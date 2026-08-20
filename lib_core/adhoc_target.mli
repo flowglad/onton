@@ -11,6 +11,15 @@ type add_target =
 type operation = Add of add_target | Remove_pr of Types.Pr_number.t
 [@@deriving show, eq]
 
+val operation_supported :
+  supports_pull_request_changes:bool ->
+  supports_branch_changes:bool ->
+  operation ->
+  bool
+(** Whether the forge's explicit change-identity capabilities admit an
+    operation. Removals are always supported because they only unregister an
+    already-known local change. *)
+
 val validate_remote_branch : string -> (Types.Branch.t, string) Result.t
 (** Validate a short remote branch name using git's ref-format constraints. *)
 

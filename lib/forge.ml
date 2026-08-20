@@ -18,6 +18,8 @@ module type S = sig
   val is_permanent_error : error -> bool
   val is_merge_queue_required_error : error -> bool
   val supports_reviews : bool
+  val supports_pull_request_changes : bool
+  val supports_branch_changes : bool
   val owner : string
   val change_url : Types.Pr_number.t -> string option
 

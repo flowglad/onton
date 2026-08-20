@@ -19,7 +19,7 @@ module type FORGE = sig
 
   val name : string
   val show_error : error -> string
-  val supports_reviews : bool
+  val supports_branch_changes : bool
 
   val list_prs :
     branch:Branch.t ->
@@ -44,7 +44,7 @@ module Make (Forge : FORGE) (W : WORKTREE) = struct
             else None))
 
   let add ~runtime ~fetch_mutex ~register_change ~branch =
-    if Forge.supports_reviews then Unsupported_forge Forge.name
+    if not Forge.supports_branch_changes then Unsupported_forge Forge.name
     else
       match find_registered_branch runtime branch with
       | Some patch_id -> Already_registered patch_id

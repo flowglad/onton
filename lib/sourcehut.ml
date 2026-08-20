@@ -307,18 +307,21 @@ let make ~net ~clock ~process_mgr ~token ~owner ~repo ~repo_root ~main_branch
         (Sourcehut_target.empty_registry, Some (Api_error message))
   in
   let changes = ref initial_registry in
-  let initialization_error = ref initial_error in
+  let initialization_error = initial_error in
   let record_change ~preferred_id ~branch ~base =
-    match
-      Sourcehut_target.register_change !changes ~preferred_id ~branch ~base
-    with
-    | Error message -> Error (Api_error message)
-    | Ok (updated, id) ->
-        changes := updated;
-        Ok id
+    match initialization_error with
+    | Some error -> Error error
+    | None -> (
+        match
+          Sourcehut_target.register_change !changes ~preferred_id ~branch ~base
+        with
+        | Error message -> Error (Api_error message)
+        | Ok (updated, id) ->
+            changes := updated;
+            Ok id)
   in
   let find_change pr_number =
-    match !initialization_error with
+    match initialization_error with
     | Some error -> Error error
     | None -> (
         match Sourcehut_target.find_change !changes pr_number with
@@ -350,6 +353,8 @@ let make ~net ~clock ~process_mgr ~token ~owner ~repo ~repo_root ~main_branch
 
     let is_merge_queue_required_error _ = false
     let supports_reviews = false
+    let supports_pull_request_changes = false
+    let supports_branch_changes = true
     let owner = owner
 
     let change_url pr_number =

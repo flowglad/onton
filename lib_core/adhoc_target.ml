@@ -11,6 +11,12 @@ type add_target =
 type operation = Add of add_target | Remove_pr of Types.Pr_number.t
 [@@deriving show, eq]
 
+let operation_supported ~supports_pull_request_changes ~supports_branch_changes
+    = function
+  | Add (Pull_request _) -> supports_pull_request_changes
+  | Add (Remote_branch _) -> supports_branch_changes
+  | Remove_pr _ -> true
+
 let forbidden_ref_char c =
   Char.to_int c <= 0x20
   || Char.to_int c = 0x7f

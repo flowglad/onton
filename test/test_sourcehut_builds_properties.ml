@@ -63,7 +63,7 @@ let build_decisions_are_total =
           ~sha:"abcdef012345" [ job ]
       in
       let source = Sourcehut_builds.log_source job in
-      List.length checks <= 1
+      List.length checks = 1
       && source.Ci_log_digest.log = Some status
       && List.is_empty source.Ci_log_digest.annotations)
 

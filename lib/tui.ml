@@ -1133,7 +1133,7 @@ let render_help_overlay ~width ~height ~version =
           "w         Register worktree (enter path)";
           "-/x       Remove selected patch";
           "m         Manage patch";
-          "o         Open review in browser";
+          "o         Open change in browser";
           "t         Toggle timeline";
           "q         Quit";
         ] );
@@ -1146,7 +1146,7 @@ let render_help_overlay ~width ~height ~version =
           "Enter     Send message";
           "c         View all CI checks";
           "m         Manage patch";
-          "o         Open PR in browser";
+          "o         Open change in browser";
           "Esc/Bksp  Back to list";
           "t         Toggle timeline";
         ] );

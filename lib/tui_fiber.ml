@@ -602,14 +602,20 @@ module Make (Forge : Forge.S) (W : Worktree.S) (Env : Tui_env.S) = struct
                     end
                 | Tui_input.Prompt_pr -> (
                     match Adhoc_target.parse_add_value line with
+                    | Ok (Adhoc_target.Remote_branch _)
+                      when not Forge.supports_branch_changes ->
+                        log_event Env.runtime
+                          (Printf.sprintf
+                             "%s does not accept remote branch changes"
+                             Forge.name)
                     | Ok (Adhoc_target.Remote_branch branch) ->
                         add_remote_branch ~status_msg branch
                     | Ok (Adhoc_target.Pull_request _)
-                      when not Forge.supports_reviews ->
+                      when not Forge.supports_pull_request_changes ->
                         log_event Env.runtime
                           (Printf.sprintf
-                             "%s accepts remote branches, not PR numbers; use \
-                              branch:%s for a numeric branch name"
+                             "%s does not accept PR-number changes; use \
+                              branch:%s if it accepts remote branches"
                              Forge.name line)
                     | Ok (Adhoc_target.Pull_request pr_number) ->
                         let n = Pr_number.to_int pr_number in

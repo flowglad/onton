@@ -20,7 +20,7 @@ module type FORGE = sig
 
   val name : string
   val show_error : error -> string
-  val supports_reviews : bool
+  val supports_branch_changes : bool
 
   val list_prs :
     branch:Branch.t ->

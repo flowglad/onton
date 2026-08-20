@@ -81,6 +81,35 @@ let safe_patch_id =
       && (not (String.contains value '/'))
       && not (String.contains value '\\'))
 
+let removals_are_capability_independent =
+  QCheck2.Test.make
+    ~name:"ad-hoc removals are supported for every forge capability mix"
+    ~count:500
+    QCheck2.Gen.(pair bool bool)
+    (fun (supports_pull_request_changes, supports_branch_changes) ->
+      Adhoc_target.operation_supported ~supports_pull_request_changes
+        ~supports_branch_changes
+        (Remove_pr (Types.Pr_number.of_int 1)))
+
+let additions_follow_identity_capabilities =
+  QCheck2.Test.make
+    ~name:"ad-hoc additions follow independent change identity capabilities"
+    ~count:500
+    QCheck2.Gen.(pair bool bool)
+    (fun (supports_pull_request_changes, supports_branch_changes) ->
+      let pull_request =
+        Adhoc_target.operation_supported ~supports_pull_request_changes
+          ~supports_branch_changes
+          (Add (Pull_request (Types.Pr_number.of_int 1)))
+      in
+      let remote_branch =
+        Adhoc_target.operation_supported ~supports_pull_request_changes
+          ~supports_branch_changes
+          (Add (Remote_branch (Types.Branch.of_string "feature")))
+      in
+      Bool.equal pull_request supports_pull_request_changes
+      && Bool.equal remote_branch supports_branch_changes)
+
 let () =
   QCheck_base_runner.run_tests_main
     [
@@ -89,4 +118,6 @@ let () =
       remote_branch_forms;
       ref_boundaries;
       safe_patch_id;
+      removals_are_capability_independent;
+      additions_follow_identity_capabilities;
     ]

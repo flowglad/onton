@@ -29,7 +29,7 @@ module Fake_forge = struct
 
   let name = "Fake reviewless forge"
   let show_error error = error
-  let supports_reviews = false
+  let supports_branch_changes = true
   let requested = ref []
 
   let list_prs ~branch ?base ~state:_ () =

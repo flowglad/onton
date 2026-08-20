@@ -1243,42 +1243,49 @@ let apply_add_pr ~(setup : runtime_setup) ~(cap : constructed_capabilities)
               (Printf.sprintf "Ad-hoc PR #%d added (%s)" n
                  (Branch.to_string branch)))
 
-(** Remove a single ad-hoc PR. Mirrors [Tui_input.Remove_patch] in
+(** Remove a single ad-hoc forge change. Mirrors [Tui_input.Remove_patch] in
     [tui_fiber.ml]: refuses to touch gameplan patches, warns on busy ones. *)
 let apply_remove_pr ~(setup : runtime_setup) ~(cap : constructed_capabilities)
     pr_number =
   let n = Pr_number.to_int pr_number in
-  let patch_id = Patch_id.of_string (string_of_int n) in
   let agent_opt, in_gameplan =
     Runtime.read setup.runtime (fun snap ->
         let agent =
-          Orchestrator.find_agent snap.Runtime.orchestrator patch_id
+          Orchestrator.all_agents snap.Runtime.orchestrator
+          |> Base.List.find ~f:(fun (agent : Patch_agent.t) ->
+              Base.Option.exists
+                (Patch_agent.pr_number agent)
+                ~f:(Pr_number.equal pr_number))
         in
         let in_gp =
-          Base.List.exists snap.Runtime.gameplan.Gameplan.patches
-            ~f:(fun (p : Patch.t) -> Patch_id.equal p.Patch.id patch_id)
+          Base.Option.exists agent ~f:(fun (agent : Patch_agent.t) ->
+              Base.List.exists snap.Runtime.gameplan.Gameplan.patches
+                ~f:(fun (p : Patch.t) ->
+                  Patch_id.equal p.Patch.id agent.Patch_agent.patch_id))
         in
         (agent, in_gp))
   in
   match agent_opt with
   | None ->
-      report setup ~patch_id
-        (Printf.sprintf "Cannot remove PR #%d — not registered" n)
-  | Some _ when in_gameplan ->
+      report_global setup
+        (Printf.sprintf "Cannot remove change #%d — not registered" n)
+  | Some agent when in_gameplan ->
+      let patch_id = agent.Patch_agent.patch_id in
       report setup ~patch_id
         (Printf.sprintf
-           "Cannot remove PR #%d — gameplan patches cannot be removed" n)
+           "Cannot remove change #%d — gameplan patches cannot be removed" n)
   | Some agent ->
+      let patch_id = agent.Patch_agent.patch_id in
       if agent.Patch_agent.busy then
         report setup ~patch_id
           (Printf.sprintf
-             "Warning — PR #%d is currently running, it may create a GitHub PR \
-              before stopping"
+             "Warning — change #%d is currently running and may update its \
+              forge change before stopping"
              n);
       Runtime.update_orchestrator setup.runtime (fun orch ->
           Orchestrator.remove_agent orch patch_id);
       cap.unregister_pr_number ~patch_id;
-      report setup ~patch_id (Printf.sprintf "Removed ad-hoc PR #%d" n)
+      report setup ~patch_id (Printf.sprintf "Removed ad-hoc change #%d" n)
 
 let apply_add_branch ~(setup : runtime_setup) ~(cap : constructed_capabilities)
     branch =
@@ -1329,16 +1336,24 @@ let apply_pr_ops ~(setup : runtime_setup) ~(cap : constructed_capabilities)
     (ops : pr_op list) =
   let module Forge = (val cap.forge) in
   let incompatible =
-    Base.List.exists ops ~f:(function
-      | Adhoc_target.Add (Adhoc_target.Pull_request _)
-      | Adhoc_target.Remove_pr _ ->
-          not Forge.supports_reviews
-      | Adhoc_target.Add (Adhoc_target.Remote_branch _) ->
-          Forge.supports_reviews)
+    Base.List.exists ops ~f:(fun operation ->
+        not
+          (Adhoc_target.operation_supported
+             ~supports_pull_request_changes:Forge.supports_pull_request_changes
+             ~supports_branch_changes:Forge.supports_branch_changes operation))
   in
   if incompatible then (
+    let accepted_targets =
+      match
+        (Forge.supports_pull_request_changes, Forge.supports_branch_changes)
+      with
+      | true, true -> "PR-number or remote-branch"
+      | true, false -> "PR-number"
+      | false, true -> "remote-branch"
+      | false, false -> "no additions"
+    in
     Printf.eprintf "Error: %s accepts %s ad-hoc targets.\n%!" Forge.name
-      (if Forge.supports_reviews then "PR-number" else "remote-branch");
+      accepted_targets;
     Stdlib.exit 1)
   else
     List.iter

@@ -2493,6 +2493,8 @@ let make ~net ~clock ~token ~owner ~repo ~main_branch :
     let is_permanent_error = is_permanent_error
     let is_merge_queue_required_error = is_merge_queue_required_error
     let supports_reviews = true
+    let supports_pull_request_changes = true
+    let supports_branch_changes = false
     let owner = owner
 
     let change_url pr_number =
