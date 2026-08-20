@@ -98,8 +98,8 @@ dune build
 ## Dependencies
 
 Onton shells out to several external tools and talks to the configured forge
-API (GitHub or SourceHut). All of these must be installed and configured before
-onton can run.
+API (GitHub or SourceHut). Install and configure the tools applicable to the
+selected forge and coding backend before onton can run.
 
 ### Runtime dependencies
 
@@ -231,6 +231,10 @@ feedback, and `PROFILE:RO` is required to construct canonical build URLs. Add
 belong to the account that pushes the patch branches, because the builds API
 lists that account's jobs. Managed clones auto-detect SSH with HTTPS fallback;
 `--clone-scheme ssh|https` selects the transport explicitly.
+
+The `gh` CLI is GitHub-only and is not required in SourceHut mode. SourceHut
+uses `SRHT_TOKEN` for its API and the configured Git remote transport for Git
+operations.
 
 SourceHut has no pull-request review surface. Onton consequently treats each
 patch branch as a reviewless change: draft/review metadata is absent, review

@@ -16,6 +16,7 @@ val show_error : error -> string
 val make :
   net:_ Eio.Net.t ->
   clock:_ Eio.Time.clock ->
+  process_mgr:_ Eio.Process.mgr ->
   token:string ->
   owner:string ->
   repo:string ->

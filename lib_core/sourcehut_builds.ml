@@ -138,13 +138,19 @@ let checks_for_commit ~owner ~repo ~branch ~sha jobs =
     List.fold matching
       ~init:(Set.empty (module String), [])
       ~f:(fun (seen, kept) job ->
-        let manifest = List.last job.tags |> Option.value ~default:"build" in
+        let manifest =
+          let value = String.strip job.manifest in
+          if String.is_empty value then "build" else value
+        in
         if Set.mem seen manifest then (seen, kept)
         else (Set.add seen manifest, job :: kept))
   in
   List.rev latest
   |> List.map ~f:(fun job ->
-      let manifest_name = List.last job.tags |> Option.value ~default:"build" in
+      let manifest_name =
+        let value = String.strip job.manifest in
+        if String.is_empty value then "build" else value
+      in
       let account =
         String.chop_prefix job.owner ~prefix:"~"
         |> Option.value ~default:job.owner

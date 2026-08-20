@@ -13,21 +13,30 @@ let totality =
       ignore (Sourcehut_builds.submit_id_of_response body);
       true)
 
-let status_bounds =
+let known_status_mappings =
   QCheck2.Test.make
-    ~name:"sourcehut statuses always map to known CI conclusions" ~count:500
-    arbitrary_string (fun status ->
-      Stdlib.List.mem
-        (Sourcehut_builds.conclusion_of_status status)
+    ~name:"sourcehut known statuses map to their exact CI conclusions"
+    ~count:500
+    QCheck2.Gen.(
+      oneof_list
         [
-          "success";
-          "failure";
-          "timed_out";
-          "cancelled";
-          "in_progress";
-          "queued";
-          "pending";
+          ("SUCCESS", "success");
+          ("FAILED", "failure");
+          ("TIMEOUT", "timed_out");
+          ("CANCELLED", "cancelled");
+          ("RUNNING", "in_progress");
+          ("QUEUED", "queued");
+          ("PENDING", "pending");
         ])
+    (fun (status, expected) ->
+      String.equal (Sourcehut_builds.conclusion_of_status status) expected)
+
+let unknown_statuses_are_pending =
+  QCheck2.Test.make ~name:"sourcehut unknown statuses map to pending" ~count:500
+    arbitrary_string (fun suffix ->
+      String.equal
+        (Sourcehut_builds.conclusion_of_status ("UNKNOWN-" ^ suffix))
+        "pending")
 
 let build_decisions_are_total =
   QCheck2.Test.make
@@ -43,7 +52,7 @@ let build_decisions_are_total =
             tags = [ "demo"; "commits"; "patch-1"; "build.yml" ];
             created = None;
             owner = "~alice";
-            manifest = "";
+            manifest = "build.yml";
             visibility = "PUBLIC";
             logs = [ status ];
           }
@@ -59,7 +68,7 @@ let build_decisions_are_total =
       && List.is_empty source.Ci_log_digest.annotations)
 
 let fixture =
-  {|{"data":{"jobs":{"results":[{"id":42,"status":"FAILED","note":"[abcdef0][0]\n\n[0]: https://git.sr.ht/~alice/demo/commit/abcdef012345","tags":["demo","commits","patch-1","build.yml"],"created":"2026-08-20T12:00:00Z","owner":{"canonicalName":"~alice"}}],"cursor":null}}}|}
+  {|{"data":{"jobs":{"results":[{"id":42,"status":"FAILED","note":"[abcdef0][0]\n\n[0]: https://git.sr.ht/~alice/demo/commit/abcdef012345","tags":["demo","commits","patch-1","not-the-manifest"],"created":"2026-08-20T12:00:00Z","manifest":"build.yml","owner":{"canonicalName":"~alice"}}],"cursor":null}}}|}
 
 let exact_commit_join =
   QCheck2.Test.make ~name:"sourcehut jobs join to the exact repo branch and SHA"
@@ -75,6 +84,8 @@ let exact_commit_join =
           match checks with
           | [ check ] ->
               check.Types.Ci_check.id = Some 42
+              && String.equal check.Types.Ci_check.name
+                   "builds.sr.ht / build.yml"
               && String.equal check.Types.Ci_check.conclusion "failure"
               && List.is_empty
                    (Sourcehut_builds.checks_for_commit ~owner:"alice"
@@ -98,7 +109,7 @@ let rerun_supersedes_original =
             tags = [ "demo"; "commits"; "patch-1"; "build.yml" ];
             created = None;
             owner = "~alice";
-            manifest = "";
+            manifest = "build.yml";
             visibility = "PUBLIC";
             logs = [];
           }
@@ -114,12 +125,51 @@ let rerun_supersedes_original =
           && String.equal check.Types.Ci_check.conclusion "success"
       | _ -> false)
 
+let tag_order_cannot_alias_manifests =
+  QCheck2.Test.make
+    ~name:"sourcehut manifest identity is independent of tag ordering" ~count:1
+    QCheck2.Gen.unit (fun () ->
+      let job id manifest status : Sourcehut_builds.job =
+        Sourcehut_builds.
+          {
+            id;
+            status;
+            note =
+              "[abcdef0][0]\n\n\
+               [0]: https://git.sr.ht/~alice/demo/commit/abcdef012345";
+            tags = [ "shared-last"; "patch-1"; "commits"; "demo" ];
+            created = None;
+            owner = "~alice";
+            manifest;
+            visibility = "PUBLIC";
+            logs = [];
+          }
+      in
+      let checks =
+        Sourcehut_builds.checks_for_commit ~owner:"alice" ~repo:"demo"
+          ~branch:(Types.Branch.of_string "patch-1")
+          ~sha:"abcdef012345"
+          [ job 42 "linux.yml" "SUCCESS"; job 43 "macos.yml" "FAILED" ]
+      in
+      List.length checks = 2
+      && Stdlib.List.exists
+           (fun check ->
+             String.equal check.Types.Ci_check.name "builds.sr.ht / linux.yml")
+           checks
+      && Stdlib.List.exists
+           (fun check ->
+             String.equal check.Types.Ci_check.name "builds.sr.ht / macos.yml"
+             && String.equal check.Types.Ci_check.conclusion "failure")
+           checks)
+
 let () =
   QCheck_base_runner.run_tests_main
     [
       totality;
-      status_bounds;
+      known_status_mappings;
+      unknown_statuses_are_pending;
       build_decisions_are_total;
       exact_commit_join;
       rerun_supersedes_original;
+      tag_order_cannot_alias_manifests;
     ]

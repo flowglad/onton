@@ -18,7 +18,7 @@ let show_error = function
         (String.prefix (String.strip body) 500)
   | Api_error message -> "builds.sr.ht API error: " ^ message
   | Timeout seconds ->
-      Printf.sprintf "builds.sr.ht request timed out after %.0fs" seconds
+      Printf.sprintf "SourceHut operation timed out after %.0fs" seconds
   | Transport_error message -> "builds.sr.ht transport error: " ^ message
   | Git_error message -> "git.sr.ht operation failed: " ^ message
   | Unsupported operation ->
@@ -43,6 +43,7 @@ let https_fun tls_config uri flow =
   (Tls_eio.client_of_flow tls_config ?host flow :> _ Eio.Flow.two_way)
 
 let request_timeout = 30.0
+let git_timeout = 60.0
 let max_response_size = 2_000_000
 
 let graphql ~net ~clock ~token ~query ~variables =
@@ -97,50 +98,102 @@ type capture = {
   stderr : string;
 }
 
-let read_all channel =
-  let buffer = Buffer.create 256 in
-  (try
-     while true do
-       Buffer.add_char buffer (Stdlib.input_char channel)
-     done
-   with End_of_file -> ());
-  Buffer.contents buffer
+let setsid_exec () =
+  let candidate =
+    match Stdlib.Sys.getenv_opt "ONTON_SETSID_EXEC" with
+    | Some "" -> None
+    | Some path -> Some path
+    | None ->
+        Some
+          (Stdlib.Filename.concat
+             (Stdlib.Filename.dirname Stdlib.Sys.executable_name)
+             "onton-setsid-exec")
+  in
+  Option.filter candidate ~f:Stdlib.Sys.file_exists
 
-let run_git ~repo_root args =
-  let argv = Array.of_list ("git" :: "-C" :: repo_root :: args) in
-  match Unix.open_process_args_full "git" argv (Git_env.clean_env ()) with
-  | exception exn -> Error (Exn.to_string exn)
-  | input, output, error ->
-      let closed = ref false in
+let run_process ?(timeout = git_timeout) ~clock ~process_mgr command =
+  let stdout = Buffer.create 256 in
+  let stderr = Buffer.create 256 in
+  let setsid_exec = setsid_exec () in
+  let command =
+    match setsid_exec with Some path -> path :: command | None -> command
+  in
+  try
+    let outcome =
+      Eio.Switch.run @@ fun sw ->
+      let child =
+        Eio.Process.spawn ~sw process_mgr ~env:(Git_env.clean_env ())
+          ~stdout:(Eio.Flow.buffer_sink stdout)
+          ~stderr:(Eio.Flow.buffer_sink stderr)
+          command
+      in
+      let pid = Eio.Process.pid child in
+      let kill_tree () =
+        match setsid_exec with
+        | Some _ -> (
+            try Unix.kill (-pid) Stdlib.Sys.sigkill
+            with Unix.Unix_error ((ESRCH | EPERM), _, _) -> ())
+        | None -> (
+            try Eio.Process.signal child Stdlib.Sys.sigkill with _ -> ())
+      in
       Stdlib.Fun.protect
         ~finally:(fun () ->
-          if not !closed then
-            try ignore (Unix.close_process_full (input, output, error))
-            with _ -> ())
+          kill_tree ();
+          try ignore (Eio.Process.await child) with _ -> ())
         (fun () ->
-          Stdlib.close_out_noerr output;
-          let stdout = read_all input in
-          let stderr = read_all error in
-          let status = Unix.close_process_full (input, output, error) in
-          closed := true;
-          Ok
-            {
-              status;
-              stdout = String.strip stdout;
-              stderr = String.strip stderr;
-            })
+          Eio.Time.with_timeout clock timeout (fun () ->
+              Ok (Eio.Process.await child)))
+    in
+    match outcome with
+    | Error `Timeout -> Error (Timeout timeout)
+    | Ok status ->
+        let status =
+          match status with
+          | `Exited code -> Unix.WEXITED code
+          | `Signaled signal -> Unix.WSIGNALED signal
+        in
+        Ok
+          {
+            status;
+            stdout = String.strip (Buffer.contents stdout);
+            stderr = String.strip (Buffer.contents stderr);
+          }
+  with
+  | Eio.Cancel.Cancelled _ as exn -> raise exn
+  | exn -> Error (Git_error (Exn.to_string exn))
+
+let run_git ~clock ~process_mgr ~repo_root args =
+  run_process ~clock ~process_mgr ("git" :: "-C" :: repo_root :: args)
+
+let is_timeout = function
+  | Timeout _ -> true
+  | Http_error _ | Api_error _ | Transport_error _ | Git_error _ | Unsupported _
+    ->
+      false
+
+let%test_unit "SourceHut subprocess timeout is bounded" =
+  Eio_main.run @@ fun env ->
+  let clock = Eio.Stdenv.clock env in
+  let started = Eio.Time.now clock in
+  let result =
+    run_process ~timeout:0.05 ~clock
+      ~process_mgr:(Eio.Stdenv.process_mgr env)
+      [ "/bin/sleep"; "5" ]
+  in
+  let elapsed = Eio.Time.now clock -. started in
+  assert (Option.value_map (Result.error result) ~default:false ~f:is_timeout);
+  assert (Float.(elapsed < 1.0))
 
 let process_succeeded = function
   | Unix.WEXITED 0 -> true
   | Unix.WEXITED _ | Unix.WSIGNALED _ | Unix.WSTOPPED _ -> false
 
-let git_success ~repo_root args =
-  match run_git ~repo_root args with
-  | Ok capture -> process_succeeded capture.status
-  | Error _ -> false
+let git_success ~clock ~process_mgr ~repo_root args =
+  Result.map (run_git ~clock ~process_mgr ~repo_root args) ~f:(fun capture ->
+      process_succeeded capture.status)
 
-let git_stdout ~repo_root args =
-  match run_git ~repo_root args with
+let git_stdout ~clock ~process_mgr ~repo_root args =
+  match run_git ~clock ~process_mgr ~repo_root args with
   | Ok capture
     when process_succeeded capture.status
          && not (String.is_empty capture.stdout) ->
@@ -152,13 +205,14 @@ let git_stdout ~repo_root args =
         (Git_error
            (String.concat ~sep:"\n" [ capture.stderr; capture.stdout ]
            |> String.strip))
-  | Error message -> Error (Git_error message)
+  | Error _ as error -> error
 
 type merge_tree_result = Clean of string | Conflicting
 
-let merge_tree ~repo_root ~base_sha ~head_sha =
+let merge_tree ~clock ~process_mgr ~repo_root ~base_sha ~head_sha =
   match
-    run_git ~repo_root [ "merge-tree"; "--write-tree"; base_sha; head_sha ]
+    run_git ~clock ~process_mgr ~repo_root
+      [ "merge-tree"; "--write-tree"; base_sha; head_sha ]
   with
   | Ok { status = Unix.WEXITED 0; stdout; _ } when not (String.is_empty stdout)
     ->
@@ -171,17 +225,18 @@ let merge_tree ~repo_root ~base_sha ~head_sha =
         (Git_error
            (String.concat ~sep:"\n" [ capture.stderr; capture.stdout ]
            |> String.strip))
-  | Error message -> Error (Git_error message)
+  | Error _ as error -> error
 
 let ref_name branch = "refs/remotes/origin/" ^ Branch.to_string branch
 
-let resolve_ref ~repo_root branch =
-  git_stdout ~repo_root [ "rev-parse"; "--verify"; ref_name branch ]
+let resolve_ref ~clock ~process_mgr ~repo_root branch =
+  git_stdout ~clock ~process_mgr ~repo_root
+    [ "rev-parse"; "--verify"; ref_name branch ]
 
 let jobs_query =
   {|query Jobs($cursor: Cursor) {
       jobs(cursor: $cursor) {
-        results { id status note tags created owner { canonicalName } }
+        results { id status note tags created manifest owner { canonicalName } }
         cursor
       }
     }|}
@@ -238,8 +293,13 @@ let submit_query =
              visibility: $visibility) { id }
     }|}
 
-let make ~net ~clock ~token ~owner ~repo ~repo_root ~main_branch
+let make ~net ~clock ~process_mgr ~token ~owner ~repo ~repo_root ~main_branch
     ~changes:initial_changes : (module Forge.S with type error = error) =
+  let run_git = run_git ~clock ~process_mgr in
+  let git_success = git_success ~clock ~process_mgr in
+  let git_stdout = git_stdout ~clock ~process_mgr in
+  let merge_tree = merge_tree ~clock ~process_mgr in
+  let resolve_ref = resolve_ref ~clock ~process_mgr in
   let changes = ref Sourcehut_target.empty_registry in
   let initialization_error = ref None in
   let record_change ~preferred_id ~branch ~base =
@@ -312,59 +372,62 @@ let make ~net ~clock ~token ~owner ~repo ~repo_root ~main_branch
           | Error error, _ -> Error error
           | Ok _, Error error -> Error error
           | Ok head_sha, Ok base_sha -> (
-              let merged =
+              match
                 git_success ~repo_root
                   [ "merge-base"; "--is-ancestor"; head_sha; base_sha ]
-              in
-              let merge_state =
-                if merged then Ok Pr_state.Mergeable
-                else
-                  Result.map (merge_tree ~repo_root ~base_sha ~head_sha)
-                    ~f:(function
-                    | Clean _ -> Pr_state.Mergeable
-                    | Conflicting -> Pr_state.Conflicting)
-              in
-              match merge_state with
+              with
               | Error _ as error -> error
-              | Ok merge_state -> (
-                  match fetch_jobs ~net ~clock ~token with
+              | Ok merged -> (
+                  let merge_state =
+                    if merged then Ok Pr_state.Mergeable
+                    else
+                      Result.map (merge_tree ~repo_root ~base_sha ~head_sha)
+                        ~f:(function
+                        | Clean _ -> Pr_state.Mergeable
+                        | Conflicting -> Pr_state.Conflicting)
+                  in
+                  match merge_state with
                   | Error _ as error -> error
-                  | Ok jobs ->
-                      let ci_checks =
-                        Sourcehut_builds.checks_for_commit ~owner ~repo
-                          ~branch:head ~sha:head_sha jobs
-                      in
-                      let check_status =
-                        Pr_state.derive_check_status ci_checks
-                      in
-                      let merge_ready =
-                        Pr_state.merge_ready_of ~merge_state ~check_status
-                          ~review_decision:None
-                      in
-                      Ok
-                        {
-                          Pr_state.status = (if merged then Merged else Open);
-                          is_draft = false;
-                          merge_state;
-                          merge_ready;
-                          merge_ready_divergence = None;
-                          review_decision = None;
-                          check_status;
-                          ci_checks;
-                          ci_checks_truncated = false;
-                          comments = [];
-                          unresolved_comment_count = 0;
-                          findings = [];
-                          node_id = None;
-                          merge_queue_required = false;
-                          merge_queue_entry = None;
-                          head_branch = Some head;
-                          head_oid = Some head_sha;
-                          merge_commit_sha =
-                            (if merged then Some base_sha else None);
-                          base_branch = Some base;
-                          is_fork = false;
-                        })))
+                  | Ok merge_state -> (
+                      match fetch_jobs ~net ~clock ~token with
+                      | Error _ as error -> error
+                      | Ok jobs ->
+                          let ci_checks =
+                            Sourcehut_builds.checks_for_commit ~owner ~repo
+                              ~branch:head ~sha:head_sha jobs
+                          in
+                          let check_status =
+                            Pr_state.derive_check_status ci_checks
+                          in
+                          let merge_ready =
+                            Pr_state.merge_ready_of ~merge_state ~check_status
+                              ~review_decision:None
+                          in
+                          Ok
+                            {
+                              Pr_state.status =
+                                (if merged then Merged else Open);
+                              is_draft = false;
+                              merge_state;
+                              merge_ready;
+                              merge_ready_divergence = None;
+                              review_decision = None;
+                              check_status;
+                              ci_checks;
+                              ci_checks_truncated = false;
+                              comments = [];
+                              unresolved_comment_count = 0;
+                              findings = [];
+                              node_id = None;
+                              merge_queue_required = false;
+                              merge_queue_entry = None;
+                              head_branch = Some head;
+                              head_oid = Some head_sha;
+                              merge_commit_sha =
+                                (if merged then Some base_sha else None);
+                              base_branch = Some base;
+                              is_fork = false;
+                            }))))
 
     let merge_queue_removal_checks ~pr_number:_ = Ok []
 
@@ -416,17 +479,21 @@ let make ~net ~clock ~token ~owner ~repo ~repo_root ~main_branch
       | Error _ as error -> error
       | Ok id -> (
           match resolve_ref ~repo_root branch with
-          | Error _ -> Ok []
-          | Ok head_sha ->
-              let merged =
+          | Error error -> if is_timeout error then Error error else Ok []
+          | Ok head_sha -> (
+              let merged_result =
                 match resolve_ref ~repo_root base with
-                | Error _ -> false
+                | Error error ->
+                    if is_timeout error then Error error else Ok false
                 | Ok base_sha ->
                     git_success ~repo_root
                       [ "merge-base"; "--is-ancestor"; head_sha; base_sha ]
               in
-              if Poly.equal state `Open && merged then Ok []
-              else Ok [ (id, base, merged) ])
+              match merged_result with
+              | Error _ as error -> error
+              | Ok merged ->
+                  if Poly.equal state `Open && merged then Ok []
+                  else Ok [ (id, base, merged) ]))
 
     let update_pr_body ~pr_number:_ ~body:_ = Ok ()
 
@@ -457,58 +524,63 @@ let make ~net ~clock ~token ~owner ~repo ~repo_root ~main_branch
           match (resolve_ref ~repo_root head, resolve_ref ~repo_root base) with
           | Error error, _ | _, Error error -> Error error
           | Ok head_sha, Ok base_sha -> (
-              let target =
-                if
-                  git_success ~repo_root
-                    [ "merge-base"; "--is-ancestor"; base_sha; head_sha ]
-                then Ok head_sha
-                else
-                  match merge_tree ~repo_root ~base_sha ~head_sha with
-                  | Error _ as error -> error
-                  | Ok Conflicting ->
-                      Error
-                        (Git_error
-                           (Printf.sprintf "%s does not merge cleanly into %s"
-                              (Branch.to_string head) (Branch.to_string base)))
-                  | Ok (Clean tree) ->
-                      git_stdout ~repo_root
-                        [
-                          "-c";
-                          "user.name=onton";
-                          "-c";
-                          "user.email=onton@localhost";
-                          "commit-tree";
-                          tree;
-                          "-p";
-                          base_sha;
-                          "-p";
-                          head_sha;
-                          "-m";
-                          Printf.sprintf "Merge %s" (Branch.to_string head);
-                        ]
-              in
-              match target with
+              match
+                git_success ~repo_root
+                  [ "merge-base"; "--is-ancestor"; base_sha; head_sha ]
+              with
               | Error _ as error -> error
-              | Ok target_sha -> (
-                  match
-                    run_git ~repo_root
-                      [
-                        "push";
-                        Printf.sprintf "--force-with-lease=refs/heads/%s:%s"
-                          (Branch.to_string base) base_sha;
-                        "origin";
-                        Printf.sprintf "%s:refs/heads/%s" target_sha
-                          (Branch.to_string base);
-                      ]
-                  with
-                  | Ok capture when process_succeeded capture.status ->
-                      Ok Merge_succeeded
-                  | Ok capture ->
-                      Error
-                        (Git_error
-                           (String.concat ~sep:"\n"
-                              [ capture.stderr; capture.stdout ]))
-                  | Error message -> Error (Git_error message))))
+              | Ok base_is_ancestor -> (
+                  let target =
+                    if base_is_ancestor then Ok head_sha
+                    else
+                      match merge_tree ~repo_root ~base_sha ~head_sha with
+                      | Error _ as error -> error
+                      | Ok Conflicting ->
+                          Error
+                            (Git_error
+                               (Printf.sprintf
+                                  "%s does not merge cleanly into %s"
+                                  (Branch.to_string head)
+                                  (Branch.to_string base)))
+                      | Ok (Clean tree) ->
+                          git_stdout ~repo_root
+                            [
+                              "-c";
+                              "user.name=onton";
+                              "-c";
+                              "user.email=onton@localhost";
+                              "commit-tree";
+                              tree;
+                              "-p";
+                              base_sha;
+                              "-p";
+                              head_sha;
+                              "-m";
+                              Printf.sprintf "Merge %s" (Branch.to_string head);
+                            ]
+                  in
+                  match target with
+                  | Error _ as error -> error
+                  | Ok target_sha -> (
+                      match
+                        run_git ~repo_root
+                          [
+                            "push";
+                            Printf.sprintf "--force-with-lease=refs/heads/%s:%s"
+                              (Branch.to_string base) base_sha;
+                            "origin";
+                            Printf.sprintf "%s:refs/heads/%s" target_sha
+                              (Branch.to_string base);
+                          ]
+                      with
+                      | Ok capture when process_succeeded capture.status ->
+                          Ok Merge_succeeded
+                      | Ok capture ->
+                          Error
+                            (Git_error
+                               (String.concat ~sep:"\n"
+                                  [ capture.stderr; capture.stdout ]))
+                      | Error _ as error -> error))))
 
     let enqueue_pr ~pr_number:_ = unsupported "merge queues"
     let dequeue_pr ~pr_number:_ = unsupported "merge queues"

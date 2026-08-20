@@ -4,6 +4,7 @@
 val run_prune :
   net:_ Eio.Net.t ->
   clock:_ Eio.Time.clock ->
+  process_mgr:_ Eio.Process.mgr ->
   github_token:string ->
   refresh:bool ->
   unit ->

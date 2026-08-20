@@ -249,7 +249,7 @@ let kept_reason ~base ~refresh_summary =
   | None -> base
   | Some note -> Stdlib.Printf.sprintf "%s (%s)" base note
 
-let run_prune ~net ~clock ~github_token ~refresh () =
+let run_prune ~net ~clock ~process_mgr ~github_token ~refresh () =
   let slugs = Project_store.list_projects () in
   if List.is_empty slugs then (
     Stdlib.Printf.printf "No stored projects to consider.\n";
@@ -273,8 +273,8 @@ let run_prune ~net ~clock ~github_token ~refresh () =
       if String.is_empty token then None
       else if String.equal forge "sourcehut" then
         let module S =
-          (val Sourcehut.make ~net ~clock ~token ~owner ~repo ~repo_root
-                 ~main_branch ~changes)
+          (val Sourcehut.make ~net ~clock ~process_mgr ~token ~owner ~repo
+                 ~repo_root ~main_branch ~changes)
         in
         Some (module S : Forge.S)
       else

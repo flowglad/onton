@@ -115,7 +115,7 @@ module Make (Forge : Forge.S) (W : Worktree.S) (Env : Poller_env.S) = struct
                   };
                 { f with Review_service.id = key }))
 
-  (** Translate a [Github] result into a [Poll_outcome.t]. Pure-modulo-show; the
+  (** Translate a [Forge] result into a [Poll_outcome.t]. Pure-modulo-show; the
       boundary lets [Poll_cycle.classify] reason about timeouts the same way it
       reasons about other failures, which is the invariant the interleaving
       property tests exercise. *)

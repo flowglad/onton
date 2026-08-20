@@ -875,8 +875,8 @@ let construct_capabilities ~net (setup : runtime_setup) =
       in
       let module S =
         (val Sourcehut.make ~net ~clock:setup.clock ~token:github_token
-               ~owner:github_owner ~repo:github_repo ~repo_root ~main_branch
-               ~changes)
+               ~process_mgr:setup.process_mgr ~owner:github_owner
+               ~repo:github_repo ~repo_root ~main_branch ~changes)
       in
       (module S)
     else
@@ -1740,8 +1740,9 @@ let main_cmd ~pr_ops =
       Stdlib.exit
         ( Eio_main.run @@ fun env ->
           Prune_runner.run_prune ~net:(Eio.Stdenv.net env)
-            ~clock:(Eio.Stdenv.clock env) ~github_token
-            ~refresh:(not no_refresh) () )
+            ~clock:(Eio.Stdenv.clock env)
+            ~process_mgr:(Eio.Stdenv.process_mgr env)
+            ~github_token ~refresh:(not no_refresh) () )
     else if upload_debug then (
       match project with
       | None ->
