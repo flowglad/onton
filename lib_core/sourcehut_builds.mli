@@ -1,3 +1,6 @@
+(* @archlint.module interface
+   @archlint.domain sourcehut-builds *)
+
 (** Total decoding and decisions for builds.sr.ht jobs. *)
 
 type job = {

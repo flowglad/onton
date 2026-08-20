@@ -1,3 +1,6 @@
+(* @archlint.module interface
+   @archlint.domain sourcehut *)
+
 (** Reviewless SourceHut forge backed by git.sr.ht branches and builds.sr.ht. *)
 
 type error =

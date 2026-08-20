@@ -1,3 +1,6 @@
+(* @archlint.module test
+   @archlint.domain adhoc-branch *)
+
 open Onton_core
 open Adhoc_target
 

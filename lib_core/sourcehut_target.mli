@@ -1,3 +1,6 @@
+(* @archlint.module interface
+   @archlint.domain sourcehut-target *)
+
 (** Pure SourceHut repository target logic. *)
 
 val validate_target : owner:string -> repo:string -> (unit, string) Result.t

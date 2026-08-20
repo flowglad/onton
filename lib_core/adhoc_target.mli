@@ -1,3 +1,6 @@
+(* @archlint.module interface
+   @archlint.domain adhoc-branch *)
+
 (** Pure parsing and validation for ad-hoc change arguments. *)
 
 type add_target =

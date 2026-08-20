@@ -1,5 +1,5 @@
 (* @archlint.module core
-   @archlint.domain adhoc-target *)
+   @archlint.domain adhoc-branch *)
 
 open Base
 

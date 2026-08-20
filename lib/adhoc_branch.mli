@@ -1,3 +1,6 @@
+(* @archlint.module interface
+   @archlint.domain adhoc-branch *)
+
 (** Effectful registration of an existing remote branch as an ad-hoc change. *)
 
 open Onton_core.Types

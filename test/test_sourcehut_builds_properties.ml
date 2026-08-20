@@ -1,3 +1,6 @@
+(* @archlint.module test
+   @archlint.domain sourcehut-builds *)
+
 open Onton_core
 
 let arbitrary_string = QCheck2.Gen.string_size (QCheck2.Gen.int_bound 500)
@@ -25,6 +28,35 @@ let status_bounds =
           "queued";
           "pending";
         ])
+
+let build_decisions_are_total =
+  QCheck2.Test.make
+    ~name:"sourcehut build decisions are total over generated jobs" ~count:500
+    QCheck2.Gen.(pair (int_bound 1_000_000) arbitrary_string)
+    (fun (id, status) ->
+      let job : Sourcehut_builds.job =
+        Sourcehut_builds.
+          {
+            id;
+            status;
+            note = "https://git.sr.ht/~alice/demo/commit/abcdef012345";
+            tags = [ "demo"; "commits"; "patch-1"; "build.yml" ];
+            created = None;
+            owner = "~alice";
+            manifest = "";
+            visibility = "PUBLIC";
+            logs = [ status ];
+          }
+      in
+      let checks =
+        Sourcehut_builds.checks_for_commit ~owner:"alice" ~repo:"demo"
+          ~branch:(Types.Branch.of_string "patch-1")
+          ~sha:"abcdef012345" [ job ]
+      in
+      let source = Sourcehut_builds.log_source job in
+      List.length checks <= 1
+      && source.Ci_log_digest.log = Some status
+      && List.is_empty source.Ci_log_digest.annotations)
 
 let fixture =
   {|{"data":{"jobs":{"results":[{"id":42,"status":"FAILED","note":"[abcdef0][0]\n\n[0]: https://git.sr.ht/~alice/demo/commit/abcdef012345","tags":["demo","commits","patch-1","build.yml"],"created":"2026-08-20T12:00:00Z","owner":{"canonicalName":"~alice"}}],"cursor":null}}}|}
@@ -84,4 +116,10 @@ let rerun_supersedes_original =
 
 let () =
   QCheck_base_runner.run_tests_main
-    [ totality; status_bounds; exact_commit_join; rerun_supersedes_original ]
+    [
+      totality;
+      status_bounds;
+      build_decisions_are_total;
+      exact_commit_join;
+      rerun_supersedes_original;
+    ]

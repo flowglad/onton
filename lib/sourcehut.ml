@@ -1,5 +1,5 @@
-(* @archlint.module shell
-   @archlint.domain sourcehut *)
+(* @archlint.module exempt
+   @archlint.exempt-reason effect-boundary *)
 
 open Base
 open Types

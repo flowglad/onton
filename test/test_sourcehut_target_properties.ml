@@ -1,3 +1,6 @@
+(* @archlint.module test
+   @archlint.domain sourcehut-target *)
+
 open Onton_core
 
 let gen_string = QCheck2.Gen.string_size (QCheck2.Gen.int_bound 200)
