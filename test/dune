@@ -669,3 +669,13 @@
  (name test_dependency_injection_functors)
  (modules test_dependency_injection_functors)
  (libraries onton onton_core eio))
+
+(test
+ (name test_sourcehut_target_properties)
+ (modules test_sourcehut_target_properties)
+ (libraries onton_core qcheck-core qcheck-core.runner))
+
+(test
+ (name test_sourcehut_builds_properties)
+ (modules test_sourcehut_builds_properties)
+ (libraries onton_core qcheck-core qcheck-core.runner))

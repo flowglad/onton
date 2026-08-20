@@ -37,9 +37,6 @@ module type STARTUP_RECONCILER = sig
     branch:Branch.t -> ((Pr_number.t * Branch.t * bool) option, string) Result.t
 end
 
-module Make
-    (_ : Forge.S with type error = Github.error)
-    (_ : Worktree.S)
-    (_ : Poller_env.S) : sig
+module Make (_ : Forge.S) (_ : Worktree.S) (_ : Poller_env.S) : sig
   val run : (module STARTUP_RECONCILER) -> unit
 end

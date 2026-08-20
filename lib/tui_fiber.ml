@@ -84,11 +84,7 @@ module Tui_env = struct
   end
 end
 
-module Make
-    (Forge : Forge.S with type error = Github.error)
-    (_ : Worktree.S)
-    (Env : Tui_env.S) =
-struct
+module Make (Forge : Forge.S) (_ : Worktree.S) (Env : Tui_env.S) = struct
   exception Quit
 
   let run () =

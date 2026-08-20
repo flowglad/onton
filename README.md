@@ -97,8 +97,9 @@ dune build
 
 ## Dependencies
 
-Onton shells out to several external tools and talks to the GitHub API. All
-of these must be installed and configured before onton can run.
+Onton shells out to several external tools and talks to the configured forge
+API (GitHub or SourceHut). All of these must be installed and configured before
+onton can run.
 
 ### Runtime dependencies
 
@@ -219,6 +220,25 @@ hand and your interactive shell isn't authenticated for HTTPS pushes, run
 global git config and subsequent git invocations transparently reuse the
 token.
 
+### SourceHut
+
+Use `--forge sourcehut` for a git.sr.ht repository (ad-hoc mode also detects a
+`git.sr.ht` origin automatically). Set `SRHT_TOKEN` to a SourceHut personal
+access token with `JOBS:RW`, `LOGS:RO`, and `PROFILE:RO`. `JOBS:RW` permits
+polling and reruns, `LOGS:RO` lets onton include failed task logs in CI
+feedback, and `PROFILE:RO` is required to construct canonical build URLs. Add
+`SECRETS:RO` when rerun manifests reference SourceHut secrets. The token must
+belong to the account whose SSH identity pushes the patch branches, because
+the builds API lists that account's jobs. Git pushes and merges use the
+repository's SSH remote and therefore use your ssh-agent.
+
+SourceHut has no pull-request review surface. Onton consequently treats each
+patch branch as a reviewless change: draft/review metadata is absent, review
+operations are disabled, and [builds.sr.ht jobs](https://docs.sourcehut.org/builds.sr.ht/)
+for the branch's exact head SHA become ordinary CI checks. At least one
+SourceHut build manifest must run for a change to become CI-passing. Automerge
+updates the configured base branch with a guarded git merge and push.
+
 ### Coding-agent authentication
 
 Onton spawns each patch in an isolated config dir (`spawn-envs/<patch_id>/{claude,codex,opencode}`)
@@ -285,11 +305,12 @@ onton --repo ../my-repo [OPTIONS]        # Ad-hoc mode (no gameplan)
 | `PROJECT` | (derived from gameplan) | Project name (positional). Required to resume, optional with `--gameplan` |
 | `--gameplan` | — | Path to the gameplan markdown file |
 | `--repo` | `.` | Path to the git repository. GitHub owner/repo are inferred from `git remote` |
-| `--token` | `$GITHUB_TOKEN` or `gh auth token` | GitHub API token |
+| `--forge` | `auto` | Forge: `github`, `sourcehut`, or local-origin auto-detection. Gameplan projects default to GitHub unless specified. |
+| `--token` | forge-specific | API token. Defaults to `$GITHUB_TOKEN` / `gh auth token` for GitHub or `$SRHT_TOKEN` for SourceHut. |
 | `--backend` | `claude` | LLM backend: `claude`, `codex`, `opencode`, `pi`, `gemini`. See [Backend & model](#backend--model) |
 | `--model` | (backend CLI's own default) | Model name passed to the backend CLI |
 | `--main-branch` | (auto-detected) | Main branch name (inferred from remote HEAD if omitted) |
-| `--poll-interval` | `30.0` | GitHub polling interval in seconds |
+| `--poll-interval` | `30.0` | Forge polling interval in seconds |
 | `--max-concurrency` | `5` / `$ONTON_MAX_CONCURRENCY` | Maximum concurrent Claude processes |
 | `--auto-merge` | off | Enable automerge for every patch when starting a fresh `--gameplan` project; ignored on resume so per-patch TUI toggles persist |
 | `--headless` | off | Run without TUI (plain log output to stdout) |
@@ -301,7 +322,8 @@ message ledger, so accepted but incomplete work can resume after restart.
 
 ### User configuration
 
-Per-repo configuration lives at `~/.config/onton/<github-owner>/<github-repo>/`.
+Per-repo configuration lives at `~/.config/onton/<github-owner>/<github-repo>/`
+for GitHub and `~/.config/onton/sourcehut/<owner>/<repo>/` for SourceHut.
 
 | File | Description |
 |------|-------------|
@@ -446,7 +468,7 @@ waiting for running sessions to finish. Backpressure is provided by a
 | `event_log` | Structured event log for persistence and replay |
 | `pr_state` | Pull request state tracking and derived status |
 | `run_classification` | Classify agent run outcomes (success, failure, needs intervention) |
-| `forge` | Git forge (GitHub) abstraction |
+| `forge` | Git forge abstraction with explicit review capabilities |
 | `invariants` | Pure spec invariant checker over `State.t` — used by property tests and ad-hoc snapshot inspection (no production call site) |
 | `persistence` | JSON snapshot save/load for the current durable schema, including transcripts and the message ledger |
 | `project_store` | Project config and gameplan storage at `~/.local/share/onton/` |
@@ -454,6 +476,7 @@ waiting for running sessions to finish. Backpressure is provided by a
 | `prompt` | Agent prompt rendering with per-project template override support |
 | `worktree` | Git worktree CRUD, branch detection, orchestrator-executed `git rebase` |
 | `github` | GitHub GraphQL API client (HTTPS via Eio) |
+| `sourcehut` | Reviewless git.sr.ht branch lifecycle plus builds.sr.ht CI client |
 | `term` | ANSI terminal primitives (raw mode, key input, size, SIGTSTP/SIGCONT) |
 | `tui_input` | Keyboard -> command translation, text-mode parsing, history buffer |
 | `tui` | Terminal UI: list/detail/timeline views, status derivation, frame rendering, gameplan-ordered display |

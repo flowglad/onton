@@ -25,10 +25,7 @@ module Tui_env : sig
   end
 end
 
-module Make
-    (_ : Forge.S with type error = Github.error)
-    (_ : Worktree.S)
-    (_ : Tui_env.S) : sig
+module Make (_ : Forge.S) (_ : Worktree.S) (_ : Tui_env.S) : sig
   exception Quit
 
   val run : unit -> unit

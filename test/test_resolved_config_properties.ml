@@ -9,6 +9,7 @@ open Onton_core
 let valid_config ~max_concurrency ~max_ci_failures : Resolved_config.config =
   {
     Resolved_config.project = Some "project";
+    forge = "github";
     Resolved_config.backend = "claude";
     Resolved_config.model = "sonnet";
     Resolved_config.github_token = "token";

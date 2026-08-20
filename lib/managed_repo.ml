@@ -183,8 +183,12 @@ let read_remote_urls ~path =
     without prompting or hanging. Exit code 0 means SSH can both authenticate to
     GitHub and read this specific repo — which is also the condition for SSH
     push to work. *)
-let probe_ssh_available ~owner ~repo =
-  let url = Github_target.clone_url ~scheme:Github_target.Ssh ~owner ~repo in
+let probe_ssh_available ~forge ~owner ~repo =
+  let url =
+    if String.equal forge "sourcehut" then
+      Sourcehut_target.clone_url ~owner ~repo
+    else Github_target.clone_url ~scheme:Github_target.Ssh ~owner ~repo
+  in
   let extra_env =
     [ "GIT_SSH_COMMAND=ssh -o BatchMode=yes -o ConnectTimeout=5" ]
   in
@@ -203,9 +207,13 @@ let probe_ssh_available ~owner ~repo =
     [--filter=blob:none] for a partial clone — only fetched objects are
     downloaded lazily, which is the right tradeoff for onton's worktree-per-
     patch usage pattern. *)
-let clone_managed_repo ~scheme ~owner ~repo ~target_dir =
+let clone_managed_repo ~forge ~scheme ~owner ~repo ~target_dir =
   Project_store.ensure_dir (Stdlib.Filename.dirname target_dir);
-  let url = Github_target.clone_url ~scheme ~owner ~repo in
+  let url =
+    if String.equal forge "sourcehut" then
+      Sourcehut_target.clone_url ~owner ~repo
+    else Github_target.clone_url ~scheme ~owner ~repo
+  in
   match run_git_no_cwd [ "clone"; "--filter=blob:none"; url; target_dir ] with
   | Some { status = Unix.WEXITED 0; _ } -> Ok ()
   | Some ({ status = Unix.WEXITED _; _ } as cap)
@@ -225,26 +233,28 @@ let clone_managed_repo ~scheme ~owner ~repo ~target_dir =
     the user can see why their managed clone landed on SSH (or fell back to
     HTTPS). *)
 let resolve_clone_scheme ?(override : Github_target.url_scheme option = None)
-    ~owner ~repo () =
-  let ssh_available =
-    match override with
-    | Some _ -> false
-    | None -> probe_ssh_available ~owner ~repo
-  in
-  let scheme = Github_target.resolve_scheme ~override ~ssh_available in
-  (match (override, scheme) with
-  | None, Github_target.Ssh ->
-      Stdlib.Printf.eprintf
-        "onton: SSH probe to git@github.com succeeded — cloning managed repo \
-         via SSH\n\
-         %!"
-  | None, Github_target.Https ->
-      Stdlib.Printf.eprintf
-        "onton: SSH probe to git@github.com unavailable — cloning managed repo \
-         via HTTPS\n\
-         %!"
-  | Some _, _ -> ());
-  scheme
+    ?(forge = "github") ~owner ~repo () =
+  if String.equal forge "sourcehut" then Github_target.Ssh
+  else
+    let ssh_available =
+      match override with
+      | Some _ -> false
+      | None -> probe_ssh_available ~forge ~owner ~repo
+    in
+    let scheme = Github_target.resolve_scheme ~override ~ssh_available in
+    (match (override, scheme) with
+    | None, Github_target.Ssh ->
+        Stdlib.Printf.eprintf
+          "onton: SSH probe to git@github.com succeeded — cloning managed repo \
+           via SSH\n\
+           %!"
+    | None, Github_target.Https ->
+        Stdlib.Printf.eprintf
+          "onton: SSH probe to git@github.com unavailable — cloning managed \
+           repo via HTTPS\n\
+           %!"
+    | Some _, _ -> ());
+    scheme
 
 let string_of_url_scheme = function
   | Github_target.Https -> "https"
@@ -264,9 +274,9 @@ let url_scheme_of_string = function
     probing SSH reachability to GitHub — see {!resolve_clone_scheme}. The
     resolved scheme is returned together with the repo root so the caller can
     persist it back to [config.json] on subsequent runs. *)
-let ensure_managed_repo ?(clone_scheme = None) ~project_name ~token ~owner ~repo
-    () =
-  Git_env.set_github_token token;
+let ensure_managed_repo ?(clone_scheme = None) ?(forge = "github") ~project_name
+    ~token ~owner ~repo () =
+  if String.equal forge "github" then Git_env.set_github_token token;
   let repo_root = Project_store.managed_repo_dir project_name in
   let git_dir = Stdlib.Filename.concat repo_root ".git" in
   let repo_root_exists = Stdlib.Sys.file_exists repo_root in
@@ -293,8 +303,10 @@ let ensure_managed_repo ?(clone_scheme = None) ~project_name ~token ~owner ~repo
      immediately discard — and the accompanying "cloning managed repo via X"
      log line would be a lie. *)
   let clone_with_probe ~target_dir =
-    let scheme = resolve_clone_scheme ~override:clone_scheme ~owner ~repo () in
-    match clone_managed_repo ~scheme ~owner ~repo ~target_dir with
+    let scheme =
+      resolve_clone_scheme ~override:clone_scheme ~forge ~owner ~repo ()
+    in
+    match clone_managed_repo ~forge ~scheme ~owner ~repo ~target_dir with
     | Ok () -> Ok (repo_root, scheme)
     | Error msg -> Error msg
   in
@@ -308,7 +320,15 @@ let ensure_managed_repo ?(clone_scheme = None) ~project_name ~token ~owner ~repo
     let existing_scheme =
       match read_remote_urls ~path:repo_root with
       | urls ->
-          List.find_map urls ~f:Github_target.scheme_of_url
+          List.find_map urls ~f:(fun url ->
+              match Github_target.scheme_of_url url with
+              | Some _ as scheme -> scheme
+              | None ->
+                  if
+                    Option.is_some
+                      (Sourcehut_target.infer_owner_repo_from_url url)
+                  then Some Github_target.Ssh
+                  else None)
           |> Option.value
                ~default:(Option.value clone_scheme ~default:Github_target.Https)
     in
@@ -358,3 +378,8 @@ let infer_github_token () =
         | None ->
             ""
       with _ -> "")
+
+let infer_sourcehut_token () =
+  match Stdlib.Sys.getenv_opt "SRHT_TOKEN" with
+  | Some token -> String.strip token
+  | None -> ""

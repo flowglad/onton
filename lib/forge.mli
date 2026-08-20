@@ -3,14 +3,25 @@
 
 (** Forge interface: consumer-facing abstraction over forge operations.
 
-    Each forge implementation (GitHub, GitLab, etc.) satisfies this signature.
-    Implementations capture any runtime capabilities they need at construction
-    time; for GitHub, {!Github.make} is the canonical constructor. *)
+    Each forge implementation (GitHub, SourceHut, etc.) satisfies this
+    signature. [supports_reviews] distinguishes PR-style forges from
+    branch-backed, CI-only adapters. Implementations capture any runtime
+    capabilities they need at construction time; for GitHub, {!Github.make} is
+    the canonical constructor. *)
 
 module type S = sig
   type error
 
+  val name : string
   val show_error : error -> string
+  val poll_error : error -> Poll_outcome.t
+  val is_duplicate_change_error : error -> bool
+  val is_permanent_error : error -> bool
+  val is_merge_queue_required_error : error -> bool
+
+  (* Whether review comments, threads, and review requests are meaningful for
+     this forge. Callers must not invoke those operations when [false]. *)
+  val supports_reviews : bool
   val owner : string
 
   type merge_result =

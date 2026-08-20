@@ -41,6 +41,7 @@ val reset_artifact_dir : string -> unit
 
 type stored_config = {
   project_name : string;
+  forge : string;
   github_owner : string;
   github_repo : string;
   backend : string;
@@ -69,6 +70,7 @@ type stored_config = {
 
 val save_config :
   project_name:string ->
+  ?forge:string ->
   github_owner:string ->
   github_repo:string ->
   backend:string ->

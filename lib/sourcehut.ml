@@ -1,0 +1,517 @@
+(* @archlint.module shell
+   @archlint.domain sourcehut *)
+
+open Base
+open Types
+
+type error =
+  | Http_error of { status : int; body : string }
+  | Api_error of string
+  | Timeout of float
+  | Transport_error of string
+  | Git_error of string
+  | Unsupported of string
+
+let show_error = function
+  | Http_error { status; body } ->
+      Printf.sprintf "builds.sr.ht HTTP %d: %s" status
+        (String.prefix (String.strip body) 500)
+  | Api_error message -> "builds.sr.ht API error: " ^ message
+  | Timeout seconds ->
+      Printf.sprintf "builds.sr.ht request timed out after %.0fs" seconds
+  | Transport_error message -> "builds.sr.ht transport error: " ^ message
+  | Git_error message -> "git.sr.ht operation failed: " ^ message
+  | Unsupported operation ->
+      Printf.sprintf "SourceHut does not support %s" operation
+
+let https_config () =
+  match Ca_certs.authenticator () with
+  | Error (`Msg message) -> Error message
+  | Ok authenticator -> (
+      match Tls.Config.client ~authenticator () with
+      | Ok config -> Ok config
+      | Error (`Msg message) -> Error message)
+
+let https_fun tls_config uri flow =
+  let host =
+    Uri.host uri
+    |> Option.bind ~f:(fun value ->
+        match Domain_name.of_string value with
+        | Error _ -> None
+        | Ok domain -> Result.ok (Domain_name.host domain))
+  in
+  (Tls_eio.client_of_flow tls_config ?host flow :> _ Eio.Flow.two_way)
+
+let request_timeout = 30.0
+let max_response_size = 2_000_000
+
+let graphql ~net ~clock ~token ~query ~variables =
+  let request_body =
+    `Assoc [ ("query", `String query); ("variables", variables) ]
+    |> Yojson.Safe.to_string
+  in
+  let perform () =
+    try
+      Mirage_crypto_rng_unix.use_default ();
+      match https_config () with
+      | Error message -> Error (Transport_error message)
+      | Ok tls_config ->
+          let client =
+            Cohttp_eio.Client.make ~https:(Some (https_fun tls_config)) net
+          in
+          let headers =
+            Http.Header.of_list
+              [
+                ("Authorization", "Bearer " ^ token);
+                ("Content-Type", "application/json");
+                ("Accept", "application/json");
+                ("User-Agent", "onton/0.1.0");
+              ]
+          in
+          Eio.Switch.run @@ fun sw ->
+          let body = Cohttp_eio.Body.of_string request_body in
+          let response, response_body =
+            Cohttp_eio.Client.post client ~sw ~headers ~body
+              (Uri.of_string "https://builds.sr.ht/query")
+          in
+          let status = Http.Response.status response |> Http.Status.to_int in
+          let body =
+            Eio.Buf_read.(
+              of_flow ~max_size:max_response_size response_body |> take_all)
+          in
+          if status >= 200 && status < 300 then Ok body
+          else Error (Http_error { status; body })
+    with
+    | Eio.Cancel.Cancelled _ as exn -> raise exn
+    | exn -> Error (Transport_error (Exn.to_string exn))
+  in
+  match
+    Eio.Time.with_timeout clock request_timeout (fun () -> Ok (perform ()))
+  with
+  | Ok result -> result
+  | Error `Timeout -> Error (Timeout request_timeout)
+
+type capture = {
+  status : Unix.process_status;
+  stdout : string;
+  stderr : string;
+}
+
+let read_all channel =
+  let buffer = Buffer.create 256 in
+  (try
+     while true do
+       Buffer.add_char buffer (Stdlib.input_char channel)
+     done
+   with End_of_file -> ());
+  Buffer.contents buffer
+
+let run_git ~repo_root args =
+  let argv = Array.of_list ("git" :: "-C" :: repo_root :: args) in
+  match Unix.open_process_args_full "git" argv (Git_env.clean_env ()) with
+  | exception exn -> Error (Exn.to_string exn)
+  | input, output, error ->
+      let closed = ref false in
+      Stdlib.Fun.protect
+        ~finally:(fun () ->
+          if not !closed then
+            try ignore (Unix.close_process_full (input, output, error))
+            with _ -> ())
+        (fun () ->
+          Stdlib.close_out_noerr output;
+          let stdout = read_all input in
+          let stderr = read_all error in
+          let status = Unix.close_process_full (input, output, error) in
+          closed := true;
+          Ok
+            {
+              status;
+              stdout = String.strip stdout;
+              stderr = String.strip stderr;
+            })
+
+let process_succeeded = function
+  | Unix.WEXITED 0 -> true
+  | Unix.WEXITED _ | Unix.WSIGNALED _ | Unix.WSTOPPED _ -> false
+
+let git_success ~repo_root args =
+  match run_git ~repo_root args with
+  | Ok capture -> process_succeeded capture.status
+  | Error _ -> false
+
+let git_stdout ~repo_root args =
+  match run_git ~repo_root args with
+  | Ok capture
+    when process_succeeded capture.status
+         && not (String.is_empty capture.stdout) ->
+      Ok capture.stdout
+  | Ok capture ->
+      Error
+        (Git_error
+           (String.concat ~sep:"\n" [ capture.stderr; capture.stdout ]
+           |> String.strip))
+  | Error message -> Error (Git_error message)
+
+let ref_name branch = "refs/remotes/origin/" ^ Branch.to_string branch
+
+let resolve_ref ~repo_root branch =
+  git_stdout ~repo_root [ "rev-parse"; "--verify"; ref_name branch ]
+
+let jobs_query =
+  {|query Jobs($cursor: Cursor) {
+      jobs(cursor: $cursor) {
+        results { id status note tags created owner { canonicalName } }
+        cursor
+      }
+    }|}
+
+let job_query =
+  {|query Job($id: Int!) {
+      job(id: $id) {
+        id status note tags created manifest visibility
+        owner { canonicalName }
+        log { last128KiB }
+        tasks { name status log { last128KiB } }
+      }
+    }|}
+
+let fetch_jobs ~net ~clock ~token ~owner ~repo ~branch ~sha =
+  let rec loop cursor pages acc =
+    if pages = 0 then Ok acc
+    else
+      let variables =
+        `Assoc
+          [
+            ( "cursor",
+              match cursor with None -> `Null | Some value -> `String value );
+          ]
+      in
+      match graphql ~net ~clock ~token ~query:jobs_query ~variables with
+      | Error _ as error -> error
+      | Ok body -> (
+          match Sourcehut_builds.jobs_of_response body with
+          | Error message -> Error (Api_error message)
+          | Ok (jobs, next) -> (
+              let acc = acc @ jobs in
+              let checks =
+                Sourcehut_builds.checks_for_commit ~owner ~repo ~branch ~sha acc
+              in
+              if not (List.is_empty checks) then Ok acc
+              else
+                match next with
+                | None -> Ok acc
+                | Some _ when List.is_empty jobs -> Ok acc
+                | Some next -> loop (Some next) (pages - 1) acc))
+  in
+  loop None 8 []
+
+let fetch_job ~net ~clock ~token id =
+  match
+    graphql ~net ~clock ~token ~query:job_query
+      ~variables:(`Assoc [ ("id", `Int id) ])
+  with
+  | Error _ as error -> error
+  | Ok body ->
+      Result.map_error (Sourcehut_builds.job_of_response body)
+        ~f:(fun message -> Api_error message)
+
+let submit_query =
+  {|mutation Rerun($manifest: String!, $tags: [String!], $note: String,
+                    $visibility: Visibility) {
+      submit(manifest: $manifest, tags: $tags, note: $note,
+             visibility: $visibility) { id }
+    }|}
+
+let make ~net ~clock ~token ~owner ~repo ~repo_root ~main_branch
+    ~changes:initial_changes : (module Forge.S with type error = error) =
+  let changes : (Pr_number.t, Branch.t * Branch.t) Hashtbl.t =
+    Hashtbl.create (module Pr_number)
+  in
+  List.iter initial_changes ~f:(fun (branch, base) ->
+      Hashtbl.set changes
+        ~key:(Sourcehut_target.change_id branch)
+        ~data:(branch, base));
+  let find_change pr_number =
+    match Hashtbl.find changes pr_number with
+    | Some change -> Ok change
+    | None -> Error (Api_error "unknown local SourceHut change identifier")
+  in
+  let unsupported operation = Error (Unsupported operation) in
+  let module M = struct
+    type nonrec error = error
+
+    let name = "SourceHut"
+    let show_error = show_error
+
+    let poll_error = function
+      | Timeout seconds -> Poll_outcome.Timed_out { seconds }
+      | Transport_error msg | Git_error msg ->
+          Poll_outcome.Transport_failed { msg }
+      | Http_error { status; body } ->
+          Poll_outcome.Http_failed { status; msg = body }
+      | Api_error msg | Unsupported msg -> Poll_outcome.Json_parse_failed msg
+
+    let is_duplicate_change_error _ = false
+
+    let is_permanent_error = function
+      | Http_error { status; _ } -> status >= 400 && status < 500
+      | Unsupported _ -> true
+      | Api_error _ | Timeout _ | Transport_error _ | Git_error _ -> false
+
+    let is_merge_queue_required_error _ = false
+    let supports_reviews = false
+    let owner = owner
+
+    type merge_result =
+      | Merge_succeeded
+      | Merge_queued of string
+      | Merge_unconfirmed
+
+    type enqueue_result =
+      | Enqueued of Pr_state.merge_queue_entry
+      | Already_enqueued of Pr_state.merge_queue_entry
+
+    let pr_state pr_number =
+      match find_change pr_number with
+      | Error _ as error -> error
+      | Ok (head, base) -> (
+          match (resolve_ref ~repo_root head, resolve_ref ~repo_root base) with
+          | Error _, _ ->
+              Ok
+                {
+                  Pr_state.status = Closed;
+                  is_draft = false;
+                  merge_state = Unknown;
+                  merge_ready = false;
+                  merge_ready_divergence = None;
+                  review_decision = None;
+                  check_status = Pending;
+                  ci_checks = [];
+                  ci_checks_truncated = false;
+                  comments = [];
+                  unresolved_comment_count = 0;
+                  findings = [];
+                  node_id = None;
+                  merge_queue_required = false;
+                  merge_queue_entry = None;
+                  head_branch = Some head;
+                  head_oid = None;
+                  merge_commit_sha = None;
+                  base_branch = Some base;
+                  is_fork = false;
+                }
+          | Ok _, Error error -> Error error
+          | Ok head_sha, Ok base_sha -> (
+              let merged =
+                git_success ~repo_root
+                  [ "merge-base"; "--is-ancestor"; head_sha; base_sha ]
+              in
+              let merge_state =
+                if merged then Pr_state.Mergeable
+                else if
+                  git_success ~repo_root
+                    [ "merge-tree"; "--write-tree"; base_sha; head_sha ]
+                then Mergeable
+                else Conflicting
+              in
+              match
+                fetch_jobs ~net ~clock ~token ~owner ~repo ~branch:head
+                  ~sha:head_sha
+              with
+              | Error _ as error -> error
+              | Ok jobs ->
+                  let ci_checks =
+                    Sourcehut_builds.checks_for_commit ~owner ~repo ~branch:head
+                      ~sha:head_sha jobs
+                  in
+                  let check_status = Pr_state.derive_check_status ci_checks in
+                  let merge_ready =
+                    Pr_state.merge_ready_of ~merge_state ~check_status
+                      ~review_decision:None
+                  in
+                  Ok
+                    {
+                      Pr_state.status = (if merged then Merged else Open);
+                      is_draft = false;
+                      merge_state;
+                      merge_ready;
+                      merge_ready_divergence = None;
+                      review_decision = None;
+                      check_status;
+                      ci_checks;
+                      ci_checks_truncated = false;
+                      comments = [];
+                      unresolved_comment_count = 0;
+                      findings = [];
+                      node_id = None;
+                      merge_queue_required = false;
+                      merge_queue_entry = None;
+                      head_branch = Some head;
+                      head_oid = Some head_sha;
+                      merge_commit_sha =
+                        (if merged then Some base_sha else None);
+                      base_branch = Some base;
+                      is_fork = false;
+                    }))
+
+    let merge_queue_removal_checks ~pr_number:_ = Ok []
+
+    let check_failure_details ~check =
+      match check.Ci_check.id with
+      | None -> Ok { Ci_log_digest.annotations = []; log = None }
+      | Some id ->
+          Result.map
+            (fetch_job ~net ~clock ~token id)
+            ~f:Sourcehut_builds.log_source
+
+    let rerun_failed_jobs_for_check ~check =
+      match check.Ci_check.id with
+      | None -> Error (Api_error "SourceHut build has no job id")
+      | Some id -> (
+          match fetch_job ~net ~clock ~token id with
+          | Error _ as error -> error
+          | Ok job ->
+              let visibility =
+                match String.uppercase job.visibility with
+                | ("PUBLIC" | "UNLISTED" | "PRIVATE") as value -> `String value
+                | _ -> `Null
+              in
+              let variables =
+                `Assoc
+                  [
+                    ("manifest", `String job.manifest);
+                    ( "tags",
+                      `List (List.map job.tags ~f:(fun tag -> `String tag)) );
+                    ("note", `String job.note);
+                    ("visibility", visibility);
+                  ]
+              in
+              Result.bind
+                (graphql ~net ~clock ~token ~query:submit_query ~variables)
+                ~f:(fun body ->
+                  Result.map_error (Sourcehut_builds.submit_id_of_response body)
+                    ~f:(fun message -> Api_error message)
+                  |> Result.map ~f:(fun _ -> ())))
+
+    let list_prs ~branch ?base ~state () =
+      let id = Sourcehut_target.change_id branch in
+      let base =
+        match (base, Hashtbl.find changes id) with
+        | Some base, _ -> base
+        | None, Some (_, base) -> base
+        | None, None -> main_branch
+      in
+      Hashtbl.set changes ~key:id ~data:(branch, base);
+      match resolve_ref ~repo_root branch with
+      | Error _ -> Ok []
+      | Ok head_sha ->
+          let merged =
+            match resolve_ref ~repo_root base with
+            | Error _ -> false
+            | Ok base_sha ->
+                git_success ~repo_root
+                  [ "merge-base"; "--is-ancestor"; head_sha; base_sha ]
+          in
+          if Poly.equal state `Open && merged then Ok []
+          else Ok [ (id, base, merged) ]
+
+    let update_pr_body ~pr_number:_ ~body:_ = Ok ()
+
+    let reply_to_review_comment ~pr_number:_ ~comment_id:_ ~body:_ =
+      unsupported "review comments"
+
+    let resolve_review_thread ~thread_id:_ = unsupported "review threads"
+    let viewer_login () = None
+
+    let create_pull_request ~title:_ ~head ~base ~body:_ ~draft:_ =
+      let id = Sourcehut_target.change_id head in
+      Hashtbl.set changes ~key:id ~data:(head, base);
+      Ok id
+
+    let update_pr_base ~pr_number ~base =
+      match find_change pr_number with
+      | Error _ as error -> error
+      | Ok (head, _) ->
+          Hashtbl.set changes ~key:pr_number ~data:(head, base);
+          Ok ()
+
+    let request_review ~pr_number:_ ~team_slug:_ = unsupported "code review"
+    let set_draft ~pr_number:_ ~draft:_ = Ok ()
+
+    let merge_pr ~pr_number =
+      match find_change pr_number with
+      | Error _ as error -> error
+      | Ok (head, base) -> (
+          match (resolve_ref ~repo_root head, resolve_ref ~repo_root base) with
+          | Error error, _ | _, Error error -> Error error
+          | Ok head_sha, Ok base_sha -> (
+              let target =
+                if
+                  git_success ~repo_root
+                    [ "merge-base"; "--is-ancestor"; base_sha; head_sha ]
+                then Ok head_sha
+                else
+                  match
+                    git_stdout ~repo_root
+                      [ "merge-tree"; "--write-tree"; base_sha; head_sha ]
+                  with
+                  | Error _ as error -> error
+                  | Ok tree ->
+                      git_stdout ~repo_root
+                        [
+                          "commit-tree";
+                          tree;
+                          "-p";
+                          base_sha;
+                          "-p";
+                          head_sha;
+                          "-m";
+                          Printf.sprintf "Merge %s" (Branch.to_string head);
+                        ]
+              in
+              match target with
+              | Error _ as error -> error
+              | Ok target_sha -> (
+                  match
+                    run_git ~repo_root
+                      [
+                        "push";
+                        Printf.sprintf "--force-with-lease=refs/heads/%s:%s"
+                          (Branch.to_string base) base_sha;
+                        "origin";
+                        Printf.sprintf "%s:refs/heads/%s" target_sha
+                          (Branch.to_string base);
+                      ]
+                  with
+                  | Ok capture when process_succeeded capture.status ->
+                      Ok Merge_succeeded
+                  | Ok capture ->
+                      Error
+                        (Git_error
+                           (String.concat ~sep:"\n"
+                              [ capture.stderr; capture.stdout ]))
+                  | Error message -> Error (Git_error message))))
+
+    let enqueue_pr ~pr_number:_ = unsupported "merge queues"
+    let dequeue_pr ~pr_number:_ = unsupported "merge queues"
+
+    let check_repo_access () =
+      if String.is_empty (String.strip token) then
+        Error
+          (Api_error
+             "SRHT_TOKEN is required (JOBS:RW, LOGS:RO, and PROFILE:RO scopes)")
+      else
+        match resolve_ref ~repo_root main_branch with
+        | Ok _ -> (
+            match
+              graphql ~net ~clock ~token ~query:jobs_query
+                ~variables:(`Assoc [ ("cursor", `Null) ])
+            with
+            | Error _ as error -> error
+            | Ok body -> (
+                match Sourcehut_builds.jobs_of_response body with
+                | Ok _ -> Ok ()
+                | Error message -> Error (Api_error message)))
+        | Error _ as error -> error
+  end in
+  (module M)

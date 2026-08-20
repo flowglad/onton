@@ -3,6 +3,7 @@
 
 val ensure_managed_repo :
   ?clone_scheme:Onton_core.Github_target.url_scheme option ->
+  ?forge:string ->
   project_name:string ->
   token:string ->
   owner:string ->
@@ -32,3 +33,6 @@ val string_of_url_scheme : Onton_core.Github_target.url_scheme -> string
 
 val infer_github_token : unit -> string
 (** Resolve a GitHub token from [GITHUB_TOKEN] or [gh auth token]. *)
+
+val infer_sourcehut_token : unit -> string
+(** Resolve a SourceHut token from [SRHT_TOKEN]. *)

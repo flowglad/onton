@@ -1,6 +1,7 @@
 (executable
  (name main)
  (public_name onton)
+ (modules main version)
  (libraries onton onton_core cmdliner eio eio_main re)
  (ocamlopt_flags (:standard -w -40-42))
  (ocamlc_flags (:standard -w -40-42)))
@@ -8,6 +9,7 @@
 (executable
  (name probe_findings_api)
  (public_name onton-probe-findings-api)
+ (modules probe_findings_api)
  (libraries onton onton_core eio eio_main unix)
  (ocamlopt_flags (:standard -w -40-42))
  (ocamlc_flags (:standard -w -40-42)))
@@ -15,6 +17,7 @@
 (executable
  (name check_repo_config)
  (public_name onton-check-repo-config)
+ (modules check_repo_config)
  (libraries onton onton_core)
  (ocamlopt_flags (:standard -w -40-42))
  (ocamlc_flags (:standard -w -40-42)))

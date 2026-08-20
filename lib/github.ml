@@ -2435,7 +2435,32 @@ let make ~net ~clock ~token ~owner ~repo ~main_branch :
   let module M = struct
     type nonrec error = error
 
+    let name = "GitHub"
     let show_error = show_error
+
+    let poll_error = function
+      | Timeout { seconds; _ } -> Poll_outcome.Timed_out { seconds }
+      | Transport_error { msg; _ } -> Poll_outcome.Transport_failed { msg }
+      | Http_error { status; body; _ } ->
+          Poll_outcome.Http_failed { status; msg = extract_github_message body }
+      | Graphql_error msgs -> Poll_outcome.Graphql_failed msgs
+      | Json_parse_error msg -> Poll_outcome.Json_parse_failed msg
+
+    let is_duplicate_change_error = function
+      | Http_error { status = 422; body; _ } ->
+          response_error_message_contains body
+            ~substring:"pull request already exists"
+      | Http_error _ | Json_parse_error _ | Graphql_error _ | Timeout _
+      | Transport_error _ ->
+          false
+
+    let is_permanent_error = function
+      | Http_error { status; _ } -> status >= 400 && status < 500
+      | Json_parse_error _ -> true
+      | Graphql_error _ | Timeout _ | Transport_error _ -> false
+
+    let is_merge_queue_required_error = is_merge_queue_required_error
+    let supports_reviews = true
     let owner = owner
 
     type nonrec merge_result = merge_result =

@@ -37,11 +37,7 @@ module type STARTUP_RECONCILER = sig
     branch:Branch.t -> ((Pr_number.t * Branch.t * bool) option, string) Result.t
 end
 
-module Make
-    (Forge : Forge.S with type error = Github.error)
-    (W : Worktree.S)
-    (Env : Poller_env.S) =
-struct
+module Make (Forge : Forge.S) (W : Worktree.S) (Env : Poller_env.S) = struct
   module WS_Env : Worktree_setup.ENV = struct
     let runtime = Env.runtime
     let clock = Env.clock
@@ -123,17 +119,9 @@ struct
       boundary lets [Poll_cycle.classify] reason about timeouts the same way it
       reasons about other failures, which is the invariant the interleaving
       property tests exercise. *)
-  let poll_outcome_of_github_result = function
+  let poll_outcome_of_forge_result = function
     | Ok pr_state -> Poll_outcome.Ok_pr_state pr_state
-    | Error (Github.Timeout { seconds; _ }) ->
-        Poll_outcome.Timed_out { seconds }
-    | Error (Github.Transport_error { msg; _ }) ->
-        Poll_outcome.Transport_failed { msg }
-    | Error (Github.Http_error { status; body; _ }) ->
-        Poll_outcome.Http_failed
-          { status; msg = Github.extract_github_message body }
-    | Error (Github.Graphql_error msgs) -> Poll_outcome.Graphql_failed msgs
-    | Error (Github.Json_parse_error msg) -> Poll_outcome.Json_parse_failed msg
+    | Error err -> Forge.poll_error err
 
   let run (module StartupReconciler : STARTUP_RECONCILER) =
     let runtime = Env.runtime in
@@ -275,7 +263,7 @@ struct
         Eio.Fiber.List.map ~max_fibers:16
           (fun (patch_id, pr_number, was_merged) ->
             let outcome =
-              poll_outcome_of_github_result (Forge.pr_state pr_number)
+              poll_outcome_of_forge_result (Forge.pr_state pr_number)
             in
             (patch_id, pr_number, was_merged, outcome))
           poll_intents
