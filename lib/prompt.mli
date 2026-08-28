@@ -119,7 +119,7 @@ val render_turn_layer_merge_conflict :
 
 (** {1 Composed prompts}
 
-    Each public render below is the composition of the three layers plus the
+    Each layered public render below composes the three layers plus the
     repository's optional [AGENTS.md] context. Follow-up renders accept the
     gameplan layer inputs as optional: when a caller has no gameplan-defined
     patch in scope (e.g. ad-hoc PRs), the gameplan and patch layers are omitted,
