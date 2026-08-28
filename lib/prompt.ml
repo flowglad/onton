@@ -1810,12 +1810,17 @@ let%test "ad-hoc turn prompts retain agents_md context" =
     render_review_prompt ~project_name:"adhoc" ~agents_md
       ~artifact_dir:"/tmp/comment-responses" []
   in
+  let findings_prompt =
+    render_findings_prompt ~project_name:"adhoc" ~agents_md
+      ~artifact_dir:"/tmp/findings-wontfix" []
+  in
   let conflict_prompt =
     render_merge_conflict_prompt ~project_name:"adhoc" ~agents_md
       ~base_branch:"main" ()
   in
   String.is_prefix ci_prompt ~prefix:expected_prefix
   && String.is_prefix review_prompt ~prefix:expected_prefix
+  && String.is_prefix findings_prompt ~prefix:expected_prefix
   && String.is_prefix conflict_prompt ~prefix:expected_prefix
 
 (* === Three-layer invariants ===
