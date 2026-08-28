@@ -573,21 +573,20 @@ let render_patch_layer_of_gameplan ~project_name ?pr_number (patch : Patch.t)
     ~ancestors:(ancestor_patches gameplan patch)
     ~base_branch ()
 
-(* When all of [patch], [gameplan], [base_branch] are supplied, returns
-   the gameplan+patch prefix; otherwise returns the empty string. Used by
-   the layered turn-prompt composers to support callers that don't have a
-   gameplan-defined patch in scope (e.g. ad-hoc PRs). *)
+(* Compose the stable context that precedes a turn prompt. Repository
+   conventions are independent of whether the patch came from a gameplan, so
+   retain [AGENTS.md] for ad-hoc PRs even when there is no gameplan+patch prefix
+   to render. *)
 let layered_prefix ~project_name ?pr_number ?patch ?gameplan ?base_branch
     ?agents_md () =
+  let repo_context = agents_md_section agents_md in
   match (patch, gameplan, base_branch) with
   | Some p, Some g, Some b ->
       render_gameplan_layer ~project_name g
-      ^ (match agents_md with
-        | Some content -> agents_md_section (Some content)
-        | None -> "")
+      ^ repo_context
       ^ render_patch_layer_of_gameplan ~project_name ?pr_number p g
           ~base_branch:b
-  | _ -> ""
+  | _ -> repo_context
 
 let render_turn_layer_start ~(project_name : string) : string =
   let vars = [ ("project_name", project_name) ] in
@@ -1800,6 +1799,24 @@ let%test "agents_md section normalizes trailing newline spacing" =
   String.equal
     (agents_md_section (Some "Rule one.\n"))
     "## Project Conventions (AGENTS.md)\n\nRule one.\n\n"
+
+let%test "ad-hoc turn prompts retain agents_md context" =
+  let agents_md = "Run every build with stdin closed." in
+  let expected_prefix = agents_md_section (Some agents_md) in
+  let ci_prompt =
+    render_ci_failure_unknown_prompt ~project_name:"adhoc" ~agents_md ()
+  in
+  let review_prompt =
+    render_review_prompt ~project_name:"adhoc" ~agents_md
+      ~artifact_dir:"/tmp/comment-responses" []
+  in
+  let conflict_prompt =
+    render_merge_conflict_prompt ~project_name:"adhoc" ~agents_md
+      ~base_branch:"main" ()
+  in
+  String.is_prefix ci_prompt ~prefix:expected_prefix
+  && String.is_prefix review_prompt ~prefix:expected_prefix
+  && String.is_prefix conflict_prompt ~prefix:expected_prefix
 
 (* === Three-layer invariants ===
 
