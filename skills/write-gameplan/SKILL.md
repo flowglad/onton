@@ -545,7 +545,7 @@ The rest is human judgement. Walk these before setting the relevant `mergability
 
 7. **Patch boundaries** — for each patch, confirm its `files` frame is **complete** (delivers the functional change with no edits spilling into unlisted files) and **exclusive** (no patch that can run concurrently writes the same file/symbol), and that the patch is **non-vacuous** (its postcondition is not already true of the grounded current surface). See [Patch Boundaries (Frames and No-Ops)](#patch-boundaries-frames-and-no-ops).
 
-8. **No tombstone enforcement** — for removal work, confirm the gameplan does not add absence assertions over retired strings/fields/symbols, a retired-feature repository scanner or lint rule, a spec that models a deleted concept only to negate it, or a follow-up patch whose sole job is preventing hypothetical reintroduction. Verify surviving behavior and live boundaries instead. See [Removal Work: No Tombstone Tests](#removal-work-no-tombstone-tests).
+8. **No tombstone enforcement** — for removal work, confirm the gameplan follows the full [Removal Work: No Tombstone Tests](#removal-work-no-tombstone-tests) rule: do not add absence assertions that an object, schema, export, source file, or registry lacks a retired field, string, symbol, or entry; a retired-feature repository scanner or lint rule; a spec that models a deleted concept only to negate it; or a follow-up patch whose sole job is preventing hypothetical reintroduction. Verify surviving behavior and live boundaries instead.
 
 9. **Remaining checklist booleans** — once the items above hold, set every other `mergabilityChecklist` boolean honestly based on the gameplan content and the validator's PASS.
 
