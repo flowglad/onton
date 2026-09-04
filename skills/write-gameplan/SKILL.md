@@ -451,7 +451,12 @@ Different projects may use different migration tools and workflows. When plannin
 
 ## Test-First Pattern
 
-Write test stubs with skip/pending markers BEFORE implementation:
+Use test-first stubs for new or changed observable behavior that warrants a
+test. This is not a requirement to manufacture a test for every patch: a pure
+deletion or source-shape cleanup does not need a stub that asserts the deleted
+thing is absent. See [Removal Work: No Tombstone Tests](#removal-work-no-tombstone-tests).
+
+Write applicable test stubs with skip/pending markers BEFORE implementation:
 
 **Stub patches** (`INFRA`):
 - Add tests with the framework's skip/pending mechanism (e.g., `.skip` in JS test runners, `@pytest.mark.skip` in Python, `[@tags "pending"]` in OCaml ppx_inline_test, `#[ignore]` in Rust)
@@ -462,6 +467,49 @@ Write test stubs with skip/pending markers BEFORE implementation:
 - Remove the skip/pending marker
 - Implement the test body
 - Must be in the SAME patch as the code being tested
+
+## Removal Work: No Tombstone Tests
+
+When a gameplan removes a feature, the deletion is work to perform now, not a
+permanent invariant that needs machinery to keep it dead. Name the files,
+symbols, registrations, and call sites to delete in the removal patch, then use
+the compiler/typechecker and tests of the surviving or replacement behavior to
+show that the repository is coherent after the deletion.
+
+Do **not** create tombstones whose only purpose is to prove that removed source
+vocabulary or shape remains absent:
+
+- no unit test that asserts an object, schema, export, source file, or registry
+  lacks a particular retired field, string, symbol, or entry;
+- no repository scanner, denylist, CI check, or custom linter that searches for
+  the retired feature's identifiers, literals, or phrases;
+- no per-patch or final-state spec that declares the deleted concept solely to
+  negate its existence; and
+- no follow-up patch dedicated to guarding a deletion against hypothetical
+  reintroduction.
+
+These checks preserve historical vocabulary, add maintenance cost, and protect
+against a change authors have no reason to make. Put deletion instructions in
+`files`, `changes`, and `requiredChanges`; keep `acceptanceCriteria`, tests, and
+specs focused on behavior available through the live system. For example, test
+that the replacement transport completes a request, retained workers still
+register, or historical data remains readable. A negative runtime effect such
+as "one request creates no duplicate row" is valid when it is an observable
+safety property of a surviving path; scanning source text for the old queue
+name is not.
+
+Negative enforcement is appropriate when there is still a live choice to
+constrain:
+
+- an existing function, dependency, field, or API must not be used from a
+  particular layer or call path;
+- a generally available coding pattern is disallowed and authors could
+  independently reach for it; or
+- an externally reachable interface deliberately remains and must reject an
+  input or operation.
+
+In those cases, test the real boundary or lint the reusable pattern. Once the
+feature and its entry points are gone, stop carrying its tombstone.
 
 ## Verification
 
@@ -497,7 +545,9 @@ The rest is human judgement. Walk these before setting the relevant `mergability
 
 7. **Patch boundaries** — for each patch, confirm its `files` frame is **complete** (delivers the functional change with no edits spilling into unlisted files) and **exclusive** (no patch that can run concurrently writes the same file/symbol), and that the patch is **non-vacuous** (its postcondition is not already true of the grounded current surface). See [Patch Boundaries (Frames and No-Ops)](#patch-boundaries-frames-and-no-ops).
 
-8. **Remaining checklist booleans** — once the items above hold, set every other `mergabilityChecklist` boolean honestly based on the gameplan content and the validator's PASS.
+8. **No tombstone enforcement** — for removal work, confirm the gameplan follows the full [Removal Work: No Tombstone Tests](#removal-work-no-tombstone-tests) rule: do not add absence assertions that an object, schema, export, source file, or registry lacks a retired field, string, symbol, or entry; a retired-feature repository scanner or lint rule; a spec that models a deleted concept only to negate it; or a follow-up patch whose sole job is preventing hypothetical reintroduction. Verify surviving behavior and live boundaries instead.
+
+9. **Remaining checklist booleans** — once the items above hold, set every other `mergabilityChecklist` boolean honestly based on the gameplan content and the validator's PASS.
 
 ## Resolving Open Questions
 

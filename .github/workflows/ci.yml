@@ -274,7 +274,7 @@ jobs:
       # brings the OCaml toolchain it needs (its own ocaml/setup-ocaml switch,
       # independent of this repo's build job), so this stays self-contained:
       # only the OCaml adapter runs, against our source root.
-      - uses: flowglad/archlint@c2a7640950b70054d84cac48cfc98fe15d4a007d # post-v1.4.0 wrapped-library fix
+      - uses: flowglad/archlint@855690b1d0f821a177af0ea68e8eb6ae6a263ecc # pin OCaml action compiler version
         with:
           adapter: ocaml
           ocaml-root: .
