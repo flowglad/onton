@@ -46,7 +46,9 @@ let make_io ?(exists = false) ?(refs = []) ?(ancestry = SP.Unknown) () =
           ancestry_called := true;
           ancestry);
       execute_action =
-        (fun ~path:_ ~branch_str:_ action -> executed := Some action);
+        (fun ~path:_ ~branch_str:_ ~expected_local:_ action ->
+          executed := Some action;
+          true);
     }
   in
   (io, executed, ancestry_called, collision_called)

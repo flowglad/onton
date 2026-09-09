@@ -319,6 +319,8 @@ onton --repo ../my-repo [OPTIONS]        # Ad-hoc mode (no gameplan)
 | `--token` | forge-specific | API token. Defaults to `$GITHUB_TOKEN` / `gh auth token` for GitHub or `$SRHT_TOKEN` for SourceHut. |
 | `--backend` | `claude` | LLM backend: `claude`, `codex`, `opencode`, `pi`, `gemini`. See [Backend & model](#backend--model) |
 | `--model` | (backend CLI's own default) | Model name passed to the backend CLI |
+| `--worktree-backend` | `git` | Checkout lifecycle manager: `git` or `simgit` |
+| `--worktree-executable` | `sg` for simgit | Explicit simgit executable name or path |
 | `--main-branch` | (auto-detected) | Main branch name (inferred from remote HEAD if omitted) |
 | `--poll-interval` | `30.0` | Forge polling interval in seconds |
 | `--max-concurrency` | `5` / `$ONTON_MAX_CONCURRENCY` | Maximum concurrent Claude processes |
@@ -362,6 +364,58 @@ chmod +x ~/.config/onton/myorg/myrepo/on_worktree_create
 Worktrees are discovered from `git worktree list`. If no existing worktree is
 found for a patch's branch, one is created at
 `~/worktrees/<project>/patch-<id>`.
+
+### Worktree backends
+
+To use [simgit](https://github.com/abendrothj/simgit), start or resume with:
+
+```sh
+onton PROJECT --worktree-backend simgit --worktree-executable /path/to/simgit/sg
+```
+
+An explicit path avoids collisions with other tools named `sg`, including
+ast-grep. Onton checks the executable's worktree commands before provisioning;
+a missing or incompatible executable is an error. Onton does not install simgit.
+
+Repository defaults can be set in `~/.config/onton/<owner>/<repo>/config.json`:
+
+```json
+{
+  "worktree": {
+    "backend": "simgit",
+    "executable": "/path/to/simgit/sg"
+  }
+}
+```
+
+The CLI takes precedence over persisted project settings, then repository
+defaults, then Git. `executable` is optional for simgit and defaults to `sg`.
+Changing the backend affects new checkouts. Existing checkouts keep their owner,
+including its executable, in the repository's `.git/onton-worktrees/` metadata.
+Legacy checkouts are validated and adopted; simgit's metadata identifies its
+checkouts even without an Onton ownership record.
+
+Both backends retain Onton's branch/start-point rules, checkout paths, creation
+hooks, and normal Git fetch/rebase/push behavior. Simgit checkouts are persistent
+and use its normal CoW/fallback selection; Onton logs the resulting storage mode.
+An unavailable overlay is repaired before reuse. Repair failures preserve its
+registration and surface an intervention instead of recreating over its data.
+Interrupted creation can leave a branch or partial checkout; retries inspect
+that state and never roll back branch history automatically. Creation is recorded
+as `preparing` until the tool finishes and the checkout is validated; unfinished
+creation requires intervention even when Git already lists the directory.
+Checkout deletion uses the owning backend and retains the branch.
+
+Run the adapter integration suite against an installed simgit executable with:
+
+```sh
+ONTON_TEST_SIMGIT=/path/to/simgit/sg opam exec -- dune exec test/test_worktree_backend_integration.exe
+```
+
+On Linux with `fuse-overlayfs` and accessible `/dev/fuse`, prepend
+`SIMGIT_POPULATE=overlay` to exercise overlay-backed creation, reuse, rebase, and
+teardown. The default test gate always exercises Git and subprocess failure
+handling; real simgit checks run when `ONTON_TEST_SIMGIT` is set.
 
 ### Ad-hoc mode
 

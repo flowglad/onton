@@ -3,7 +3,12 @@
 
 open Base
 
-type t = { patch_id : Types.Patch_id.t; branch : Types.Branch.t; path : string }
+type t = {
+  patch_id : Types.Patch_id.t;
+  branch : Types.Branch.t;
+  path : string;
+  newly_created : bool;
+}
 [@@deriving show, eq, sexp_of, compare]
 
 (* Pure parsers and decision functions live in [Worktree_parser] (lib_core/).
@@ -72,9 +77,6 @@ let ref_exists ~process_mgr ~repo_root ref_path =
   | exception e when has_cancellation e -> raise e
   | exception _ -> false
 
-let branch_exists ~process_mgr ~repo_root branch_str =
-  ref_exists ~process_mgr ~repo_root ("refs/heads/" ^ branch_str)
-
 let remote_branch_exists ~process_mgr ~repo_root branch_str =
   ref_exists ~process_mgr ~repo_root ("refs/remotes/origin/" ^ branch_str)
 
@@ -119,22 +121,6 @@ let is_checked_out_in_repo_root ~process_mgr ~repo_root branch =
       String.equal current (Types.Branch.to_string branch)
   | exception e when has_cancellation e -> raise e
   | exception _ -> false
-
-let run_git ~process_mgr args =
-  let stderr_buf = Buffer.create 128 in
-  match
-    process_run_retry process_mgr
-      ~env:(Stdlib.Lazy.force clean_git_env)
-      ~stdout:(Eio.Flow.buffer_sink (Buffer.create 64))
-      ~stderr:(Eio.Flow.buffer_sink stderr_buf)
-      args
-  with
-  | () -> ()
-  | exception e when has_cancellation e -> raise e
-  | exception _ ->
-      let stderr = String.strip (Buffer.contents stderr_buf) in
-      let cmd = String.concat ~sep:" " args in
-      failwith (Printf.sprintf "git command failed: %s\nstderr: %s" cmd stderr)
 
 (* Run a git command and capture (exit_code, stdout, stderr) without raising.
    Defined here, ahead of its first use in [read_repo_ref_sha] and
@@ -237,10 +223,6 @@ let fetch_origin_branch ~fetch_lock ~process_mgr ~repo_root ~branch_str =
             (Printf.sprintf "git fetch origin %s crashed: %s" branch_str
                (Exn.to_string exn)))
 
-let add_worktree_for_existing_branch ~process_mgr ~repo_root ~path ~branch_str =
-  run_git ~process_mgr
-    [ "git"; "-C"; repo_root; "worktree"; "add"; path; branch_str ]
-
 let branch_prefixes = Worktree_parser.branch_prefixes
 let find_ci_ref_collision = Worktree_parser.find_ci_ref_collision
 
@@ -280,65 +262,10 @@ let check_case_insensitive_ref_collision ~process_mgr ~repo_root branch_str =
            branch_str colliding colliding)
   | None -> ()
 
-(* Execute the [action] half of a [Start_point_plan.decision] against the
-   worktree at [path]. Raises only on truly exceptional git failures; the
-   "branch was concurrently created" race is handled inline by falling back to
-   the [Use_local_branch_unchanged] command shape. *)
-let execute_start_point_action ~process_mgr ~repo_root ~path ~branch_str
-    (action : Start_point_plan.action) =
-  match action with
-  | Use_local_branch_unchanged _ ->
-      add_worktree_for_existing_branch ~process_mgr ~repo_root ~path ~branch_str
-  | Reset_and_use_remote_tracking _ ->
-      (* [-B] resets / recreates the local branch at the remote tracking ref
-         before checking it out into the new worktree. Defeats the PR #315
-         failure mode: if [refs/heads/<branch>] was stale, [-B] points it at
-         [origin/<branch>] now. *)
-      run_git ~process_mgr
-        [
-          "git";
-          "-C";
-          repo_root;
-          "worktree";
-          "add";
-          "-B";
-          branch_str;
-          path;
-          "origin/" ^ branch_str;
-        ]
-  | Create_new_branch_from_base { base_branch } -> (
-      match
-        run_git ~process_mgr
-          [
-            "git";
-            "-C";
-            repo_root;
-            "worktree";
-            "add";
-            "-b";
-            branch_str;
-            path;
-            base_branch;
-          ]
-      with
-      | () -> ()
-      | exception e when has_cancellation e -> raise e
-      | exception _ when branch_exists ~process_mgr ~repo_root branch_str ->
-          (* Branch was created (e.g. by a concurrent attempt) but worktree
-             setup failed — retry without -b. *)
-          add_worktree_for_existing_branch ~process_mgr ~repo_root ~path
-            ~branch_str)
-
-(* The effectful operations [create] performs, factored into an injectable
-   record so the wiring — short-circuit, ref reads, ancestry, decision, action
-   dispatch — can be exercised with in-memory fakes instead of a live git
-   repository. {!create} supplies the git-backed implementation via {!git_io};
-   tests supply scripted ref states. Mirrors the pure/effectful split already
-   used for [classify_push_result], [push_gate_from_count], etc. *)
+(* Creation wiring separates start-point decisions from backend lifecycle effects. *)
 type create_io = {
   worktree_exists : path:string -> bool;
-      (** The [Sys.file_exists path] short-circuit: when [true], [create] trusts
-          the existing worktree and skips every git operation below. *)
+      (** True only for a validated, ready checkout of the requested branch. *)
   check_ref_collision : branch_str:string -> unit;
       (** Case-insensitive ref-collision guard; raises to abort creation. *)
   read_ref : ref_name:string -> string option;
@@ -346,14 +273,18 @@ type create_io = {
   ancestry : local:string -> remote:string -> Start_point_plan.ancestry;
       (** Two-way ancestry between an existing local and remote SHA. *)
   execute_action :
-    path:string -> branch_str:string -> Start_point_plan.action -> unit;
-      (** Run the git commands realising the planner's chosen action. *)
+    path:string ->
+    branch_str:string ->
+    expected_local:string option ->
+    Start_point_plan.action ->
+    bool;
+      (** Realize the approved action; return true only for a new checkout. *)
 }
 
 (* Wiring of [create], parameterised over its effects. Given [io], it reads the
    local/remote refs, computes ancestry only when both sides exist, consults the
    pure {!Start_point_plan.plan}, and either executes the action or surfaces the
-   refusal. [create] is exactly this with the git-backed [io]; the split exists
+   refusal. [make] supplies validated backend effects; the split exists
    so the control flow (including the short-circuit and the refusal mapping) can
    be unit-tested without spawning git.
 
@@ -364,7 +295,8 @@ let create_with_io ~io ~project_name ~patch_id ~branch ~base_ref :
     (t, Start_point_plan.refusal) Result.t =
   let path = worktree_dir ~project_name ~patch_id in
   let branch_str = Types.Branch.to_string branch in
-  if io.worktree_exists ~path then Result.Ok { patch_id; branch; path }
+  if io.worktree_exists ~path then
+    Result.Ok { patch_id; branch; path; newly_created = false }
   else (
     io.check_ref_collision ~branch_str;
     let local_ref = io.read_ref ~ref_name:("refs/heads/" ^ branch_str) in
@@ -384,49 +316,10 @@ let create_with_io ~io ~project_name ~patch_id ~branch ~base_ref :
     match decision with
     | Refuse refusal -> Result.Error refusal
     | Plan action ->
-        io.execute_action ~path ~branch_str action;
-        Result.Ok { patch_id; branch; path })
-
-(* The production [create_io]: every operation backed by a real git invocation
-   against [repo_root]. The [worktree_exists] short-circuit is keyed only on
-   [$HOME] + [project_name] + [patch_id] (see {!worktree_dir}); callers must
-   guarantee an isolated [$HOME] so a stale [~/worktrees/<project>/patch-<id>]
-   from a prior run cannot make it return a spurious Ok. *)
-let git_io ~process_mgr ~repo_root : create_io =
-  {
-    worktree_exists = (fun ~path -> Stdlib.Sys.file_exists path);
-    check_ref_collision =
-      (fun ~branch_str ->
-        check_case_insensitive_ref_collision ~process_mgr ~repo_root branch_str);
-    read_ref =
-      (fun ~ref_name -> read_repo_ref_sha ~process_mgr ~repo_root ~ref_name);
-    ancestry =
-      (fun ~local ~remote ->
-        compute_repo_ancestry ~process_mgr ~repo_root ~local ~remote);
-    execute_action =
-      (fun ~path ~branch_str action ->
-        execute_start_point_action ~process_mgr ~repo_root ~path ~branch_str
-          action);
-  }
-
-(* [Worktree.create] consults [Start_point_plan] before executing any git
-   command, ensuring the worktree starts at the right commit regardless of
-   whether the user's local clone has a stale branch ref. See the [.mli] doc
-   on [create] and [start_point_plan.mli] for the rules.
-
-   Returns [Error _] when the planner refuses (local diverged from remote,
-   branch checked out in main, etc.); the caller in [Worktree_setup] surfaces
-   refusals through the orchestrator's [needs_intervention] path. *)
-let create ~process_mgr ~repo_root ~project_name ~patch_id ~branch ~base_ref :
-    (t, Start_point_plan.refusal) Result.t =
-  create_with_io
-    ~io:(git_io ~process_mgr ~repo_root)
-    ~project_name ~patch_id ~branch ~base_ref
-
-let remove ~process_mgr ~repo_root t =
-  process_run_retry process_mgr
-    ~env:(Stdlib.Lazy.force clean_git_env)
-    [ "git"; "-C"; repo_root; "worktree"; "remove"; "--force"; t.path ]
+        let newly_created =
+          io.execute_action ~path ~branch_str ~expected_local:local_ref action
+        in
+        Result.Ok { patch_id; branch; path; newly_created })
 
 let detect_branch ~process_mgr ~path =
   let buf = Buffer.create 128 in
@@ -456,26 +349,6 @@ let detect_branch ~process_mgr ~path =
 
 let parse_porcelain ~repo_root raw =
   Worktree_parser.parse_porcelain ~cwd:(Stdlib.Sys.getcwd ()) ~repo_root raw
-
-let list_with_branches ~process_mgr ~repo_root =
-  let main_root = resolve_main_root ~process_mgr ~repo_root in
-  let buf = Buffer.create 512 in
-  let stderr_buf = Buffer.create 64 in
-  (match
-     process_run_retry process_mgr
-       ~env:(Stdlib.Lazy.force clean_git_env)
-       ~stdout:(Eio.Flow.buffer_sink buf)
-       ~stderr:(Eio.Flow.buffer_sink stderr_buf)
-       [ "git"; "-C"; repo_root; "worktree"; "list"; "--porcelain" ]
-   with
-  | () -> ()
-  | exception e when has_cancellation e -> raise e
-  | exception exn ->
-      let msg = Buffer.contents stderr_buf in
-      failwith
-        (Printf.sprintf "list_with_branches failed at %s: %s\ngit stderr: %s"
-           repo_root (Exn.to_string exn) msg));
-  parse_porcelain ~repo_root:main_root (Buffer.contents buf)
 
 (* Type re-exports — pure definitions live in Worktree_parser. The manifest
    equations equate Worktree.X with Worktree_parser.X across the library
@@ -1083,27 +956,10 @@ let read_in_progress_conflict_info ~process_mgr ~path ~target ~project_name
               ~ancestor_ids ~target
     | _ -> None
 
-let find_for_branch ~process_mgr ~repo_root branch =
-  let pairs = try list_with_branches ~process_mgr ~repo_root with _ -> [] in
-  List.find_map pairs ~f:(fun (path, b) ->
-      if Types.Branch.equal b branch then Some path else None)
-
-(** Drop git's worktree-registry entries for directories that no longer exist on
-    disk. Useful before [find_for_branch] / [create] when a previous worktree
-    directory was deleted out-of-band ([rm -rf] or a leftover failed checkout):
-    without this, [git worktree list] still reports the stale entry and
-    [git worktree add] refuses to recreate the same path. *)
-let prune_admin ~process_mgr ~repo_root =
-  let _ =
-    run_git_exit_code ~process_mgr
-      [ "git"; "-C"; repo_root; "worktree"; "prune" ]
-  in
-  ()
-
-let exists t = Stdlib.Sys.file_exists t.path
 let path t = t.path
 let patch_id t = t.patch_id
 let branch t = t.branch
+let newly_created t = t.newly_created
 
 module type S = sig
   val resolve_main_root : unit -> string
@@ -1125,11 +981,14 @@ module type S = sig
       fetch failures. Caller in [Worktree_setup.ensure_worktree] runs this
       before [create] so the planner sees a fresh view of [origin/<branch>]. *)
 
-  val remove : t -> unit
+  val remove : discard:bool -> t -> unit
   val detect_branch : path:string -> Types.Branch.t
   val list_with_branches : unit -> (string * Types.Branch.t) list
   val find_for_branch : Types.Branch.t -> string option
   val prune_admin : unit -> unit
+
+  val ensure_ready :
+    path:string -> branch:Types.Branch.t -> (bool, string) Result.t
 
   val run_hook :
     clock:_ Eio.Time.clock ->
@@ -1175,7 +1034,14 @@ end
 
 type client = (module S)
 
-let make ~clock ~process_mgr ~repo_root =
+let make ~fs ~config ~clock ~process_mgr ~repo_root =
+  let module B =
+    (val Worktree_backend.make ~fs ~clock ~process_mgr ~repo_root ~config
+           ~timeout_seconds:120.)
+  in
+  let ready ~path ~branch =
+    Result.map (B.inspect ~path ~branch) ~f:Option.is_some
+  in
   (module struct
     let resolve_main_root () = resolve_main_root ~process_mgr ~repo_root
 
@@ -1186,13 +1052,48 @@ let make ~clock ~process_mgr ~repo_root =
       remote_branch_exists ~process_mgr ~repo_root branch_str
 
     let create ~project_name ~patch_id ~branch ~base_ref =
-      create ~process_mgr ~repo_root ~project_name ~patch_id ~branch ~base_ref
+      let io =
+        {
+          worktree_exists =
+            (fun ~path ->
+              match ready ~path ~branch with
+              | Ok b -> b
+              | Error msg -> failwith msg);
+          check_ref_collision =
+            (fun ~branch_str ->
+              check_case_insensitive_ref_collision ~process_mgr ~repo_root
+                branch_str);
+          read_ref =
+            (fun ~ref_name ->
+              read_repo_ref_sha ~process_mgr ~repo_root ~ref_name);
+          ancestry =
+            (fun ~local ~remote ->
+              compute_repo_ancestry ~process_mgr ~repo_root ~local ~remote);
+          execute_action =
+            (fun ~path ~branch_str:_ ~expected_local action ->
+              let _, created =
+                B.materialize ~path ~branch ~expected_local action
+              in
+              created);
+        }
+      in
+      create_with_io ~io ~project_name ~patch_id ~branch ~base_ref
 
-    let remove t = remove ~process_mgr ~repo_root t
+    let remove ~discard t =
+      match B.inspect ~path:t.path ~branch:t.branch with
+      | Ok (Some checkout) -> B.remove ~discard checkout
+      | Ok None -> ()
+      | Error msg -> failwith msg
+
     let detect_branch ~path = detect_branch ~process_mgr ~path
-    let list_with_branches () = list_with_branches ~process_mgr ~repo_root
-    let find_for_branch branch = find_for_branch ~process_mgr ~repo_root branch
-    let prune_admin () = prune_admin ~process_mgr ~repo_root
+    let list_with_branches () = B.list ()
+
+    let find_for_branch branch =
+      List.find_map (B.list ()) ~f:(fun (path, b) ->
+          if Types.Branch.equal branch b then Some path else None)
+
+    let prune_admin () = B.reconcile ()
+    let ensure_ready = ready
 
     let run_hook ~clock ~script ~cwd ~env () =
       User_config.run_hook ~process_mgr ~clock ~script ~cwd ~env ()

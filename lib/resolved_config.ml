@@ -14,6 +14,7 @@ type config = {
   main_branch : Branch.t;
   poll_interval : float;
   repo_root : string;
+  worktree : Worktree_lifecycle.config;
   max_concurrency : int;
   max_ci_failures : int;
   automerge_timeout : float;
@@ -35,6 +36,7 @@ type t = {
   main_branch : Branch.t;
   poll_interval : float;
   repo_root : string;
+  worktree : Worktree_lifecycle.config;
   max_concurrency : int;
   max_ci_failures : int;
   automerge_timeout : float;
@@ -141,6 +143,7 @@ let of_config (config : config) =
           main_branch = config.main_branch;
           poll_interval = config.poll_interval;
           repo_root = config.repo_root;
+          worktree = config.worktree;
           max_concurrency = config.max_concurrency;
           max_ci_failures = config.max_ci_failures;
           automerge_timeout = config.automerge_timeout;
