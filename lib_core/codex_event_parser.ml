@@ -104,7 +104,7 @@ let parse_event_with_cost_tracking ~model ~budget_cap_nano_usd ~cost_state line
           ([ Types.Stream_event.Error msg ], cost_state)
       | _ -> ([], cost_state))
 
-let build_args ~model ~effort ~cwd_path ~prompt ~resume_session =
+let build_args ~model ~effort ~extras ~cwd_path ~prompt ~resume_session =
   let model_args =
     match model with
     | Some m when not (String.is_empty m) -> [ "-m"; m ]
@@ -116,7 +116,10 @@ let build_args ~model ~effort ~cwd_path ~prompt ~resume_session =
         [ "-c"; Printf.sprintf "model_reasoning_effort=%S" e ]
     | _ -> []
   in
-  let global = [ "codex"; "-C"; cwd_path ] @ effort_args in
+  let extra_args =
+    List.concat_map extras ~f:(fun override -> [ "-c"; override ])
+  in
+  let global = [ "codex"; "-C"; cwd_path ] @ effort_args @ extra_args in
   let trailing = [ "--dangerously-bypass-approvals-and-sandbox" ] in
   match resume_session with
   | Some session_id ->
@@ -160,8 +163,8 @@ let%test "auto_model: missing or invalid complexity -> Sol" =
 
 let%test "build_args fresh (no resume, no model)" =
   let args =
-    build_args ~model:None ~effort:None ~cwd_path:"/tmp/work" ~prompt:"do stuff"
-      ~resume_session:None
+    build_args ~model:None ~effort:None ~extras:[] ~cwd_path:"/tmp/work"
+      ~prompt:"do stuff" ~resume_session:None
   in
   List.equal String.equal args
     [
@@ -176,8 +179,8 @@ let%test "build_args fresh (no resume, no model)" =
 
 let%test "build_args fresh with model" =
   let args =
-    build_args ~model:(Some "gpt-5-mini") ~effort:None ~cwd_path:"/tmp/work"
-      ~prompt:"do stuff" ~resume_session:None
+    build_args ~model:(Some "gpt-5-mini") ~effort:None ~extras:[]
+      ~cwd_path:"/tmp/work" ~prompt:"do stuff" ~resume_session:None
   in
   List.equal String.equal args
     [
@@ -194,7 +197,7 @@ let%test "build_args fresh with model" =
 
 let%test "build_args adds a model_reasoning_effort override" =
   let args =
-    build_args ~model:(Some "gpt-5.6-luna") ~effort:(Some "xhigh")
+    build_args ~model:(Some "gpt-5.6-luna") ~effort:(Some "xhigh") ~extras:[]
       ~cwd_path:"/tmp/work" ~prompt:"do stuff" ~resume_session:None
   in
   List.equal String.equal args
@@ -212,10 +215,31 @@ let%test "build_args adds a model_reasoning_effort override" =
       "--dangerously-bypass-approvals-and-sandbox";
     ]
 
+let%test "build_args adds every Codex config extra before exec" =
+  let args =
+    build_args ~model:None ~effort:None
+      ~extras:[ "features.fast_mode=true"; "service_tier=\"fast\"" ]
+      ~cwd_path:"/tmp/work" ~prompt:"do stuff" ~resume_session:None
+  in
+  List.equal String.equal args
+    [
+      "codex";
+      "-C";
+      "/tmp/work";
+      "-c";
+      "features.fast_mode=true";
+      "-c";
+      "service_tier=\"fast\"";
+      "exec";
+      "do stuff";
+      "--json";
+      "--dangerously-bypass-approvals-and-sandbox";
+    ]
+
 let%test "build_args with resume session passes prompt and bypass flag" =
   let args =
-    build_args ~model:None ~effort:None ~cwd_path:"/tmp/work" ~prompt:"do stuff"
-      ~resume_session:(Some "sess-1")
+    build_args ~model:None ~effort:None ~extras:[] ~cwd_path:"/tmp/work"
+      ~prompt:"do stuff" ~resume_session:(Some "sess-1")
   in
   List.equal String.equal args
     [
@@ -232,8 +256,8 @@ let%test "build_args with resume session passes prompt and bypass flag" =
 
 let%test "build_args with resume session and model" =
   let args =
-    build_args ~model:(Some "gpt-5-mini") ~effort:None ~cwd_path:"/tmp/work"
-      ~prompt:"do stuff" ~resume_session:(Some "sess-1")
+    build_args ~model:(Some "gpt-5-mini") ~effort:None ~extras:[]
+      ~cwd_path:"/tmp/work" ~prompt:"do stuff" ~resume_session:(Some "sess-1")
   in
   List.equal String.equal args
     [

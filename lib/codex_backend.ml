@@ -43,12 +43,14 @@ let budget_cap_nano_usd_from_env () =
           Some (Int64.of_float (Float.round_nearest (cap *. 1_000_000_000.0)))
       | Some _ | None -> None)
 
-let run_streaming ~model ~effort ~process_mgr ~clock ~timeout ~setsid_exec
-    ~project_name ~cwd ~patch_id ~prompt ~resume_session ~session_uuid
-    ~complexity ~on_event =
+let run_streaming ~model ~effort ~extras ~process_mgr ~clock ~timeout
+    ~setsid_exec ~project_name ~cwd ~patch_id ~prompt ~resume_session
+    ~session_uuid ~complexity ~on_event =
   let model = Llm_backend.resolve_auto_model ~model ~complexity ~auto_model in
   let cwd_path = snd cwd in
-  let args = build_args ~model ~effort ~cwd_path ~prompt ~resume_session in
+  let args =
+    build_args ~model ~effort ~extras ~cwd_path ~prompt ~resume_session
+  in
   let env =
     Spawn_env.merge_env ~base_env:(Unix.environment ())
       ~overrides:
@@ -79,7 +81,7 @@ let run_streaming ~model ~effort ~process_mgr ~clock ~timeout ~setsid_exec
     run_once ())
   else result
 
-let create ~model ~effort ~process_mgr ~clock ~timeout ~setsid_exec :
+let create ~model ~effort ~extras ~process_mgr ~clock ~timeout ~setsid_exec :
     Llm_backend.t =
   {
     name = "Codex";
@@ -93,7 +95,7 @@ let create ~model ~effort ~process_mgr ~clock ~timeout ~setsid_exec :
         ~complexity
         ~on_event
       ->
-        run_streaming ~model ~effort ~process_mgr ~clock ~timeout ~setsid_exec
-          ~cwd ~project_name ~patch_id ~prompt ~resume_session ~session_uuid
-          ~complexity ~on_event);
+        run_streaming ~model ~effort ~extras ~process_mgr ~clock ~timeout
+          ~setsid_exec ~cwd ~project_name ~patch_id ~prompt ~resume_session
+          ~session_uuid ~complexity ~on_event);
   }
