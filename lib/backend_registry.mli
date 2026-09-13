@@ -21,10 +21,12 @@ val create :
   clock:_ Eio.Time.clock ->
   timeout:float ->
   setsid_exec:string option ->
+  codex_extras:string list ->
   t
 (** Build an empty registry that knows how to construct any of the supported
     backends. The Eio capabilities and per-session [timeout] are baked into the
-    closure so callers don't re-thread them on every [get]. *)
+    closure so callers don't re-thread them on every [get]. [codex_extras] is
+    included in every Codex backend the registry creates. *)
 
 val get :
   t -> backend:string -> model:string option -> effort:string option -> kind

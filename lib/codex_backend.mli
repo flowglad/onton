@@ -4,6 +4,7 @@
 val create :
   model:string option ->
   effort:string option ->
+  extras:string list ->
   process_mgr:_ Eio.Process.mgr ->
   clock:_ Eio.Time.clock ->
   timeout:float ->
@@ -12,7 +13,8 @@ val create :
 (** Create an LLM backend that uses the Codex CLI. [model], when provided, is
     passed to [codex exec] via the [-m] flag; [None] (or empty) lets the Codex
     CLI pick its own default. [effort], when provided, is passed as Codex's
-    [model_reasoning_effort] config override. [timeout] is the maximum session
+    [model_reasoning_effort] config override. Each item in [extras] is passed as
+    an additional [-c] config override. [timeout] is the maximum session
     duration in seconds before the process is killed. See
     {!Claude_backend.create} for [setsid_exec] semantics. *)
 
