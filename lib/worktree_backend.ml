@@ -323,49 +323,103 @@ let make ~fs ~clock ~process_mgr ~repo_root ~(config : config) ~timeout_seconds
                    [ "run"; branch_str; "--path"; path; "--"; "/usr/bin/true" ]
                   : string)
         in
-        (match (c.backend, action) with
-        | Simgit, Create_new_branch_from_base _ ->
-            ignore
-              (sg c
-                 [
-                   "add"; branch_str; "--path"; path; "--base"; target; "--json";
-                 ]
-                : string)
-        | ( Git,
-            ( Use_local_branch_unchanged _ | Reset_and_use_remote_tracking _
-            | Create_new_branch_from_base _ ) )
-        | ( Simgit,
-            (Use_local_branch_unchanged _ | Reset_and_use_remote_tracking _) )
-          ->
-            (match action with
-            | Use_local_branch_unchanged _ -> ()
-            | Reset_and_use_remote_tracking _ | Create_new_branch_from_base _ ->
-                let old =
-                  Option.value expected_local
-                    ~default:(String.make (String.length target) '0')
-                in
+        let published = ref false in
+        let reset_attempted = ref false in
+        Stdlib.Fun.protect
+          ~finally:(fun () ->
+            if !reset_attempted && not !published then
+              Eio.Cancel.protect (fun () ->
+                  match ref_sha branch_str with
+                  | current
+                    when Option.equal String.equal current expected_local ->
+                      ()
+                  | Some current when String.equal current target ->
+                      let args =
+                        match expected_local with
+                        | Some old ->
+                            [
+                              "update-ref";
+                              "refs/heads/" ^ branch_str;
+                              old;
+                              target;
+                            ]
+                        | None ->
+                            [
+                              "update-ref";
+                              "-d";
+                              "refs/heads/" ^ branch_str;
+                              target;
+                            ]
+                      in
+                      ignore (git args : string)
+                  | _ ->
+                      failwith
+                        "Branch changed during failed creation; refusing to \
+                         overwrite concurrent history"))
+          (fun () ->
+            (match (c.backend, action) with
+            | Simgit, Create_new_branch_from_base _ ->
                 ignore
-                  (git [ "update-ref"; "refs/heads/" ^ branch_str; target; old ]
-                    : string));
-            attach ());
-        let checkout =
-          match get (inspect_impl ~creation_finished:true ~path ~branch) with
-          | Some c -> c
-          | None -> failwith "Worktree creation returned without a checkout"
-        in
-        let head = checked [ "git"; "-C"; path; "rev-parse"; "HEAD" ] in
-        if not (String.equal head target) then
-          failwith
-            "Worktree HEAD changed during creation; preserving it for \
-             intervention";
-        (if equal_backend c.backend Simgit then
-           let entries = get (parse_simgit_list (sg c [ "list"; "--json" ])) in
-           List.iter entries ~f:(fun (e : registration) ->
-               if String.equal (canonical e.path) (canonical path) then
-                 Eio.traceln "onton: simgit checkout %s (%s)" path
-                   (Option.value e.mode ~default:"unknown mode")));
-        write_owner ~path ~branch ~phase:Ready c;
-        (checkout, true)
+                  (sg c
+                     [
+                       "add";
+                       branch_str;
+                       "--path";
+                       path;
+                       "--base";
+                       target;
+                       "--json";
+                     ]
+                    : string)
+            | ( Git,
+                ( Use_local_branch_unchanged _ | Reset_and_use_remote_tracking _
+                | Create_new_branch_from_base _ ) )
+            | ( Simgit,
+                (Use_local_branch_unchanged _ | Reset_and_use_remote_tracking _)
+              ) ->
+                (match action with
+                | Use_local_branch_unchanged _ -> ()
+                | Reset_and_use_remote_tracking _
+                | Create_new_branch_from_base _ ->
+                    let old =
+                      Option.value expected_local
+                        ~default:(String.make (String.length target) '0')
+                    in
+                    (match action with
+                    | Reset_and_use_remote_tracking _ -> reset_attempted := true
+                    | Use_local_branch_unchanged _
+                    | Create_new_branch_from_base _ ->
+                        ());
+                    ignore
+                      (git
+                         [
+                           "update-ref"; "refs/heads/" ^ branch_str; target; old;
+                         ]
+                        : string));
+                attach ());
+            let checkout =
+              match
+                get (inspect_impl ~creation_finished:true ~path ~branch)
+              with
+              | Some c -> c
+              | None -> failwith "Worktree creation returned without a checkout"
+            in
+            let head = checked [ "git"; "-C"; path; "rev-parse"; "HEAD" ] in
+            if not (String.equal head target) then
+              failwith
+                "Worktree HEAD changed during creation; preserving it for \
+                 intervention";
+            (if equal_backend c.backend Simgit then
+               let entries =
+                 get (parse_simgit_list (sg c [ "list"; "--json" ]))
+               in
+               List.iter entries ~f:(fun (e : registration) ->
+                   if String.equal (canonical e.path) (canonical path) then
+                     Eio.traceln "onton: simgit checkout %s (%s)" path
+                       (Option.value e.mode ~default:"unknown mode")));
+            write_owner ~path ~branch ~phase:Ready c;
+            published := true;
+            (checkout, true))
   in
   let list () =
     git_list ()
@@ -409,27 +463,48 @@ let make ~fs ~clock ~process_mgr ~repo_root ~(config : config) ~timeout_seconds
     if Stdlib.Sys.file_exists metadata then Unix.unlink metadata
   in
   let reconcile () =
-    (* Native prune can destroy the registration needed to remount an overlay. *)
-    let managed =
-      List.find_map (git_list ()) ~f:(fun (e : registration) ->
-          match e.branch with
-          | Some branch ->
-              let c, _phase =
-                owning ~path:e.path ~branch:(Types.Branch.of_string branch)
-              in
-              if equal_backend c.backend Simgit then Some c else None
-          | None ->
-              if simgit_owned e.path then Some (simgit_config ()) else None)
+    let registration_owner (e : registration) =
+      match e.branch with
+      | Some branch ->
+          fst (owning ~path:e.path ~branch:(Types.Branch.of_string branch))
+      | None ->
+          if simgit_owned e.path then simgit_config ()
+          else Worktree_lifecycle.git
     in
-    match managed with
-    | Some c ->
-        preflight c;
-        ignore (sg c [ "prune" ] : string)
-    | None -> (
-        match config.backend with
-        | Git -> ignore (git [ "worktree"; "prune" ] : string)
-        | Simgit -> ignore (sg config [ "prune" ] : string))
+    let owners =
+      config :: List.map (git_list ()) ~f:registration_owner
+      |> List.dedup_and_sort ~compare:compare_config
+    in
+    List.iter owners ~f:(fun c ->
+        match c.backend with
+        | Git -> ()
+        | Simgit ->
+            preflight c;
+            ignore (sg c [ "prune" ] : string));
+    (* Native prune must service Git registrations without destroying the admin
+       entries of unmounted overlays. Preserve existing locks, and release only
+       the temporary locks we acquired, including on failure/cancellation. *)
+    let locked = ref [] in
+    Stdlib.Fun.protect
+      ~finally:(fun () ->
+        Eio.Cancel.protect (fun () ->
+            List.iter !locked ~f:(fun path ->
+                ignore (git [ "worktree"; "unlock"; path ] : string))))
+      (fun () ->
+        List.iter (git_list ()) ~f:(fun e ->
+            if equal_backend (registration_owner e).backend Simgit then
+              match admin_for e.path with
+              | Some admin
+                when not
+                       (Stdlib.Sys.file_exists
+                          (Stdlib.Filename.concat admin "locked")) ->
+                  Eio.Cancel.protect (fun () ->
+                      ignore (git [ "worktree"; "lock"; e.path ] : string);
+                      locked := e.path :: !locked)
+              | Some _ | None -> ());
+        ignore (git [ "worktree"; "prune" ] : string))
   in
+
   let mutex = Eio.Mutex.create () in
   (module struct
     let inspect ~path ~branch =

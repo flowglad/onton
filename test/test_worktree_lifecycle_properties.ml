@@ -182,9 +182,46 @@ let publication =
              (W.parse_ownership ~path:name ~branch:(name ^ "-other") json)
       with _ -> false)
 
+let repository_executable =
+  Q.Test.make
+    ~name:
+      "repository executables require absolute paths; trusted overrides remain \
+       valid"
+    ~count:300
+    Q.Gen.(string_size (int_range 1 100))
+    (fun suffix ->
+      try
+        let relative =
+          "./" ^ String.map (fun c -> if c = '\000' then 'x' else c) suffix
+        in
+        let json executable =
+          `Assoc
+            [
+              ("backend", `String "simgit"); ("executable", `String executable);
+            ]
+        in
+        Result.is_error (W.parse_optional (Some (json relative)))
+        && Result.is_error
+             (Repo_config.parse_string ~known_backends:[]
+                (Yojson.Safe.to_string (`Assoc [ ("worktree", json relative) ])))
+        && Result.is_ok (W.parse_optional (Some (json ("/opt/" ^ relative))))
+        && Result.is_ok
+             (W.resolve ~backend:(Some "simgit") ~executable:(Some relative)
+                ~stored_backend:None ~stored_executable:None ~repo:None)
+        && Result.is_ok
+             (W.resolve ~backend:None ~executable:None
+                ~stored_backend:(Some "simgit")
+                ~stored_executable:(Some relative) ~repo:None)
+        && Result.is_error (W.parse_optional (Some (json "sg")))
+        && Result.is_ok
+             (W.parse_optional
+                (Some (`Assoc [ ("backend", `String "simgit") ])))
+      with _ -> false)
+
 let () =
   QCheck_base_runner.run_tests_main
     [
+      repository_executable;
       total;
       roundtrip;
       list_roundtrip;

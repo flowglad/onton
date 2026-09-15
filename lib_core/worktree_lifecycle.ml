@@ -55,7 +55,13 @@ let of_json = function
 
 let parse_optional = function
   | None -> Ok None
-  | Some json -> Result.map (of_json json) ~f:Option.some
+  | Some json ->
+      Result.bind (of_json json) ~f:(fun config ->
+          match Json.field "executable" json with
+          | Some (`String executable)
+            when Stdlib.Filename.is_relative executable ->
+              Error "repository worktree.executable must be an absolute path"
+          | _ -> Ok (Some config))
 
 let resolve ~backend ~executable ~stored_backend ~stored_executable ~repo =
   let default = Option.value repo ~default:git in

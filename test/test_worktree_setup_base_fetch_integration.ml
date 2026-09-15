@@ -151,13 +151,49 @@ let empty_gameplan =
 (** Instantiate the real [Worktree_setup.Make] over a real git-backed [W] for
     [managed_dir], then run [ensure_worktree] for a brand-new [branch] cut from
     [base_ref]. Returns the worktree path. *)
-let run_ensure env ~managed_dir ~project_name ~pid ~branch ~base_ref =
+let run_ensure ?cancel_stage env ~managed_dir ~project_name ~pid ~branch
+    ~base_ref =
   let process_mgr = Eio.Stdenv.process_mgr env in
   let clock = Eio.Stdenv.clock env in
-  let module W =
+  let module Real =
     (val Worktree.make ~fs:(Eio.Stdenv.fs env) ~config:Worktree_lifecycle.git
            ~clock ~process_mgr ~repo_root:managed_dir)
   in
+  let attempted = ref false and created = ref false in
+  let cancellation =
+    let bt = Stdlib.Printexc.get_callstack 0 in
+    Eio.Exn.Multiple
+      [
+        (Failure "cleanup failed", bt);
+        (Eio.Exn.Multiple [ (Eio.Cancel.Cancelled (Failure "stop"), bt) ], bt);
+      ]
+  in
+  let module W = struct
+    include Real
+
+    let ensure_ready ~path ~branch =
+      if
+        Poly.equal cancel_stage (Some `Ready)
+        || (Poly.equal cancel_stage (Some `Recovery) && !attempted)
+      then raise cancellation;
+      if !created then Error "transient re-inspection failure"
+      else Real.ensure_ready ~path ~branch
+
+    let find_for_branch branch =
+      if Poly.equal cancel_stage (Some `Recovery) && !attempted then
+        Some (Stdlib.Filename.concat managed_dir "recovery")
+      else Real.find_for_branch branch
+
+    let create ~project_name ~patch_id ~branch ~base_ref =
+      attempted := true;
+      (match cancel_stage with
+      | Some `Create -> raise cancellation
+      | Some `Recovery -> failwith "creation interrupted"
+      | Some `Ready | None -> ());
+      let result = Real.create ~project_name ~patch_id ~branch ~base_ref in
+      created := Result.is_ok result;
+      result
+  end in
   let patch = mk_patch ~pid ~branch in
   let gameplan = { empty_gameplan with Types.Gameplan.patches = [ patch ] } in
   let module Env : Worktree_setup.ENV = struct
@@ -185,6 +221,16 @@ let run_ensure env ~managed_dir ~project_name ~pid ~branch ~base_ref =
   | Worktree_setup.Path p -> p
   | Worktree_setup.Missing -> failwith "ensure_worktree: Missing"
   | Worktree_setup.Refused -> failwith "ensure_worktree: Refused"
+  | exception exn when Worktree.has_cancellation exn ->
+      if Option.is_none cancel_stage then raise exn;
+      if not (phys_equal exn cancellation) then failwith "cancellation changed";
+      let after =
+        Runtime.read Env.runtime (fun snap ->
+            Orchestrator.agent snap.Runtime.orchestrator pid)
+      in
+      if not (Patch_agent.equal agent after) then
+        failwith "cancellation changed agent state";
+      "cancelled"
 
 (** Origin's main advances after the clone; both the local [main] ref and the
     clone-time remote-tracking ref lag. The cut must land on origin's current
@@ -273,9 +319,25 @@ let scenario_fetch_failure_falls_back env =
     local_main head;
   Stdlib.print_endline "  fetch_failure_falls_back: OK"
 
+let scenario_nested_cancellation env =
+  List.iter [ `Ready; `Create; `Recovery ] ~f:(fun cancel_stage ->
+      with_temp_dir (fun root ->
+          let origin_dir = Stdlib.Filename.concat root "origin" in
+          let managed_dir = Stdlib.Filename.concat root "managed" in
+          setup_origin_with_main ~origin_dir;
+          clone_into ~origin_dir ~managed_dir;
+          let result =
+            run_ensure ~cancel_stage env ~managed_dir ~project_name:"cancel"
+              ~pid:(Types.Patch_id.of_string "4")
+              ~branch:"cancel/patch-4" ~base_ref:"main"
+          in
+          assert_string "nested cancellation propagated without refusal"
+            "cancelled" result))
+
 let () =
   Eio_main.run @@ fun env ->
   Stdlib.print_endline "worktree_setup base-fetch integration:";
+  scenario_nested_cancellation env;
   scenario_stale_local_main env;
   scenario_dep_base_local_canonical env;
   scenario_fetch_failure_falls_back env;

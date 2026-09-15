@@ -24,8 +24,9 @@ module type S = sig
     Start_point_plan.action ->
     checkout * bool
   (** Executes an approved action. Failure/cancellation can leave a branch or
-      partial checkout; inspect before retrying. Never rolls back branch
-      history. *)
+      partial checkout; inspect before retrying. Never rolls back branch history
+      on retry. A failed remote reset restores the approved old ref with
+      compare-and-swap, preserving concurrent ref changes. *)
 
   val list : unit -> (string * Types.Branch.t) list
   val remove : discard:bool -> checkout -> unit

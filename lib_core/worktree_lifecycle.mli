@@ -15,7 +15,12 @@ val configure :
 
 val to_json : config -> Yojson.Safe.t
 val of_json : Yojson.Safe.t -> (config, string) Result.t
+
 val parse_optional : Yojson.Safe.t option -> (config option, string) Result.t
+(** Repository configuration boundary: explicit executables must be absolute.
+    Omitted executables use the built-in backend name. CLI and persisted
+    configuration use [configure] and [of_json] instead. *)
+
 val backend_name : backend -> string
 
 val resolve :

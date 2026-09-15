@@ -314,10 +314,164 @@ echo preserve > "$checkout_path/finished"
         [ "failed"; "cancelled" ];
       print_endline "failed and cancelled provisioning remains unpublished: OK")
 
+let failed_reset env =
+  G.with_temp_repo (fun repo ->
+      G.run_git ~cwd:repo [ "commit"; "--allow-empty"; "-qm"; "base" ];
+      let base = G.git_capture ~cwd:repo [ "rev-parse"; "HEAD" ] in
+      G.run_git ~cwd:repo [ "commit"; "--allow-empty"; "-qm"; "ahead" ];
+      let ahead = G.git_capture ~cwd:repo [ "rev-parse"; "HEAD" ] in
+      let script = Filename.concat repo "reset-sg" in
+      let body ending =
+        {|#!/bin/sh
+for arg in "$@"; do [ "$arg" = "--help" ] && exit 0; done
+[ "$2" = "run" ] || exit 2
+git worktree add "$5" "$3" || exit 3
+touch "$5/attached"
+|}
+        ^ ending ^ "\n"
+      in
+      write script (body "exit 1");
+      Unix.chmod script 0o700;
+      let module B =
+        (val Worktree_backend.make ~fs:(Eio.Stdenv.fs env)
+               ~clock:(Eio.Stdenv.clock env)
+               ~process_mgr:(Eio.Stdenv.process_mgr env)
+               ~repo_root:repo
+               ~config:
+                 (get (L.configure ~backend:"simgit" ~executable:(Some script)))
+               ~timeout_seconds:5.)
+      in
+      List.iter
+        (fun name ->
+          G.run_git ~cwd:repo [ "branch"; name; base ];
+          let path = Filename.concat repo name in
+          let create () =
+            ignore
+              (B.materialize ~path ~branch:(branch name)
+                 ~expected_local:(Some base)
+                 (Start_point_plan.Reset_and_use_remote_tracking
+                    { remote_sha = ahead }))
+          in
+          Fun.protect
+            ~finally:(fun () ->
+              G.run_git ~cwd:repo [ "worktree"; "remove"; "--force"; path ])
+            (fun () ->
+              if name = "reset-failed" then
+                check "reset attachment fails" (rejects create)
+              else (
+                write script (body "exec sleep 10");
+                let cancelled = ref false in
+                Eio.Fiber.first
+                  (fun () ->
+                    try create ()
+                    with exn when Worktree.has_cancellation exn ->
+                      cancelled := true;
+                      raise exn)
+                  (fun () ->
+                    let rec wait () =
+                      if not (Sys.file_exists (Filename.concat path "attached"))
+                      then (
+                        Eio.Time.sleep (Eio.Stdenv.clock env) 0.01;
+                        wait ())
+                    in
+                    wait ());
+                check "reset cancellation propagated" !cancelled);
+              check "failed reset restores old branch"
+                (G.git_capture ~cwd:repo [ "rev-parse"; name ] = base);
+              check "failed reset remains unpublished"
+                (Result.is_error (B.inspect ~path ~branch:(branch name)));
+              check "retry refuses partial checkout" (rejects create);
+              check "retry preserves old branch"
+                (G.git_capture ~cwd:repo [ "rev-parse"; name ] = base)))
+        [ "reset-failed"; "reset-cancelled" ])
+
+let mixed_reconcile env =
+  G.with_temp_repo (fun repo ->
+      let repo = Unix.realpath repo in
+      G.run_git ~cwd:repo [ "commit"; "--allow-empty"; "-qm"; "base" ];
+      let make config =
+        Worktree_backend.make ~fs:(Eio.Stdenv.fs env)
+          ~clock:(Eio.Stdenv.clock env)
+          ~process_mgr:(Eio.Stdenv.process_mgr env)
+          ~repo_root:repo ~config ~timeout_seconds:5.
+      in
+      let paths =
+        List.map
+          (fun name ->
+            let path = Filename.concat repo name in
+            G.run_git ~cwd:repo [ "worktree"; "add"; "-b"; name; path ];
+            path)
+          [ "sg-one"; "sg-two"; "native" ]
+      in
+      Fun.protect
+        ~finally:(fun () ->
+          List.iter
+            (fun path ->
+              ignore (G.git_exit_code ~cwd:repo [ "worktree"; "unlock"; path ]);
+              ignore
+                (G.git_exit_code ~cwd:repo
+                   [ "worktree"; "remove"; "--force"; path ]))
+            paths)
+        (fun () ->
+          List.iter
+            (fun name ->
+              let path = Filename.concat repo name in
+              let script = Filename.concat repo (name ^ "-bin") in
+              let log = script ^ ".log" in
+              write script
+                ("#!/bin/sh\n\
+                  for arg in \"$@\"; do [ \"$arg\" = \"--help\" ] && exit 0; \
+                  done\n"
+               ^ "case \"$2\" in\n\
+                  repair) echo '{\"failed\":[]}' ;;\n\
+                  prune) touch " ^ Filename.quote log
+               ^ ";;\n*) exit 2;;\nesac\n");
+              Unix.chmod script 0o700;
+              let admin =
+                G.git_capture ~cwd:path [ "rev-parse"; "--absolute-git-dir" ]
+              in
+              write (Filename.concat admin "simgit-mode") "overlay";
+              let module B =
+                (val make
+                       (get
+                          (L.configure ~backend:"simgit"
+                             ~executable:(Some script))))
+              in
+              check "adopt simulated overlay"
+                (Option.is_some (get (B.inspect ~path ~branch:(branch name)))))
+            [ "sg-one"; "sg-two" ];
+          G.run_git ~cwd:repo
+            [ "worktree"; "lock"; Filename.concat repo "sg-two" ];
+          List.iter
+            (fun path -> G.sh ~dir:repo ("rm -rf " ^ Filename.quote path))
+            paths;
+          let module B = (val make L.git) in
+          B.reconcile ();
+          List.iter
+            (fun name ->
+              check "all simgit owners reconciled"
+                (Sys.file_exists (Filename.concat repo (name ^ "-bin.log"))))
+            [ "sg-one"; "sg-two" ];
+          let listed = List.map fst (B.list ()) in
+          check "stale Git registration pruned"
+            (not (List.mem (Filename.concat repo "native") listed));
+          List.iter
+            (fun name ->
+              let path = Filename.concat repo name in
+              check "unmounted overlay registration retained"
+                (List.mem path listed);
+              let admin = Filename.concat repo (".git/worktrees/" ^ name) in
+              check "temporary locks released and existing locks preserved"
+                (Sys.file_exists (Filename.concat admin "locked")
+                = (name = "sg-two")))
+            [ "sg-one"; "sg-two" ]))
+
 let () =
   Eio_main.run (fun env ->
       fixture env L.git;
       failures env;
+      failed_reset env;
+      mixed_reconcile env;
       interrupted_creation env;
       match Sys.getenv_opt "ONTON_TEST_SIMGIT" with
       | None ->

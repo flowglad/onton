@@ -390,6 +390,8 @@ Repository defaults can be set in `~/.config/onton/<owner>/<repo>/config.json`:
 
 The CLI takes precedence over persisted project settings, then repository
 defaults, then Git. `executable` is optional for simgit and defaults to `sg`.
+An explicit repository `worktree.executable` must be an absolute path. CLI and
+persisted settings also accept executable names and relative paths.
 Changing the backend affects new checkouts. Existing checkouts keep their owner,
 including its executable, in the repository's `.git/onton-worktrees/` metadata.
 Legacy checkouts are validated and adopted; simgit's metadata identifies its
@@ -401,7 +403,9 @@ and use its normal CoW/fallback selection; Onton logs the resulting storage mode
 An unavailable overlay is repaired before reuse. Repair failures preserve its
 registration and surface an intervention instead of recreating over its data.
 Interrupted creation can leave a branch or partial checkout; retries inspect
-that state and never roll back branch history automatically. Creation is recorded
+that state and never roll back branch history automatically. If provisioning
+resets an existing branch but fails before publication, it restores the approved
+old ref without overwriting a concurrent branch change. Creation is recorded
 as `preparing` until the tool finishes and the checkout is validated; unfinished
 creation requires intervention even when Git already lists the directory.
 Checkout deletion uses the owning backend and retains the branch.

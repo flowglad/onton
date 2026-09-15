@@ -13,6 +13,9 @@ type t = private {
 
 val worktree_dir : project_name:string -> patch_id:Types.Patch_id.t -> string
 
+val has_cancellation : exn -> bool
+(** Includes cancellation nested in [Eio.Exn.Multiple]. *)
+
 val is_transient_spawn_failure : exn -> bool
 (** [true] for exceptions that mean a subprocess could not be spawned/run to
     completion (e.g. [posix_spawn] failing with EAGAIN under process-table

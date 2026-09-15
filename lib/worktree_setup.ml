@@ -230,7 +230,7 @@ module Make (W : Worktree.S) (Env : ENV) : S = struct
               with
               | Ok checkout -> `Created checkout
               | Error refusal -> `Refused refusal
-              | exception (Eio.Cancel.Cancelled _ as exn) -> raise exn
+              | exception exn when Worktree.has_cancellation exn -> raise exn
               | exception exn -> `Raised exn
             in
             let path =
@@ -267,10 +267,11 @@ module Make (W : Worktree.S) (Env : ENV) : S = struct
                        (Stdlib.Printexc.to_string exn));
                   false
             in
-            match
-              (created, if created then is_ready ~path ~branch:br else false)
-            with
-            | true, true ->
+            (* A successful create carries a validated, published checkout.
+               Re-inspection here would turn a transient recovery failure into
+               a refusal after provisioning has already succeeded. *)
+            match created with
+            | true ->
                 Runtime.update_orchestrator runtime (fun orch ->
                     Orchestrator.set_worktree_path orch patch_id path);
                 (match
@@ -305,11 +306,7 @@ module Make (W : Worktree.S) (Env : ENV) : S = struct
                              msg))
                 | None -> ());
                 Path path
-            | true, false ->
-                log_event runtime ~patch_id
-                  (Printf.sprintf "Worktree still missing at %s" path);
-                Missing
-            | false, _ -> (
+            | false -> (
                 match create_outcome with
                 | `Refused _ -> Refused
                 | `Created _ -> Missing
@@ -337,7 +334,7 @@ module Make (W : Worktree.S) (Env : ENV) : S = struct
 
   let ensure_worktree ~patch_id ~agent ?branch ?base_ref () =
     try ensure_worktree_impl ~patch_id ~agent ?branch ?base_ref () with
-    | Eio.Cancel.Cancelled _ as exn -> raise exn
+    | exn when Worktree.has_cancellation exn -> raise exn
     | exn ->
         let reason = Exn.to_string exn in
         Runtime_logging.log_event Env.runtime ~patch_id
