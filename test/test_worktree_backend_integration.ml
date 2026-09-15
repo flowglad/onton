@@ -435,6 +435,62 @@ touch "$4/attached"
                 (G.git_capture ~cwd:repo [ "rev-parse"; name ] = base)))
         [ "reset-failed"; "reset-cancelled" ])
 
+let concurrent_reset env =
+  G.with_temp_repo (fun repo ->
+      G.run_git ~cwd:repo [ "commit"; "--allow-empty"; "-qm"; "base" ];
+      let base = G.git_capture ~cwd:repo [ "rev-parse"; "HEAD" ] in
+      G.run_git ~cwd:repo [ "commit"; "--allow-empty"; "-qm"; "ahead" ];
+      let ahead = G.git_capture ~cwd:repo [ "rev-parse"; "HEAD" ] in
+      G.run_git ~cwd:repo [ "branch"; "race"; base ];
+      let old_path = Sys.getenv "PATH" in
+      let real_git =
+        String.split_on_char ':' old_path
+        |> List.map (fun dir -> Filename.concat dir "git")
+        |> List.find (fun path ->
+            try
+              Unix.access path [ Unix.X_OK ];
+              not (Sys.is_directory path)
+            with Unix.Unix_error _ -> false)
+        |> Unix.realpath
+      in
+      let bin = Filename.concat repo "bin" in
+      Unix.mkdir bin 0o700;
+      let wrapper = Filename.concat bin "git" in
+      let marker = Filename.concat repo "concurrent-update" in
+      (* A competing writer performs the same target update immediately before
+         our compare-and-swap. The second real Git command must then fail. *)
+      write wrapper
+        ("#!/bin/sh\n\
+          if [ \"$3\" = update-ref ] && [ \"$4\" = refs/heads/race ] && [ \
+          \"$5\" = " ^ Filename.quote ahead ^ " ]; then\n"
+       ^ Filename.quote real_git ^ " \"$@\" || exit 3\n" ^ "touch "
+       ^ Filename.quote marker ^ "\nfi\nexec " ^ Filename.quote real_git
+       ^ " \"$@\"\n");
+      Unix.chmod wrapper 0o700;
+      Fun.protect
+        ~finally:(fun () -> Unix.putenv "PATH" old_path)
+        (fun () ->
+          Unix.putenv "PATH" (bin ^ ":" ^ old_path);
+          let module B =
+            (val Worktree_backend.make ~fs:(Eio.Stdenv.fs env)
+                   ~clock:(Eio.Stdenv.clock env)
+                   ~process_mgr:(Eio.Stdenv.process_mgr env)
+                   ~repo_root:repo ~config:L.git ~timeout_seconds:5.)
+          in
+          let path = Filename.concat repo "checkout" in
+          check "competing update causes reset CAS failure"
+            (rejects (fun () ->
+                 ignore
+                   (B.materialize ~path ~branch:(branch "race")
+                      ~expected_local:(Some base)
+                      (Start_point_plan.Reset_and_use_remote_tracking
+                         { remote_sha = ahead }))));
+          check "competing writer ran" (Sys.file_exists marker);
+          check "failed CAS preserves competing target update"
+            (G.git_capture ~cwd:repo [ "rev-parse"; "race" ] = ahead);
+          check "failed CAS does not publish checkout"
+            (Result.is_error (B.inspect ~path ~branch:(branch "race")))))
+
 let mixed_reconcile env =
   G.with_temp_repo (fun repo ->
       let repo = Unix.realpath repo in
@@ -640,6 +696,7 @@ let () =
       discovery env;
       clean_failed_creation env;
       failed_reset env;
+      concurrent_reset env;
       mixed_reconcile env;
       interrupted_creation env;
       match Sys.getenv_opt "ONTON_TEST_SIMGIT" with

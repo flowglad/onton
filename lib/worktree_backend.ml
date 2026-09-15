@@ -380,10 +380,10 @@ let make ~fs ~clock ~process_mgr ~repo_root ~(config : config) ~timeout_seconds
                   : string)
         in
         let published = ref false in
-        let reset_attempted = ref false in
+        let reset_applied = ref false in
         Stdlib.Fun.protect
           ~finally:(fun () ->
-            if !reset_attempted && not !published then
+            if !reset_applied && not !published then
               Eio.Cancel.protect (fun () ->
                   match ref_sha branch_str with
                   | current
@@ -455,17 +455,26 @@ let make ~fs ~clock ~process_mgr ~repo_root ~(config : config) ~timeout_seconds
                       Option.value expected_local
                         ~default:(String.make (String.length target) '0')
                     in
-                    (match action with
-                    | Reset_and_use_remote_tracking _ -> reset_attempted := true
-                    | Use_local_branch_unchanged _
-                    | Create_new_branch_from_base _ ->
-                        ());
-                    ignore
-                      (git
-                         [
-                           "update-ref"; "refs/heads/" ^ branch_str; target; old;
-                         ]
-                        : string));
+                    (* Only a successful CAS authorizes rollback. Keep its
+                       acknowledgement and recording together under external
+                       cancellation; a failed CAS may observe another writer's
+                       update to the very same target. *)
+                    Eio.Cancel.protect (fun () ->
+                        ignore
+                          (git
+                             [
+                               "update-ref";
+                               "refs/heads/" ^ branch_str;
+                               target;
+                               old;
+                             ]
+                            : string);
+                        match action with
+                        | Reset_and_use_remote_tracking _ ->
+                            reset_applied := true
+                        | Use_local_branch_unchanged _
+                        | Create_new_branch_from_base _ ->
+                            ()));
                 attach ());
             let checkout =
               match
