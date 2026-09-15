@@ -232,7 +232,14 @@ let make ~fs ~clock ~process_mgr ~repo_root ~(config : config) ~timeout_seconds
   in
   let legacy_owner path =
     match simgit_config () with
-    | None -> Worktree_lifecycle.git
+    | None ->
+        (* Git's registration alone cannot identify an unrecorded simgit owner.
+           Internal simgit marker files are not a supported ownership API. *)
+        if Option.is_some (admin_for path) then
+          failwith
+            ("Cannot determine legacy checkout ownership without simgit; \
+              restore simgit before adopting: " ^ path)
+        else Worktree_lifecycle.git
     | Some c -> (
         let entries = get (parse_simgit_list (sg c [ "list"; "--json" ])) in
         match

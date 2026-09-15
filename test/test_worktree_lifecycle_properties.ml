@@ -170,13 +170,25 @@ let publication =
   Q.Test.make
     ~name:"ownership preserves publication state and rejects another checkout"
     ~count:300
-    Q.Gen.(pair string (oneof_list [ W.Preparing; W.Cleanup_pending; W.Ready ]))
-    (fun (name, phase) ->
+    Q.Gen.(
+      pair string
+        (oneof_list
+           [
+             (W.Git, W.Preparing);
+             (W.Git, W.Ready);
+             (W.Simgit, W.Preparing);
+             (W.Simgit, W.Cleanup_pending);
+             (W.Simgit, W.Ready);
+           ]))
+    (fun (name, (backend, phase)) ->
       try
         let owner =
-          match W.configure ~backend:"simgit" ~executable:None with
-          | Ok c -> c
-          | Error msg -> failwith msg
+          match backend with
+          | W.Git -> W.git
+          | W.Simgit -> (
+              match W.configure ~backend:"simgit" ~executable:None with
+              | Ok c -> c
+              | Error msg -> failwith msg)
         in
         let json = W.ownership_json ~path:name ~branch:name ~phase owner in
         (match W.parse_ownership ~path:name ~branch:name json with

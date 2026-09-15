@@ -398,7 +398,9 @@ An explicit repository `worktree.executable` must be an absolute path. CLI and
 persisted settings also accept executable names and relative paths.
 Changing the backend affects new checkouts. Existing checkouts keep their owner,
 including its executable, in the repository's `.git/onton-worktrees/` metadata.
-Legacy checkouts are validated and adopted; simgit's public `list --json` mode
+Legacy linked checkouts without a persisted owner require simgit to identify
+ownership through its supported listing API; adoption is refused when simgit
+is unavailable. Once available, simgit's public `list --json` mode
 identifies its checkouts, including `git-checkout` fallback, without an Onton
 ownership record.
 

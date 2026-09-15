@@ -27,9 +27,10 @@ module type S = sig
       partial checkout; inspect before retrying. Never rolls back branch history
       on retry. A failed remote reset restores the approved old ref with
       compare-and-swap, preserving concurrent ref changes. Once a failed simgit
-      child is reaped, unlock and ordinary remove recover clean/absent targets;
-      dirty files or cleanup failures retain a cleanup-pending record that
-      inspection can resume across restarts. *)
+      child is reaped and required ref rollback has completed, unlock and
+      ordinary remove recover clean/absent targets; dirty files or cleanup
+      failures retain a cleanup-pending record that inspection can resume across
+      restarts. *)
 
   val list : unit -> (string * Types.Branch.t) list
   val remove : discard:bool -> checkout -> unit

@@ -170,15 +170,17 @@ let fixture env config =
           (* Native legacy checkouts have no Onton ownership metadata. *)
           G.run_git ~cwd:repo
             [ "worktree"; "add"; "-b"; "legacy"; p "legacy"; base ];
-          let legacy =
-            match
-              get (B.inspect ~path:(p "legacy") ~branch:(branch "legacy"))
-            with
-            | Some c -> c
-            | None -> failwith "legacy missing"
-          in
-          check "legacy native ownership"
-            (L.equal_backend (Worktree_backend.owner legacy).backend L.Git);
+          (match B.inspect ~path:(p "legacy") ~branch:(branch "legacy") with
+          | Ok (Some legacy) ->
+              check "legacy native ownership"
+                (L.equal_backend (Worktree_backend.owner legacy).backend L.Git)
+          | Error msg when L.equal_backend config.backend L.Git ->
+              check "unknown legacy owner requires simgit"
+                (Base.String.is_substring msg
+                   ~substring:"Cannot determine legacy checkout ownership");
+              G.run_git ~cwd:repo [ "worktree"; "remove"; p "legacy" ]
+          | Ok None -> failwith "legacy missing"
+          | Error msg -> failwith msg);
           (match (config.backend, config.executable) with
           | L.Simgit, Some executable ->
               let old_path = Sys.getenv "PATH" in
@@ -505,7 +507,14 @@ let mixed_reconcile env =
         List.map
           (fun name ->
             let path = Filename.concat repo name in
-            G.run_git ~cwd:repo [ "worktree"; "add"; "-b"; name; path ];
+            if name = "native" then
+              let module Native = (val make L.git) in
+              ignore
+                (Native.materialize ~path ~branch:(branch name)
+                   ~expected_local:None
+                   (Start_point_plan.Create_new_branch_from_base
+                      { base_branch = "main" }))
+            else G.run_git ~cwd:repo [ "worktree"; "add"; "-b"; name; path ];
             path)
           [ "sg-one"; "sg-two"; "native" ]
       in
@@ -624,6 +633,69 @@ let discovery env =
           Unix.unlink sg;
           check "no candidates rejected" (rejects (fun () -> ignore (make ())))));
   print_endline "executable discovery and identity: OK"
+
+let unavailable_legacy_owner env =
+  G.with_temp_repo (fun repo ->
+      let repo = Unix.realpath repo in
+      G.run_git ~cwd:repo [ "commit"; "--allow-empty"; "-qm"; "base" ];
+      let path = Filename.concat repo "legacy" in
+      G.run_git ~cwd:repo [ "worktree"; "add"; "-b"; "legacy"; path ];
+      let bin = Filename.concat repo "bin" in
+      Unix.mkdir bin 0o700;
+      let script = Filename.concat bin "simgit" in
+      let alias = Filename.concat bin "sg" in
+      List.iter
+        (fun file ->
+          write file "#!/bin/sh\nexit 1\n";
+          Unix.chmod file 0o700)
+        [ script; alias ];
+      let old_path = Sys.getenv "PATH" in
+      Fun.protect
+        ~finally:(fun () -> Unix.putenv "PATH" old_path)
+        (fun () ->
+          Unix.putenv "PATH" (bin ^ ":" ^ old_path);
+          let make () =
+            Worktree_backend.make ~fs:(Eio.Stdenv.fs env)
+              ~clock:(Eio.Stdenv.clock env)
+              ~process_mgr:(Eio.Stdenv.process_mgr env)
+              ~repo_root:repo ~config:L.git ~timeout_seconds:5.
+          in
+          let module Missing = (val make ()) in
+          check "unavailable legacy owner refuses adoption"
+            (Result.is_error (Missing.inspect ~path ~branch:(branch "legacy")));
+          check "unavailable owner preserves files" (Sys.file_exists path);
+          let listing =
+            Yojson.Safe.to_string
+              (`List
+                 [
+                   `Assoc
+                     [
+                       ("worktree", `String path);
+                       ("branch", `String "legacy");
+                       ("mode", `String "cow-clone");
+                     ];
+                 ])
+          in
+          let removed = Filename.concat repo "removed-by-simgit" in
+          write script
+            ("#!/bin/sh\n\
+              case \"$1\" in\n\
+              --json) echo '{\"identity\":\"simgit\",\"version\":\"0.3.0\"}' ;;\n\
+              list) echo " ^ Filename.quote listing
+           ^ ";;\n\
+              repair) echo '{\"failed\":[]}' ;;\n\
+              remove) git worktree remove \"$2\" && touch "
+           ^ Filename.quote removed ^ ";;\n*) exit 2;;\nesac\n");
+          let module Restored = (val make ()) in
+          let checkout =
+            match get (Restored.inspect ~path ~branch:(branch "legacy")) with
+            | Some c -> c
+            | None -> failwith "legacy checkout lost"
+          in
+          check "restored tool recovers simgit ownership"
+            (L.equal_backend (Worktree_backend.owner checkout).backend L.Simgit);
+          Restored.remove ~discard:false checkout;
+          check "removal uses owning backend" (Sys.file_exists removed)))
 
 let clean_failed_creation env =
   G.with_temp_repo (fun repo ->
@@ -759,6 +831,7 @@ let () =
       fixture env L.git;
       failures env;
       discovery env;
+      unavailable_legacy_owner env;
       clean_failed_creation env;
       failed_reset env;
       concurrent_reset env;
