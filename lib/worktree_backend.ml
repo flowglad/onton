@@ -1,5 +1,5 @@
-(* @archlint.module shell
-   @archlint.domain worktree-backend *)
+(* @archlint.module state
+   @archlint.domain worktree-lifecycle *)
 
 open Base
 open Worktree_lifecycle

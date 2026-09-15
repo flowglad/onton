@@ -1,5 +1,5 @@
-(* @archlint.module test
-   @archlint.domain worktree-backend *)
+(* @archlint.module stateTest
+   @archlint.domain worktree-lifecycle *)
 
 open Onton
 open Onton_core
@@ -689,8 +689,73 @@ esac
         [ "exit 1"; "git worktree add -b \"$2\" \"$4\" main || exit 3; exit 1" ]);
   print_endline "failed provisioning cleanup: OK"
 
+let lifecycle_sequences env =
+  QCheck2.Test.make
+    ~name:"checkout readiness follows generated lifecycle operations" ~count:25
+    QCheck2.Gen.(list_size (int_range 1 12) (int_range 0 3))
+    (fun operations ->
+      try
+        G.with_temp_repo (fun repo ->
+            G.run_git ~cwd:repo [ "commit"; "--allow-empty"; "-qm"; "base" ];
+            let base = G.git_capture ~cwd:repo [ "rev-parse"; "HEAD" ] in
+            G.run_git ~cwd:repo [ "branch"; "sequence"; base ];
+            let path = Filename.concat repo "checkout" in
+            let requested = branch "sequence" in
+            let module B =
+              (val Worktree_backend.make ~fs:(Eio.Stdenv.fs env)
+                     ~clock:(Eio.Stdenv.clock env)
+                     ~process_mgr:(Eio.Stdenv.process_mgr env)
+                     ~repo_root:repo ~config:L.git ~timeout_seconds:5.)
+            in
+            let ready = ref false in
+            Fun.protect
+              ~finally:(fun () ->
+                remove (module B) ~discard:true ~path ~branch:requested)
+              (fun () ->
+                List.for_all
+                  (fun operation ->
+                    (match operation with
+                    | 0 ->
+                        let checkout, created =
+                          B.materialize ~path ~branch:requested
+                            ~expected_local:(Some base)
+                            (Start_point_plan.Use_local_branch_unchanged
+                               { local_sha = base })
+                        in
+                        check "creation is idempotent" (created = not !ready);
+                        check "owner retained"
+                          (L.equal_config
+                             (Worktree_backend.owner checkout)
+                             L.git);
+                        ready := true
+                    | 1 ->
+                        remove (module B) ~discard:false ~path ~branch:requested;
+                        ready := false
+                    | 2 -> B.reconcile ()
+                    | _ -> ignore (get (B.inspect ~path ~branch:requested)));
+                    let registrations =
+                      get
+                        (L.parse_git_list
+                           (G.git_capture ~cwd:repo
+                              [ "worktree"; "list"; "--porcelain"; "-z" ]))
+                    in
+                    let registered =
+                      List.exists
+                        (fun (entry : L.registration) ->
+                          entry.branch = Some "sequence")
+                        registrations
+                    in
+                    registered = !ready
+                    && Option.is_some (get (B.inspect ~path ~branch:requested))
+                       = !ready
+                    && G.git_capture ~cwd:repo [ "rev-parse"; "sequence" ]
+                       = base)
+                  operations))
+      with _ -> false)
+
 let () =
   Eio_main.run (fun env ->
+      QCheck2.Test.check_exn (lifecycle_sequences env);
       fixture env L.git;
       failures env;
       discovery env;

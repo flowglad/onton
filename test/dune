@@ -8,7 +8,7 @@
  (name test_worktree_backend_integration)
  (modules test_worktree_backend_integration)
  (flags (:standard -w -40-42))
- (libraries onton onton_core onton_test_support eio_main unix))
+ (libraries onton onton_core onton_test_support eio_main unix qcheck-core))
 
 (test
  (name test_onton)

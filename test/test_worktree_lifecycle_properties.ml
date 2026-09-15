@@ -280,12 +280,19 @@ let ownership_modes =
             = List.map (function None -> W.Git | Some _ -> W.Simgit) modes
       with _ -> false)
 
+let backend_names =
+  Q.Test.make ~name:"backend names match the selected backend" ~count:100
+    Q.Gen.bool (fun simgit ->
+      W.backend_name (if simgit then W.Simgit else W.Git)
+      = if simgit then "simgit" else "git")
+
 let () =
   QCheck_base_runner.run_tests_main
     [
       discovery_contract;
       ownership_modes;
       repository_executable;
+      backend_names;
       total;
       roundtrip;
       list_roundtrip;

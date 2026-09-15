@@ -1,5 +1,5 @@
 (* @archlint.module interface
-   @archlint.domain worktree-backend *)
+   @archlint.domain worktree-lifecycle *)
 
 open Base
 
