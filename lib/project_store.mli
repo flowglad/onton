@@ -60,6 +60,8 @@ type stored_config = {
           legacy configs preserves field absence so resolution can fall through
           to the repository default and then
           {!Patch_controller.default_automerge_timeout}. *)
+  worktree_backend : string option;
+  worktree_executable : string option;
   url_scheme : string option;
       (** Persisted transport for the managed [origin]. [None] on legacy configs
           predating P0-D; gets auto-resolved on the next
@@ -81,6 +83,7 @@ val save_config :
   max_concurrency:int ->
   max_ci_failures:int ->
   automerge_timeout:float ->
+  ?worktree:Worktree_lifecycle.config ->
   ?url_scheme:string option ->
   unit ->
   unit

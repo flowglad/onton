@@ -38,6 +38,10 @@ type run_knobs = {
   max_concurrency : int;
   max_ci_failures : int;
   automerge_timeout : float option;
+  worktree_backend : string option;
+  worktree_executable : string option;
+  stored_worktree_backend : string option;
+  stored_worktree_executable : string option;
   headless : bool;
   patch_agent_provider : string option;
   patch_agent_effort : string option;
@@ -331,6 +335,10 @@ let finalize_run ~project_name ~repo_coords ~run_knobs ~backend_inputs
     max_concurrency;
     max_ci_failures;
     automerge_timeout;
+    worktree_backend;
+    worktree_executable;
+    stored_worktree_backend;
+    stored_worktree_executable;
     headless;
     patch_agent_provider;
     patch_agent_effort;
@@ -349,6 +357,18 @@ let finalize_run ~project_name ~repo_coords ~run_knobs ~backend_inputs
         (Option.value repo_config.Repo_config.automerge_timeout
            ~default:Patch_controller.default_automerge_timeout)
   in
+  let worktree =
+    match
+      Worktree_lifecycle.resolve ~backend:worktree_backend
+        ~executable:worktree_executable ~stored_backend:stored_worktree_backend
+        ~stored_executable:stored_worktree_executable
+        ~repo:repo_config.Repo_config.worktree
+    with
+    | Ok c -> c
+    | Error msg ->
+        Printf.eprintf "Error: %s\n%!" msg;
+        Stdlib.exit 1
+  in
   let backend, model =
     resolve_backend_model ~cli_backend ~cli_model ~stored_backend ~stored_model
       ~repo_config
@@ -357,7 +377,7 @@ let finalize_run ~project_name ~repo_coords ~run_knobs ~backend_inputs
     ~backend ~model
     ~main_branch:(Branch.to_string main_branch)
     ~poll_interval ~repo_root ~max_concurrency ~max_ci_failures
-    ~automerge_timeout
+    ~automerge_timeout ~worktree
     ~url_scheme:(Option.map Managed_repo.string_of_url_scheme url_scheme)
     ();
   (* Refresh the agent-readable gameplan copy under artifacts/ so patch
@@ -367,6 +387,7 @@ let finalize_run ~project_name ~repo_coords ~run_knobs ~backend_inputs
   let config =
     {
       Resolved_config.project = Some project_name;
+      worktree;
       forge;
       backend;
       model;
@@ -399,7 +420,8 @@ let finalize_run ~project_name ~repo_coords ~run_knobs ~backend_inputs
 let resolve_config ~project ~gameplan_path ~forge ~github_token ~backend ~model
     ~main_branch ~poll_interval ~(repo_root : string option) ~max_concurrency
     ~(max_ci_failures : int option) ~(automerge_timeout : float option)
-    ~headless ~(clone_scheme : string option) =
+    ~headless ~worktree_backend ~worktree_executable
+    ~(clone_scheme : string option) =
   let clone_scheme_override =
     match clone_scheme with
     | None -> None
@@ -437,6 +459,10 @@ let resolve_config ~project ~gameplan_path ~forge ~github_token ~backend ~model
         Option.value max_ci_failures
           ~default:Patch_agent.default_max_ci_failures;
       automerge_timeout;
+      worktree_backend;
+      worktree_executable;
+      stored_worktree_backend = None;
+      stored_worktree_executable = None;
       headless;
       patch_agent_provider;
       patch_agent_effort;
@@ -729,6 +755,10 @@ let resolve_config ~project ~gameplan_path ~forge ~github_token ~backend ~model
                   let run_knobs =
                     {
                       run_knobs with
+                      stored_worktree_backend =
+                        stored.Project_store.worktree_backend;
+                      stored_worktree_executable =
+                        stored.Project_store.worktree_executable;
                       poll_interval = stored.Project_store.poll_interval;
                       max_concurrency = stored.Project_store.max_concurrency;
                       max_ci_failures =
@@ -888,7 +918,8 @@ let construct_capabilities ~net (setup : runtime_setup) =
   in
   let module Forge = (val forge) in
   let worktree_client =
-    Worktree.make ~clock:setup.clock ~process_mgr:setup.process_mgr ~repo_root
+    Worktree.make ~fs:setup.fs ~config:config.Resolved_config.worktree
+      ~clock:setup.clock ~process_mgr:setup.process_mgr ~repo_root
   in
   let module WorktreeClient = (val worktree_client) in
   (match Forge.check_repo_access () with
@@ -1453,12 +1484,13 @@ let run_with_config ~no_lock ~auto_merge ~pr_ops (config : config) gameplan
 
 let run ~project ~gameplan_path ~forge ~github_token ~backend ~model
     ~(main_branch : Branch.t option) ~poll_interval ~(repo_root : string option)
-    ~max_concurrency ~max_ci_failures ~automerge_timeout ~headless ~no_lock
-    ~auto_merge ~clone_scheme ~pr_ops =
+    ~max_concurrency ~max_ci_failures ~automerge_timeout ~worktree_backend
+    ~worktree_executable ~headless ~no_lock ~auto_merge ~clone_scheme ~pr_ops =
   match
     resolve_config ~project ~gameplan_path ~forge ~github_token ~backend ~model
       ~main_branch ~poll_interval ~repo_root ~max_concurrency ~max_ci_failures
-      ~automerge_timeout ~headless ~clone_scheme
+      ~automerge_timeout ~worktree_backend ~worktree_executable ~headless
+      ~clone_scheme
   with
   | Error errs ->
       Base.List.iter errs ~f:(fun e -> Printf.eprintf "Error: %s\n" e);
@@ -1496,7 +1528,8 @@ let cli_option_takes_value (s : string) : bool =
       match s with
       | "--gameplan" | "--token" | "--backend" | "--model" | "--repo"
       | "--main-branch" | "--poll-interval" | "--max-concurrency"
-      | "--max-ci-failures" | "--automerge-timeout" ->
+      | "--max-ci-failures" | "--automerge-timeout" | "--worktree-backend"
+      | "--worktree-executable" ->
           true
       | _ -> false)
 
@@ -1748,11 +1781,30 @@ let auto_merge_arg =
            per-patch toggles set via the TUI survive restarts. Individual \
            patches can still be toggled off in the TUI manage overlay.")
 
+let worktree_backend_arg =
+  let open Cmdliner.Arg in
+  value
+  & opt (some (enum [ ("git", "git"); ("simgit", "simgit") ])) None
+  & info [ "worktree-backend" ] ~docv:"BACKEND"
+      ~doc:
+        "Worktree lifecycle backend: git (default) or simgit. Persisted for \
+         project resumes."
+
+let worktree_executable_arg =
+  let open Cmdliner.Arg in
+  value
+  & opt (some string) None
+  & info [ "worktree-executable" ] ~docv:"PATH"
+      ~doc:
+        "Simgit executable name or path (default: sg). Use an explicit path if \
+         sg is another tool."
+
 let main_cmd ~pr_ops =
   let open Cmdliner in
   let run_cmd project gameplan_path forge github_token backend model main_branch
       poll_interval repo_root max_concurrency max_ci_failures automerge_timeout
-      headless upload_debug no_lock prune no_refresh auto_merge clone_scheme =
+      worktree_backend worktree_executable headless upload_debug no_lock prune
+      no_refresh auto_merge clone_scheme =
     if prune then
       Stdlib.exit
         ( Eio_main.run @@ fun env ->
@@ -1789,16 +1841,18 @@ let main_cmd ~pr_ops =
       run ~project ~gameplan_path ~forge ~github_token
         ~backend:(Base.String.strip backend)
         ~model:(Base.String.strip model) ~main_branch ~poll_interval ~repo_root
-        ~max_concurrency ~max_ci_failures ~automerge_timeout ~headless ~no_lock
-        ~auto_merge ~clone_scheme ~pr_ops)
+        ~max_concurrency ~max_ci_failures ~automerge_timeout ~worktree_backend
+        ~worktree_executable ~headless ~no_lock ~auto_merge ~clone_scheme
+        ~pr_ops)
   in
   let term =
     Term.(
       const run_cmd $ project_arg $ gameplan_path_arg $ forge_arg
       $ github_token_arg $ backend_arg $ model_arg $ main_branch_arg
       $ poll_interval_arg $ repo_arg $ max_concurrency_arg $ max_ci_failures_arg
-      $ automerge_timeout_arg $ headless_arg $ upload_debug_arg $ no_lock_arg
-      $ prune_arg $ no_refresh_arg $ auto_merge_arg $ clone_scheme_arg)
+      $ automerge_timeout_arg $ worktree_backend_arg $ worktree_executable_arg
+      $ headless_arg $ upload_debug_arg $ no_lock_arg $ prune_arg
+      $ no_refresh_arg $ auto_merge_arg $ clone_scheme_arg)
   in
   let info =
     Cmd.info "onton" ~version:Version.s

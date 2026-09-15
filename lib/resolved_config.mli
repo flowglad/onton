@@ -14,6 +14,7 @@ type config = {
   main_branch : Branch.t;
   poll_interval : float;
   repo_root : string;
+  worktree : Worktree_lifecycle.config;
   max_concurrency : int;
   max_ci_failures : int;
       (** Per-project cap on consecutive CI-failure responses per patch (see
@@ -46,6 +47,7 @@ type t = {
   main_branch : Branch.t;
   poll_interval : float;
   repo_root : string;
+  worktree : Worktree_lifecycle.config;
   max_concurrency : int;
   max_ci_failures : int;
   automerge_timeout : float;

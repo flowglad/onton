@@ -47,6 +47,7 @@ type t = {
   default_effort : string option;
       (** Top-level [default.effort]. [None] lets the selected provider use its
           own reasoning-effort default. *)
+  worktree : Worktree_lifecycle.config option;
   automerge_timeout : float option;
       (** Top-level [automerge_timeout] in seconds. Must be finite and greater
           than zero. Resolution uses a CLI override, then a persisted project
