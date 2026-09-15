@@ -181,7 +181,7 @@ let save_config ~project_name ?(forge = "github") ~github_owner ~github_repo
       max_ci_failures;
       automerge_timeout = Some automerge_timeout;
       worktree_backend = Some (Worktree_lifecycle.backend_name worktree.backend);
-      worktree_executable = Some worktree.executable;
+      worktree_executable = worktree.executable;
       url_scheme;
     }
   in

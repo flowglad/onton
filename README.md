@@ -320,7 +320,7 @@ onton --repo ../my-repo [OPTIONS]        # Ad-hoc mode (no gameplan)
 | `--backend` | `claude` | LLM backend: `claude`, `codex`, `opencode`, `pi`, `gemini`. See [Backend & model](#backend--model) |
 | `--model` | (backend CLI's own default) | Model name passed to the backend CLI |
 | `--worktree-backend` | `git` | Checkout lifecycle manager: `git` or `simgit` |
-| `--worktree-executable` | `sg` for simgit | Explicit simgit executable name or path |
+| `--worktree-executable` | Discover `simgit`, then `sg` | Explicit simgit executable name or path |
 | `--main-branch` | (auto-detected) | Main branch name (inferred from remote HEAD if omitted) |
 | `--poll-interval` | `30.0` | Forge polling interval in seconds |
 | `--max-concurrency` | `5` / `$ONTON_MAX_CONCURRENCY` | Maximum concurrent Claude processes |
@@ -370,12 +370,16 @@ found for a patch's branch, one is created at
 To use [simgit](https://github.com/abendrothj/simgit), start or resume with:
 
 ```sh
-onton PROJECT --worktree-backend simgit --worktree-executable /path/to/simgit/sg
+onton PROJECT --worktree-backend simgit
 ```
 
-An explicit path avoids collisions with other tools named `sg`, including
-ast-grep. Onton checks the executable's worktree commands before provisioning;
-a missing or incompatible executable is an error. Onton does not install simgit.
+Onton tries `simgit`, then `sg`, and accepts only an executable whose
+`--json doctor` response identifies it as simgit. This rejects colliding tools
+such as ast-grep. Use `--worktree-executable /path/to/simgit` to select a specific
+installation; explicit selections do not fall back. The adapter uses the flat
+CLI (`add`, `run`, `list`, `repair`, `unlock`, `remove`, `prune`) supported by
+simgit 0.3.0. A missing or incompatible executable is an error. Onton does not
+install simgit.
 
 Repository defaults can be set in `~/.config/onton/<owner>/<repo>/config.json`:
 
@@ -389,13 +393,14 @@ Repository defaults can be set in `~/.config/onton/<owner>/<repo>/config.json`:
 ```
 
 The CLI takes precedence over persisted project settings, then repository
-defaults, then Git. `executable` is optional for simgit and defaults to `sg`.
+defaults, then Git. Omitting `executable` retains automatic discovery across restarts.
 An explicit repository `worktree.executable` must be an absolute path. CLI and
 persisted settings also accept executable names and relative paths.
 Changing the backend affects new checkouts. Existing checkouts keep their owner,
 including its executable, in the repository's `.git/onton-worktrees/` metadata.
-Legacy checkouts are validated and adopted; simgit's metadata identifies its
-checkouts even without an Onton ownership record.
+Legacy checkouts are validated and adopted; simgit's public `list --json` mode
+identifies its checkouts, including `git-checkout` fallback, without an Onton
+ownership record.
 
 Both backends retain Onton's branch/start-point rules, checkout paths, creation
 hooks, and normal Git fetch/rebase/push behavior. Simgit checkouts are persistent
@@ -406,8 +411,15 @@ Interrupted creation can leave a branch or partial checkout; retries inspect
 that state and never roll back branch history automatically. If provisioning
 resets an existing branch but fails before publication, it restores the approved
 old ref without overwriting a concurrent branch change. Creation is recorded
-as `preparing` until the tool finishes and the checkout is validated; unfinished
-creation requires intervention even when Git already lists the directory.
+as `preparing` until the tool finishes and the checkout is validated. After a
+failed or cancelled simgit invocation has stopped and ref rollback is complete,
+Onton records `cleanup_pending` and calls `unlock` then `remove`, even if the
+target is already absent. Cleanup retains branches and refuses dirty files;
+its ownership record is cleared only after cleanup succeeds. Inspection resumes
+pending cleanup across restarts, so resolving dirty files permits a later retry.
+A `preparing` record left by a process crash still requires intervention: verify that the
+creator has stopped before running `simgit unlock PATH` and `simgit remove PATH`
+and clearing the corresponding `.git/onton-worktrees/` record.
 Checkout deletion uses the owning backend and retains the branch.
 
 Run the adapter integration suite against an installed simgit executable with:

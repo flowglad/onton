@@ -109,20 +109,62 @@ let make ~fs ~clock ~process_mgr ~repo_root ~(config : config) ~timeout_seconds
       (git [ "rev-parse"; "--path-format=absolute"; "--git-common-dir" ])
   in
   let registry = Stdlib.Filename.concat common "onton-worktrees" in
-  let checked_executables = Hash_set.create (module String) in
-  let preflight c =
-    match c.backend with
-    | Git -> ()
-    | Simgit when Hash_set.mem checked_executables c.executable -> ()
-    | Simgit ->
-        List.iter [ "add"; "run"; "list"; "repair"; "remove"; "prune" ]
-          ~f:(fun command ->
-            ignore
-              (checked [ c.executable; "worktree"; command; "--help" ] : string));
-        Hash_set.add checked_executables c.executable
+  let checked_executables = Hashtbl.create (module String) in
+  let resolve_executable name =
+    let candidates =
+      if String.contains name '/' then [ name ]
+      else
+        String.split (Option.value (Sys.getenv "PATH") ~default:"") ~on:':'
+        |> List.map ~f:(fun dir -> Stdlib.Filename.concat dir name)
+    in
+    List.find_map candidates ~f:(fun path ->
+        try
+          Unix.access path [ Unix.X_OK ];
+          if Stdlib.Sys.is_directory path then None else Some (canonical path)
+        with Unix.Unix_error _ -> None)
   in
-  preflight config;
-  let sg c args = checked (c.executable :: "worktree" :: args) in
+  let probe name =
+    match Hashtbl.find checked_executables name with
+    | Some executable -> Ok executable
+    | None ->
+        protect_result (fun () ->
+            let executable =
+              match resolve_executable name with
+              | Some path -> path
+              | None -> failwith ("Executable unavailable: " ^ name)
+            in
+            get (doctor_identity (checked [ executable; "--json"; "doctor" ]));
+            Hashtbl.add_exn checked_executables ~key:name ~data:executable;
+            executable)
+  in
+  let discover () =
+    match probe "simgit" with
+    | Ok executable -> Ok executable
+    | Error first -> (
+        match probe "sg" with
+        | Ok executable -> Ok executable
+        | Error second -> Error (first ^ "\n" ^ second))
+  in
+  let resolve_config c =
+    match c.backend with
+    | Git -> c
+    | Simgit ->
+        let executable =
+          get
+            (match c.executable with
+            | Some name -> probe name
+            | None -> discover ())
+        in
+        get (configure ~backend:"simgit" ~executable:(Some executable))
+  in
+  let config = resolve_config config in
+  let preflight c = ignore (resolve_config c : config) in
+  let executable c =
+    match (resolve_config c).executable with
+    | Some name -> name
+    | None -> failwith "Resolved backend has no executable"
+  in
+  let sg c args = checked (executable c :: args) in
   let metadata_path path =
     Stdlib.Filename.concat registry
       (Stdlib.Digest.to_hex (Stdlib.Digest.string (canonical path)) ^ ".json")
@@ -180,23 +222,30 @@ let make ~fs ~clock ~process_mgr ~repo_root ~(config : config) ~timeout_seconds
           then Some admin
           else None)
   in
-  let simgit_owned path =
-    match admin_for path with
-    | None -> false
-    | Some admin ->
-        List.exists [ "simgit-mode"; "simgit-overlay" ] ~f:(fun file ->
-            Stdlib.Sys.file_exists (Stdlib.Filename.concat admin file))
-  in
   let simgit_config () =
-    if equal_backend config.backend Simgit then config
-    else get (configure ~backend:"simgit" ~executable:None)
+    if equal_backend config.backend Simgit then Some config
+    else
+      match discover () with
+      | Error _ -> None
+      | Ok executable ->
+          Some (get (configure ~backend:"simgit" ~executable:(Some executable)))
+  in
+  let legacy_owner path =
+    match simgit_config () with
+    | None -> Worktree_lifecycle.git
+    | Some c -> (
+        let entries = get (parse_simgit_list (sg c [ "list"; "--json" ])) in
+        match
+          List.find entries ~f:(fun (e : registration) ->
+              String.equal e.path (canonical path))
+        with
+        | Some e when equal_backend (registration_backend e) Simgit -> c
+        | Some _ | None -> Worktree_lifecycle.git)
   in
   let owning ~path ~branch =
     match read_owner ~path ~branch with
     | Some state -> state
-    | None ->
-        ( (if simgit_owned path then simgit_config () else Worktree_lifecycle.git),
-          Ready )
+    | None -> (legacy_owner path, Ready)
   in
   let validate ~path ~branch =
     let at args = checked ("git" :: "-C" :: path :: args) in
@@ -234,37 +283,44 @@ let make ~fs ~clock ~process_mgr ~repo_root ~(config : config) ~timeout_seconds
     if not (String.equal head ("refs/heads/" ^ Types.Branch.to_string branch))
     then failwith ("Checkout branch differs from requested branch: " ^ path)
   in
+  let cleanup ~path c =
+    ignore (sg c [ "unlock"; path; "--json" ] : string);
+    ignore (sg c [ "remove"; path; "--json" ] : string);
+    Unix.unlink (metadata_path path)
+  in
   let inspect_impl ~creation_finished ~path ~branch =
     protect_result (fun () ->
         let c, phase = owning ~path ~branch in
-        if equal_phase phase Preparing && not creation_finished then
-          failwith
-            ("Checkout creation did not finish; preserve its files and verify \
-              the creator has stopped before recovery: " ^ path);
-        let registered =
-          List.exists (git_list ()) ~f:(fun (e : registration) ->
-              String.equal (canonical e.path) (canonical path))
-        in
-        if equal_backend c.backend Simgit && registered then (
-          preflight c;
-          let code, output, _err =
-            run [ c.executable; "worktree"; "repair"; "--json" ]
-          in
-          get (repair_error ~code ~path:(canonical path) output));
-        if not (Stdlib.Sys.file_exists path) then (
-          if equal_backend c.backend Simgit && registered then
-            failwith ("Simgit checkout remains unavailable: " ^ path);
+        if equal_phase phase Cleanup_pending then (
+          cleanup ~path c;
           None)
         else (
-          if not registered then
+          if equal_phase phase Preparing && not creation_finished then
             failwith
-              ("Path exists but is not a registered linked checkout: " ^ path);
-          if Option.is_none (admin_for path) then
-            failwith "Cannot adopt the main checkout";
-          validate ~path ~branch;
-          if Option.is_none (read_owner ~path ~branch) then
-            write_owner ~path ~branch ~phase:Ready c;
-          Some { path; owner = c; repo_id = common; branch }))
+              ("Checkout creation did not finish; preserve its files and \
+                verify the creator has stopped before recovery: " ^ path);
+          let registered =
+            List.exists (git_list ()) ~f:(fun (e : registration) ->
+                String.equal (canonical e.path) (canonical path))
+          in
+          if equal_backend c.backend Simgit && registered then (
+            preflight c;
+            let code, output, _err = run [ executable c; "repair"; "--json" ] in
+            get (repair_error ~code ~path:(canonical path) output));
+          if not (Stdlib.Sys.file_exists path) then (
+            if equal_backend c.backend Simgit && registered then
+              failwith ("Simgit checkout remains unavailable: " ^ path);
+            None)
+          else (
+            if not registered then
+              failwith
+                ("Path exists but is not a registered linked checkout: " ^ path);
+            if Option.is_none (admin_for path) then
+              failwith "Cannot adopt the main checkout";
+            validate ~path ~branch;
+            if Option.is_none (read_owner ~path ~branch) then
+              write_owner ~path ~branch ~phase:Ready c;
+            Some { path; owner = c; repo_id = common; branch })))
   in
   let inspect = inspect_impl ~creation_finished:false in
   let ref_sha branch =
@@ -355,7 +411,21 @@ let make ~fs ~clock ~process_mgr ~repo_root ~(config : config) ~timeout_seconds
                   | _ ->
                       failwith
                         "Branch changed during failed creation; refusing to \
-                         overwrite concurrent history"))
+                         overwrite concurrent history");
+            if (not !published) && equal_backend c.backend Simgit then
+              Eio.Cancel.protect (fun () ->
+                  match
+                    protect_result (fun () ->
+                        (* This child has been reaped and ref rollback completed.
+                           Persist that fact so cleanup can resume after a restart. *)
+                        write_owner ~path ~branch ~phase:Cleanup_pending c;
+                        cleanup ~path c)
+                  with
+                  | Ok () -> ()
+                  | Error message ->
+                      Eio.traceln
+                        "onton: unfinished checkout preserved at %s: %s" path
+                        message))
           (fun () ->
             (match (c.backend, action) with
             | Simgit, Create_new_branch_from_base _ ->
@@ -458,7 +528,9 @@ let make ~fs ~clock ~process_mgr ~repo_root ~(config : config) ~timeout_seconds
     let flags = if discard then [ "--force" ] else [] in
     (match c.backend with
     | Git -> ignore (git ([ "worktree"; "remove" ] @ flags @ [ path ]) : string)
-    | Simgit -> ignore (sg c ([ "remove" ] @ flags @ [ path ]) : string));
+    | Simgit ->
+        let flags = if discard then [ "--discard-dirty" ] else [] in
+        ignore (sg c ([ "remove" ] @ flags @ [ path ]) : string));
     let metadata = metadata_path path in
     if Stdlib.Sys.file_exists metadata then Unix.unlink metadata
   in
@@ -467,9 +539,7 @@ let make ~fs ~clock ~process_mgr ~repo_root ~(config : config) ~timeout_seconds
       match e.branch with
       | Some branch ->
           fst (owning ~path:e.path ~branch:(Types.Branch.of_string branch))
-      | None ->
-          if simgit_owned e.path then simgit_config ()
-          else Worktree_lifecycle.git
+      | None -> legacy_owner e.path
     in
     let owners =
       config :: List.map (git_list ()) ~f:registration_owner

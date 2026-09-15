@@ -12,6 +12,7 @@ let total =
         ignore (W.configure ~backend:s ~executable:(Some s));
         ignore (W.of_json (`String s));
         ignore (W.parse_simgit_list s);
+        ignore (W.doctor_identity s);
         ignore (W.parse_git_list s);
         ignore (W.parse_ownership ~path:s ~branch:s (`String s));
         ignore
@@ -102,7 +103,7 @@ let boundaries =
             {|{"worktree":{"backend":"simgit","executable":"/opt/simgit/sg"}}|}
         with
         | Ok { worktree = Some c; _ } ->
-            c.executable = "/opt/simgit/sg"
+            c.executable = Some "/opt/simgit/sg"
             && W.equal_backend c.backend W.Simgit
         | Ok _ | Error _ -> false
       with _ -> false)
@@ -137,6 +138,8 @@ let resolution =
         && resolve ~backend:"simgit" ~executable:"/cli/sg"
              ~stored_backend:"simgit" ~stored_executable:"/stored/sg" ()
            = Ok (sg "/cli/sg")
+        && resolve ~stored_backend:"simgit" ~repo:(sg "/repo/sg") ()
+           = W.configure ~backend:"simgit" ~executable:None
         && Result.is_error (resolve ~stored_backend:"unknown" ())
       with _ -> false)
 
@@ -167,14 +170,18 @@ let publication =
   Q.Test.make
     ~name:"ownership preserves publication state and rejects another checkout"
     ~count:300
-    Q.Gen.(pair string bool)
-    (fun (name, ready) ->
+    Q.Gen.(pair string (oneof_list [ W.Preparing; W.Cleanup_pending; W.Ready ]))
+    (fun (name, phase) ->
       try
-        let phase = if ready then W.Ready else W.Preparing in
-        let json = W.ownership_json ~path:name ~branch:name ~phase W.git in
+        let owner =
+          match W.configure ~backend:"simgit" ~executable:None with
+          | Ok c -> c
+          | Error msg -> failwith msg
+        in
+        let json = W.ownership_json ~path:name ~branch:name ~phase owner in
         (match W.parse_ownership ~path:name ~branch:name json with
-          | Ok (owner, state) ->
-              W.equal_config owner W.git && W.equal_phase phase state
+          | Ok (decoded_owner, state) ->
+              W.equal_config decoded_owner owner && W.equal_phase phase state
           | Error _ -> false)
         && Result.is_error
              (W.parse_ownership ~path:(name ^ "/other") ~branch:name json)
@@ -218,9 +225,66 @@ let repository_executable =
                 (Some (`Assoc [ ("backend", `String "simgit") ])))
       with _ -> false)
 
+let discovery_contract =
+  Q.Test.make
+    ~name:"automatic discovery survives persistence and ownership publication"
+    ~count:1 Q.Gen.unit (fun () ->
+      try
+        let automatic = W.configure ~backend:"simgit" ~executable:None in
+        match automatic with
+        | Error _ -> false
+        | Ok config ->
+            config.executable = None
+            && W.of_json (W.to_json config) = automatic
+            && W.resolve ~backend:None ~executable:None
+                 ~stored_backend:(Some "simgit") ~stored_executable:None
+                 ~repo:None
+               = automatic
+            && W.doctor_identity {|{"identity":"simgit","version":"0.3.0"}|}
+               = Ok ()
+            && List.for_all
+                 (fun json -> Result.is_error (W.doctor_identity json))
+                 [
+                   "{}";
+                   "[]";
+                   {|{"identity":"ast-grep","version":"1"}|};
+                   {|{"identity":"simgit"}|};
+                   {|{"identity":"simgit","version":""}|};
+                 ]
+      with _ -> false)
+
+let ownership_modes =
+  Q.Test.make
+    ~name:"all reported modes stay simgit-owned across arbitrary listings"
+    ~count:300
+    Q.Gen.(list (option string))
+    (fun modes ->
+      try
+        let raw =
+          Yojson.Safe.to_string
+            (`List
+               (List.mapi
+                  (fun i mode ->
+                    `Assoc
+                      [
+                        ("worktree", `String ("/checkout/" ^ string_of_int i));
+                        ( "mode",
+                          match mode with None -> `Null | Some s -> `String s );
+                      ])
+                  modes))
+        in
+        match W.parse_simgit_list raw with
+        | Error _ -> false
+        | Ok entries ->
+            List.map W.registration_backend entries
+            = List.map (function None -> W.Git | Some _ -> W.Simgit) modes
+      with _ -> false)
+
 let () =
   QCheck_base_runner.run_tests_main
     [
+      discovery_contract;
+      ownership_modes;
       repository_executable;
       total;
       roundtrip;

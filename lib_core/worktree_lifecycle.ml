@@ -5,10 +5,10 @@ open Base
 
 type backend = Git | Simgit [@@deriving show, eq, sexp_of, compare]
 
-type config = { backend : backend; executable : string }
+type config = { backend : backend; executable : string option }
 [@@deriving show, eq, sexp_of, compare]
 
-let git = { backend = Git; executable = "git" }
+let git = { backend = Git; executable = Some "git" }
 let backend_name = function Git -> "git" | Simgit -> "simgit"
 
 let configure ~backend ~executable =
@@ -19,24 +19,21 @@ let configure ~backend ~executable =
     | _ -> Error "worktree.backend must be git or simgit"
   in
   Result.bind kind ~f:(fun backend ->
-      let executable =
-        Option.value executable
-          ~default:(match backend with Git -> "git" | Simgit -> "sg")
-      in
-      if
-        String.is_empty (String.strip executable)
-        || String.contains executable '\000'
-      then
-        Error "worktree.executable must be a nonempty executable name or path"
-      else if equal_backend backend Git && not (String.equal executable "git")
-      then Error "worktree.executable is only supported for simgit"
-      else Ok { backend; executable })
+      match (backend, executable) with
+      | Git, (None | Some "git") -> Ok git
+      | Git, Some _ -> Error "worktree.executable is only supported for simgit"
+      | Simgit, Some name
+        when String.is_empty (String.strip name) || String.contains name '\000'
+        ->
+          Error "worktree.executable must be a nonempty executable name or path"
+      | Simgit, _ -> Ok { backend; executable })
 
 let to_json t =
   `Assoc
     [
       ("backend", `String (backend_name t.backend));
-      ("executable", `String t.executable);
+      ( "executable",
+        Option.value_map t.executable ~default:`Null ~f:(fun x -> `String x) );
     ]
 
 let of_json = function
@@ -75,10 +72,10 @@ let resolve ~backend ~executable ~stored_backend ~stored_executable ~repo =
     | Some _ as e -> e
     | None -> (
         match (stored_backend, stored_executable) with
-        | Some b, Some e when String.equal b selected -> Some e
+        | Some b, e when String.equal b selected -> e
         | _ ->
             if String.equal selected (backend_name default.backend) then
-              Some default.executable
+              default.executable
             else None)
   in
   configure ~backend:selected ~executable
@@ -89,7 +86,7 @@ type registration = {
   mode : string option;
 }
 
-type phase = Preparing | Ready [@@deriving eq]
+type phase = Preparing | Cleanup_pending | Ready [@@deriving eq]
 
 let ownership_json ~path ~branch ~phase config =
   `Assoc
@@ -98,8 +95,11 @@ let ownership_json ~path ~branch ~phase config =
       ("branch", `String branch);
       ("owner", to_json config);
       ( "state",
-        `String (match phase with Preparing -> "preparing" | Ready -> "ready")
-      );
+        `String
+          (match phase with
+          | Preparing -> "preparing"
+          | Cleanup_pending -> "cleanup_pending"
+          | Ready -> "ready") );
     ]
 
 let parse_ownership ~path ~branch json =
@@ -114,6 +114,8 @@ let parse_ownership ~path ~branch json =
       Result.bind (of_json owner) ~f:(fun config ->
           match state with
           | "preparing" -> Ok (config, Preparing)
+          | "cleanup_pending" when equal_backend config.backend Simgit ->
+              Ok (config, Cleanup_pending)
           | "ready" -> Ok (config, Ready)
           | _ -> Error "Unknown checkout publication state")
   | _ ->
@@ -160,8 +162,12 @@ let parse_simgit_list raw =
     | `List entries ->
         List.map entries ~f:(function
           | `Assoc fields -> (
-              match string_field fields "worktree" with
-              | Some path when not (String.is_empty path) ->
+              match
+                ( string_field fields "worktree",
+                  List.Assoc.find fields "mode" ~equal:String.equal )
+              with
+              | Some path, (Some `Null | Some (`String _))
+                when not (String.is_empty path) ->
                   Ok
                     {
                       path;
@@ -172,7 +178,7 @@ let parse_simgit_list raw =
                               ~default:b);
                       mode = string_field fields "mode";
                     }
-              | _ -> Error "simgit list: missing worktree path")
+              | _ -> Error "simgit list: missing path or invalid mode")
           | _ -> Error "simgit list: invalid entry")
         |> Result.all
     | _ -> Error "simgit list: expected an array")
@@ -196,3 +202,14 @@ let repair_error ?(code = 0) ~path raw =
               | _ -> Error "simgit repair: invalid failure entry")
         | _ -> Error "simgit repair: missing failed array")
     | _ -> Error "simgit repair: expected an object")
+
+let doctor_identity raw =
+  Result.bind (parse raw) ~f:(fun json ->
+      match (Json.field "identity" json, Json.field "version" json) with
+      | Some (`String "simgit"), Some (`String version)
+        when not (String.is_empty (String.strip version)) ->
+          Ok ()
+      | _ -> Error "Expected simgit doctor identity and version")
+
+let registration_backend (entry : registration) =
+  match entry.mode with None -> Git | Some _ -> Simgit

@@ -26,7 +26,10 @@ module type S = sig
   (** Executes an approved action. Failure/cancellation can leave a branch or
       partial checkout; inspect before retrying. Never rolls back branch history
       on retry. A failed remote reset restores the approved old ref with
-      compare-and-swap, preserving concurrent ref changes. *)
+      compare-and-swap, preserving concurrent ref changes. Once a failed simgit
+      child is reaped, unlock and ordinary remove recover clean/absent targets;
+      dirty files or cleanup failures retain a cleanup-pending record that
+      inspection can resume across restarts. *)
 
   val list : unit -> (string * Types.Branch.t) list
   val remove : discard:bool -> checkout -> unit

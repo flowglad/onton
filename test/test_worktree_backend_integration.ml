@@ -28,6 +28,14 @@ let remove (module B : Worktree_backend.S) ~discard ~path ~branch =
   | None -> ()
 
 let fixture env config =
+  let config =
+    match (config.L.backend, config.L.executable) with
+    | L.Simgit, Some path ->
+        get
+          (L.configure ~backend:"simgit"
+             ~executable:(Some (Unix.realpath path)))
+    | L.Git, _ | L.Simgit, None -> config
+  in
   G.with_temp_repo (fun repo ->
       write (Filename.concat repo "file") "base\n";
       G.run_git ~cwd:repo [ "add"; "file" ];
@@ -171,6 +179,35 @@ let fixture env config =
           in
           check "legacy native ownership"
             (L.equal_backend (Worktree_backend.owner legacy).backend L.Git);
+          (match (config.backend, config.executable) with
+          | L.Simgit, Some executable ->
+              let old_path = Sys.getenv "PATH" in
+              Fun.protect
+                ~finally:(fun () -> Unix.putenv "PATH" old_path)
+                (fun () ->
+                  let bin = Filename.concat repo "discovery-bin" in
+                  Unix.mkdir bin 0o700;
+                  Unix.symlink executable (Filename.concat bin "simgit");
+                  Unix.putenv "PATH" (bin ^ ":" ^ old_path);
+                  G.sh ~dir:repo
+                    (Filename.quote executable ^ " add external --path "
+                    ^ Filename.quote (p "external"));
+                  let module Native = (val make L.git) in
+                  let external_checkout =
+                    match
+                      get
+                        (Native.inspect ~path:(p "external")
+                           ~branch:(branch "external"))
+                    with
+                    | Some checkout -> checkout
+                    | None -> failwith "external simgit checkout missing"
+                  in
+                  check "Git default discovers unrecorded simgit ownership"
+                    (L.equal_backend
+                       (Worktree_backend.owner external_checkout).backend
+                       L.Simgit);
+                  Native.remove ~discard:false external_checkout)
+          | L.Git, _ | L.Simgit, None -> ());
           B.reconcile ();
           check "reconcile retains healthy checkout"
             (Option.is_some
@@ -236,9 +273,12 @@ let interrupted_creation env =
       let script = Filename.concat repo "interrupted-sg" in
       let script_body ending =
         {|#!/bin/sh
-for arg in "$@"; do [ "$arg" = "--help" ] && exit 0; done
-[ "$1" = "worktree" ] && [ "$2" = "add" ] || exit 2
-shift 2
+[ "$1" = "--json" ] && [ "$2" = "doctor" ] && { echo '{"identity":"simgit","version":"0.3.0"}'; exit 0; }
+[ "$1" = "list" ] && { echo '[]'; exit 0; }
+[ "$1" = "unlock" ] && exit 0
+[ "$1" = "remove" ] && { git worktree remove "$2"; exit $?; }
+[ "$1" = "add" ] || exit 2
+shift
 branch=$1
 shift
 while [ "$#" -gt 0 ]; do
@@ -278,7 +318,9 @@ echo preserve > "$checkout_path/finished"
           let path = Filename.concat repo name in
           Fun.protect
             ~finally:(fun () ->
-              G.run_git ~cwd:repo [ "worktree"; "remove"; "--force"; path ])
+              ignore
+                (G.git_exit_code ~cwd:repo
+                   [ "worktree"; "remove"; "--force"; path ]))
             (fun () ->
               if name = "failed" then
                 check "failed command reported"
@@ -310,7 +352,12 @@ echo preserve > "$checkout_path/finished"
               check "failed creation retains edits"
                 (Sys.file_exists (Filename.concat path "finished"));
               check "failed creation retains branch"
-                (G.git_capture ~cwd:repo [ "rev-parse"; name ] = base)))
+                (G.git_capture ~cwd:repo [ "rev-parse"; name ] = base);
+              Unix.unlink (Filename.concat path "finished");
+              check "restart resumes cleanup after dirty files are resolved"
+                (get (Restart.inspect ~path ~branch:(branch name)) = None);
+              check "cleanup retry remains idempotent"
+                (get (Restart.inspect ~path ~branch:(branch name)) = None)))
         [ "failed"; "cancelled" ];
       print_endline "failed and cancelled provisioning remains unpublished: OK")
 
@@ -323,10 +370,13 @@ let failed_reset env =
       let script = Filename.concat repo "reset-sg" in
       let body ending =
         {|#!/bin/sh
-for arg in "$@"; do [ "$arg" = "--help" ] && exit 0; done
-[ "$2" = "run" ] || exit 2
-git worktree add "$5" "$3" || exit 3
-touch "$5/attached"
+[ "$1" = "--json" ] && [ "$2" = "doctor" ] && { echo '{"identity":"simgit","version":"0.3.0"}'; exit 0; }
+[ "$1" = "list" ] && { echo '[]'; exit 0; }
+[ "$1" = "unlock" ] && exit 0
+[ "$1" = "remove" ] && { git worktree remove "$2"; exit $?; }
+[ "$1" = "run" ] || exit 2
+git worktree add "$4" "$2" || exit 3
+touch "$4/attached"
 |}
         ^ ending ^ "\n"
       in
@@ -418,19 +468,26 @@ let mixed_reconcile env =
               let path = Filename.concat repo name in
               let script = Filename.concat repo (name ^ "-bin") in
               let log = script ^ ".log" in
-              write script
-                ("#!/bin/sh\n\
-                  for arg in \"$@\"; do [ \"$arg\" = \"--help\" ] && exit 0; \
-                  done\n"
-               ^ "case \"$2\" in\n\
-                  repair) echo '{\"failed\":[]}' ;;\n\
-                  prune) touch " ^ Filename.quote log
-               ^ ";;\n*) exit 2;;\nesac\n");
-              Unix.chmod script 0o700;
-              let admin =
-                G.git_capture ~cwd:path [ "rev-parse"; "--absolute-git-dir" ]
+              let listing =
+                Yojson.Safe.to_string
+                  (`List
+                     [
+                       `Assoc
+                         [
+                           ("worktree", `String path);
+                           ("mode", `String "overlay");
+                         ];
+                     ])
               in
-              write (Filename.concat admin "simgit-mode") "overlay";
+              write script
+                ("#!/bin/sh\n"
+               ^ "if [ \"$1\" = \"--json\" ] && [ \"$2\" = \"doctor\" ]; then \
+                  echo '{\"identity\":\"simgit\",\"version\":\"0.3.0\"}'; exit \
+                  0; fi\n" ^ "case \"$1\" in\n" ^ "list) echo "
+               ^ Filename.quote listing ^ ";;\n"
+               ^ "repair) echo '{\"failed\":[]}' ;;\n" ^ "prune) touch "
+               ^ Filename.quote log ^ ";;\n*) exit 2;;\nesac\n");
+              Unix.chmod script 0o700;
               let module B =
                 (val make
                        (get
@@ -466,10 +523,122 @@ let mixed_reconcile env =
                 = (name = "sg-two")))
             [ "sg-one"; "sg-two" ]))
 
+let discovery env =
+  G.with_temp_repo (fun repo ->
+      let bin = Filename.concat repo "bin" in
+      Unix.mkdir bin 0o700;
+      let old_path = Sys.getenv "PATH" in
+      let make ?executable () =
+        Worktree_backend.make ~fs:(Eio.Stdenv.fs env)
+          ~clock:(Eio.Stdenv.clock env)
+          ~process_mgr:(Eio.Stdenv.process_mgr env)
+          ~repo_root:repo
+          ~config:(get (L.configure ~backend:"simgit" ~executable))
+          ~timeout_seconds:5.
+      in
+      let script name body =
+        let path = Filename.concat bin name in
+        write path ("#!/bin/sh\n" ^ body ^ "\n");
+        Unix.chmod path 0o700;
+        path
+      in
+      let good = "echo '{\"identity\":\"simgit\",\"version\":\"0.3.0\"}'" in
+      Fun.protect
+        ~finally:(fun () -> Unix.putenv "PATH" old_path)
+        (fun () ->
+          Unix.putenv "PATH" (bin ^ ":/usr/bin:/bin");
+          let sg = script "sg" good in
+          ignore (make ());
+          let canonical = script "simgit" good in
+          ignore (script "sg" "exit 77");
+          ignore (make ());
+          ignore
+            (script "simgit"
+               "echo '{\"identity\":\"ast-grep\",\"version\":\"1.0.0\"}'");
+          ignore (script "sg" good);
+          ignore (make ());
+          check "explicit wrong identity does not fall back"
+            (rejects (fun () -> ignore (make ~executable:canonical ())));
+          Unix.unlink canonical;
+          ignore
+            (script "sg"
+               "echo '{\"identity\":\"ast-grep\",\"version\":\"1.0.0\"}'");
+          check "colliding alias rejected"
+            (rejects (fun () -> ignore (make ())));
+          Unix.unlink sg;
+          check "no candidates rejected" (rejects (fun () -> ignore (make ())))));
+  print_endline "executable discovery and identity: OK"
+
+let clean_failed_creation env =
+  G.with_temp_repo (fun repo ->
+      G.run_git ~cwd:repo [ "commit"; "--allow-empty"; "-qm"; "base" ];
+      let script = Filename.concat repo "fake-simgit" in
+      let log = Filename.concat repo "cleanup.log" in
+      let path = Filename.concat repo "checkout" in
+      let make ending =
+        write script
+          ("#!/bin/sh\n"
+         ^ {|[ "$1" = "--json" ] && [ "$2" = "doctor" ] && { echo '{"identity":"simgit","version":"0.3.0"}'; exit 0; }
+case "$1" in
+list) echo '[]';;
+unlock) echo unlock >> |}
+         ^ Filename.quote log ^ {|; exit 0;;
+remove) echo remove >> |}
+         ^ Filename.quote log
+         ^ {|;
+  if [ -e "$2" ]; then git worktree remove "$2" || exit 1; fi;;
+add) |}
+         ^ ending ^ {|;;
+*) exit 2;;
+esac
+|});
+        Unix.chmod script 0o700;
+        Worktree_backend.make ~fs:(Eio.Stdenv.fs env)
+          ~clock:(Eio.Stdenv.clock env)
+          ~process_mgr:(Eio.Stdenv.process_mgr env)
+          ~repo_root:repo
+          ~config:
+            (get (L.configure ~backend:"simgit" ~executable:(Some script)))
+          ~timeout_seconds:5.
+      in
+      List.iter
+        (fun ending ->
+          write log "";
+          let module B = (val make ending) in
+          let expected_local =
+            if
+              G.git_exit_code ~cwd:repo
+                [ "show-ref"; "--verify"; "refs/heads/failed" ]
+              = 0
+            then Some (G.git_capture ~cwd:repo [ "rev-parse"; "failed" ])
+            else None
+          in
+          check "provisioning error reported"
+            (rejects (fun () ->
+                 ignore
+                   (B.materialize ~path ~branch:(branch "failed")
+                      ~expected_local
+                      (Start_point_plan.Create_new_branch_from_base
+                         { base_branch = "main" }))));
+          check "clean or absent target recovered"
+            (get (B.inspect ~path ~branch:(branch "failed")) = None);
+          let ic = open_in log in
+          let calls =
+            Fun.protect
+              ~finally:(fun () -> close_in ic)
+              (fun () -> In_channel.input_all ic)
+          in
+          check "cleanup always unlocks before removing"
+            (calls = "unlock\nremove\n"))
+        [ "exit 1"; "git worktree add -b \"$2\" \"$4\" main || exit 3; exit 1" ]);
+  print_endline "failed provisioning cleanup: OK"
+
 let () =
   Eio_main.run (fun env ->
       fixture env L.git;
       failures env;
+      discovery env;
+      clean_failed_creation env;
       failed_reset env;
       mixed_reconcile env;
       interrupted_creation env;
