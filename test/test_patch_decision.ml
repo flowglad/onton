@@ -29,6 +29,29 @@ let with_pr pid br =
   let a = set_pr_number a (Pr_number.of_int 1) in
   complete a
 
+let failing_check run_id =
+  Ci_check.
+    {
+      name = "test";
+      conclusion = "failure";
+      details_url = None;
+      description = None;
+      started_at = None;
+      id = Some run_id;
+    }
+
+let ci_delivery_contains run_id agent =
+  let agent = enqueue agent Operation_kind.Ci in
+  let agent = respond agent Operation_kind.Ci in
+  match
+    respond_delivery ~agent ~kind:Operation_kind.Ci ~pre_fire_agent:None
+      ~prefetched_comments:[] ~prefetched_findings:[] ~main_branch:"main"
+  with
+  | Deliver { payload = Ci_payload { failed_checks }; _ } ->
+      List.exists failed_checks ~f:(fun (check : Ci_check.t) ->
+          Option.equal Int.equal check.id (Some run_id))
+  | Deliver _ | Skip_empty | Respond_stale -> false
+
 let () =
   let open QCheck2 in
   let tests =
@@ -264,6 +287,33 @@ let () =
             increment_ci_failure_count a
           in
           equal_ci_decision (on_ci_failure a) Enqueue_ci);
+      Test.make
+        ~name:
+          "respond_delivery: incomplete attempt redelivers the same failing \
+           run id"
+        Gen.(triple gen_pid gen_branch (int_range 1 1_000_000))
+        (fun (pid, br, run_id) ->
+          let a =
+            with_pr pid br |> fun a ->
+            set_ci_checks a [ failing_check run_id ] |> fun a ->
+            record_delivered_ci_run_ids a [ run_id ] |> set_session_failed
+          in
+          equal_ci_decision (on_ci_failure a) Enqueue_ci
+          && ci_delivery_contains run_id a);
+      Test.make
+        ~name:
+          "respond_delivery: completed attempt redelivers a still-failing run \
+           id"
+        Gen.(triple gen_pid gen_branch (int_range 1 1_000_000))
+        (fun (pid, br, run_id) ->
+          let a =
+            with_pr pid br |> fun a ->
+            set_ci_checks a [ failing_check run_id ] |> fun a ->
+            record_delivered_ci_run_ids a [ run_id ]
+            |> increment_ci_failure_count
+          in
+          equal_ci_decision (on_ci_failure a) Enqueue_ci
+          && ci_delivery_contains run_id a);
       Test.make
         ~name:
           "on_ci_failure: completed attempt with same failing run id respects \

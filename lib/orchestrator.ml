@@ -1045,9 +1045,19 @@ type force_complete_reason = Cancelled | Unexpected_exception
     The reason that a fiber bailed is carried as data so the same pure function
     can serve both cancellation (clean teardown) and unexpected exception
     (poisoned session) paths. *)
-let apply_force_complete t patch_id reason =
+let apply_force_complete ?message_id t patch_id reason =
   match find_agent t patch_id with
   | None -> t
+  | Some agent
+    when Option.exists message_id ~f:(fun expected ->
+             not
+               (Option.equal Message_id.equal
+                  agent.Patch_agent.current_message_id (Some expected))) ->
+      (* A daemon can remain queued behind the session semaphore after its
+         outbox message has been completed or superseded. It must not clean up
+         a newer operation that happens to be busy when the stale daemon's
+         [finally] runs. *)
+      t
   | Some _ ->
       let t =
         match reason with

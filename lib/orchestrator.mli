@@ -364,7 +364,8 @@ val apply_respond_outcome :
 type force_complete_reason = Cancelled | Unexpected_exception
 [@@deriving show, eq, sexp_of]
 
-val apply_force_complete : t -> Patch_id.t -> force_complete_reason -> t
+val apply_force_complete :
+  ?message_id:Message_id.t -> t -> Patch_id.t -> force_complete_reason -> t
 (** Pure applicator for runner fibers that exited abnormally while the agent was
     [busy]. The single source of truth for the [bin/main.ml] [with_busy_guard]
     finally and [mark_session_failed] sites that previously called [complete]
@@ -375,7 +376,11 @@ val apply_force_complete : t -> Patch_id.t -> force_complete_reason -> t
     - [Unexpected_exception]: always advances [session_fallback] via
       [set_session_failed] then [set_tried_fresh] (preserving the prior
       [mark_session_failed] semantics, which pushed [Fresh_available] all the
-      way to [Given_up]). This still runs even when the agent is not busy.
+      way to [Given_up]). This still runs even when the agent is not busy. When
+      [message_id] is supplied, the transition is applied only while that
+      message still owns the agent. This prevents a stale runner fiber from
+      completing a newer operation for the same patch.
+
     - [Cancelled]: leaves [session_fallback] alone — a clean cancel should not
       poison the fallback chain.
     - If [busy] AND [inflight_human_messages <> []]: routes through

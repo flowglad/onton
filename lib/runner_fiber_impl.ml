@@ -842,7 +842,8 @@ module Make (Forge : Forge.S) (W : Worktree.S) (Env : Runner_env.S) = struct
                 | Some patch ->
                     Some
                       (fun () ->
-                        With_busy_guard.run ~patch_id (fun () ->
+                        With_busy_guard.run ~patch_id
+                          ~message_id:(Orchestrator.message_id msg) (fun () ->
                             let result =
                               with_session_slot (fun () ->
                                   let agent =
@@ -854,7 +855,11 @@ module Make (Forge : Forge.S) (W : Worktree.S) (Env : Runner_env.S) = struct
                                     agent.Patch_agent.merged
                                     || Patch_agent.needs_intervention agent
                                     || agent.Patch_agent.branch_blocked
-                                    || not agent.Patch_agent.busy
+                                    || (not agent.Patch_agent.busy)
+                                    || not
+                                         (Option.equal Message_id.equal
+                                            agent.Patch_agent.current_message_id
+                                            (Some (Orchestrator.message_id msg)))
                                   then (
                                     log_event runtime ~patch_id
                                       "Skipping action — became stale during \
@@ -1138,7 +1143,8 @@ module Make (Forge : Forge.S) (W : Worktree.S) (Env : Runner_env.S) = struct
             | Orchestrator.Rebase (patch_id, new_base) ->
                 Some
                   (fun () ->
-                    With_busy_guard.run ~patch_id (fun () ->
+                    With_busy_guard.run ~patch_id
+                      ~message_id:(Orchestrator.message_id msg) (fun () ->
                         (* Rebase is orchestrator-executed (no session slot), so
                          work begins immediately under the busy guard. *)
                         Runtime.update_orchestrator runtime (fun orch ->
@@ -1408,7 +1414,9 @@ module Make (Forge : Forge.S) (W : Worktree.S) (Env : Runner_env.S) = struct
                               Some "no current failures")
                       else None
                     in
-                    With_busy_guard.run ~patch_id (fun () ->
+                    With_busy_guard.run ~patch_id
+                      ~message_id:(Orchestrator.message_id msg) (fun () ->
+                        let ci_run_ids_to_record = ref [] in
                         let result =
                           match ci_skip_reason with
                           | Some reason ->
@@ -1508,10 +1516,17 @@ module Make (Forge : Forge.S) (W : Worktree.S) (Env : Runner_env.S) = struct
                                           snap.Runtime.orchestrator patch_id)
                                   in
                                   let delivery =
-                                    Patch_decision.respond_delivery ~agent ~kind
-                                      ~pre_fire_agent ~prefetched_comments
-                                      ~prefetched_findings
-                                      ~main_branch:(Branch.to_string main)
+                                    if
+                                      Option.equal Message_id.equal
+                                        agent.Patch_agent.current_message_id
+                                        (Some (Orchestrator.message_id msg))
+                                    then
+                                      Patch_decision.respond_delivery ~agent
+                                        ~kind ~pre_fire_agent
+                                        ~prefetched_comments
+                                        ~prefetched_findings
+                                        ~main_branch:(Branch.to_string main)
+                                    else Patch_decision.Respond_stale
                                   in
                                   let render_base_changed_prefix base_change =
                                     match base_change with
@@ -2303,27 +2318,21 @@ module Make (Forge : Forge.S) (W : Worktree.S) (Env : Runner_env.S) = struct
                                             ~default:(Branch.to_string main)
                                             ~f:Branch.to_string
                                         in
-                                        (* Lock in CI run dedup before firing the
-                                       session. Recording pre-flight (rather
-                                       than post-) means a session that starts
-                                       but later fails still counts as
-                                       "delivered", so we don't re-nag the
-                                       agent with the same failing run on the
-                                       next tick. *)
+                                        (* Remember which CI runs this turn is
+                                       about, but do not mark them delivered
+                                       until the turn reaches a non-failure
+                                       outcome. A timeout/process failure has
+                                       not established that the checks were
+                                       addressed; pre-flight recording made
+                                       those still-failing checks permanently
+                                       invisible to later polls. *)
                                         (match payload with
                                         | Patch_decision.Ci_payload
                                             { failed_checks } ->
-                                            let ids =
+                                            ci_run_ids_to_record :=
                                               Base.List.filter_map failed_checks
                                                 ~f:(fun (c : Ci_check.t) ->
                                                   c.Ci_check.id)
-                                            in
-                                            if not (Base.List.is_empty ids) then
-                                              Runtime.update_orchestrator
-                                                runtime (fun orch ->
-                                                  Orchestrator
-                                                  .record_delivered_ci_run_ids
-                                                    orch patch_id ids)
                                         | Patch_decision.Human_payload _
                                         | Patch_decision.Review_payload _
                                         | Patch_decision.Findings_payload _
@@ -2765,6 +2774,16 @@ module Make (Forge : Forge.S) (W : Worktree.S) (Env : Runner_env.S) = struct
                                              | `Stale ])
                                       with Skip_delivery -> `Skip_empty))
                         in
+                        (match result with
+                        | (`Ok | `No_commits | `Retry_push)
+                          when not (Base.List.is_empty !ci_run_ids_to_record) ->
+                            Runtime.update_orchestrator runtime (fun orch ->
+                                Orchestrator.record_delivered_ci_run_ids orch
+                                  patch_id !ci_run_ids_to_record)
+                        | `Failed | `Pr_body_miss | `Review_unresolved
+                        | `Skip_empty | `Stale | `Ok | `No_commits | `Retry_push
+                          ->
+                            ());
                         let respond_outcome =
                           match result with
                           | `Stale -> Orchestrator.Respond_stale

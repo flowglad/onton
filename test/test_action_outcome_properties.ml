@@ -49,6 +49,19 @@ let make_busy orch _patches gameplan pid kind =
   assert (Orchestrator.agent orch pid).Patch_agent.busy;
   orch
 
+let accept_only_message orch gameplan =
+  let orch, _effects, messages =
+    Patch_controller.plan_tick_messages orch ~project_name:"test-project"
+      ~gameplan
+  in
+  match messages with
+  | [ msg ] ->
+      let message_id = Orchestrator.message_id msg in
+      let orch, action = Orchestrator.accept_message orch message_id in
+      assert (Option.is_some action);
+      (orch, message_id)
+  | _ -> failwith "expected exactly one runnable message"
+
 (* ========== AO-1a: Start_failed produces busy=false ========== *)
 
 let () =
@@ -139,6 +152,37 @@ let () =
   assert (List.is_empty after_success.Patch_agent.inflight_human_messages);
   assert (not after_success.Patch_agent.busy);
   Stdlib.print_endline "AO-1c passed"
+
+(* ========== AO-1d: a stale daemon cannot force-complete a newer Start ========== *)
+
+let () =
+  let patches = mk_patches 1 in
+  let gameplan = make_gameplan patches in
+  let pid = pid_of_idx patches 0 in
+  let orch = Orchestrator.create ~patches ~main_branch:main in
+  let orch = Orchestrator.send_human_message orch pid "keep this guidance" in
+  let orch, old_message_id = accept_only_message orch gameplan in
+  let orch =
+    Orchestrator.apply_force_complete ~message_id:old_message_id orch pid
+      Orchestrator.Cancelled
+  in
+  let orch, new_message_id = accept_only_message orch gameplan in
+  let before = Orchestrator.agent orch pid in
+  assert before.Patch_agent.busy;
+  assert (
+    Option.equal Message_id.equal before.Patch_agent.current_message_id
+      (Some new_message_id));
+  let orch =
+    Orchestrator.apply_force_complete ~message_id:old_message_id orch pid
+      Orchestrator.Cancelled
+  in
+  let after = Orchestrator.agent orch pid in
+  assert (Patch_agent.equal before after);
+  assert after.Patch_agent.busy;
+  assert (
+    Option.equal Message_id.equal after.Patch_agent.current_message_id
+      (Some new_message_id));
+  Stdlib.print_endline "AO-1d passed"
 
 (* ========== AO-2: Non-stale respond outcomes produce busy=false ========== *)
 
