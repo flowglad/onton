@@ -353,7 +353,7 @@ let () =
              '%s\\n'; exec sleep 30"
             payload
         in
-        let started = Unix.gettimeofday () in
+        let started = Eio.Time.now clock in
         let result =
           Llm_backend.spawn_and_stream ~process_mgr ~clock ~timeout:30.0 ~cwd
             ~env:(Unix.environment ()) ~setsid_exec:(Some shim)
@@ -361,7 +361,7 @@ let () =
             ~patch_id:(Types.Patch_id.of_string "smoke")
             ~process_line:process_line_claude ~on_event:(fun _ -> ())
         in
-        let elapsed = Unix.gettimeofday () -. started in
+        let elapsed = Eio.Time.now clock -. started in
         if Float.(elapsed > 5.0) then (
           Stdio.printf "FAIL: helper flush grace took %.2fs (expected < 5s)\n"
             elapsed;
