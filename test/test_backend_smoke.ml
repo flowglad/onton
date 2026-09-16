@@ -293,7 +293,7 @@ let () =
     let events = ref [] in
     let on_event ev = events := ev :: !events in
     let flush_line = String.make 80 'x' in
-    let started = Unix.gettimeofday () in
+    let started = Eio.Time.now clock in
     let result =
       Llm_backend.spawn_and_stream ~process_mgr ~clock ~timeout:30.0 ~cwd
         ~env:(Unix.environment ()) ~setsid_exec:None
@@ -311,7 +311,7 @@ let () =
         ~patch_id:(Types.Patch_id.of_string "smoke")
         ~process_line:process_line_claude ~on_event
     in
-    let elapsed = Unix.gettimeofday () -. started in
+    let elapsed = Eio.Time.now clock -. started in
     let expected =
       Types.Stream_event.Final_result
         { text = "done"; stop_reason = Types.Stop_reason.End_turn }
