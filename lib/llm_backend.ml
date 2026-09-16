@@ -149,6 +149,7 @@ let spawn_and_stream ~process_mgr ~clock ~timeout ~cwd ~env ~setsid_exec ~args
       in
       let err_ref = ref "" in
       let terminal_status_ref = ref None in
+      let stop_stderr, stop_stderr_u = Eio.Promise.create () in
       Eio.Fiber.both
         (fun () ->
           let rec read_lines () =
@@ -192,48 +193,57 @@ let spawn_and_stream ~process_mgr ~clock ~timeout ~cwd ~env ~setsid_exec ~args
                persistent session state.  Do not signal it yet: Codex, in
                particular, releases its thread-store writer during graceful
                shutdown, and interrupting that cleanup can make the next
-               resume fail with an "active writer" conflict.  Descendants
-               (e.g. Bash-tool zsh processes) may keep the inherited stderr
-               write-end open indefinitely, so close our read end to unblock
-               the sibling fiber while the direct child gets a short grace
-               period. *)
-            (try Eio.Flow.close stderr_r with _ -> ());
+               resume fail with an "active writer" conflict. Keep draining
+               stderr during that grace period so diagnostics cannot fill the
+               pipe and stall the flush. *)
             let status = await_terminal_child () in
             terminal_status_ref := Some status;
             (* The direct child has now completed its graceful shutdown. Finish
                any remaining process-group descendants here: waiting for
                switch release would deadlock if one still owns stderr. *)
-            finish_process_group ()))
+            finish_process_group ();
+            (* Release the sibling reader without closing the pipe ourselves.
+               The pipe remains open until switch teardown, avoiding
+               EPIPE/SIGPIPE for a writer racing with process exit. *)
+            ignore (Eio.Promise.try_resolve stop_stderr_u ())))
         (fun () ->
           (* Only swallow the expected teardown exceptions: Eio.Buf_read
-             raises when the buffer fills up; End_of_file and Eio.Exn.Io
-             fire when the stdout fiber closes stderr_r out from under us
-             after a terminal stream event (Final_result or Error) closes
-             stderr_r out from under us. Letting anything else propagate —
-             in particular Eio.Cancel.Cancelled — is required so this fiber
-             can honour cancellation and release Eio.Fiber.both. *)
+             raises when the buffer fills up, and End_of_file/Eio.Exn.Io can
+             fire when the subprocess closes the pipe. Letting anything else
+             propagate — in particular Eio.Cancel.Cancelled — is required so
+             this fiber can honour cancellation and release Eio.Fiber.both. *)
           let add_stderr_line line =
             if not (String.is_empty !err_ref) then err_ref := !err_ref ^ "\n";
             err_ref := !err_ref ^ line;
             emit_stream `Stderr line
           in
+          let stop_or read =
+            Eio.Fiber.first
+              (fun () ->
+                Eio.Promise.await stop_stderr;
+                `Stop)
+              (fun () -> `Read (read ()))
+          in
           let rec read_stderr_lines () =
-            match Eio.Buf_read.line stderr_buf with
-            | line ->
+            match stop_or (fun () -> Eio.Buf_read.line stderr_buf) with
+            | `Stop -> ()
+            | `Read line ->
                 add_stderr_line line;
                 read_stderr_lines ()
-            | exception End_of_file -> ()
           in
           try read_stderr_lines () with
           | Eio.Buf_read.Buffer_limit_exceeded -> (
               add_stderr_line "<stderr exceeded 1MB limit, truncated>";
               let drain_buf = Bytes.create 4096 in
-              try
-                while true do
-                  ignore
-                    (Eio.Flow.single_read stderr_r (Cstruct.of_bytes drain_buf))
-                done
-              with
+              let rec drain () =
+                match
+                  stop_or (fun () ->
+                      Eio.Flow.single_read stderr_r (Cstruct.of_bytes drain_buf))
+                with
+                | `Stop -> ()
+                | `Read _ -> drain ()
+              in
+              try drain () with
               | End_of_file -> ()
               | Eio.Exn.Io _ | Invalid_argument _ -> ())
           | End_of_file -> ()

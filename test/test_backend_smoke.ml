@@ -292,22 +292,31 @@ let () =
     in
     let events = ref [] in
     let on_event ev = events := ev :: !events in
+    let started = Unix.gettimeofday () in
     let result =
       Llm_backend.spawn_and_stream ~process_mgr ~clock ~timeout:30.0 ~cwd
         ~env:(Unix.environment ()) ~setsid_exec:None
         ~args:
           [
-            "sh"; "-c"; Printf.sprintf "printf '%s\\n'; exec sleep 0.2" payload;
+            "sh";
+            "-c";
+            Printf.sprintf
+              "printf '%s\\n'; sleep 0.2; printf 'flush complete\\n' >&2"
+              payload;
           ]
         ~session_uuid:None
         ~patch_id:(Types.Patch_id.of_string "smoke")
         ~process_line:process_line_claude ~on_event
     in
+    let elapsed = Unix.gettimeofday () -. started in
     let expected =
       Types.Stream_event.Final_result
         { text = "done"; stop_reason = Types.Stop_reason.End_turn }
     in
-    if not result.Llm_backend.saw_final_result then (
+    if Float.(elapsed > 5.0) then (
+      Stdio.printf "FAIL: graceful exit took %.2fs (expected < 5s)\n" elapsed;
+      Int.incr failures)
+    else if not result.Llm_backend.saw_final_result then (
       Stdio.printf "FAIL: graceful exit saw_final_result=false\n";
       Int.incr failures)
     else if
