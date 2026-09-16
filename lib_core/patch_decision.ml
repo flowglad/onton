@@ -163,10 +163,12 @@ type respond_delivery =
 
 (** Keep failing CI checks that are eligible for this attempt. Before the first
     attempt, stable run ids are delivered once. After an incomplete session
-    ([session_fallback <> Fresh_available]) or a completed attempt whose checks
-    still fail ([ci_failure_count > 0]), the same ids become deliverable again.
-    This matches [on_ci_failure]'s retry decision and heals snapshots written by
-    older supervisors that recorded ids before a timed-out session completed.
+    ([session_fallback = Tried_fresh]) or a completed attempt whose checks still
+    fail ([ci_failure_count > 0]), the same ids become deliverable again.
+    [Given_up] is terminal, so that fallback state does not itself make
+    delivered ids eligible again. This matches [on_ci_failure]'s retry decision
+    and heals snapshots written by older supervisors that recorded ids before a
+    timed-out session completed.
 
     Checks without a stable [id] (StatusContext entries, legacy snapshots)
     bypass dedup — they can't be keyed reliably, and the conservative choice is
@@ -176,8 +178,8 @@ let filter_deliverable_ci_failures (agent : Patch_agent.t) : Ci_check.t list =
     agent.ci_failure_count > 0
     ||
     match agent.session_fallback with
-    | Patch_agent.Fresh_available -> false
-    | Patch_agent.Tried_fresh | Patch_agent.Given_up -> true
+    | Patch_agent.Tried_fresh -> true
+    | Patch_agent.Fresh_available | Patch_agent.Given_up -> false
   in
   List.filter agent.ci_checks ~f:(fun (c : Ci_check.t) ->
       if not (Ci_check.is_failure c) then false

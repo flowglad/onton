@@ -301,6 +301,18 @@ let () =
           equal_ci_decision (on_ci_failure a) Enqueue_ci
           && ci_delivery_contains run_id a);
       Test.make
+        ~name:"on_ci_failure: Given_up does not re-enqueue a delivered run id"
+        Gen.(triple gen_pid gen_branch (int_range 1 1_000_000))
+        (fun (pid, br, run_id) ->
+          let a =
+            with_pr pid br |> fun a ->
+            set_ci_checks a [ failing_check run_id ] |> fun a ->
+            record_delivered_ci_run_ids a [ run_id ]
+            |> set_tried_fresh |> set_tried_fresh
+          in
+          needs_intervention a
+          && equal_ci_decision (on_ci_failure a) Ci_already_delivered);
+      Test.make
         ~name:
           "respond_delivery: completed attempt redelivers a still-failing run \
            id"
