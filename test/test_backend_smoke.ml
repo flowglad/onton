@@ -290,6 +290,8 @@ let () =
     let payload =
       {|{"type":"result","result":"done","stop_reason":"end_turn"}|}
     in
+    let events = ref [] in
+    let on_event ev = events := ev :: !events in
     let result =
       Llm_backend.spawn_and_stream ~process_mgr ~clock ~timeout:30.0 ~cwd
         ~env:(Unix.environment ()) ~setsid_exec:None
@@ -299,10 +301,21 @@ let () =
           ]
         ~session_uuid:None
         ~patch_id:(Types.Patch_id.of_string "smoke")
-        ~process_line:process_line_claude
-        ~on_event:(fun _ -> ())
+        ~process_line:process_line_claude ~on_event
     in
-    if result.Llm_backend.exit_code <> 0 then (
+    let expected =
+      Types.Stream_event.Final_result
+        { text = "done"; stop_reason = Types.Stop_reason.End_turn }
+    in
+    if not result.Llm_backend.saw_final_result then (
+      Stdio.printf "FAIL: graceful exit saw_final_result=false\n";
+      Int.incr failures)
+    else if
+      not (List.equal Types.Stream_event.equal (List.rev !events) [ expected ])
+    then (
+      Stdio.printf "FAIL: graceful exit did not emit expected Final_result\n";
+      Int.incr failures)
+    else if result.Llm_backend.exit_code <> 0 then (
       Stdio.printf "FAIL: graceful exit after Final_result: exit=%d\n"
         result.Llm_backend.exit_code;
       Int.incr failures)
