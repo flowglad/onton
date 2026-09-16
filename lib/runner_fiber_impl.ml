@@ -2778,11 +2778,15 @@ module Make (Forge : Forge.S) (W : Worktree.S) (Env : Runner_env.S) = struct
                         | (`Ok | `No_commits)
                           when not (Base.List.is_empty !ci_run_ids_to_record) ->
                             Runtime.update_orchestrator runtime (fun orch ->
-                                Orchestrator
-                                .record_delivered_ci_run_ids_if_current_message
-                                  orch patch_id
-                                  ~message_id:(Orchestrator.message_id msg)
-                                  !ci_run_ids_to_record)
+                                let agent = Orchestrator.agent orch patch_id in
+                                if
+                                  Option.equal Message_id.equal
+                                    agent.Patch_agent.current_message_id
+                                    (Some (Orchestrator.message_id msg))
+                                then
+                                  Orchestrator.record_delivered_ci_run_ids orch
+                                    patch_id !ci_run_ids_to_record
+                                else orch)
                         | `Failed | `Pr_body_miss | `Review_unresolved
                         | `Skip_empty | `Stale | `Ok | `No_commits | `Retry_push
                           ->

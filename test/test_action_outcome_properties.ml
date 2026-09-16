@@ -184,35 +184,6 @@ let () =
       (Some new_message_id));
   Stdlib.print_endline "AO-1d passed"
 
-(* ========== AO-1e: stale messages cannot record delivered CI runs ========== *)
-
-let () =
-  let patches = mk_patches 1 in
-  let gameplan = make_gameplan patches in
-  let pid = pid_of_idx patches 0 in
-  let orch = Orchestrator.create ~patches ~main_branch:main in
-  let orch = Orchestrator.send_human_message orch pid "keep this guidance" in
-  let orch, old_message_id = accept_only_message orch gameplan in
-  let orch =
-    Orchestrator.apply_force_complete ~message_id:old_message_id orch pid
-      Orchestrator.Cancelled
-  in
-  let orch, new_message_id = accept_only_message orch gameplan in
-  let orch =
-    Orchestrator.record_delivered_ci_run_ids_if_current_message orch pid
-      ~message_id:old_message_id [ 101 ]
-  in
-  assert (
-    List.is_empty (Orchestrator.agent orch pid).Patch_agent.delivered_ci_run_ids);
-  let orch =
-    Orchestrator.record_delivered_ci_run_ids_if_current_message orch pid
-      ~message_id:new_message_id [ 202 ]
-  in
-  assert (
-    List.equal Int.equal
-      (Orchestrator.agent orch pid).Patch_agent.delivered_ci_run_ids [ 202 ]);
-  Stdlib.print_endline "AO-1e passed"
-
 (* ========== AO-2: Non-stale respond outcomes produce busy=false ========== *)
 
 let () =

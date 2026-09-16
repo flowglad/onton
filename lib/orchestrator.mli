@@ -123,12 +123,6 @@ val record_delivered_ci_run_ids : t -> Patch_id.t -> int list -> t
     subsequent CI deliveries do not re-deliver the same runs. See
     {!Patch_agent.record_delivered_ci_run_ids}. *)
 
-val record_delivered_ci_run_ids_if_current_message :
-  t -> Patch_id.t -> message_id:Message_id.t -> int list -> t
-(** Record delivered CheckRun ids only while [message_id] still owns the patch's
-    in-flight operation. A stale runner must not mutate deduplication state
-    belonging to a newer operation. *)
-
 val set_checks_passing : t -> Patch_id.t -> bool -> t
 val set_merge_ready : t -> Patch_id.t -> bool -> t
 val set_head_oid : t -> Patch_id.t -> string option -> t
