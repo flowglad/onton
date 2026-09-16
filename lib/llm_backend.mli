@@ -64,9 +64,11 @@ val spawn_and_stream :
 
     When [setsid_exec] is supplied, [args] is prefixed with that path (a tiny
     OCaml shim that calls [setsid(2)] before exec'ing). The child then leads its
-    own process group. After a terminal stream event the direct child and any
-    short-lived persistence helpers get a grace period to flush session state;
-    bounded teardown then signals the whole group so tool-call grandchildren
+    own process group. After a terminal stream event, stdout and stderr remain
+    drained while the direct child gets 2 seconds to exit, followed by up to 2
+    seconds after TERM before a direct-child KILL. Once the child exits, any
+    short-lived persistence helpers get a separate 2-second grace period;
+    bounded teardown then signals the remaining group so tool-call grandchildren
     (e.g. Bash-spawned shells) are reaped rather than reparented to PID 1. *)
 
 type t = {

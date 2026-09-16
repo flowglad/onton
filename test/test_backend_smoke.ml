@@ -292,6 +292,7 @@ let () =
     in
     let events = ref [] in
     let on_event ev = events := ev :: !events in
+    let flush_line = String.make 80 'x' in
     let started = Unix.gettimeofday () in
     let result =
       Llm_backend.spawn_and_stream ~process_mgr ~clock ~timeout:30.0 ~cwd
@@ -301,8 +302,10 @@ let () =
             "sh";
             "-c";
             Printf.sprintf
-              "printf '%s\\n'; sleep 0.2; printf 'flush complete\\n' >&2"
-              payload;
+              "printf '%s\\n'; sleep 0.2; i=0; while [ \"$i\" -lt 2048 ]; do \
+               printf '%s\\n'; i=$((i + 1)); done; printf 'flush complete\\n' \
+               >&2"
+              payload flush_line;
           ]
         ~session_uuid:None
         ~patch_id:(Types.Patch_id.of_string "smoke")
@@ -331,6 +334,52 @@ let () =
     else Stdio.printf "graceful exit after Final_result: passed\n"
   in
   graceful_exit_test ();
+  (* --- Direct-child escalation must not interrupt persistence helpers in the
+     same process group. The child outlives its initial grace and receives
+     TERM, while its helper needs another 0.5s to finish and report success. *)
+  let helper_flush_grace_test () =
+    match Stdlib.Sys.getenv_opt "ONTON_SETSID_EXEC" with
+    | None | Some "" ->
+        Stdio.printf
+          "helper flush grace: SKIPPED (ONTON_SETSID_EXEC not set — dune run \
+           only)\n"
+    | Some shim ->
+        let payload =
+          {|{"type":"result","result":"done","stop_reason":"end_turn"}|}
+        in
+        let script =
+          Printf.sprintf
+            "(sleep 2.5; printf 'helper-flushed\\n' >&2; sleep 0.1) & printf \
+             '%s\\n'; exec sleep 30"
+            payload
+        in
+        let started = Unix.gettimeofday () in
+        let result =
+          Llm_backend.spawn_and_stream ~process_mgr ~clock ~timeout:30.0 ~cwd
+            ~env:(Unix.environment ()) ~setsid_exec:(Some shim)
+            ~args:[ "sh"; "-c"; script ] ~session_uuid:None
+            ~patch_id:(Types.Patch_id.of_string "smoke")
+            ~process_line:process_line_claude ~on_event:(fun _ -> ())
+        in
+        let elapsed = Unix.gettimeofday () -. started in
+        if Float.(elapsed > 5.0) then (
+          Stdio.printf "FAIL: helper flush grace took %.2fs (expected < 5s)\n"
+            elapsed;
+          Int.incr failures)
+        else if not result.Llm_backend.saw_final_result then (
+          Stdio.printf "FAIL: helper flush grace: Final_result not seen\n";
+          Int.incr failures)
+        else if
+          not
+            (String.is_substring result.Llm_backend.stderr
+               ~substring:"helper-flushed")
+        then (
+          Stdio.printf
+            "FAIL: helper flush grace: persistence helper was interrupted\n";
+          Int.incr failures)
+        else Stdio.printf "helper flush grace: passed (%.2fs)\n" elapsed
+  in
+  helper_flush_grace_test ();
   (* --- Timeout regression: a subprocess that never emits Final_result
      still times out on schedule. *)
   let timeout_test () =
