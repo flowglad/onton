@@ -1414,12 +1414,40 @@ module Make (Forge : Forge.S) (W : Worktree.S) (Env : Runner_env.S) = struct
                               Some "no current failures")
                       else None
                     in
-                    With_busy_guard.run ~patch_id
-                      ~message_id:(Orchestrator.message_id msg) (fun () ->
+                    let message_id = Orchestrator.message_id msg in
+                    let owns_current_message () =
+                      Runtime.read runtime (fun snap ->
+                          let agent =
+                            Orchestrator.agent snap.Runtime.orchestrator
+                              patch_id
+                          in
+                          Option.equal Message_id.equal
+                            agent.Patch_agent.current_message_id
+                            (Some message_id))
+                    in
+                    let update_if_current f =
+                      let updated = ref false in
+                      Runtime.update_orchestrator runtime (fun orch ->
+                          let agent = Orchestrator.agent orch patch_id in
+                          if
+                            Option.equal Message_id.equal
+                              agent.Patch_agent.current_message_id
+                              (Some message_id)
+                          then (
+                            updated := true;
+                            f orch)
+                          else orch);
+                      !updated
+                    in
+                    With_busy_guard.run ~patch_id ~message_id (fun () ->
                         let ci_run_ids_to_record = ref [] in
                         let result =
-                          match ci_skip_reason with
-                          | Some reason ->
+                          match (owns_current_message (), ci_skip_reason) with
+                          | false, _ ->
+                              log_event runtime ~patch_id
+                                "Skipping action — became stale before delivery";
+                              `Stale
+                          | true, Some reason ->
                               (* Fast path: skip decision already made. Don't
                                consume a session slot for a no-op — that
                                slot can go to another agent. *)
@@ -1427,12 +1455,13 @@ module Make (Forge : Forge.S) (W : Worktree.S) (Env : Runner_env.S) = struct
                                 (Printf.sprintf "Skipped ci delivery — %s"
                                    reason);
                               `Skip_empty
-                          | None ->
+                          | true, None ->
                               with_session_slot (fun () ->
+                                  let owns_after_wait =
+                                    update_if_current (fun orch ->
+                                        Orchestrator.mark_running orch patch_id)
+                                  in
                                   let ci_merge_queue_removal_checks = ref [] in
-                                  Runtime.update_orchestrator runtime
-                                    (fun orch ->
-                                      Orchestrator.mark_running orch patch_id);
                                   (* Write fresh ci_checks under the busy guard
                                    so the write can't race with the poller or
                                    land after a concurrent complete/merge.
@@ -1440,7 +1469,7 @@ module Make (Forge : Forge.S) (W : Worktree.S) (Env : Runner_env.S) = struct
                                    [agent.ci_checks] reflects the fresh
                                    list. *)
                                   (match (is_ci, fresh_pr_state) with
-                                  | true, Some pr_state ->
+                                  | true, Some pr_state when owns_after_wait ->
                                       let synthetic_checks =
                                         Runtime.read runtime (fun snap ->
                                             Orchestrator.agent
@@ -1505,10 +1534,11 @@ module Make (Forge : Forge.S) (W : Worktree.S) (Env : Runner_env.S) = struct
                                         pr_state.Pr_state.ci_checks
                                         @ merge_queue_checks
                                       in
-                                      Runtime.update_orchestrator runtime
-                                        (fun orch ->
-                                          Orchestrator.set_ci_checks orch
-                                            patch_id ci_checks)
+                                      ignore
+                                        (update_if_current (fun orch ->
+                                             Orchestrator.set_ci_checks orch
+                                               patch_id ci_checks)
+                                          : bool)
                                   | _ -> ());
                                   let agent =
                                     Runtime.read runtime (fun snap ->
@@ -1517,9 +1547,7 @@ module Make (Forge : Forge.S) (W : Worktree.S) (Env : Runner_env.S) = struct
                                   in
                                   let delivery =
                                     if
-                                      Option.equal Message_id.equal
-                                        agent.Patch_agent.current_message_id
-                                        (Some (Orchestrator.message_id msg))
+                                      owns_after_wait && owns_current_message ()
                                     then
                                       Patch_decision.respond_delivery ~agent
                                         ~kind ~pre_fire_agent
@@ -2777,12 +2805,18 @@ module Make (Forge : Forge.S) (W : Worktree.S) (Env : Runner_env.S) = struct
                         (match result with
                         | (`Ok | `No_commits)
                           when not (Base.List.is_empty !ci_run_ids_to_record) ->
+                            (* Ownership is rechecked at commit time. If this
+                               message was superseded during the session, leave
+                               deduplication state to the newer operation; a
+                               conservative repeat is safer than suppressing a
+                               still-failing check that the newer operation has
+                               not handled. *)
                             Runtime.update_orchestrator runtime (fun orch ->
                                 let agent = Orchestrator.agent orch patch_id in
                                 if
                                   Option.equal Message_id.equal
                                     agent.Patch_agent.current_message_id
-                                    (Some (Orchestrator.message_id msg))
+                                    (Some message_id)
                                 then
                                   Orchestrator.record_delivered_ci_run_ids orch
                                     patch_id !ci_run_ids_to_record
@@ -2803,9 +2837,18 @@ module Make (Forge : Forge.S) (W : Worktree.S) (Env : Runner_env.S) = struct
                               Orchestrator.Respond_review_unresolved
                           | `Ok -> Orchestrator.Respond_ok
                         in
-                        Runtime.update_orchestrator runtime (fun orch ->
-                            Orchestrator.apply_respond_outcome orch patch_id
-                              kind respond_outcome);
+                        (match respond_outcome with
+                        | Orchestrator.Respond_stale -> ()
+                        | Orchestrator.Respond_failed
+                        | Orchestrator.Respond_retry_push
+                        | Orchestrator.Respond_no_commits
+                        | Orchestrator.Respond_skip_empty
+                        | Orchestrator.Respond_pr_body_miss
+                        | Orchestrator.Respond_review_unresolved
+                        | Orchestrator.Respond_ok ->
+                            Runtime.update_orchestrator runtime (fun orch ->
+                                Orchestrator.apply_respond_outcome orch patch_id
+                                  kind respond_outcome));
                         match respond_outcome with
                         | Orchestrator.Respond_failed ->
                             let agent =
