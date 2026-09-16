@@ -2775,11 +2775,14 @@ module Make (Forge : Forge.S) (W : Worktree.S) (Env : Runner_env.S) = struct
                                       with Skip_delivery -> `Skip_empty))
                         in
                         (match result with
-                        | (`Ok | `No_commits | `Retry_push)
+                        | (`Ok | `No_commits)
                           when not (Base.List.is_empty !ci_run_ids_to_record) ->
                             Runtime.update_orchestrator runtime (fun orch ->
-                                Orchestrator.record_delivered_ci_run_ids orch
-                                  patch_id !ci_run_ids_to_record)
+                                Orchestrator
+                                .record_delivered_ci_run_ids_if_current_message
+                                  orch patch_id
+                                  ~message_id:(Orchestrator.message_id msg)
+                                  !ci_run_ids_to_record)
                         | `Failed | `Pr_body_miss | `Review_unresolved
                         | `Skip_empty | `Stale | `Ok | `No_commits | `Retry_push
                           ->

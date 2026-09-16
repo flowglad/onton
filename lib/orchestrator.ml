@@ -579,6 +579,14 @@ let record_delivered_ci_run_ids t patch_id ids =
   update_agent t patch_id ~f:(fun a ->
       Patch_agent.record_delivered_ci_run_ids a ids)
 
+let record_delivered_ci_run_ids_if_current_message t patch_id ~message_id ids =
+  let agent = agent t patch_id in
+  if
+    Option.equal Message_id.equal agent.Patch_agent.current_message_id
+      (Some message_id)
+  then record_delivered_ci_run_ids t patch_id ids
+  else t
+
 let set_checks_passing t patch_id v =
   update_agent t patch_id ~f:(fun a -> Patch_agent.set_checks_passing a v)
 
