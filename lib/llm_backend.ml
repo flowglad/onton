@@ -70,11 +70,66 @@ let spawn_and_stream ~process_mgr ~clock ~timeout ~cwd ~env ~setsid_exec ~args
         Eio.Process.spawn ~sw process_mgr ~cwd ~stdin:stdin_r ~stdout:stdout_w
           ~stderr:stderr_w ~env args
       in
+      (* Await the process exactly once.  Timeout races below wait on this
+         promise rather than repeatedly cancelling [Eio.Process.await], which
+         cannot reliably be resumed after its waiting fiber is cancelled. *)
+      let await_promise =
+        Eio.Fiber.fork_promise ~sw (fun () -> Eio.Process.await child)
+      in
+      let await_child () = Eio.Promise.await_exn await_promise in
       let pid = Eio.Process.pid child in
       let have_group = Option.is_some setsid_exec in
       let signal_tree signal =
         if have_group then kill_group ~pid ~signal
         else try Eio.Process.signal child signal with _ -> ()
+      in
+      let await_child_with_timeout seconds =
+        Eio.Time.with_timeout clock seconds (fun () -> Ok (await_child ()))
+      in
+      let await_terminal_child () =
+        (* Give the CLI a short un-signalled grace period to flush session
+           persistence and exit normally.  If it remains alive, retain the
+           bounded teardown guarantee by escalating through TERM and KILL.
+           This runs in the stdout fiber so it cannot be held behind the
+           stderr reader, whose pipe may remain open in a descendant. *)
+        match await_child_with_timeout 2.0 with
+        | Ok status -> status
+        | Error `Timeout -> (
+            signal_tree Stdlib.Sys.sigterm;
+            match await_child_with_timeout 2.0 with
+            | Ok status -> status
+            | Error `Timeout -> (
+                signal_tree Stdlib.Sys.sigkill;
+                (* SIGKILL is unconditional; 1s is more than enough for the
+                   kernel to deliver it. The outer session timeout is a final
+                   backstop, but it can be very long (e.g. 1800s), so cap
+                   locally to keep the guarantee tight here. *)
+                match await_child_with_timeout 1.0 with
+                | Ok status -> status
+                | Error `Timeout -> `Signaled 9))
+      in
+      let finish_process_group () =
+        if have_group then
+          (* The CLI may delegate persistence to a short-lived helper that
+             remains in its process group after the direct child exits.  Give
+             those descendants the same chance to flush cleanly before the
+             final sweep. *)
+          let deadline = Eio.Time.now clock +. 2.0 in
+          let rec wait_for_exit () =
+            let alive =
+              try
+                Unix.kill (-pid) 0;
+                true
+              with
+              | Unix.Unix_error (ESRCH, _, _) -> false
+              | Unix.Unix_error (EPERM, _, _) -> true
+            in
+            if alive && Float.(Eio.Time.now clock < deadline) then (
+              Eio.Time.sleep clock 0.05;
+              wait_for_exit ())
+            else alive
+          in
+          if wait_for_exit () then kill_group ~pid ~signal:Stdlib.Sys.sigkill
       in
       Eio.Switch.on_release sw (fun () ->
           (* Release path fires on timeout / cancellation / exception. Be
@@ -93,6 +148,7 @@ let spawn_and_stream ~process_mgr ~clock ~timeout ~cwd ~env ~setsid_exec ~args
         Eio.Buf_read.of_flow ~max_size:stderr_max_size stderr_r
       in
       let err_ref = ref "" in
+      let terminal_status_ref = ref None in
       Eio.Fiber.both
         (fun () ->
           let rec read_lines () =
@@ -132,14 +188,22 @@ let spawn_and_stream ~process_mgr ~clock ~timeout ~cwd ~env ~setsid_exec ~args
           in
           read_lines ();
           if !saw_terminal_event_ref then (
-            (* Tear down immediately: the model's turn is over. Descendants
-               of the child (e.g. Bash-tool zsh processes) may keep the
-               inherited stderr write-end open indefinitely, which would
-               leave the sibling [take_all] fiber blocked on EOF. Signal
-               the whole group (when available) and close our read end so
-               the fiber unblocks. *)
-            signal_tree Stdlib.Sys.sigterm;
-            try Eio.Flow.close stderr_r with _ -> ()))
+            (* The model's turn is over, but the CLI may still be flushing
+               persistent session state.  Do not signal it yet: Codex, in
+               particular, releases its thread-store writer during graceful
+               shutdown, and interrupting that cleanup can make the next
+               resume fail with an "active writer" conflict.  Descendants
+               (e.g. Bash-tool zsh processes) may keep the inherited stderr
+               write-end open indefinitely, so close our read end to unblock
+               the sibling fiber while the direct child gets a short grace
+               period. *)
+            (try Eio.Flow.close stderr_r with _ -> ());
+            let status = await_terminal_child () in
+            terminal_status_ref := Some status;
+            (* The direct child has now completed its graceful shutdown. Finish
+               any remaining process-group descendants here: waiting for
+               switch release would deadlock if one still owns stderr. *)
+            finish_process_group ()))
         (fun () ->
           (* Only swallow the expected teardown exceptions: Eio.Buf_read
              raises when the buffer fills up; End_of_file and Eio.Exn.Io
@@ -175,27 +239,9 @@ let spawn_and_stream ~process_mgr ~clock ~timeout ~cwd ~env ~setsid_exec ~args
           | End_of_file -> ()
           | Eio.Exn.Io _ -> ());
       let status =
-        if !saw_terminal_event_ref then
-          (* SIGTERM was just delivered; cap the await so a child that
-             ignores it doesn't stall us, then escalate to SIGKILL. *)
-          match
-            Eio.Time.with_timeout clock 2.0 (fun () ->
-                Ok (Eio.Process.await child))
-          with
-          | Ok status -> status
-          | Error `Timeout -> (
-              signal_tree Stdlib.Sys.sigkill;
-              (* SIGKILL is unconditional; 1s is more than enough for the
-                 kernel to deliver it. The outer session timeout is a final
-                 backstop, but it can be very long (e.g. 1800s), so we cap
-                 locally to keep the guarantee tight here. *)
-              match
-                Eio.Time.with_timeout clock 1.0 (fun () ->
-                    Ok (Eio.Process.await child))
-              with
-              | Ok status -> status
-              | Error `Timeout -> `Signaled 9)
-        else Eio.Process.await child
+        match !terminal_status_ref with
+        | Some status -> status
+        | None -> await_child ()
       in
       let code = match status with `Exited c -> c | `Signaled s -> 128 + s in
       (!err_ref, code)
