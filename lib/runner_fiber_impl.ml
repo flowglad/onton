@@ -2837,18 +2837,27 @@ module Make (Forge : Forge.S) (W : Worktree.S) (Env : Runner_env.S) = struct
                               Orchestrator.Respond_review_unresolved
                           | `Ok -> Orchestrator.Respond_ok
                         in
-                        (match respond_outcome with
-                        | Orchestrator.Respond_stale -> ()
-                        | Orchestrator.Respond_failed
-                        | Orchestrator.Respond_retry_push
-                        | Orchestrator.Respond_no_commits
-                        | Orchestrator.Respond_skip_empty
-                        | Orchestrator.Respond_pr_body_miss
-                        | Orchestrator.Respond_review_unresolved
-                        | Orchestrator.Respond_ok ->
-                            Runtime.update_orchestrator runtime (fun orch ->
-                                Orchestrator.apply_respond_outcome orch patch_id
-                                  kind respond_outcome));
+                        let outcome_applied =
+                          match respond_outcome with
+                          | Orchestrator.Respond_stale -> false
+                          | Orchestrator.Respond_failed
+                          | Orchestrator.Respond_retry_push
+                          | Orchestrator.Respond_no_commits
+                          | Orchestrator.Respond_skip_empty
+                          | Orchestrator.Respond_pr_body_miss
+                          | Orchestrator.Respond_review_unresolved
+                          | Orchestrator.Respond_ok ->
+                              update_if_current (fun orch ->
+                                  Orchestrator.apply_respond_outcome orch
+                                    patch_id kind respond_outcome)
+                        in
+                        (* A session can be superseded after delivery begins.
+                           Treat an outcome that no longer owns the message as
+                           stale so it cannot complete the newer operation. *)
+                        let respond_outcome =
+                          if outcome_applied then respond_outcome
+                          else Orchestrator.Respond_stale
+                        in
                         match respond_outcome with
                         | Orchestrator.Respond_failed ->
                             let agent =
