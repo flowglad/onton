@@ -157,7 +157,7 @@ let default_max_ci_failures = 3
    event log so operators can grep for "why is this patch stuck?" by
    reason. *)
 let intervention_reason_of_fields ~merged ~has_pr ~is_pr_missing
-    ~session_given_up ~human_in_queue ~ci_failure_count ~max_ci_failures
+    ~session_given_up ~human_pending ~ci_failure_count ~max_ci_failures
     ~start_attempts_without_pr ~conflict_noop_count ~no_commits_push_count
     ~context_exhaustion_count ~push_failure_count ~rebase_failure_count
     ~pr_body_artifact_miss_count ~review_unresolved_cycle_count =
@@ -176,7 +176,7 @@ let intervention_reason_of_fields ~merged ~has_pr ~is_pr_missing
        [merged] is terminal — a merged agent never needs intervention, so
        short-circuit on it to keep the predicate self-consistent even for
        callers that don't pre-filter by [merged]. *)
-  else if human_in_queue then None
+  else if human_pending then None
   else if ci_failure_count >= max_ci_failures then
     Some (Printf.sprintf "ci_failure_count>=%d" max_ci_failures)
   else if (not has_pr) && start_attempts_without_pr >= 2 then
@@ -205,7 +205,7 @@ let intervention_reason t =
   intervention_reason_of_fields ~merged:t.merged ~has_pr:(has_pr t)
     ~is_pr_missing:(is_pr_missing t)
     ~session_given_up:(equal_session_fallback t.session_fallback Given_up)
-    ~human_in_queue:human_pending ~ci_failure_count:t.ci_failure_count
+    ~human_pending ~ci_failure_count:t.ci_failure_count
     ~max_ci_failures:t.max_ci_failures
     ~start_attempts_without_pr:t.start_attempts_without_pr
     ~conflict_noop_count:t.conflict_noop_count
@@ -219,13 +219,13 @@ let intervention_reason t =
 let needs_intervention t = Option.is_some (intervention_reason t)
 
 let needs_intervention_of_fields ~merged ~has_pr ~is_pr_missing
-    ~session_given_up ~human_in_queue ~ci_failure_count ~max_ci_failures
+    ~session_given_up ~human_pending ~ci_failure_count ~max_ci_failures
     ~start_attempts_without_pr ~conflict_noop_count ~no_commits_push_count
     ~context_exhaustion_count ~push_failure_count ~rebase_failure_count
     ~pr_body_artifact_miss_count ~review_unresolved_cycle_count =
   Option.is_some
     (intervention_reason_of_fields ~merged ~has_pr ~is_pr_missing
-       ~session_given_up ~human_in_queue ~ci_failure_count ~max_ci_failures
+       ~session_given_up ~human_pending ~ci_failure_count ~max_ci_failures
        ~start_attempts_without_pr ~conflict_noop_count ~no_commits_push_count
        ~context_exhaustion_count ~push_failure_count ~rebase_failure_count
        ~pr_body_artifact_miss_count ~review_unresolved_cycle_count)
