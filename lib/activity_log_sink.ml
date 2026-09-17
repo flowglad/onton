@@ -26,6 +26,9 @@ let operation_list_member fields name =
   | Some (`List values) -> List.filter_map values ~f:operation_kind_of_json
   | _ -> []
 
+let nonempty_list_member fields name =
+  match member fields name with Some (`List (_ :: _)) -> true | _ -> false
+
 let current_op_member fields =
   match member fields "current_op" with
   | Some `Null | None -> None
@@ -54,12 +57,14 @@ let session_given_up fields =
 
 let needs_intervention fields =
   let queue = operation_list_member fields "queue" in
+  let human_pending =
+    List.mem queue Operation_kind.Human ~equal:Operation_kind.equal
+    || nonempty_list_member fields "inflight_human_messages"
+  in
   Patch_agent.needs_intervention_of_fields
     ~merged:(bool_member fields "merged")
     ~has_pr:(has_pr fields) ~is_pr_missing:(is_pr_missing fields)
-    ~session_given_up:(session_given_up fields)
-    ~human_in_queue:
-      (List.mem queue Operation_kind.Human ~equal:Operation_kind.equal)
+    ~session_given_up:(session_given_up fields) ~human_pending
     ~ci_failure_count:
       (Option.value (int_member fields "ci_failure_count") ~default:0)
     ~max_ci_failures:
@@ -138,6 +143,19 @@ let%test "branch_blocked activity-log agent renders needs-help" =
          ])
   in
   Display_status.equal status Display_status.Needs_help
+
+let%test "in-flight Human delivery retains activity-log intervention exemption"
+    =
+  not
+    (needs_intervention
+       [
+         ("merged", `Bool false);
+         ("pr_status", `Assoc [ ("kind", `String "present") ]);
+         ("session_fallback", `String "Fresh_available");
+         ("queue", `List []);
+         ("inflight_human_messages", `List [ `String "please retry" ]);
+         ("ci_failure_count", `Int Patch_agent.default_max_ci_failures);
+       ])
 
 let transition_action ~default_kind payload =
   let fields = assoc_fields payload in

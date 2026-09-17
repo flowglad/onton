@@ -225,7 +225,7 @@ val intervention_reason_of_fields :
   has_pr:bool ->
   is_pr_missing:bool ->
   session_given_up:bool ->
-  human_in_queue:bool ->
+  human_pending:bool ->
   ci_failure_count:int ->
   max_ci_failures:int ->
   start_attempts_without_pr:int ->
@@ -237,7 +237,8 @@ val intervention_reason_of_fields :
   pr_body_artifact_miss_count:int ->
   review_unresolved_cycle_count:int ->
   string option
-(** Raw-field form of {!intervention_reason}. This is the canonical pure
+(** Raw-field form of {!intervention_reason}. [human_pending] must be true when
+    a Human delivery is either queued or in flight. This is the canonical pure
     decision for callers that reconstruct agent status from persisted telemetry
     instead of holding a {!t}. *)
 
@@ -248,7 +249,8 @@ val needs_intervention : t -> bool
     - [is_pr_missing t] (PR vanished from the remote — bypasses the Human
       exemption; queued Human entries are deferred until [Missing → Present]
       recovery rather than dispatched while [Missing])
-    - [Human] not in queue AND any of: [ci_failure_count >= max_ci_failures],
+    - no queued or in-flight [Human] delivery AND any of:
+      [ci_failure_count >= max_ci_failures],
       [(not has_pr) && start_attempts_without_pr >= 2],
       [conflict_noop_count >= 2], [no_commits_push_count >= 2],
       [context_exhaustion_count >= 2], [push_failure_count >= 3],
@@ -260,7 +262,7 @@ val needs_intervention_of_fields :
   has_pr:bool ->
   is_pr_missing:bool ->
   session_given_up:bool ->
-  human_in_queue:bool ->
+  human_pending:bool ->
   ci_failure_count:int ->
   max_ci_failures:int ->
   start_attempts_without_pr:int ->
