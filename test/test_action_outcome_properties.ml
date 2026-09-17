@@ -49,6 +49,19 @@ let make_busy orch _patches gameplan pid kind =
   assert (Orchestrator.agent orch pid).Patch_agent.busy;
   orch
 
+let accept_only_message orch gameplan =
+  let orch, _effects, messages =
+    Patch_controller.plan_tick_messages orch ~project_name:"test-project"
+      ~gameplan
+  in
+  match messages with
+  | [ msg ] ->
+      let message_id = Orchestrator.message_id msg in
+      let orch, action = Orchestrator.accept_message orch message_id in
+      assert (Option.is_some action);
+      (orch, message_id)
+  | _ -> failwith "expected exactly one runnable message"
+
 (* ========== AO-1a: Start_failed produces busy=false ========== *)
 
 let () =
@@ -139,6 +152,37 @@ let () =
   assert (List.is_empty after_success.Patch_agent.inflight_human_messages);
   assert (not after_success.Patch_agent.busy);
   Stdlib.print_endline "AO-1c passed"
+
+(* ========== AO-1d: a stale daemon cannot force-complete a newer Start ========== *)
+
+let () =
+  let patches = mk_patches 1 in
+  let gameplan = make_gameplan patches in
+  let pid = pid_of_idx patches 0 in
+  let orch = Orchestrator.create ~patches ~main_branch:main in
+  let orch = Orchestrator.send_human_message orch pid "keep this guidance" in
+  let orch, old_message_id = accept_only_message orch gameplan in
+  let orch =
+    Orchestrator.apply_force_complete ~message_id:old_message_id orch pid
+      Orchestrator.Cancelled
+  in
+  let orch, new_message_id = accept_only_message orch gameplan in
+  let before = Orchestrator.agent orch pid in
+  assert before.Patch_agent.busy;
+  assert (
+    Option.equal Message_id.equal before.Patch_agent.current_message_id
+      (Some new_message_id));
+  let orch =
+    Orchestrator.apply_force_complete ~message_id:old_message_id orch pid
+      Orchestrator.Cancelled
+  in
+  let after = Orchestrator.agent orch pid in
+  assert (Patch_agent.equal before after);
+  assert after.Patch_agent.busy;
+  assert (
+    Option.equal Message_id.equal after.Patch_agent.current_message_id
+      (Some new_message_id));
+  Stdlib.print_endline "AO-1d passed"
 
 (* ========== AO-2: Non-stale respond outcomes produce busy=false ========== *)
 
@@ -467,6 +511,56 @@ let () =
   in
   assert (ci_count orch pid = before);
   Stdlib.print_endline "AO-7 passed"
+
+(* ========== AO-7b: failed CI push remains deliverable ========== *)
+
+let () =
+  let run_id = 4242 in
+  let check =
+    Ci_check.
+      {
+        name = "test";
+        conclusion = "failure";
+        details_url = None;
+        description = None;
+        started_at = None;
+        id = Some run_id;
+      }
+  in
+  let orch, patches, gameplan, pid = bootstrap_one () in
+  let orch = Orchestrator.set_ci_checks orch pid [ check ] in
+  let orch = make_busy orch patches gameplan pid Operation_kind.Ci in
+  let orch =
+    Orchestrator.apply_respond_outcome orch pid Operation_kind.Ci
+      Orchestrator.Respond_retry_push
+  in
+  let agent = Orchestrator.agent orch pid in
+  assert (List.is_empty agent.Patch_agent.delivered_ci_run_ids);
+  assert (
+    Patch_decision.equal_ci_decision
+      (Patch_decision.on_ci_failure agent)
+      Patch_decision.Enqueue_ci);
+  let agent = Patch_agent.enqueue agent Operation_kind.Ci in
+  let agent = Patch_agent.respond agent Operation_kind.Ci in
+  let redelivered =
+    match
+      Patch_decision.respond_delivery ~agent ~kind:Operation_kind.Ci
+        ~pre_fire_agent:None ~prefetched_comments:[] ~prefetched_findings:[]
+        ~main_branch:"main"
+    with
+    | Patch_decision.Deliver { payload; _ } -> (
+        match payload with
+        | Patch_decision.Ci_payload { failed_checks } ->
+            List.exists failed_checks ~f:(fun (check : Ci_check.t) ->
+                Option.equal Int.equal check.Ci_check.id (Some run_id))
+        | Patch_decision.Human_payload _ | Patch_decision.Review_payload _
+        | Patch_decision.Findings_payload _ | Patch_decision.Pr_body_payload
+        | Patch_decision.Merge_conflict_payload ->
+            false)
+    | Patch_decision.Skip_empty | Patch_decision.Respond_stale -> false
+  in
+  assert redelivered;
+  Stdlib.print_endline "AO-7b passed"
 
 (* ========== AO-8: Respond_ok + Pr_body sets pr_body_delivered ========== *)
 

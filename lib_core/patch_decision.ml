@@ -161,18 +161,34 @@ type respond_delivery =
   | Respond_stale
 [@@deriving show, eq, sexp_of, compare]
 
-(** Keep only failing CI checks that haven't already been delivered to the
-    agent. Checks without a stable [id] (StatusContext entries, legacy
-    snapshots) bypass the dedup — they can't be keyed reliably, and the
-    conservative choice is to deliver rather than silently drop. *)
-let filter_undelivered_ci_failures (agent : Patch_agent.t) : Ci_check.t list =
+(** Keep failing CI checks that are eligible for this attempt. Before the first
+    attempt, stable run ids are delivered once. After an incomplete session
+    ([session_fallback = Tried_fresh]) or a completed attempt whose checks still
+    fail ([ci_failure_count > 0]), the same ids become deliverable again.
+    [Given_up] is terminal, so that fallback state does not itself make
+    delivered ids eligible again. This matches [on_ci_failure]'s retry decision
+    and heals snapshots written by older supervisors that recorded ids before a
+    timed-out session completed.
+
+    Checks without a stable [id] (StatusContext entries, legacy snapshots)
+    bypass dedup — they can't be keyed reliably, and the conservative choice is
+    to deliver rather than silently drop. *)
+let filter_deliverable_ci_failures (agent : Patch_agent.t) : Ci_check.t list =
+  let retrying =
+    agent.ci_failure_count > 0
+    ||
+    match agent.session_fallback with
+    | Patch_agent.Tried_fresh -> true
+    | Patch_agent.Fresh_available | Patch_agent.Given_up -> false
+  in
   List.filter agent.ci_checks ~f:(fun (c : Ci_check.t) ->
       if not (Ci_check.is_failure c) then false
       else
         match c.id with
         | None -> true
         | Some id ->
-            not (List.mem agent.delivered_ci_run_ids id ~equal:Int.equal))
+            retrying
+            || not (List.mem agent.delivered_ci_run_ids id ~equal:Int.equal))
 
 let on_ci_failure (a : Patch_agent.t) : ci_decision =
   if a.ci_failure_count >= a.max_ci_failures then Cap_reached
@@ -185,13 +201,10 @@ let on_ci_failure (a : Patch_agent.t) : ci_decision =
   else
     let has_known_failure = List.exists a.ci_checks ~f:Ci_check.is_failure in
     let has_undelivered_failure =
-      not (List.is_empty (filter_undelivered_ci_failures a))
+      not (List.is_empty (filter_deliverable_ci_failures a))
     in
     match (has_known_failure, has_undelivered_failure) with
-    | true, false ->
-        if a.ci_failure_count > 0 && a.ci_failure_count < a.max_ci_failures then
-          Enqueue_ci
-        else Ci_already_delivered
+    | true, false -> Ci_already_delivered
     | false, _ ->
         (* The poll queue can report a CI failure before GitHub has returned
            the failed check rows. With no stable run id available to dedup
@@ -212,11 +225,10 @@ let respond_delivery ~(agent : Patch_agent.t) ~(kind : Operation_kind.t)
   then Respond_stale
   else
     let source = Option.value pre_fire_agent ~default:agent in
-    (* Precompute the CI failure list once so emptiness and payload agree.
-       Filtering against [delivered_ci_run_ids] is what prevents a second
-       delivery of the same underlying run after an unrelated [generation]
-       bump. *)
-    let ci_undelivered = filter_undelivered_ci_failures agent in
+    (* Precompute the CI failure list once so emptiness and payload agree. The
+       delivery filter deduplicates an initial attempt while allowing explicit
+       retries after failed or completed attempts. *)
+    let ci_deliverable = filter_deliverable_ci_failures agent in
     let is_empty =
       match kind with
       | Operation_kind.Review_comments -> List.is_empty prefetched_comments
@@ -230,7 +242,7 @@ let respond_delivery ~(agent : Patch_agent.t) ~(kind : Operation_kind.t)
              (e.g. if a future caller forgets the freshness hop). Also
              catches the case where every fresh failure has already been
              delivered — no new information to send. *)
-          List.is_empty ci_undelivered
+          List.is_empty ci_deliverable
       | Operation_kind.Merge_conflict | Operation_kind.Pr_body
       | Operation_kind.Rebase ->
           false
@@ -254,7 +266,7 @@ let respond_delivery ~(agent : Patch_agent.t) ~(kind : Operation_kind.t)
         match kind with
         | Operation_kind.Human ->
             Human_payload { messages = List.rev source.human_messages }
-        | Operation_kind.Ci -> Ci_payload { failed_checks = ci_undelivered }
+        | Operation_kind.Ci -> Ci_payload { failed_checks = ci_deliverable }
         | Operation_kind.Review_comments ->
             Review_payload { comments = prefetched_comments }
         | Operation_kind.Findings ->
