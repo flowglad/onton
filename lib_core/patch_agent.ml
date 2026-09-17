@@ -193,12 +193,20 @@ let intervention_reason_of_fields ~merged ~has_pr ~is_pr_missing
   else None
 
 let intervention_reason t =
+  (* Accepting a Human operation moves it out of [queue] and into
+     [inflight_human_messages] before the runner gets a session slot. Keep the
+     exemption active across that ownership transfer; otherwise a failure cap
+     can make the just-accepted action stale, [complete_failed] restores the
+     message, and reconciliation dispatches the same action forever. *)
+  let human_pending =
+    List.mem t.queue Operation_kind.Human ~equal:Operation_kind.equal
+    || not (List.is_empty t.inflight_human_messages)
+  in
   intervention_reason_of_fields ~merged:t.merged ~has_pr:(has_pr t)
     ~is_pr_missing:(is_pr_missing t)
     ~session_given_up:(equal_session_fallback t.session_fallback Given_up)
-    ~human_in_queue:
-      (List.mem t.queue Operation_kind.Human ~equal:Operation_kind.equal)
-    ~ci_failure_count:t.ci_failure_count ~max_ci_failures:t.max_ci_failures
+    ~human_in_queue:human_pending ~ci_failure_count:t.ci_failure_count
+    ~max_ci_failures:t.max_ci_failures
     ~start_attempts_without_pr:t.start_attempts_without_pr
     ~conflict_noop_count:t.conflict_noop_count
     ~no_commits_push_count:t.no_commits_push_count
