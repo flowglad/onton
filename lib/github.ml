@@ -1703,7 +1703,10 @@ let update_pr_body ~net ~clock ?timeout t ~pr_number ~body =
     Printf.sprintf "/repos/%s/%s/pulls/%d" t.owner t.repo
       (Types.Pr_number.to_int pr_number)
   in
-  let req_body = `Assoc [ ("body", `String body) ] |> Yojson.Safe.to_string in
+  let req_body =
+    `Assoc [ ("body", `String (Pr_body_limit.limit body)) ]
+    |> Yojson.Safe.to_string
+  in
   match request ~net ~clock ?timeout t ~meth:`PATCH ~path ~body:req_body () with
   | Ok _ -> Ok ()
   | Error _ as e -> e
@@ -1729,7 +1732,7 @@ let create_pull_request ~net ~clock ?timeout t ~title ~head ~base ~body ~draft =
         ("title", `String title);
         ("head", `String (Types.Branch.to_string head));
         ("base", `String (Types.Branch.to_string base));
-        ("body", `String body);
+        ("body", `String (Pr_body_limit.limit body));
         ("draft", `Bool draft);
       ]
     |> Yojson.Safe.to_string

@@ -1,4 +1,9 @@
 (test
+ (name test_pr_body_limit_properties)
+ (modules test_pr_body_limit_properties)
+ (libraries onton_core qcheck-core qcheck-core.runner))
+
+(test
  (name test_worktree_lifecycle_properties)
  (modules test_worktree_lifecycle_properties)
  (flags (:standard -w -40-42))

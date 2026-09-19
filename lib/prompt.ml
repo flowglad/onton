@@ -811,7 +811,8 @@ let render_pr_description ~(project_name : string) (patch : Patch.t)
         optional_list_section ~header:"Acceptance Criteria"
           patch.acceptance_criteria );
       ( "files_section",
-        optional_list_section ~header:"Files to Modify" patch.files );
+        optional_list_section ~header:"Files to Modify"
+          (Pr_body_limit.summarize_files patch.files) );
       ("precedents_section", format_precedents patch.Patch.precedents);
     ]
   in
@@ -2266,6 +2267,16 @@ let%test "render_pr_description omits Established Precedents when empty" =
   let patch, _, gameplan = make_layer_test_fixture () in
   let body = render_pr_description ~project_name:"onton" patch gameplan in
   not (String.is_substring body ~substring:"Established Precedents")
+
+let%test "render_pr_description summarizes a large file list" =
+  let patch, _, gameplan = make_layer_test_fixture () in
+  let files = List.init 616 ~f:(fun i -> Printf.sprintf "file-%d" i) in
+  let body =
+    render_pr_description ~project_name:"onton" { patch with files } gameplan
+  in
+  String.is_substring body ~substring:"file-29"
+  && (not (String.is_substring body ~substring:"file-30\n"))
+  && String.is_substring body ~substring:"586 more files"
 
 let%test "follow-up prompts without patch+gameplan emit only the turn layer" =
   let _, _, _gameplan = make_layer_test_fixture () in
