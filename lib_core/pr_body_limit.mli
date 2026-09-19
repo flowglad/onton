@@ -1,3 +1,6 @@
+(* @archlint.module interface
+   @archlint.domain pr-body-limit *)
+
 (** GitHub PR description bounds. The byte cap leaves room below GitHub's
     65,536-character field limit, including for multibyte text. *)
 

@@ -1,3 +1,6 @@
+(* @archlint.module core
+   @archlint.domain pr-body-limit *)
+
 open Base
 
 let max_bytes = 60_000

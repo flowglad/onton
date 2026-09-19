@@ -1,3 +1,6 @@
+(* @archlint.module test
+   @archlint.domain pr-body-limit *)
+
 open Base
 open Onton_core
 module Gen = QCheck2.Gen
