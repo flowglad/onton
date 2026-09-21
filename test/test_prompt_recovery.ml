@@ -139,6 +139,7 @@ let () =
 let () =
   let prompt =
     Prompt.render_uncommitted_changes_prompt ~project_name:""
+      ~pr_number:(Onton_core.Types.Pr_number.of_int 434)
       ~git_status:" M lib/worker.ml\n?? scratch.txt" ()
   in
   assert_contains "dirty: explains blocked rebase" prompt
@@ -147,9 +148,21 @@ let () =
   assert_contains "dirty: offers discard" prompt
     ~substring:"discard them completely";
   assert_contains "dirty: includes status" prompt ~substring:"M lib/worker.ml";
+  assert_contains "dirty: includes PR context" prompt ~substring:"PR: #434";
   assert_contains "dirty: requires clean porcelain status" prompt
     ~substring:"git status --porcelain";
   assert_contains "dirty: leaves rebase to supervisor" prompt
     ~substring:"Do not rebase or push"
+
+let () =
+  let prompt =
+    Prompt.render_turn_layer_uncommitted_changes ~project_name:""
+      ~git_status:(String.make 4500 'Z') ()
+  in
+  assert_contains "dirty: long status is marked truncated" prompt
+    ~substring:"[truncated]";
+  if String.count prompt ~f:(Char.equal 'Z') <> 4000 then (
+    Stdlib.print_endline "FAIL: dirty: status was not capped at 4000 bytes";
+    Stdlib.exit 1)
 
 let () = Stdlib.print_endline "All prompt-recovery tests passed."

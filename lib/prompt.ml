@@ -1353,17 +1353,35 @@ let render_ci_failure_unknown_prompt ~(project_name : string) ?agents_md
     ?agents_md ()
   ^ render_turn_layer_ci_unknown ~project_name ?pr_number ()
 
-let render_turn_layer_uncommitted_changes ~(project_name : string)
-    ~(git_status : string) : string =
+let render_turn_layer_uncommitted_changes ~(project_name : string) ?pr_number
+    ~(git_status : string) () : string =
   let status =
     if String.is_empty (String.strip git_status) then "(status unavailable)"
-    else String.rstrip git_status
+    else
+      let status = String.rstrip git_status in
+      if String.length status > 4000 then
+        String.prefix status 4000 ^ "\n[truncated]"
+      else status
   in
-  let vars = [ ("project_name", project_name); ("git_status", status) ] in
+  let pr_ctx =
+    match pr_number with
+    | Some n -> Printf.sprintf "\n\nPR: #%d" (Pr_number.to_int n)
+    | None -> ""
+  in
+  let vars =
+    [
+      ("project_name", project_name);
+      ( "pr_number",
+        match pr_number with
+        | Some n -> Int.to_string (Pr_number.to_int n)
+        | None -> "" );
+      ("git_status", status);
+    ]
+  in
   render_with_override ~project_name ~name:"turn_uncommitted_changes" ~vars
     ~default:(fun () ->
       Printf.sprintf
-        "# Uncommitted Changes Block the Required Rebase\n\n\
+        "# Uncommitted Changes Block the Required Rebase%s\n\n\
          The supervisor needs to rebase this branch, but the worktree contains \
          uncommitted changes. Decide which of these outcomes is correct:\n\n\
          - If the changes belong to this patch, stage and commit all of them.\n\
@@ -1376,14 +1394,15 @@ let render_turn_layer_uncommitted_changes ~(project_name : string)
          ```text\n\
          %s\n\
          ```"
-        status)
+        pr_ctx status)
 
 let render_uncommitted_changes_prompt ~(project_name : string) ?agents_md
     ?pr_number ?patch ?gameplan ?base_branch ~(git_status : string) () : string
     =
   layered_prefix ~project_name ?pr_number ?patch ?gameplan ?base_branch
     ?agents_md ()
-  ^ render_turn_layer_uncommitted_changes ~project_name ~git_status
+  ^ render_turn_layer_uncommitted_changes ~project_name ?pr_number ~git_status
+      ()
 
 let render_recovery_section (ci : Worktree.conflict_info) =
   let bullet (c : Worktree.unique_commit) =

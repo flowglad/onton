@@ -24,12 +24,14 @@ type t =
   | Resolving_conflict
   | Responding_to_human
   | Writing_pr_body
+  | Cleaning_worktree
   | Rebasing
   | Starting
   | Updating
   | Ci_queued
   | Review_queued
   | Findings_queued
+  | Cleanup_queued
   | Awaiting_feedback
   | Blocked_by_dep
   | Pending
@@ -69,7 +71,7 @@ let derive (ctx : State.Patch_ctx.t) ~patch_id
     else Approved_idle
   else if State.Patch_ctx.is_busy ctx ~patch_id then
     match current_op with
-    | Some Uncommitted_changes -> Updating
+    | Some Uncommitted_changes -> Cleaning_worktree
     | Some Ci -> Fixing_ci
     | Some Review_comments -> Addressing_review
     | Some Findings -> Addressing_findings
@@ -81,6 +83,8 @@ let derive (ctx : State.Patch_ctx.t) ~patch_id
         if State.Patch_ctx.has_pr ctx ~patch_id then Updating else Starting
   else if State.Patch_ctx.has_pr ctx ~patch_id then
     if not (is_on_main ctx ~patch_id ~main_branch) then Blocked_by_dep
+    else if State.Patch_ctx.is_queued ctx ~patch_id ~kind:Uncommitted_changes
+    then Cleanup_queued
     else if State.Patch_ctx.is_queued ctx ~patch_id ~kind:Ci then Ci_queued
     else if State.Patch_ctx.is_queued ctx ~patch_id ~kind:Review_comments then
       Review_queued
@@ -188,6 +192,16 @@ let%test "busy with ci op" =
     (derive ctx ~patch_id:(Patch_id.of_string "1") ~current_op:(Some Ci)
        ~main_branch:(Branch.of_string "main"))
 
+let%test "busy with uncommitted changes op" =
+  let ctx =
+    State.Patch_ctx.empty
+    |> State.Patch_ctx.set_busy ~patch_id:(Patch_id.of_string "1") ~value:true
+  in
+  equal Cleaning_worktree
+    (derive ctx ~patch_id:(Patch_id.of_string "1")
+       ~current_op:(Some Uncommitted_changes)
+       ~main_branch:(Branch.of_string "main"))
+
 let%test "busy with review op" =
   let ctx =
     State.Patch_ctx.empty
@@ -254,6 +268,17 @@ let%test "ci queued" =
     (derive ctx ~patch_id:(Patch_id.of_string "1") ~current_op:None
        ~main_branch:(Branch.of_string "main"))
 
+let%test "uncommitted changes queued" =
+  let ctx =
+    State.Patch_ctx.empty
+    |> State.Patch_ctx.set_has_pr ~patch_id:(Patch_id.of_string "1") ~value:true
+    |> State.Patch_ctx.set_queued ~patch_id:(Patch_id.of_string "1")
+         ~kind:Uncommitted_changes ~value:true
+  in
+  equal Cleanup_queued
+    (derive ctx ~patch_id:(Patch_id.of_string "1") ~current_op:None
+       ~main_branch:(Branch.of_string "main"))
+
 let%test "review queued" =
   let ctx =
     State.Patch_ctx.empty
@@ -317,5 +342,12 @@ let%test "legacy Awaiting_review decodes to Awaiting_feedback" =
 let%test "current statuses round-trip through yojson" =
   List.for_all
     [
-      Awaiting_feedback; Ci_queued; Merged; Pending; Needs_help; In_merge_queue;
+      Awaiting_feedback;
+      Cleanup_queued;
+      Cleaning_worktree;
+      Ci_queued;
+      Merged;
+      Pending;
+      Needs_help;
+      In_merge_queue;
     ] ~f:(fun s -> equal s (t_of_yojson (yojson_of_t s)))

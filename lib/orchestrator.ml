@@ -1266,20 +1266,31 @@ type respond_outcome =
 [@@deriving show, eq, sexp_of]
 
 let apply_respond_outcome t patch_id kind outcome =
+  let retry_rebase_after_cleanup t =
+    if Operation_kind.equal kind Operation_kind.Uncommitted_changes then
+      enqueue t patch_id Operation_kind.Rebase
+    else t
+  in
   match outcome with
   | Respond_stale -> t
-  | Respond_failed -> complete_failed t patch_id
-  | Respond_retry_push -> complete t patch_id
-  | Respond_no_commits -> complete t patch_id
-  | Respond_skip_empty -> complete t patch_id
+  | Respond_failed -> complete_failed t patch_id |> retry_rebase_after_cleanup
+  | Respond_retry_push -> complete t patch_id |> retry_rebase_after_cleanup
+  | Respond_no_commits -> complete t patch_id |> retry_rebase_after_cleanup
+  | Respond_skip_empty -> complete t patch_id |> retry_rebase_after_cleanup
   | Respond_pr_body_miss ->
       let t = complete t patch_id in
-      update_agent t patch_id
-        ~f:Patch_agent.increment_pr_body_artifact_miss_count
+      let t =
+        update_agent t patch_id
+          ~f:Patch_agent.increment_pr_body_artifact_miss_count
+      in
+      retry_rebase_after_cleanup t
   | Respond_review_unresolved ->
       let t = complete t patch_id in
-      update_agent t patch_id
-        ~f:Patch_agent.increment_review_unresolved_cycle_count
+      let t =
+        update_agent t patch_id
+          ~f:Patch_agent.increment_review_unresolved_cycle_count
+      in
+      retry_rebase_after_cleanup t
   | Respond_ok ->
       let t = complete t patch_id in
       (* Only count CI fix attempts that actually delivered a payload with
@@ -1306,11 +1317,10 @@ let apply_respond_outcome t patch_id kind outcome =
         else t
       in
       let t =
-        if Operation_kind.equal kind Operation_kind.Uncommitted_changes then
-          enqueue t patch_id Operation_kind.Rebase
+        if Operation_kind.equal kind Operation_kind.Pr_body then
+          let t = set_pr_body_delivered t patch_id true in
+          update_agent t patch_id
+            ~f:Patch_agent.reset_pr_body_artifact_miss_count
         else t
       in
-      if Operation_kind.equal kind Operation_kind.Pr_body then
-        let t = set_pr_body_delivered t patch_id true in
-        update_agent t patch_id ~f:Patch_agent.reset_pr_body_artifact_miss_count
-      else t
+      retry_rebase_after_cleanup t

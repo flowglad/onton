@@ -1382,9 +1382,7 @@ let () =
              ~pre_fire_agent:None ~prefetched_comments:[]
              ~prefetched_findings:[] ~main_branch:"main"
          with
-         | Deliver { payload = Uncommitted_changes_payload; _ } ->
-             session_no_commits_is_ok ~agent:a ~delivery_mode:Respond
-               ~kind:(Some Operation_kind.Uncommitted_changes)
+         | Deliver { payload = Uncommitted_changes_payload; _ } -> true
          | Deliver _ | Skip_empty | Respond_stale -> false));
   QCheck2.Test.check_exn
     (QCheck2.Test.make ~name:"patch decision public surface is linked"

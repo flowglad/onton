@@ -361,7 +361,8 @@ let () =
 
 (** P7: Priority ordering — Respond always picks highest-priority operation.
     When multiple operations are enqueued, tick fires the one with lowest
-    priority value (Rebase < Human < Merge_conflict < Ci < Review_comments). *)
+    priority value (Uncommitted_changes < Rebase < Human < Merge_conflict < Ci <
+    Review_comments). *)
 let () =
   let prop_p7 =
     QCheck2.Test.make ~name:"P7: respond picks highest priority" ~count:300

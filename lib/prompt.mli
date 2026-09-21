@@ -108,7 +108,11 @@ val render_turn_layer_ci_unknown :
   project_name:string -> ?pr_number:Pr_number.t -> unit -> string
 
 val render_turn_layer_uncommitted_changes :
-  project_name:string -> git_status:string -> string
+  project_name:string ->
+  ?pr_number:Pr_number.t ->
+  git_status:string ->
+  unit ->
+  string
 
 val render_turn_layer_merge_conflict :
   project_name:string ->

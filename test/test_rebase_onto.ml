@@ -1401,6 +1401,45 @@ let () =
        failwith "test11: expected Uncommitted_changes");
    assert_eq "test11: HEAD unchanged" original_head
      (git ~process_mgr ~dir [ "rev-parse"; "HEAD" ]);
+   let rebase_merge = Stdlib.Filename.concat dir ".git/rebase-merge" in
+   let rebase_apply = Stdlib.Filename.concat dir ".git/rebase-apply" in
+   if Stdlib.Sys.file_exists rebase_merge || Stdlib.Sys.file_exists rebase_apply
+   then failwith "test11: rebase should not be in progress";
+   Stdlib.Sys.command (Printf.sprintf "rm -rf %s" dir) |> ignore);
+
+  (* ── Test 12: untracked files are routed to agent cleanup ────────── *)
+  (let dir = init_repo () in
+   commit_file ~process_mgr ~dir ~filename:"a.txt" ~content:"a" ~msg:"A"
+   |> ignore;
+   git ~process_mgr ~dir [ "checkout"; "-b"; "feat" ] |> ignore;
+   commit_file ~process_mgr ~dir ~filename:"f.txt" ~content:"committed" ~msg:"F"
+   |> ignore;
+   let original_head = git ~process_mgr ~dir [ "rev-parse"; "HEAD" ] in
+   git ~process_mgr ~dir [ "checkout"; "main" ] |> ignore;
+   commit_file ~process_mgr ~dir ~filename:"b.txt" ~content:"b" ~msg:"B"
+   |> ignore;
+   git ~process_mgr ~dir [ "checkout"; "feat" ] |> ignore;
+   let untracked_path = Stdlib.Filename.concat dir "scratch.txt" in
+   let oc = Stdlib.open_out untracked_path in
+   Stdlib.output_string oc "untracked";
+   Stdlib.close_out oc;
+   let result =
+     Worktree.rebase_onto ~process_mgr ~path:dir
+       ~target:(Types.Branch.of_string "main")
+       ~upstream:"main" ~project_name:"" ~ancestor_ids:[] ()
+   in
+   (match result with
+   | Worktree.Uncommitted_changes status ->
+       if not (String.is_substring status ~substring:"?? scratch.txt") then
+         failwith "test12: dirty status omitted untracked file"
+   | Worktree.Ok | Worktree.Noop | Worktree.Conflict _ | Worktree.Error _ ->
+       failwith "test12: expected Uncommitted_changes");
+   assert_eq "test12: HEAD unchanged" original_head
+     (git ~process_mgr ~dir [ "rev-parse"; "HEAD" ]);
+   let rebase_merge = Stdlib.Filename.concat dir ".git/rebase-merge" in
+   let rebase_apply = Stdlib.Filename.concat dir ".git/rebase-apply" in
+   if Stdlib.Sys.file_exists rebase_merge || Stdlib.Sys.file_exists rebase_apply
+   then failwith "test12: rebase should not be in progress";
    Stdlib.Sys.command (Printf.sprintf "rm -rf %s" dir) |> ignore);
 
   Stdlib.print_endline "All rebase_onto integration tests passed."

@@ -1122,6 +1122,7 @@ let () =
               Orchestrator.equal_conflict_rebase_decision decision
                 Orchestrator.Cleanup_needed
               && (not a.Patch_agent.busy)
+              && a.Patch_agent.rebase_failure_count = 1
               && List.mem a.Patch_agent.queue Operation_kind.Uncommitted_changes
                    ~equal:Operation_kind.equal
               && List.is_empty effects

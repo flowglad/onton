@@ -241,11 +241,13 @@ let () =
         Option.is_none
           (Worktree_parser.classify_rebase_worktree_status ~code:0 ~stdout:" \n"
              ~stderr:"")
-        && Worktree_parser.equal_rebase_result
-             (Option.value_exn
-                (Worktree_parser.classify_rebase_worktree_status ~code:0
-                   ~stdout:" M lib/a.ml\n?? scratch.txt\n" ~stderr:""))
-             (Worktree_parser.Uncommitted_changes "M lib/a.ml\n?? scratch.txt")
+        && Option.value_map
+             (Worktree_parser.classify_rebase_worktree_status ~code:0
+                ~stdout:" M lib/a.ml\n?? scratch.txt\n" ~stderr:"")
+             ~default:false ~f:(fun result ->
+               Worktree_parser.equal_rebase_result result
+                 (Worktree_parser.Uncommitted_changes
+                    "M lib/a.ml\n?? scratch.txt"))
         &&
         match
           Worktree_parser.classify_rebase_worktree_status ~code:128 ~stdout:""

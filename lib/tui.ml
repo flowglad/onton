@@ -22,12 +22,14 @@ type display_status = Display_status.t =
   | Resolving_conflict
   | Responding_to_human
   | Writing_pr_body
+  | Cleaning_worktree
   | Rebasing
   | Starting
   | Updating
   | Ci_queued
   | Review_queued
   | Findings_queued
+  | Cleanup_queued
   | Awaiting_feedback
   | Blocked_by_dep
   | Pending
@@ -48,12 +50,14 @@ let label = function
   | Resolving_conflict -> "resolving-conflict"
   | Responding_to_human -> "responding-to-human"
   | Writing_pr_body -> "writing-pr-body"
+  | Cleaning_worktree -> "cleaning-worktree"
   | Rebasing -> "rebasing"
   | Starting -> "starting"
   | Updating -> "updating"
   | Ci_queued -> "ci-queued"
   | Review_queued -> "review-queued"
   | Findings_queued -> "findings-queued"
+  | Cleanup_queued -> "cleanup-queued"
   | Awaiting_feedback -> "awaiting-feedback"
   | Blocked_by_dep -> "blocked-by-dep"
   | Pending -> "pending"
@@ -70,12 +74,14 @@ let color = function
   | Resolving_conflict -> Term.Sgr.fg_yellow
   | Responding_to_human -> Term.Sgr.fg_magenta
   | Writing_pr_body -> Term.Sgr.fg_cyan
+  | Cleaning_worktree -> Term.Sgr.fg_yellow
   | Rebasing -> Term.Sgr.fg_cyan
   | Starting -> Term.Sgr.fg_cyan
   | Updating -> Term.Sgr.fg_cyan
   | Ci_queued -> Term.Sgr.fg_yellow
   | Review_queued -> Term.Sgr.fg_yellow
   | Findings_queued -> Term.Sgr.fg_yellow
+  | Cleanup_queued -> Term.Sgr.fg_yellow
   | Awaiting_feedback -> Term.Sgr.fg_blue
   | Blocked_by_dep -> Term.Sgr.fg_blue
   | Pending -> Term.Sgr.fg_default
@@ -160,11 +166,12 @@ let status_style = function
   | Approved_idle -> [ Term.Sgr.fg_green ]
   | Approved_running -> [ Term.Sgr.fg_green; Term.Sgr.bold ]
   | Fixing_ci | Addressing_review | Addressing_findings | Resolving_conflict
-  | Responding_to_human | Writing_pr_body ->
+  | Responding_to_human | Writing_pr_body | Cleaning_worktree ->
       [ Term.Sgr.fg_cyan; Term.Sgr.bold ]
   | Rebasing -> [ Term.Sgr.fg_yellow ]
   | Starting | Updating -> [ Term.Sgr.fg_cyan ]
-  | Ci_queued | Review_queued | Findings_queued -> [ Term.Sgr.fg_yellow ]
+  | Ci_queued | Review_queued | Findings_queued | Cleanup_queued ->
+      [ Term.Sgr.fg_yellow ]
   | Awaiting_feedback -> [ Term.Sgr.fg_blue ]
   | Blocked_by_dep -> [ Term.Sgr.fg_blue ]
   | Pending -> [ Term.Sgr.dim ]
@@ -176,11 +183,11 @@ let status_indicator = function
   | Approved_idle -> "✓"
   | Approved_running -> "▶"
   | Fixing_ci | Addressing_review | Addressing_findings | Resolving_conflict
-  | Responding_to_human | Writing_pr_body ->
+  | Responding_to_human | Writing_pr_body | Cleaning_worktree ->
       "▶"
   | Rebasing -> "↻"
   | Starting | Updating -> "▶"
-  | Ci_queued | Review_queued | Findings_queued -> "◎"
+  | Ci_queued | Review_queued | Findings_queued | Cleanup_queued -> "◎"
   | Awaiting_feedback -> "◎"
   | Blocked_by_dep -> "◎"
   | Pending -> "·"
@@ -546,12 +553,12 @@ let render_merge_queue_badge = function
 
 let is_running_status = function
   | Fixing_ci | Addressing_review | Addressing_findings | Resolving_conflict
-  | Responding_to_human | Writing_pr_body | Rebasing | Starting | Updating
-  | Approved_running ->
+  | Responding_to_human | Writing_pr_body | Cleaning_worktree | Rebasing
+  | Starting | Updating | Approved_running ->
       true
   | Merged | Needs_help | In_merge_queue | Approved_idle | Ci_queued
-  | Review_queued | Findings_queued | Awaiting_feedback | Blocked_by_dep
-  | Pending ->
+  | Review_queued | Findings_queued | Cleanup_queued | Awaiting_feedback
+  | Blocked_by_dep | Pending ->
       false
 
 (** {1 Frame rendering} *)

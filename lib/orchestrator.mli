@@ -359,7 +359,9 @@ val apply_respond_outcome :
     naturally). [Respond_review_unresolved] -> complete +
     increment_review_unresolved_cycle_count — the still-unresolved threads
     re-deliver via the next poll until the cap (>=2) surfaces the agent through
-    [needs_intervention]. *)
+    [needs_intervention]. Every non-stale completion for [Uncommitted_changes]
+    also enqueues [Rebase], so both committed and discarded cleanup paths retry
+    the blocked rebase. *)
 
 type force_complete_reason = Cancelled | Unexpected_exception
 [@@deriving show, eq, sexp_of]

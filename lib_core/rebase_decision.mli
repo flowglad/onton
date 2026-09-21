@@ -104,9 +104,9 @@ val anchor_after_result :
       SHA — produce a fresh anchor for [base_branch] with that SHA. Noop
       refreshes too: a noop proves local HEAD already contains the remote tip,
       which is exactly the post-condition we want anchored.
-    - {!Worktree_parser.Conflict} or {!Worktree_parser.Error} — return [prev]
-      unchanged. A failed attempt must not erase or corrupt the
-      previously-recorded anchor.
+    - {!Worktree_parser.Conflict}, {!Worktree_parser.Uncommitted_changes}, or
+      {!Worktree_parser.Error} — return [prev] unchanged. A blocked or failed
+      attempt must not erase or corrupt the previously-recorded anchor.
     - Missing remote SHA on Ok/Noop — return [prev]. The handler observed a
       rebase outcome but couldn't record a SHA, so keep the older anchor rather
       than fabricate one. *)
