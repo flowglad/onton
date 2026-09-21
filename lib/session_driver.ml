@@ -813,11 +813,11 @@ module Make (W : Worktree.S) (Env : ENV) = struct
              same Ok/Failed disposition unless the combination promoted us
              to Session_push_failed (which is always Failed).
 
-             Special case: when the agent is responding to a human message,
-             the human may have asked a question or made a request that
-             requires no code changes. Absence of new commits is therefore
-             not a failure — override Session_no_commits to Session_ok so
-             the no_commits_push_count counter does not march toward
+             Special cases: a human message may require no code changes, and
+             an Uncommitted_changes cleanup may correctly discard local work.
+             Absence of new commits is therefore not a failure for those
+             response kinds — override Session_no_commits to Session_ok so the
+             no_commits_push_count counter does not march toward
              needs_intervention and the operation completes cleanly.
 
              Pr_body, Review_comments, and Ci stay false DELIBERATELY even

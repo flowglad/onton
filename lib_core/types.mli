@@ -49,6 +49,9 @@ end
 
 module Operation_kind : sig
   type t =
+    | Uncommitted_changes
+        (** Patch-agent cleanup requested after the supervisor finds local
+            worktree changes that prevent a required rebase. *)
     | Rebase
     | Human
     | Merge_conflict

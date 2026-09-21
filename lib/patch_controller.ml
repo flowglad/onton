@@ -200,8 +200,8 @@ let apply_poll_result ?(merge_queue_ejection_confirmed = false) t patch_id
             if is_new then
               log (Printf.sprintf "Enqueued %s" (Operation_kind.to_label kind));
             Orchestrator.enqueue acc patch_id kind
-        | Operation_kind.Rebase | Operation_kind.Human | Operation_kind.Pr_body
-          ->
+        | Operation_kind.Uncommitted_changes | Operation_kind.Rebase
+        | Operation_kind.Human | Operation_kind.Pr_body ->
             if is_new then
               log (Printf.sprintf "Enqueued %s" (Operation_kind.to_label kind));
             Orchestrator.enqueue acc patch_id kind)

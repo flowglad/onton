@@ -286,6 +286,7 @@ let () =
                   && (not (List.mem messages first_msg ~equal:String.equal))
                   && List.mem first_pre.Patch_agent.human_messages first_msg
                        ~equal:String.equal
+              | Patch_decision.Uncommitted_changes_payload
               | Patch_decision.Ci_payload _ | Patch_decision.Review_payload _
               | Patch_decision.Findings_payload _
               | Patch_decision.Pr_body_payload
@@ -553,6 +554,7 @@ let () =
         | Patch_decision.Ci_payload { failed_checks } ->
             List.exists failed_checks ~f:(fun (check : Ci_check.t) ->
                 Option.equal Int.equal check.Ci_check.id (Some run_id))
+        | Patch_decision.Uncommitted_changes_payload
         | Patch_decision.Human_payload _ | Patch_decision.Review_payload _
         | Patch_decision.Findings_payload _ | Patch_decision.Pr_body_payload
         | Patch_decision.Merge_conflict_payload ->

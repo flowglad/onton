@@ -277,6 +277,7 @@ type rebase_result = Worktree_parser.rebase_result =
   | Ok
   | Noop
   | Conflict of conflict_info
+  | Uncommitted_changes of string
   | Error of string
 [@@deriving show, eq, sexp_of, compare]
 
@@ -304,9 +305,10 @@ val rebase_onto :
     [~project_name:""] or [~ancestor_ids:[]] to opt out of the subject filter
     entirely; cherry-pick deduplication still applies.
 
-    On [Conflict], the rebase is left in progress and the returned
-    [conflict_info] carries the recovery info the patch-agent prompt threads
-    through to the agent. *)
+    Returns [Uncommitted_changes status] without starting the rebase when
+    [git status --porcelain=v1] reports local changes. On [Conflict], the rebase
+    is left in progress and the returned [conflict_info] carries the recovery
+    info the patch-agent prompt threads through to the agent. *)
 
 val read_in_progress_conflict_info :
   process_mgr:_ Eio.Process.mgr ->

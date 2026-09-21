@@ -1353,6 +1353,38 @@ let render_ci_failure_unknown_prompt ~(project_name : string) ?agents_md
     ?agents_md ()
   ^ render_turn_layer_ci_unknown ~project_name ?pr_number ()
 
+let render_turn_layer_uncommitted_changes ~(project_name : string)
+    ~(git_status : string) : string =
+  let status =
+    if String.is_empty (String.strip git_status) then "(status unavailable)"
+    else String.rstrip git_status
+  in
+  let vars = [ ("project_name", project_name); ("git_status", status) ] in
+  render_with_override ~project_name ~name:"turn_uncommitted_changes" ~vars
+    ~default:(fun () ->
+      Printf.sprintf
+        "# Uncommitted Changes Block the Required Rebase\n\n\
+         The supervisor needs to rebase this branch, but the worktree contains \
+         uncommitted changes. Decide which of these outcomes is correct:\n\n\
+         - If the changes belong to this patch, stage and commit all of them.\n\
+         - If the changes are accidental, obsolete, or generated artifacts, \
+         discard them completely. Include untracked files when applicable.\n\n\
+         Do not rebase or push. The supervisor will retry the rebase after \
+         this session. Before finishing, verify that `git status --porcelain` \
+         emits no output.\n\n\
+         ## Current Worktree Status\n\n\
+         ```text\n\
+         %s\n\
+         ```"
+        status)
+
+let render_uncommitted_changes_prompt ~(project_name : string) ?agents_md
+    ?pr_number ?patch ?gameplan ?base_branch ~(git_status : string) () : string
+    =
+  layered_prefix ~project_name ?pr_number ?patch ?gameplan ?base_branch
+    ?agents_md ()
+  ^ render_turn_layer_uncommitted_changes ~project_name ~git_status
+
 let render_recovery_section (ci : Worktree.conflict_info) =
   let bullet (c : Worktree.unique_commit) =
     let short =

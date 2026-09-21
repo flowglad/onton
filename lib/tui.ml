@@ -600,6 +600,7 @@ let render_header ~project_name ~backend_name ~width =
   [ header_line; rule ]
 
 let short_op_name = function
+  | Operation_kind.Uncommitted_changes -> "cleanup"
   | Operation_kind.Ci -> "ci"
   | Operation_kind.Review_comments -> "review"
   | Operation_kind.Findings -> "findings"

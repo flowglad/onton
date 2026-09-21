@@ -69,6 +69,7 @@ let derive (ctx : State.Patch_ctx.t) ~patch_id
     else Approved_idle
   else if State.Patch_ctx.is_busy ctx ~patch_id then
     match current_op with
+    | Some Uncommitted_changes -> Updating
     | Some Ci -> Fixing_ci
     | Some Review_comments -> Addressing_review
     | Some Findings -> Addressing_findings

@@ -136,4 +136,20 @@ let () =
   assert_contains "Plain: notes no per-patch commit list" recovery_section
     ~substring:"No per-patch commit list could be isolated"
 
+let () =
+  let prompt =
+    Prompt.render_uncommitted_changes_prompt ~project_name:""
+      ~git_status:" M lib/worker.ml\n?? scratch.txt" ()
+  in
+  assert_contains "dirty: explains blocked rebase" prompt
+    ~substring:"worktree contains uncommitted changes";
+  assert_contains "dirty: offers commit" prompt ~substring:"stage and commit";
+  assert_contains "dirty: offers discard" prompt
+    ~substring:"discard them completely";
+  assert_contains "dirty: includes status" prompt ~substring:"M lib/worker.ml";
+  assert_contains "dirty: requires clean porcelain status" prompt
+    ~substring:"git status --porcelain";
+  assert_contains "dirty: leaves rebase to supervisor" prompt
+    ~substring:"Do not rebase or push"
+
 let () = Stdlib.print_endline "All prompt-recovery tests passed."

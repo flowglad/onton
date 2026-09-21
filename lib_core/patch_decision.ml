@@ -32,9 +32,10 @@ let disposition (a : Patch_agent.t) : disposition =
     | Some k -> (
         match k with
         | Operation_kind.Rebase -> Ready_rebase
-        | Operation_kind.Human | Operation_kind.Merge_conflict
-        | Operation_kind.Ci | Operation_kind.Review_comments
-        | Operation_kind.Findings | Operation_kind.Pr_body ->
+        | Operation_kind.Uncommitted_changes | Operation_kind.Human
+        | Operation_kind.Merge_conflict | Operation_kind.Ci
+        | Operation_kind.Review_comments | Operation_kind.Findings
+        | Operation_kind.Pr_body ->
             Ready_respond k)
 
 type ci_decision =
@@ -118,16 +119,21 @@ let human_acceptance_delivers_messages ~(agent : Patch_agent.t)
   && equal_delivery_mode delivery_mode Respond
   && Option.equal Operation_kind.equal kind (Some Operation_kind.Human)
 
-(** Human and Findings turns may legitimately produce no commit when they are
-    responding to an existing PR. A Human-carrying Start retains the ordinary
-    Start no-commit retry/intervention semantics even after PR association. *)
+(** Human, Findings, and Uncommitted_changes turns may legitimately produce no
+    commit when they are responding to an existing PR. Cleanup can correctly
+    discard changes instead of committing them. A Human-carrying Start retains
+    the ordinary Start no-commit retry/intervention semantics even after PR
+    association. *)
 let session_no_commits_is_ok ~(agent : Patch_agent.t)
     ~(delivery_mode : delivery_mode) ~(kind : Operation_kind.t option) : bool =
   Patch_agent.is_pr_present agent
   && equal_delivery_mode delivery_mode Respond
   &&
   match kind with
-  | Some Operation_kind.Human | Some Operation_kind.Findings -> true
+  | Some Operation_kind.Human
+  | Some Operation_kind.Findings
+  | Some Operation_kind.Uncommitted_changes ->
+      true
   | Some Operation_kind.Ci
   | Some Operation_kind.Review_comments
   | Some Operation_kind.Pr_body
@@ -144,6 +150,7 @@ type base_change = { old_base : string; new_base : string }
 [@@deriving show, eq, sexp_of, compare]
 
 type delivery_payload =
+  | Uncommitted_changes_payload
   | Human_payload of { messages : string list }
   | Ci_payload of { failed_checks : Ci_check.t list }
   | Review_payload of { comments : Comment.t list }
@@ -231,6 +238,7 @@ let respond_delivery ~(agent : Patch_agent.t) ~(kind : Operation_kind.t)
     let ci_deliverable = filter_deliverable_ci_failures agent in
     let is_empty =
       match kind with
+      | Operation_kind.Uncommitted_changes -> false
       | Operation_kind.Review_comments -> List.is_empty prefetched_comments
       | Operation_kind.Findings -> List.is_empty prefetched_findings
       | Operation_kind.Human -> List.is_empty source.human_messages
@@ -264,6 +272,7 @@ let respond_delivery ~(agent : Patch_agent.t) ~(kind : Operation_kind.t)
       in
       let payload =
         match kind with
+        | Operation_kind.Uncommitted_changes -> Uncommitted_changes_payload
         | Operation_kind.Human ->
             Human_payload { messages = List.rev source.human_messages }
         | Operation_kind.Ci -> Ci_payload { failed_checks = ci_deliverable }
@@ -373,8 +382,8 @@ let plan_artifact_sync ~(kind : Operation_kind.t) ~(session_ok : bool)
   else
     match kind with
     | Operation_kind.Pr_body -> Sync_skip
-    | Operation_kind.Rebase | Operation_kind.Human
-    | Operation_kind.Merge_conflict | Operation_kind.Ci
+    | Operation_kind.Uncommitted_changes | Operation_kind.Rebase
+    | Operation_kind.Human | Operation_kind.Merge_conflict | Operation_kind.Ci
     | Operation_kind.Review_comments | Operation_kind.Findings ->
         if pr_body_artifact_changed ~pre ~post then Sync_attempt_pr_body
         else Sync_skip
