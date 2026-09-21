@@ -377,6 +377,7 @@ type rebase_result = Worktree_parser.rebase_result =
   | Ok
   | Noop
   | Conflict of conflict_info
+  | Uncommitted_changes of string
   | Error of string
 [@@deriving show, eq, sexp_of, compare]
 
@@ -595,71 +596,83 @@ let rebase_onto ~upstream ~process_mgr ~path ~target ~project_name ~ancestor_ids
          ancestor_code
          (String.strip ancestor_stderr))
   else
-    (* Capture the pre-rebase HEAD before either find_old_base's [git rev-parse]
+    let status_code, status_stdout, status_stderr =
+      run_git_exit_code ~process_mgr
+        [ "git"; "-C"; path; "status"; "--porcelain=v1" ]
+    in
+    match
+      Worktree_parser.classify_rebase_worktree_status ~code:status_code
+        ~stdout:status_stdout ~stderr:status_stderr
+    with
+    | Some result -> result
+    | None -> (
+        (* Capture the pre-rebase HEAD before either find_old_base's [git rev-parse]
        calls or the rebase itself can move it. Best-effort: an empty string is
        a valid value for [conflict_info.orig_head] (the prompt skips emergency
        recovery when empty). *)
-    let orig_head =
-      let code, stdout, _ =
-        run_git_exit_code ~process_mgr
-          [ "git"; "-C"; path; "rev-parse"; "HEAD" ]
-      in
-      if code = 0 then String.strip stdout else ""
-    in
-    match
-      find_old_base ~process_mgr ~path ~target ~project_name ~ancestor_ids
-    with
-    | Result.Error msg ->
-        (* The cherry-pick / patch-id detection in [find_old_base] failed,
+        let orig_head =
+          let code, stdout, _ =
+            run_git_exit_code ~process_mgr
+              [ "git"; "-C"; path; "rev-parse"; "HEAD" ]
+          in
+          if code = 0 then String.strip stdout else ""
+        in
+        match
+          find_old_base ~process_mgr ~path ~target ~project_name ~ancestor_ids
+        with
+        | Result.Error msg ->
+            (* The cherry-pick / patch-id detection in [find_old_base] failed,
            so use the caller-supplied [upstream] (computed by the executor
            via [Rebase_decision.plan] from the agent's anchor history). If
            [upstream] equals [target], no usable anchor exists and we fall
            back to the 2-arg form; otherwise [git rebase --onto target
            upstream HEAD] replays exactly the patch's own commits past
            [upstream]. *)
-        let rebase_args =
-          if String.equal upstream target then
-            [ "git"; "-C"; path; "rebase"; target ]
-          else [ "git"; "-C"; path; "rebase"; "--onto"; target; upstream ]
-        in
-        let rebase_code, _, rebase_stderr =
-          run_git_exit_code ~process_mgr rebase_args
-        in
-        if rebase_code = 0 then Ok
-        else if rebase_code <> 1 then
-          Error
-            (Printf.sprintf "rebase failed (fallback, %s) (exit %d): %s" msg
-               rebase_code
-               (String.strip rebase_stderr))
-        else
-          (* Leave rebase in progress for agent to resolve. No commit list is
+            let rebase_args =
+              if String.equal upstream target then
+                [ "git"; "-C"; path; "rebase"; target ]
+              else [ "git"; "-C"; path; "rebase"; "--onto"; target; upstream ]
+            in
+            let rebase_code, _, rebase_stderr =
+              run_git_exit_code ~process_mgr rebase_args
+            in
+            if rebase_code = 0 then Ok
+            else if rebase_code <> 1 then
+              Error
+                (Printf.sprintf "rebase failed (fallback, %s) (exit %d): %s" msg
+                   rebase_code
+                   (String.strip rebase_stderr))
+            else
+              (* Leave rebase in progress for agent to resolve. No commit list is
              available because [classify_unique_commits] failed; the prompt
              renders a Plain-strategy recovery section recommending plain
              [git rebase <target>] instead of [--onto]. *)
-          classify_rebase_exit_1 ~process_mgr ~path ~stderr:rebase_stderr
-            {
-              target;
-              old_base = (if String.equal upstream target then "" else upstream);
-              unique_commits = [];
-              strategy = Plain;
-              orig_head;
-            }
-    | Result.Ok (old_base, unique_commits) ->
-        let rebase_code, _, rebase_stderr =
-          run_git_exit_code ~process_mgr
-            [ "git"; "-C"; path; "rebase"; "--onto"; target; old_base ]
-        in
-        if rebase_code = 0 then Ok
-        else if rebase_code <> 1 then
-          Error
-            (Printf.sprintf "rebase --onto failed (exit %d): %s" rebase_code
-               (String.strip rebase_stderr))
-        else
-          (* Leave rebase in progress for agent to resolve, with the recovery
+              classify_rebase_exit_1 ~process_mgr ~path ~stderr:rebase_stderr
+                {
+                  target;
+                  old_base =
+                    (if String.equal upstream target then "" else upstream);
+                  unique_commits = [];
+                  strategy = Plain;
+                  orig_head;
+                }
+        | Result.Ok (old_base, unique_commits) ->
+            let rebase_code, _, rebase_stderr =
+              run_git_exit_code ~process_mgr
+                [ "git"; "-C"; path; "rebase"; "--onto"; target; old_base ]
+            in
+            if rebase_code = 0 then Ok
+            else if rebase_code <> 1 then
+              Error
+                (Printf.sprintf "rebase --onto failed (exit %d): %s" rebase_code
+                   (String.strip rebase_stderr))
+            else
+              (* Leave rebase in progress for agent to resolve, with the recovery
              info threaded through so the prompt can render the exact --onto
              command the supervisor used. *)
-          classify_rebase_exit_1 ~process_mgr ~path ~stderr:rebase_stderr
-            { target; old_base; unique_commits; strategy = Onto; orig_head }
+              classify_rebase_exit_1 ~process_mgr ~path ~stderr:rebase_stderr
+                { target; old_base; unique_commits; strategy = Onto; orig_head }
+        )
 
 type push_result = Worktree_parser.push_result =
   | Push_ok

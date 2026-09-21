@@ -19,9 +19,14 @@ let gen_branch =
       (string_size ~gen:(char_range 'a' 'z') (int_range 3 20)))
 
 let feedback_ops =
-  Operation_kind.[ Human; Merge_conflict; Ci; Review_comments; Pr_body ]
+  Operation_kind.
+    [ Uncommitted_changes; Human; Merge_conflict; Ci; Review_comments; Pr_body ]
 
 let gen_feedback_op = QCheck2.Gen.oneof_list feedback_ops
+
+let gen_non_cleanup_feedback_op =
+  QCheck2.Gen.oneof_list
+    Operation_kind.[ Human; Merge_conflict; Ci; Review_comments; Pr_body ]
 
 (** Start + set PR so the agent is in has_pr=true, busy=false state. *)
 let with_pr pid br =
@@ -170,13 +175,23 @@ let () =
           equal_disposition (disposition a) Ready_rebase);
       (* ---- disposition: Rebase + feedback -> Ready_rebase (Rebase wins) ---- *)
       Test.make ~name:"disposition: Rebase wins over feedback"
-        Gen.(triple gen_pid gen_branch gen_feedback_op)
+        Gen.(triple gen_pid gen_branch gen_non_cleanup_feedback_op)
         (fun (pid, br, k) ->
           let a =
             with_pr pid br |> fun a ->
             enqueue a k |> fun a -> enqueue a Operation_kind.Rebase
           in
           equal_disposition (disposition a) Ready_rebase);
+      Test.make ~name:"disposition: cleanup wins over Rebase"
+        Gen.(pair gen_pid gen_branch)
+        (fun (pid, br) ->
+          let a =
+            with_pr pid br |> fun a ->
+            enqueue a Operation_kind.Rebase |> fun a ->
+            enqueue a Operation_kind.Uncommitted_changes
+          in
+          equal_disposition (disposition a)
+            (Ready_respond Operation_kind.Uncommitted_changes));
       (* ---- on_ci_failure: below cap -> Enqueue ---- *)
       Test.make ~name:"on_ci_failure: count < 3 -> Enqueue"
         Gen.(pair gen_pid gen_branch)
@@ -601,7 +616,8 @@ let () =
         {
           payload =
             ( Ci_payload _ | Review_payload _ | Findings_payload _
-            | Pr_body_payload | Merge_conflict_payload );
+            | Pr_body_payload | Merge_conflict_payload
+            | Uncommitted_changes_payload );
           _;
         }
     | Skip_empty | Respond_stale ->
@@ -635,7 +651,8 @@ let () =
         {
           payload =
             ( Ci_payload _ | Review_payload _ | Findings_payload _
-            | Pr_body_payload | Merge_conflict_payload );
+            | Pr_body_payload | Merge_conflict_payload
+            | Uncommitted_changes_payload );
           _;
         }
     | Skip_empty | Respond_stale ->
@@ -703,7 +720,8 @@ let () =
             {
               payload =
                 ( Human_payload _ | Review_payload _ | Findings_payload _
-                | Pr_body_payload | Merge_conflict_payload );
+                | Pr_body_payload | Merge_conflict_payload
+                | Uncommitted_changes_payload );
               _;
             }
         | Skip_empty | Respond_stale ->
@@ -803,7 +821,8 @@ let () =
         {
           payload =
             ( Human_payload _ | Review_payload _ | Findings_payload _
-            | Pr_body_payload | Merge_conflict_payload );
+            | Pr_body_payload | Merge_conflict_payload
+            | Uncommitted_changes_payload );
           _;
         }
     | Skip_empty | Respond_stale ->
@@ -845,7 +864,8 @@ let () =
         {
           payload =
             ( Human_payload _ | Review_payload _ | Findings_payload _
-            | Pr_body_payload | Merge_conflict_payload );
+            | Pr_body_payload | Merge_conflict_payload
+            | Uncommitted_changes_payload );
           _;
         }
     | Skip_empty | Respond_stale ->
@@ -1134,10 +1154,26 @@ let () =
     (* Helpers for plan_artifact_sync enumeration. *)
     let all_kinds : Operation_kind.t list =
       Operation_kind.
-        [ Rebase; Human; Merge_conflict; Ci; Review_comments; Pr_body ]
+        [
+          Uncommitted_changes;
+          Rebase;
+          Human;
+          Merge_conflict;
+          Ci;
+          Review_comments;
+          Pr_body;
+        ]
     in
     let non_pr_body_kinds : Operation_kind.t list =
-      Operation_kind.[ Rebase; Human; Merge_conflict; Ci; Review_comments ]
+      Operation_kind.
+        [
+          Uncommitted_changes;
+          Rebase;
+          Human;
+          Merge_conflict;
+          Ci;
+          Review_comments;
+        ]
     in
 
     (* AS-10: session_ok=false → Sync_skip for any kind, any pre/post. *)
@@ -1331,6 +1367,22 @@ let () =
          with
          | Deliver { payload = Human_payload { messages }; _ } ->
              Int.equal (List.length messages) (List.length msgs)
+         | Deliver _ | Skip_empty | Respond_stale -> false));
+  QCheck2.Test.check_exn
+    (QCheck2.Test.make
+       ~name:"respond_delivery: uncommitted changes always deliver cleanup"
+       ~count:200
+       QCheck2.Gen.(pair gen_pid gen_branch)
+       (fun (pid, br) ->
+         let a = with_pr pid br in
+         let a = enqueue a Operation_kind.Uncommitted_changes in
+         let a = respond a Operation_kind.Uncommitted_changes in
+         match
+           respond_delivery ~agent:a ~kind:Operation_kind.Uncommitted_changes
+             ~pre_fire_agent:None ~prefetched_comments:[]
+             ~prefetched_findings:[] ~main_branch:"main"
+         with
+         | Deliver { payload = Uncommitted_changes_payload; _ } -> true
          | Deliver _ | Skip_empty | Respond_stale -> false));
   QCheck2.Test.check_exn
     (QCheck2.Test.make ~name:"patch decision public surface is linked"

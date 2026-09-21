@@ -131,7 +131,16 @@ module Operation_kind = Types.Operation_kind
 
 let all_kinds =
   Operation_kind.
-    [ Rebase; Human; Merge_conflict; Ci; Review_comments; Pr_body; Findings ]
+    [
+      Uncommitted_changes;
+      Rebase;
+      Human;
+      Merge_conflict;
+      Ci;
+      Review_comments;
+      Pr_body;
+      Findings;
+    ]
 
 let gen_kind = QCheck2.Gen.oneof_list all_kinds
 
@@ -164,7 +173,8 @@ let is_feedback_classifies_kinds =
       let reference =
         match k with
         | Operation_kind.Rebase -> false
-        | Human | Merge_conflict | Ci | Review_comments | Pr_body | Findings ->
+        | Uncommitted_changes | Human | Merge_conflict | Ci | Review_comments
+        | Pr_body | Findings ->
             true
       in
       Bool.equal (Priority.is_feedback k) reference)

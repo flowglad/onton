@@ -132,8 +132,24 @@ type conflict_info = {
 }
 [@@deriving show, eq, sexp_of, compare]
 
-type rebase_result = Ok | Noop | Conflict of conflict_info | Error of string
+type rebase_result =
+  | Ok
+  | Noop
+  | Conflict of conflict_info
+  | Uncommitted_changes of string
+  | Error of string
 [@@deriving show, eq, sexp_of, compare]
+
+let classify_rebase_worktree_status ~code ~stdout ~stderr =
+  if code <> 0 then
+    Some
+      (Error
+         (Printf.sprintf "git status before rebase failed (exit %d): %s" code
+            (String.strip stderr))
+        : rebase_result)
+  else
+    let status = String.strip stdout in
+    if String.is_empty status then None else Some (Uncommitted_changes status)
 
 (** Recognize a commit subject as one of an ancestor patch's commits via the
     project-prefixed pattern [[<project>] Patch <id>:]. Used during rebase to

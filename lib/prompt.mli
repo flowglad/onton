@@ -107,6 +107,13 @@ val render_turn_layer_ci_detailed :
 val render_turn_layer_ci_unknown :
   project_name:string -> ?pr_number:Pr_number.t -> unit -> string
 
+val render_turn_layer_uncommitted_changes :
+  project_name:string ->
+  ?pr_number:Pr_number.t ->
+  git_status:string ->
+  unit ->
+  string
+
 val render_turn_layer_merge_conflict :
   project_name:string ->
   ?pr_number:Pr_number.t ->
@@ -220,6 +227,17 @@ val render_ci_failure_unknown_prompt :
   ?patch:Patch.t ->
   ?gameplan:Gameplan.t ->
   ?base_branch:string ->
+  unit ->
+  string
+
+val render_uncommitted_changes_prompt :
+  project_name:string ->
+  ?agents_md:string ->
+  ?pr_number:Pr_number.t ->
+  ?patch:Patch.t ->
+  ?gameplan:Gameplan.t ->
+  ?base_branch:string ->
+  git_status:string ->
   unit ->
   string
 

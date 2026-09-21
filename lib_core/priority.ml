@@ -7,18 +7,19 @@ module Ok = Operation_kind
 
 let priority (k : Ok.t) : int =
   match k with
-  | Ok.Rebase -> 0
-  | Ok.Human -> 1
-  | Ok.Merge_conflict -> 2
-  | Ok.Ci -> 3
-  | Ok.Review_comments -> 4
-  | Ok.Findings -> 5
-  | Ok.Pr_body -> 6
+  | Ok.Uncommitted_changes -> 0
+  | Ok.Rebase -> 1
+  | Ok.Human -> 2
+  | Ok.Merge_conflict -> 3
+  | Ok.Ci -> 4
+  | Ok.Review_comments -> 5
+  | Ok.Findings -> 6
+  | Ok.Pr_body -> 7
 
 let is_feedback (k : Ok.t) : bool =
   match k with
-  | Ok.Human | Ok.Merge_conflict | Ok.Ci | Ok.Review_comments | Ok.Findings
-  | Ok.Pr_body ->
+  | Ok.Uncommitted_changes | Ok.Human | Ok.Merge_conflict | Ok.Ci
+  | Ok.Review_comments | Ok.Findings | Ok.Pr_body ->
       true
   | Ok.Rebase -> false
 
@@ -57,13 +58,15 @@ let highest_priority (q : t) (k : Ok.t) : bool =
 let%test_module "Priority" =
   (module struct
     let%test "priority ordering" =
-      priority Ok.Rebase < priority Ok.Human
+      priority Ok.Uncommitted_changes < priority Ok.Rebase
+      && priority Ok.Rebase < priority Ok.Human
       && priority Ok.Human < priority Ok.Merge_conflict
       && priority Ok.Merge_conflict < priority Ok.Ci
       && priority Ok.Ci < priority Ok.Review_comments
 
     let%test "is_feedback" =
-      is_feedback Ok.Human
+      is_feedback Ok.Uncommitted_changes
+      && is_feedback Ok.Human
       && is_feedback Ok.Merge_conflict
       && is_feedback Ok.Ci
       && is_feedback Ok.Review_comments

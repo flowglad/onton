@@ -361,7 +361,8 @@ let () =
 
 (** P7: Priority ordering — Respond always picks highest-priority operation.
     When multiple operations are enqueued, tick fires the one with lowest
-    priority value (Rebase < Human < Merge_conflict < Ci < Review_comments). *)
+    priority value (Uncommitted_changes < Rebase < Human < Merge_conflict < Ci <
+    Review_comments). *)
 let () =
   let prop_p7 =
     QCheck2.Test.make ~name:"P7: respond picks highest priority" ~count:300
@@ -494,9 +495,10 @@ let make_busy_orch ~patches ~kind ~messages =
                enqueues [Human], so no separate [enqueue] is needed. *)
             List.fold messages ~init:orch ~f:(fun acc msg ->
                 Orchestrator.send_human_message acc pid msg)
-        | Operation_kind.Rebase | Operation_kind.Merge_conflict
-        | Operation_kind.Ci | Operation_kind.Review_comments
-        | Operation_kind.Findings | Operation_kind.Pr_body ->
+        | Operation_kind.Uncommitted_changes | Operation_kind.Rebase
+        | Operation_kind.Merge_conflict | Operation_kind.Ci
+        | Operation_kind.Review_comments | Operation_kind.Findings
+        | Operation_kind.Pr_body ->
             Orchestrator.enqueue orch pid kind
       in
       let orch =

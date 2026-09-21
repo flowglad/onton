@@ -117,9 +117,10 @@ val session_no_commits_is_ok :
   kind:Types.Operation_kind.t option ->
   bool
 (** Whether a no-commit session is an accepted no-op. This exemption is limited
-    to [Respond] deliveries for Human and Findings operations on an existing PR;
-    a Human-carrying [Start] retains Start's no-commit retry/intervention
-    behavior even if it associates a PR mid-session. *)
+    to [Respond] deliveries for Human, Findings, and Uncommitted_changes
+    operations on an existing PR. Cleanup may correctly discard changes rather
+    than create a commit. A Human-carrying [Start] retains Start's ordinary
+    no-commit behavior even if it associates a PR mid-session. *)
 
 (** {2 Respond delivery — pre-session decisions for the runner} *)
 
@@ -130,6 +131,7 @@ type base_change = { old_base : string; new_base : string }
 [@@deriving show, eq, sexp_of, compare]
 
 type delivery_payload =
+  | Uncommitted_changes_payload
   | Human_payload of { messages : string list }
   | Ci_payload of { failed_checks : Ci_check.t list }
   | Review_payload of { comments : Comment.t list }

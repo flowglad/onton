@@ -6,7 +6,16 @@ open Onton_core.Types
 open Onton_core.Patch_agent
 
 let all_ops =
-  Operation_kind.[ Rebase; Human; Merge_conflict; Ci; Review_comments; Pr_body ]
+  Operation_kind.
+    [
+      Uncommitted_changes;
+      Rebase;
+      Human;
+      Merge_conflict;
+      Ci;
+      Review_comments;
+      Pr_body;
+    ]
 
 let gen_pid =
   QCheck2.Gen.(
@@ -21,7 +30,8 @@ let gen_branch =
 let gen_op = QCheck2.Gen.oneof_list all_ops
 
 let feedback_ops =
-  Operation_kind.[ Human; Merge_conflict; Ci; Review_comments; Pr_body ]
+  Operation_kind.
+    [ Uncommitted_changes; Human; Merge_conflict; Ci; Review_comments; Pr_body ]
 
 let gen_feedback_op = QCheck2.Gen.oneof_list feedback_ops
 

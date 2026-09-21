@@ -1200,6 +1200,10 @@ module Make (Forge : Forge.S) (W : Worktree.S) (Env : Runner_env.S) = struct
                         | Worktree.Conflict _ ->
                             log_event runtime ~patch_id
                               "Rebase conflict — enqueued merge-conflict"
+                        | Worktree.Uncommitted_changes _ ->
+                            log_event runtime ~patch_id
+                              "Rebase blocked by uncommitted changes — \
+                               prompting patch agent"
                         | Worktree.Error msg ->
                             log_event runtime ~patch_id
                               (Printf.sprintf "Rebase failed — %s" msg));
@@ -1792,6 +1796,7 @@ module Make (Forge : Forge.S) (W : Worktree.S) (Env : Runner_env.S) = struct
                                           match rebase_result with
                                           | Worktree.Conflict ci -> Some ci
                                           | Worktree.Ok | Worktree.Noop
+                                          | Worktree.Uncommitted_changes _
                                           | Worktree.Error _ ->
                                               None
                                         in
@@ -1810,6 +1815,11 @@ module Make (Forge : Forge.S) (W : Worktree.S) (Env : Runner_env.S) = struct
                                             log_event runtime ~patch_id
                                               "Conflict rebase hit conflicts — \
                                                delivering to agent"
+                                        | Worktree.Uncommitted_changes _ ->
+                                            log_event runtime ~patch_id
+                                              "Conflict rebase blocked by \
+                                               uncommitted changes — prompting \
+                                               patch agent"
                                         | Worktree.Error msg ->
                                             log_event runtime ~patch_id
                                               (Printf.sprintf
@@ -1970,12 +1980,17 @@ module Make (Forge : Forge.S) (W : Worktree.S) (Env : Runner_env.S) = struct
                                              no-recovery-section prompt
                                              rather than blocking delivery. *)
                                             deliver_to_agent ?conflict_info ()
+                                        | Orchestrator.Conflict_cleanup_queued
+                                          ->
+                                            `Stale
                                         | Orchestrator.Conflict_give_up ->
                                             `Failed)
                                   | Patch_decision.Deliver
                                       {
                                         payload =
-                                          ( Patch_decision.Human_payload _
+                                          ( Patch_decision
+                                            .Uncommitted_changes_payload
+                                          | Patch_decision.Human_payload _
                                           | Patch_decision.Ci_payload _
                                           | Patch_decision.Review_payload _
                                           | Patch_decision.Findings_payload _
@@ -2022,6 +2037,8 @@ module Make (Forge : Forge.S) (W : Worktree.S) (Env : Runner_env.S) = struct
                                               (Project_store
                                                .comment_responses_dir
                                                  ~project_name ~patch_id)
+                                        | Patch_decision
+                                          .Uncommitted_changes_payload
                                         | Patch_decision.Ci_payload _
                                         | Patch_decision.Findings_payload _
                                         | Patch_decision.Human_payload _
@@ -2032,6 +2049,9 @@ module Make (Forge : Forge.S) (W : Worktree.S) (Env : Runner_env.S) = struct
                                       in
                                       log_event runtime ~patch_id
                                         (match payload with
+                                        | Patch_decision
+                                          .Uncommitted_changes_payload ->
+                                            "Delivering uncommitted-changes"
                                         | Patch_decision.Review_payload
                                             { comments } ->
                                             Printf.sprintf "Delivering %s (%s)"
@@ -2063,6 +2083,18 @@ module Make (Forge : Forge.S) (W : Worktree.S) (Env : Runner_env.S) = struct
                                       try
                                         let prompt =
                                           match payload with
+                                          | Patch_decision
+                                            .Uncommitted_changes_payload ->
+                                              Prompt
+                                              .render_uncommitted_changes_prompt
+                                                ~project_name ?agents_md
+                                                ?pr_number
+                                                ?patch:patch_for_layer ~gameplan
+                                                ~base_branch:
+                                                  base_branch_for_layer
+                                                ~git_status:
+                                                  (W.git_status ~path:wt_path)
+                                                ()
                                           | Patch_decision.Ci_payload
                                               { failed_checks } ->
                                               if
@@ -2361,6 +2393,8 @@ module Make (Forge : Forge.S) (W : Worktree.S) (Env : Runner_env.S) = struct
                                               Base.List.filter_map failed_checks
                                                 ~f:(fun (c : Ci_check.t) ->
                                                   c.Ci_check.id)
+                                        | Patch_decision
+                                          .Uncommitted_changes_payload
                                         | Patch_decision.Human_payload _
                                         | Patch_decision.Review_payload _
                                         | Patch_decision.Findings_payload _
@@ -2685,6 +2719,8 @@ module Make (Forge : Forge.S) (W : Worktree.S) (Env : Runner_env.S) = struct
                                                 else `Retry_push
                                               else result
                                           | Patch_decision.Human_payload _
+                                          | Patch_decision
+                                            .Uncommitted_changes_payload
                                           | Patch_decision
                                             .Merge_conflict_payload ->
                                               result

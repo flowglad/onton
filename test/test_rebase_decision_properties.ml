@@ -437,7 +437,21 @@ let prop_aar_error_preserves =
       in
       Option.equal Anchor.equal a prev)
 
-(** RD-AAR-5: Ok with None resolved -> prev unchanged (no fabricated anchor). *)
+(** RD-AAR-5: Uncommitted changes preserve prev unchanged. *)
+let prop_aar_uncommitted_changes_preserves =
+  Test.make ~count:50
+    ~name:"anchor_after_result: Uncommitted_changes -> prev unchanged"
+    (Gen.pair gen_typed_branch gen_hex40) (fun (base, resolved) ->
+      let prev = Some (some_anchor ()) in
+      List.for_all [ None; Some resolved ] ~f:(fun resolved_remote_sha ->
+          let a =
+            Rebase_decision.anchor_after_result ~prev
+              ~result:(Worktree_parser.Uncommitted_changes "")
+              ~resolved_remote_sha ~base_branch:base
+          in
+          Option.equal Anchor.equal a prev))
+
+(** RD-AAR-6: Ok with None resolved -> prev unchanged (no fabricated anchor). *)
 let prop_aar_ok_no_sha_preserves =
   Test.make ~count:50
     ~name:"anchor_after_result: Ok + None sha -> prev unchanged"
@@ -465,6 +479,7 @@ let () =
       prop_aar_noop_refreshes;
       prop_aar_conflict_preserves;
       prop_aar_error_preserves;
+      prop_aar_uncommitted_changes_preserves;
       prop_aar_ok_no_sha_preserves;
     ];
   Stdlib.print_endline "Rebase_decision: all properties passed"

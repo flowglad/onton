@@ -200,8 +200,8 @@ let apply_poll_result ?(merge_queue_ejection_confirmed = false) t patch_id
             if is_new then
               log (Printf.sprintf "Enqueued %s" (Operation_kind.to_label kind));
             Orchestrator.enqueue acc patch_id kind
-        | Operation_kind.Rebase | Operation_kind.Human | Operation_kind.Pr_body
-          ->
+        | Operation_kind.Uncommitted_changes | Operation_kind.Rebase
+        | Operation_kind.Human | Operation_kind.Pr_body ->
             if is_new then
               log (Printf.sprintf "Enqueued %s" (Operation_kind.to_label kind));
             Orchestrator.enqueue acc patch_id kind)
@@ -520,26 +520,23 @@ let plan_action_for_patch t ~branch_map patch_id =
     && (not agent.Patch_agent.merged)
     && (not agent.Patch_agent.busy)
     && (not agent.Patch_agent.branch_blocked)
-    && List.mem agent.Patch_agent.queue Operation_kind.Rebase
-         ~equal:Operation_kind.equal
+    && Option.value_map
+         (Patch_agent.highest_priority agent)
+         ~default:false
+         ~f:(Operation_kind.equal Operation_kind.Rebase)
   then
-    match Patch_agent.highest_priority agent with
-    | Some highest when Operation_kind.equal highest Operation_kind.Rebase ->
-        let branch_of dep_pid =
-          match Map.find branch_map dep_pid with
-          | Some b -> b
-          | None ->
-              Option.value
-                (Orchestrator.agent t dep_pid).Patch_agent.base_branch
-                ~default:(Orchestrator.main_branch t)
-        in
-        let new_base =
-          Graph.initial_base (Orchestrator.graph t) patch_id ~has_merged
-            ~branch_of
-            ~main:(Orchestrator.main_branch t)
-        in
-        Some (Orchestrator.Rebase (patch_id, new_base))
-    | _ -> None
+    let branch_of dep_pid =
+      match Map.find branch_map dep_pid with
+      | Some b -> b
+      | None ->
+          Option.value (Orchestrator.agent t dep_pid).Patch_agent.base_branch
+            ~default:(Orchestrator.main_branch t)
+    in
+    let new_base =
+      Graph.initial_base (Orchestrator.graph t) patch_id ~has_merged ~branch_of
+        ~main:(Orchestrator.main_branch t)
+    in
+    Some (Orchestrator.Rebase (patch_id, new_base))
   else if
     Patch_agent.is_pr_present agent
     && (not agent.Patch_agent.merged)

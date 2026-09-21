@@ -343,6 +343,7 @@ let prop_plan_new_base_only_for_rebase =
         | Reconciler.Start_operation { kind; new_base; _ } -> (
             match kind with
             | Types.Operation_kind.Rebase -> Option.is_some new_base
+            | Types.Operation_kind.Uncommitted_changes
             | Types.Operation_kind.Human | Types.Operation_kind.Merge_conflict
             | Types.Operation_kind.Ci | Types.Operation_kind.Review_comments
             | Types.Operation_kind.Findings | Types.Operation_kind.Pr_body ->
@@ -362,6 +363,7 @@ let prop_plan_suppresses_rebase_multi_dep =
             match kind with
             | Types.Operation_kind.Rebase ->
                 List.length (Graph.open_pr_deps graph patch_id ~has_merged) <= 1
+            | Types.Operation_kind.Uncommitted_changes
             | Types.Operation_kind.Human | Types.Operation_kind.Merge_conflict
             | Types.Operation_kind.Ci | Types.Operation_kind.Review_comments
             | Types.Operation_kind.Findings | Types.Operation_kind.Pr_body ->

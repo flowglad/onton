@@ -204,6 +204,7 @@ let () =
       Operation_kind.Review_comments;
       Operation_kind.Human;
       Operation_kind.Merge_conflict;
+      Operation_kind.Uncommitted_changes;
       Operation_kind.Pr_body;
     ]
   in
@@ -286,6 +287,7 @@ let () =
                   && (not (List.mem messages first_msg ~equal:String.equal))
                   && List.mem first_pre.Patch_agent.human_messages first_msg
                        ~equal:String.equal
+              | Patch_decision.Uncommitted_changes_payload
               | Patch_decision.Ci_payload _ | Patch_decision.Review_payload _
               | Patch_decision.Findings_payload _
               | Patch_decision.Pr_body_payload
@@ -329,7 +331,15 @@ let () =
   let prop =
     QCheck2.Test.make ~name:"AO-5: stale outcomes are identity"
       (QCheck2.Gen.oneof_list
-         Operation_kind.[ Ci; Review_comments; Human; Merge_conflict; Pr_body ])
+         Operation_kind.
+           [
+             Uncommitted_changes;
+             Ci;
+             Review_comments;
+             Human;
+             Merge_conflict;
+             Pr_body;
+           ])
       (fun kind ->
         try
           let orch, patches, gameplan, pid = bootstrap_one () in
@@ -360,6 +370,41 @@ let () =
   in
   QCheck2.Test.check_exn prop;
   Stdlib.print_endline "AO-5 passed"
+
+(* ========== AO-5b: completed cleanup responses retry the rebase ========== *)
+
+let () =
+  let completion_outcomes =
+    [
+      Orchestrator.Respond_ok;
+      Orchestrator.Respond_failed;
+      Orchestrator.Respond_retry_push;
+      Orchestrator.Respond_no_commits;
+      Orchestrator.Respond_skip_empty;
+    ]
+  in
+  let prop =
+    QCheck2.Test.make
+      ~name:"AO-5b: completed Uncommitted_changes response enqueues Rebase"
+      (QCheck2.Gen.oneof_list completion_outcomes) (fun outcome ->
+        try
+          let orch, patches, gameplan, pid = bootstrap_one () in
+          let orch =
+            make_busy orch patches gameplan pid
+              Operation_kind.Uncommitted_changes
+          in
+          let orch =
+            Orchestrator.apply_respond_outcome orch pid
+              Operation_kind.Uncommitted_changes outcome
+          in
+          let agent = Orchestrator.agent orch pid in
+          (not agent.Patch_agent.busy)
+          && List.mem agent.Patch_agent.queue Operation_kind.Rebase
+               ~equal:Operation_kind.equal
+        with _ -> false)
+  in
+  QCheck2.Test.check_exn prop;
+  Stdlib.print_endline "AO-5b passed"
 
 (* ========== AO-6: Respond_failed restores inflight human messages ========== *)
 
@@ -553,6 +598,7 @@ let () =
         | Patch_decision.Ci_payload { failed_checks } ->
             List.exists failed_checks ~f:(fun (check : Ci_check.t) ->
                 Option.equal Int.equal check.Ci_check.id (Some run_id))
+        | Patch_decision.Uncommitted_changes_payload
         | Patch_decision.Human_payload _ | Patch_decision.Review_payload _
         | Patch_decision.Findings_payload _ | Patch_decision.Pr_body_payload
         | Patch_decision.Merge_conflict_payload ->
