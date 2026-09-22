@@ -198,6 +198,7 @@ let rec toml_value_of_json ~path (json : Yojson.Safe.t) =
       else Ok (encoded ^ ".0")
   | `String value -> Ok (Yojson.Safe.to_string (`String value))
   | `List values ->
+      (* TOML 1.0 permits mixed types, including nested arrays. *)
       Result.map
         (List.mapi values ~f:(fun index value ->
              toml_value_of_json ~path:(Printf.sprintf "%s[%d]" path index) value)
@@ -444,6 +445,15 @@ let%test "parse_string: extras preserve float type and 64-bit integer bounds" =
     | Error _ -> false)
   && rejects {|{"extras":{"too_large":9223372036854775808}}|}
   && rejects {|{"extras":{"too_small":-9223372036854775809}}|}
+
+let%test "parse_string: extras preserve valid mixed TOML arrays" =
+  match
+    parse_string ~known_backends:[ "codex" ]
+      {|{"extras":{"mixed":["fast",true,[1,false]]}}|}
+  with
+  | Ok t ->
+      List.equal String.equal t.extras [ "mixed=[\"fast\", true, [1, false]]" ]
+  | Error _ -> false
 
 let%test "parse_string: array object error describes unsupported nesting" =
   match
