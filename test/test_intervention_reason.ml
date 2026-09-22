@@ -277,6 +277,9 @@ let () =
              (fun a -> Patch_agent.reset_automerge_failure_count a);
              (fun a -> Patch_agent.set_head_oid a (Some "deadbeef"));
              (fun a ->
+               Patch_agent.set_expected_remote_head_oid a
+                 (if flag then Some "deadbeef" else None));
+             (fun a ->
                Patch_agent.set_review_decision a (Some "REVIEW_REQUIRED"));
              (fun a ->
                Patch_agent.set_unresolved_comment_count a

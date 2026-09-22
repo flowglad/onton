@@ -938,6 +938,19 @@ let () =
          let orch = Orchestrator.increment_automerge_failure_count orch pid in
          let orch = Orchestrator.reset_automerge_failure_count orch pid in
          let orch = Orchestrator.set_head_oid orch pid (Some "deadbeef") in
+         let expected_remote_head_oid =
+           if flag then Some "deadbeef" else None
+         in
+         let orch =
+           Orchestrator.set_expected_remote_head_oid orch pid
+             expected_remote_head_oid
+         in
+         if
+           not
+             (Option.equal String.equal
+                (Orchestrator.agent orch pid)
+                  .Patch_agent.expected_remote_head_oid expected_remote_head_oid)
+         then QCheck2.Test.fail_reportf "expected remote head was not stamped";
          let orch =
            Orchestrator.set_review_decision orch pid (Some "REVIEW_REQUIRED")
          in
