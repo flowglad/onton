@@ -215,12 +215,16 @@ let make ~fs ~clock ~process_mgr ~repo_root ~(config : config) ~timeout_seconds
     get (parse_git_list out)
   in
   let git_registrations_for_branch branch =
-    git [ "for-each-ref"; "--format=%(worktreepath)"; "refs/heads/" ^ branch ]
+    let exact_ref = "refs/heads/" ^ branch in
+    git [ "for-each-ref"; "--format=%(refname)%09%(worktreepath)"; exact_ref ]
     |> String.split_lines
-    |> List.filter_map ~f:(fun path ->
-        let path = String.strip path in
-        if String.is_empty path then None
-        else Some { path; branch = Some branch; mode = None })
+    |> List.filter_map ~f:(fun line ->
+        match String.lsplit2 line ~on:'\t' with
+        | Some (refname, path) when String.equal refname exact_ref ->
+            let path = String.strip path in
+            if String.is_empty path then None
+            else Some { path; branch = Some branch; mode = None }
+        | Some _ | None -> None)
   in
   let admin_for path =
     let dirs = Stdlib.Filename.concat common "worktrees" in
