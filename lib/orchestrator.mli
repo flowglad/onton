@@ -126,6 +126,7 @@ val record_delivered_ci_run_ids : t -> Patch_id.t -> int list -> t
 val set_checks_passing : t -> Patch_id.t -> bool -> t
 val set_merge_ready : t -> Patch_id.t -> bool -> t
 val set_head_oid : t -> Patch_id.t -> string option -> t
+val set_expected_remote_head_oid : t -> Patch_id.t -> string option -> t
 val set_review_decision : t -> Patch_id.t -> string option -> t
 val set_unresolved_comment_count : t -> Patch_id.t -> int -> t
 val set_mergeability_unknown : t -> Patch_id.t -> bool -> t

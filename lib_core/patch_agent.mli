@@ -51,6 +51,13 @@ type t = private {
       (** Component-derived merge readiness ([Pr_state.merge_ready_of]), not
           GitHub's [mergeStateStatus]. *)
   head_oid : string option;
+  expected_remote_head_oid : string option;
+      (** Head awaiting publication, installed before a force-push and retained
+          only on Push_ok. While pending, [head_oid] retains the pre-push
+          observation. Conflicts for that old head or without identity are
+          deferred. Non-conflict state remains actionable; an unidentified
+          non-conflict poll, expected head or distinct head settles the marker.
+      *)
   review_decision : string option;
   unresolved_comment_count : int;
   mergeability_unknown : bool;
@@ -394,6 +401,7 @@ val set_merge_ready : t -> bool -> t
 (** Set the component-derived [merge_ready] flag ([Pr_state.merge_ready_of]). *)
 
 val set_head_oid : t -> string option -> t
+val set_expected_remote_head_oid : t -> string option -> t
 val set_review_decision : t -> string option -> t
 val set_unresolved_comment_count : t -> int -> t
 
@@ -711,6 +719,7 @@ val restore :
   ci_checks:Types.Ci_check.t list ->
   merge_ready:bool ->
   ?head_oid:string option ->
+  ?expected_remote_head_oid:string option ->
   ?review_decision:string option ->
   ?unresolved_comment_count:int ->
   mergeability_unknown:bool ->

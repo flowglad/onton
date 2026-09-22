@@ -6,6 +6,113 @@ open Onton_core.Types
 let log_event runtime ?patch_id msg =
   Runtime_logging.log_event runtime ?patch_id msg
 
+(* Install before yielding to the push. A poll may settle the marker while
+   the push runs; successful completion must not re-arm it afterwards. *)
+let with_pending_push ~update ~patch_id ~local_sha push =
+  let published = ref false in
+  Fun.protect
+    ~finally:(fun () ->
+      if not !published then
+        Eio.Cancel.protect (fun () ->
+            update (fun orch ->
+                let agent = Orchestrator.agent orch patch_id in
+                if
+                  Base.Option.equal String.equal
+                    agent.Patch_agent.expected_remote_head_oid local_sha
+                then
+                  Orchestrator.set_expected_remote_head_oid orch patch_id None
+                else orch)))
+    (fun () ->
+      update (fun orch ->
+          Orchestrator.set_expected_remote_head_oid orch patch_id local_sha);
+      let result = push () in
+      (published :=
+         match result with
+         | Worktree.Push_ok -> true
+         | Worktree.Push_up_to_date | Worktree.Push_no_commits
+         | Worktree.Push_rejected _ | Worktree.Push_worktree_missing
+         | Worktree.Push_error _ ->
+             false);
+      result)
+
+let%test_unit "pending push covers publication, noop, errors and cancellation" =
+  Eio_main.run (fun _ ->
+      let patch_id = Patch_id.of_string "pending-push" in
+      let patch =
+        Patch.
+          {
+            id = patch_id;
+            title = "test";
+            description = "";
+            branch = Branch.of_string "branch";
+            dependencies = [];
+            spec = "";
+            acceptance_criteria = [];
+            changes = [];
+            files = [];
+            classification = "";
+            test_stubs_introduced = [];
+            test_stubs_implemented = [];
+            complexity = None;
+            precedents = [];
+            required_context = [];
+          }
+      in
+      let initial =
+        Orchestrator.create ~patches:[ patch ]
+          ~main_branch:(Branch.of_string "main")
+      in
+      let initial = Orchestrator.set_head_oid initial patch_id (Some "old") in
+      let orch = ref initial in
+      let update f = orch := f !orch in
+      let marker () =
+        (Orchestrator.agent !orch patch_id).Patch_agent.expected_remote_head_oid
+      in
+      let run push =
+        with_pending_push ~update ~patch_id ~local_sha:(Some "new") (fun () ->
+            assert (marker () = Some "new");
+            assert (
+              Onton_core.Patch_decision.defer_remote_head ~has_conflict:true
+                (Orchestrator.agent !orch patch_id)
+                (Some "old"));
+            push ())
+      in
+      List.iter
+        (fun result ->
+          orch := initial;
+          ignore (run (fun () -> result));
+          assert (marker () = None))
+        [
+          Worktree.Push_up_to_date;
+          Worktree.Push_no_commits;
+          Worktree.Push_rejected Onton_core.Push_reject_classify.Lease_violation;
+          Worktree.Push_worktree_missing;
+          Worktree.Push_error "failed";
+        ];
+      ignore (run (fun () -> Worktree.Push_ok));
+      assert (marker () = Some "new");
+      orch := initial;
+      ignore
+        (run (fun () ->
+             update (fun t ->
+                 Orchestrator.set_expected_remote_head_oid t patch_id None);
+             Worktree.Push_ok));
+      assert (marker () = None);
+      (try
+         ignore (run (fun () -> raise Exit));
+         assert false
+       with Exit -> ());
+      assert (marker () = None);
+      let started, signal = Eio.Promise.create () in
+      Eio.Fiber.first
+        (fun () ->
+          ignore
+            (run (fun () ->
+                 Eio.Promise.resolve signal ();
+                 Eio.Fiber.await_cancel ())))
+        (fun () -> Eio.Promise.await started);
+      assert (marker () = None))
+
 let patch_complexity ~(gameplan : Gameplan.t) ~patch_id =
   Base.List.find gameplan.Gameplan.patches ~f:(fun (p : Patch.t) ->
       Patch_id.equal p.Patch.id patch_id)
@@ -1241,8 +1348,11 @@ module Make (Forge : Forge.S) (W : Worktree.S) (Env : Runner_env.S) = struct
                                   ~ref_name:("refs/heads/" ^ base_str)
                               in
                               let result =
-                                W.force_push_with_lease ~path:wt_path ~branch
-                                  ~base:new_base
+                                with_pending_push
+                                  ~update:(Runtime.update_orchestrator runtime)
+                                  ~patch_id ~local_sha (fun () ->
+                                    W.force_push_with_lease ~path:wt_path
+                                      ~branch ~base:new_base)
                               in
                               (match result with
                               | Worktree.Push_ok ->
@@ -1883,10 +1993,17 @@ module Make (Forge : Forge.S) (W : Worktree.S) (Env : Runner_env.S) = struct
                                                     ("refs/heads/" ^ base)
                                               in
                                               let result =
-                                                W.force_push_with_lease
-                                                  ~path:wt_path ~branch
-                                                  ~base:
-                                                    (Types.Branch.of_string base)
+                                                with_pending_push
+                                                  ~update:
+                                                    (Runtime.update_orchestrator
+                                                       runtime)
+                                                  ~patch_id ~local_sha
+                                                  (fun () ->
+                                                    W.force_push_with_lease
+                                                      ~path:wt_path ~branch
+                                                      ~base:
+                                                        (Types.Branch.of_string
+                                                           base))
                                               in
                                               (match result with
                                               | Worktree.Push_ok ->

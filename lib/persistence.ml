@@ -199,6 +199,9 @@ let patch_agent_to_yojson (a : Patch_agent.t) =
       ("merge_ready", `Bool a.merge_ready);
       ( "head_oid",
         Option.value_map a.head_oid ~default:`Null ~f:(fun s -> `String s) );
+      ( "expected_remote_head_oid",
+        Option.value_map a.expected_remote_head_oid ~default:`Null ~f:(fun s ->
+            `String s) );
       ( "review_decision",
         Option.value_map a.review_decision ~default:`Null ~f:(fun s ->
             `String s) );
@@ -368,6 +371,8 @@ let patch_agent_of_yojson ~gameplan json =
        ~session_fallback ~human_messages ~inflight_human_messages ~ci_checks
        ~merge_ready:(bool_member "merge_ready" json)
        ~head_oid:(string_member_opt "head_oid" json)
+       ~expected_remote_head_oid:
+         (string_member_opt "expected_remote_head_oid" json)
        ~review_decision:(string_member_opt "review_decision" json)
        ~unresolved_comment_count:
          (Option.value
