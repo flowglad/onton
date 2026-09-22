@@ -202,6 +202,13 @@ let make ~fs ~clock ~process_mgr ~repo_root ~(config : config) ~timeout_seconds
               ~branch:(Types.Branch.to_string branch)
               json))
   in
+  let read_owner_for_path ~path =
+    let file = metadata_path path in
+    if not (Stdlib.Sys.file_exists file) then None
+    else
+      let json = Yojson.Safe.from_string (read_file file) in
+      Some (get (parse_ownership_for_path ~path:(canonical path) json))
+  in
   let git_list () =
     let out = git [ "worktree"; "list"; "--porcelain"; "-z" ] in
     get (parse_git_list out)
@@ -249,11 +256,6 @@ let make ~fs ~clock ~process_mgr ~repo_root ~(config : config) ~timeout_seconds
         | Some e when equal_backend (registration_backend e) Simgit -> c
         | Some _ | None -> Worktree_lifecycle.git)
   in
-  let owning ~path ~branch =
-    match read_owner ~path ~branch with
-    | Some state -> state
-    | None -> (legacy_owner path, Ready)
-  in
   let validate ~path ~branch =
     let at args = checked ("git" :: "-C" :: path :: args) in
     if
@@ -289,6 +291,30 @@ let make ~fs ~clock ~process_mgr ~repo_root ~(config : config) ~timeout_seconds
     in
     if not (String.equal head ("refs/heads/" ^ Types.Branch.to_string branch))
     then failwith ("Checkout branch differs from requested branch: " ^ path)
+  in
+  let owning ~path ~branch =
+    match read_owner_for_path ~path with
+    | None -> (legacy_owner path, Ready)
+    | Some (recorded, c, phase)
+      when String.equal recorded (Types.Branch.to_string branch) ->
+        (c, phase)
+    | Some (_, c, phase)
+      when equal_phase phase Ready && equal_backend c.backend Git ->
+        let registered =
+          List.exists (git_list ()) ~f:(fun (e : registration) ->
+              String.equal (canonical e.path) (canonical path)
+              && Option.equal String.equal e.branch
+                   (Some (Types.Branch.to_string branch)))
+        in
+        if (not registered) || Option.is_none (admin_for path) then
+          failwith "Checkout branch changed without a linked Git registration";
+        validate ~path ~branch;
+        write_owner ~path ~branch ~phase:Ready c;
+        (c, Ready)
+    | Some _ ->
+        failwith
+          "Checkout ownership conflicts with the requested path or branch, or \
+           lacks publication state"
   in
   let cleanup ~path c =
     ignore (sg c [ "unlock"; path; "--json" ] : string);

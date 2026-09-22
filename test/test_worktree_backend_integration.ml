@@ -232,6 +232,41 @@ let fixture env config =
           Printf.printf "%s lifecycle integration: OK\n%!"
             (L.backend_name config.backend)))
 
+let renamed_checkout env =
+  G.with_temp_repo (fun repo ->
+      G.run_git ~cwd:repo [ "commit"; "--allow-empty"; "-qm"; "base" ];
+      let base = G.git_capture ~cwd:repo [ "rev-parse"; "HEAD" ] in
+      let path = Filename.concat repo "checkout" in
+      let module B =
+        (val Worktree_backend.make ~fs:(Eio.Stdenv.fs env)
+               ~clock:(Eio.Stdenv.clock env)
+               ~process_mgr:(Eio.Stdenv.process_mgr env)
+               ~repo_root:repo ~config:L.git ~timeout_seconds:5.)
+      in
+      let old_branch = branch "old" in
+      let new_branch = branch "new" in
+      ignore
+        (B.materialize ~path ~branch:old_branch ~expected_local:None
+           (Start_point_plan.Create_new_branch_from_base { base_branch = base }));
+      Fun.protect
+        ~finally:(fun () ->
+          ignore
+            (G.git_exit_code ~cwd:repo
+               [ "worktree"; "remove"; "--force"; path ]))
+        (fun () ->
+          G.run_git ~cwd:path [ "switch"; "-c"; "new" ];
+          check "unrelated branch request cannot retarget ownership"
+            (Result.is_error (B.inspect ~path ~branch:(branch "unrelated")));
+          B.reconcile ();
+          check "reconcile adopts renamed ready Git checkout"
+            (Option.is_some (get (B.inspect ~path ~branch:new_branch)));
+          check "old branch no longer owns checkout"
+            (Result.is_error (B.inspect ~path ~branch:old_branch));
+          B.reconcile ();
+          B.remove ~discard:false
+            (Option.get (get (B.inspect ~path ~branch:new_branch))));
+      print_endline "renamed Git checkout reconciliation: OK")
+
 let failures env =
   G.with_temp_repo (fun repo ->
       let script = Filename.concat repo "fake-sg" in
@@ -829,6 +864,7 @@ let () =
   Eio_main.run (fun env ->
       QCheck2.Test.check_exn (lifecycle_sequences env);
       fixture env L.git;
+      renamed_checkout env;
       failures env;
       discovery env;
       unavailable_legacy_owner env;

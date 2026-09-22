@@ -14,6 +14,7 @@ let total =
         ignore (W.parse_simgit_list s);
         ignore (W.doctor_identity s);
         ignore (W.parse_git_list s);
+        ignore (W.parse_ownership_for_path ~path:s (`String s));
         ignore (W.parse_ownership ~path:s ~branch:s (`String s));
         ignore
           (W.resolve ~backend:(Some s) ~executable:(Some s) ~stored_backend:None
@@ -191,7 +192,15 @@ let publication =
               | Error msg -> failwith msg)
         in
         let json = W.ownership_json ~path:name ~branch:name ~phase owner in
-        (match W.parse_ownership ~path:name ~branch:name json with
+        (match W.parse_ownership_for_path ~path:name json with
+          | Ok (recorded, decoded_owner, decoded_phase) ->
+              recorded = name
+              && W.equal_config decoded_owner owner
+              && W.equal_phase decoded_phase phase
+          | Error _ -> false)
+        && Result.is_error
+             (W.parse_ownership_for_path ~path:(name ^ "/other") json)
+        && (match W.parse_ownership ~path:name ~branch:name json with
           | Ok (decoded_owner, state) ->
               W.equal_config decoded_owner owner && W.equal_phase phase state
           | Error _ -> false)

@@ -102,7 +102,7 @@ let ownership_json ~path ~branch ~phase config =
           | Ready -> "ready") );
     ]
 
-let parse_ownership ~path ~branch json =
+let parse_ownership_for_path ~path json =
   match
     ( Json.field "path" json,
       Json.field "branch" json,
@@ -110,18 +110,27 @@ let parse_ownership ~path ~branch json =
       Json.field "state" json )
   with
   | Some (`String p), Some (`String b), Some owner, Some (`String state)
-    when String.equal p path && String.equal b branch ->
+    when String.equal p path ->
       Result.bind (of_json owner) ~f:(fun config ->
           match state with
-          | "preparing" -> Ok (config, Preparing)
+          | "preparing" -> Ok (b, config, Preparing)
           | "cleanup_pending" when equal_backend config.backend Simgit ->
-              Ok (config, Cleanup_pending)
-          | "ready" -> Ok (config, Ready)
+              Ok (b, config, Cleanup_pending)
+          | "ready" -> Ok (b, config, Ready)
           | _ -> Error "Unknown checkout publication state")
   | _ ->
       Error
         "Checkout ownership conflicts with the requested path or branch, or \
          lacks publication state"
+
+let parse_ownership ~path ~branch json =
+  Result.bind (parse_ownership_for_path ~path json)
+    ~f:(fun (recorded, c, phase) ->
+      if String.equal recorded branch then Ok (c, phase)
+      else
+        Error
+          "Checkout ownership conflicts with the requested path or branch, or \
+           lacks publication state")
 
 let parse raw =
   try Ok (Yojson.Safe.from_string raw) with Yojson.Json_error msg -> Error msg

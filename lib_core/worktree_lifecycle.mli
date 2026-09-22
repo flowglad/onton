@@ -41,6 +41,12 @@ type phase = Preparing | Cleanup_pending | Ready [@@deriving eq]
 val ownership_json :
   path:string -> branch:string -> phase:phase -> config -> Yojson.Safe.t
 
+val parse_ownership_for_path :
+  path:string -> Yojson.Safe.t -> (string * config * phase, string) Result.t
+(** Decode the recorded branch while still requiring the requested path. A
+    caller may update a ready Git record only after validating the checkout's
+    current Git registration and repository identity. *)
+
 val parse_ownership :
   path:string ->
   branch:string ->
