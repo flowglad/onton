@@ -52,6 +52,7 @@ type create_io = {
   check_ref_collision : branch_str:string -> unit;
   read_ref : ref_name:string -> string option;
   ancestry : local:string -> remote:string -> Start_point_plan.ancestry;
+  local_changes_represented_remotely : local:string -> remote:string -> bool;
   execute_action :
     path:string ->
     branch_str:string ->
@@ -61,8 +62,9 @@ type create_io = {
 }
 (** The effectful operations used by {!S.create}. Factored out so the wiring can
     be tested with in-memory fakes instead of a live git repository:
-    [worktree_exists] drives the short-circuit, [read_ref]/[ancestry] feed
-    {!Start_point_plan.plan}, and [execute_action] realises its decision. *)
+    [worktree_exists] drives the short-circuit, ref/ancestry/patch-equivalence
+    reads feed {!Start_point_plan.plan}, and [execute_action] realises its
+    decision. *)
 
 val create_with_io :
   io:create_io ->
@@ -100,6 +102,15 @@ val compute_repo_ancestry :
     The git-backed primitive behind {!create_io.ancestry}; exposed so an
     integration test can verify the [Equal]/[Remote_ahead]/[Local_ahead]/
     [Diverged] classification against real commits. *)
+
+val local_changes_represented_remotely :
+  process_mgr:_ Eio.Process.mgr ->
+  repo_root:string ->
+  local:string ->
+  remote:string ->
+  bool
+(** Returns [true] only when [git cherry remote local] proves every local-only
+    patch is already represented in the remote history. *)
 
 (** Outcome of [fetch_origin_branch]. The [Fetch_branch_no_remote_ref] case is
     the routine "brand-new branch — no upstream yet" state, which trips on the

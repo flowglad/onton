@@ -22,8 +22,8 @@
     remote ref exists. A local ref that matches the remote or is strictly behind
     it ([Equal] / [Remote_ahead]) is safe to reset to the remote; a local ref
     that has commits the remote doesn't ([Local_ahead] / [Diverged]) is treated
-    as suspect — a human pushed something the supervisor doesn't know about, and
-    silently overwriting it would lose work. *)
+    as suspect unless Git proves every local-only patch is already represented
+    remotely (the common force-push-after-rebase case). *)
 
 type sha = string [@@deriving show, eq, sexp_of, compare]
 
@@ -62,7 +62,7 @@ type action =
 type refusal =
   | Local_diverged_from_remote of { local_sha : sha; remote_sha : sha }
       (** Ancestry is [Diverged] (or [Unknown]) and both refs are present — a
-          human's local commits would be lost by [-B] reset. *)
+          reset could lose a local patch that is not represented remotely. *)
   | Local_has_unpushed_commits of { local_sha : sha; remote_sha : sha }
       (** Ancestry is [Local_ahead] and both refs are present — the local ref is
           strictly ahead of remote. On a create path this is suspicious: onton
@@ -84,6 +84,7 @@ val plan :
   remote_ref:sha option ->
   ancestry:ancestry ->
   base_branch:string ->
+  local_changes_represented_remotely:bool ->
   branch_checked_out_in_main_root:bool ->
   existing_worktree_path:string option ->
   decision
@@ -102,6 +103,9 @@ val plan :
       [Plan (Reset_and_use_remote_tracking { remote_sha = r })]
     + [(Some l, Some r)] with [ancestry = Local_ahead] →
       [Refuse (Local_has_unpushed_commits ...)]
+    + [(Some l, Some r)] with [ancestry = Diverged | Unknown] and
+      [local_changes_represented_remotely = true] →
+      [Plan (Reset_and_use_remote_tracking { remote_sha = r })]
     + [(Some l, Some r)] with [ancestry = Diverged | Unknown] →
       [Refuse (Local_diverged_from_remote ...)] (conservative — refuse rather
       than risk silent commit loss).
