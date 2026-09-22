@@ -3,9 +3,12 @@
 
 open Types
 
-val defer_remote_head : Patch_agent.t -> string option -> bool
-(** Defer an unidentified or pre-push head while waiting for publication. The
-    expected head and distinct known heads remain actionable. *)
+val defer_remote_head :
+  Patch_agent.t -> has_conflict:bool -> string option -> bool
+(** Retain the publication marker for a known pre-push head, or an unidentified
+    conflict. This does not suppress non-conflict PR state. An unidentified
+    non-conflict observation, expected head, or distinct head settles the
+    marker. *)
 
 (** Pure decision functions for patch agents.
 

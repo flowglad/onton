@@ -65,6 +65,7 @@ let () =
         ~name:"pending publication defers only old or unidentified heads"
         Gen.(pair (option string) (option string))
         (fun (old, expected) ->
+          let defer_remote_head = defer_remote_head ~has_conflict:true in
           let a =
             create ~branch:(Branch.of_string "b") (Patch_id.of_string "p")
           in
@@ -81,6 +82,16 @@ let () =
               && not
                    (defer_remote_head a
                       (Some (head ^ Option.value old ~default:"" ^ "x"))));
+      Test.make
+        ~name:"unidentified non-conflict observations settle publication"
+        Gen.(pair (option string) (option string))
+        (fun (old, expected) ->
+          let a =
+            create ~branch:(Branch.of_string "b") (Patch_id.of_string "p")
+          in
+          let a = set_head_oid a old in
+          let a = set_expected_remote_head_oid a expected in
+          not (defer_remote_head a ~has_conflict:false None));
       (* ---- disposition: merged always Skip ---- *)
       Test.make ~name:"disposition: merged -> Skip"
         Gen.(pair gen_pid gen_branch)

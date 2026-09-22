@@ -54,8 +54,10 @@ type t = private {
   expected_remote_head_oid : string option;
       (** Head awaiting publication, installed before a force-push and retained
           only on Push_ok. While pending, [head_oid] retains the pre-push
-          observation. Polls for that old head or without identity are deferred;
-          the expected head or a distinct known head settles the marker. *)
+          observation. Conflicts for that old head or without identity are
+          deferred. Non-conflict state remains actionable; an unidentified
+          non-conflict poll, expected head or distinct head settles the marker.
+      *)
   review_decision : string option;
   unresolved_comment_count : int;
   mergeability_unknown : bool;

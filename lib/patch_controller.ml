@@ -97,10 +97,11 @@ let apply_poll_result ?(merge_queue_ejection_confirmed = false) t patch_id
   let deferred_head =
     Patch_decision.defer_remote_head
       (Orchestrator.agent t patch_id)
+      ~has_conflict:(Poller.has_conflict poll_result)
       poll_result.Poller.head_oid
   in
   let poll_result =
-    if deferred_head then (
+    if deferred_head && Poller.has_conflict poll_result then (
       log
         (Printf.sprintf
            "Deferring mergeability for GitHub head %s; waiting for pushed head \
@@ -1643,6 +1644,28 @@ let%test
         merge_ready = true;
       }
   in
+  let agent = Orchestrator.agent t pid in
+  assert agent.Patch_agent.merge_ready;
+  assert (not agent.mergeability_unknown);
+  assert (
+    Option.equal String.equal agent.expected_remote_head_oid (Some pushed_head));
+  let unidentified =
+    apply t
+      {
+        poll_result with
+        queue = [];
+        head_oid = None;
+        merge_state = Pr_state.Mergeable;
+        merge_ready = true;
+        review_decision = Some "APPROVED";
+      }
+  in
+  let agent = Orchestrator.agent unidentified pid in
+  assert agent.Patch_agent.merge_ready;
+  assert (not agent.mergeability_unknown);
+  assert (Option.equal String.equal agent.review_decision (Some "APPROVED"));
+  assert (Option.is_none agent.head_oid);
+  assert (Option.is_none agent.expected_remote_head_oid);
   let t = apply t { poll_result with head_oid = None } in
   let t = apply t poll_result in
   let agent = Orchestrator.agent t pid in
