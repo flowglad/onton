@@ -216,14 +216,16 @@ let make ~fs ~clock ~process_mgr ~repo_root ~(config : config) ~timeout_seconds
   in
   let git_registrations_for_branch branch =
     let exact_ref = "refs/heads/" ^ branch in
-    git [ "for-each-ref"; "--format=%(refname)%09%(worktreepath)"; exact_ref ]
+    git
+      [ "for-each-ref"; "--format=%(refname)%00%(worktreepath)%00"; exact_ref ]
     |> String.split_lines
     |> List.filter_map ~f:(fun line ->
-        match String.lsplit2 line ~on:'\t' with
-        | Some (refname, path) when String.equal refname exact_ref ->
-            let path = String.strip path in
-            if String.is_empty path then None
-            else Some { path; branch = Some branch; mode = None }
+        match String.lsplit2 line ~on:'\000' with
+        | Some (refname, encoded_path) when String.equal refname exact_ref -> (
+            match String.chop_suffix encoded_path ~suffix:"\000" with
+            | Some path when not (String.is_empty path) ->
+                Some { path; branch = Some branch; mode = None }
+            | Some _ | None -> None)
         | Some _ | None -> None)
   in
   let admin_for path =
@@ -602,10 +604,10 @@ let make ~fs ~clock ~process_mgr ~repo_root ~(config : config) ~timeout_seconds
         if not (Stdlib.Sys.file_exists e.path) then
           let owner =
             match
-              read_owner ~path:e.path ~branch:(Types.Branch.of_string requested)
+              protect_result (fun () -> read_owner_for_path ~path:e.path)
             with
-            | Some (owner, _) -> owner
-            | None -> Worktree_lifecycle.git
+            | Ok (Some (_, owner, _)) -> owner
+            | Ok None | Error _ -> Worktree_lifecycle.git
           in
           match owner.backend with
           | Git ->

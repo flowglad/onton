@@ -640,6 +640,9 @@ let targeted_prune_ignores_unrelated_owner env =
       let nested_stale_path = Filename.concat repo "stale-prefix-nested" in
       G.run_git ~cwd:repo
         [ "worktree"; "add"; "-b"; "prefix/nested"; nested_stale_path ];
+      let whitespace_stale_path = Filename.concat repo " stale-whitespace " in
+      G.run_git ~cwd:repo
+        [ "worktree"; "add"; "-b"; "whitespace"; whitespace_stale_path ];
       Fun.protect
         ~finally:(fun () ->
           ignore (G.git_exit_code ~cwd:repo [ "worktree"; "unlock"; path ]);
@@ -684,11 +687,12 @@ let targeted_prune_ignores_unrelated_owner env =
           write simgit_metadata
             (Yojson.Safe.to_string
                (L.ownership_json ~path:simgit_stale_path
-                  ~branch:"simgit-requested" ~phase:L.Ready simgit_owner));
+                  ~branch:"renamed-simgit" ~phase:L.Ready simgit_owner));
           G.sh ~dir:repo ("rm -rf " ^ Filename.quote stale_path);
           G.sh ~dir:repo ("rm -rf " ^ Filename.quote unrelated_stale_path);
           G.sh ~dir:repo ("rm -rf " ^ Filename.quote simgit_stale_path);
           G.sh ~dir:repo ("rm -rf " ^ Filename.quote nested_stale_path);
+          G.sh ~dir:repo ("rm -rf " ^ Filename.quote whitespace_stale_path);
           let module B =
             (val Worktree_backend.make ~fs:(Eio.Stdenv.fs env)
                    ~clock:(Eio.Stdenv.clock env)
@@ -704,6 +708,9 @@ let targeted_prune_ignores_unrelated_owner env =
           check "simgit removal was used" (Sys.file_exists simgit_log);
           check "stale simgit ownership metadata is removed"
             (not (Sys.file_exists simgit_metadata));
+          B.prune_stale_for_branch (branch "whitespace");
+          check "whitespace path registration is pruned without normalization"
+            (not (List.mem whitespace_stale_path (List.map fst (B.list ()))));
           B.prune_stale_for_branch (branch "prefix");
           check "nested branch registration is not pruned by prefix"
             (List.mem nested_stale_path (List.map fst (B.list ())));

@@ -39,8 +39,9 @@ module type S = sig
   (** Removes a stale registration for the requested branch when its working
       directory is gone, using the recorded owning backend when present and
       native Git otherwise. Ownership metadata is removed with the registration.
-      Registrations for every other branch are left untouched; backend command,
-      ownership-validation, and metadata errors propagate. *)
+      Unreadable ownership also falls back to native Git. Registrations for
+      every other branch are left untouched; backend-command and
+      metadata-deletion errors propagate. *)
 
   val reconcile : unit -> unit
 end
