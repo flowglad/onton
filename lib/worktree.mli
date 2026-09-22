@@ -413,7 +413,7 @@ module type S = sig
   val detect_branch : path:string -> Types.Branch.t
   val list_with_branches : unit -> (string * Types.Branch.t) list
   val find_for_branch : Types.Branch.t -> string option
-  val prune_admin : unit -> unit
+  val prune_stale_for_branch : Types.Branch.t -> unit
 
   val ensure_ready :
     path:string -> branch:Types.Branch.t -> (bool, string) Result.t

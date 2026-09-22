@@ -623,6 +623,58 @@ let mixed_reconcile env =
                 = (name = "sg-two")))
             [ "sg-one"; "sg-two" ]))
 
+let targeted_prune_ignores_unrelated_owner env =
+  G.with_temp_repo (fun repo ->
+      let repo = Unix.realpath repo in
+      G.run_git ~cwd:repo [ "commit"; "--allow-empty"; "-qm"; "base" ];
+      let path = Filename.concat repo "checkout" in
+      G.run_git ~cwd:repo [ "worktree"; "add"; "-b"; "old"; path ];
+      let stale_path = Filename.concat repo "stale-requested" in
+      G.run_git ~cwd:repo [ "worktree"; "add"; "-b"; "requested"; stale_path ];
+      let unrelated_stale_path = Filename.concat repo "stale-unrelated" in
+      G.run_git ~cwd:repo
+        [ "worktree"; "add"; "-b"; "unrelated"; unrelated_stale_path ];
+      Fun.protect
+        ~finally:(fun () ->
+          ignore (G.git_exit_code ~cwd:repo [ "worktree"; "unlock"; path ]);
+          ignore
+            (G.git_exit_code ~cwd:repo
+               [ "worktree"; "remove"; "--force"; path ]))
+        (fun () ->
+          G.run_git ~cwd:path [ "switch"; "-c"; "new" ];
+          let common = Filename.concat repo ".git" in
+          let registry = Filename.concat common "onton-worktrees" in
+          Unix.mkdir registry 0o700;
+          let metadata =
+            Filename.concat registry
+              (Digest.to_hex (Digest.string path) ^ ".json")
+          in
+          let unavailable_simgit =
+            get
+              (L.configure ~backend:"simgit"
+                 ~executable:(Some (Filename.concat repo "missing-simgit")))
+          in
+          write metadata
+            (Yojson.Safe.to_string
+               (L.ownership_json ~path ~branch:"old" ~phase:L.Ready
+                  unavailable_simgit));
+          G.sh ~dir:repo ("rm -rf " ^ Filename.quote stale_path);
+          G.sh ~dir:repo ("rm -rf " ^ Filename.quote unrelated_stale_path);
+          let module B =
+            (val Worktree_backend.make ~fs:(Eio.Stdenv.fs env)
+                   ~clock:(Eio.Stdenv.clock env)
+                   ~process_mgr:(Eio.Stdenv.process_mgr env)
+                   ~repo_root:repo ~config:L.git ~timeout_seconds:5.)
+          in
+          B.prune_stale_for_branch (branch "requested");
+          check "requested stale registration is pruned"
+            (not (List.mem stale_path (List.map fst (B.list ()))));
+          check "unrelated stale registration is not pruned"
+            (List.mem unrelated_stale_path (List.map fst (B.list ())));
+          check "inconsistent unrelated owner remains registered"
+            (List.mem path (List.map fst (B.list ()))));
+      print_endline "targeted prune ignores unrelated ownership: OK")
+
 let discovery env =
   G.with_temp_repo (fun repo ->
       let bin = Filename.concat repo "bin" in
@@ -872,6 +924,7 @@ let () =
       failed_reset env;
       concurrent_reset env;
       mixed_reconcile env;
+      targeted_prune_ignores_unrelated_owner env;
       interrupted_creation env;
       match Sys.getenv_opt "ONTON_TEST_SIMGIT" with
       | None ->

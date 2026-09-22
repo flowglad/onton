@@ -998,7 +998,7 @@ module type S = sig
   val detect_branch : path:string -> Types.Branch.t
   val list_with_branches : unit -> (string * Types.Branch.t) list
   val find_for_branch : Types.Branch.t -> string option
-  val prune_admin : unit -> unit
+  val prune_stale_for_branch : Types.Branch.t -> unit
 
   val ensure_ready :
     path:string -> branch:Types.Branch.t -> (bool, string) Result.t
@@ -1105,7 +1105,7 @@ let make ~fs ~config ~clock ~process_mgr ~repo_root =
       List.find_map (B.list ()) ~f:(fun (path, b) ->
           if Types.Branch.equal branch b then Some path else None)
 
-    let prune_admin () = B.reconcile ()
+    let prune_stale_for_branch branch = B.prune_stale_for_branch branch
     let ensure_ready = ready
 
     let run_hook ~clock ~script ~cwd ~env () =

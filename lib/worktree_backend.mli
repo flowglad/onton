@@ -34,6 +34,7 @@ module type S = sig
 
   val list : unit -> (string * Types.Branch.t) list
   val remove : discard:bool -> checkout -> unit
+  val prune_stale_for_branch : Types.Branch.t -> unit
   val reconcile : unit -> unit
 end
 

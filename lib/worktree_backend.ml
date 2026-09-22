@@ -27,6 +27,7 @@ module type S = sig
 
   val list : unit -> (string * Types.Branch.t) list
   val remove : discard:bool -> checkout -> unit
+  val prune_stale_for_branch : Types.Branch.t -> unit
   val reconcile : unit -> unit
 end
 
@@ -576,13 +577,30 @@ let make ~fs ~clock ~process_mgr ~repo_root ~(config : config) ~timeout_seconds
     let metadata = metadata_path path in
     if Stdlib.Sys.file_exists metadata then Unix.unlink metadata
   in
+  let registration_owner (e : registration) =
+    match e.branch with
+    | Some branch ->
+        fst (owning ~path:e.path ~branch:(Types.Branch.of_string branch))
+    | None -> legacy_owner e.path
+  in
+  let prune_stale_for_branch requested =
+    let requested = Types.Branch.to_string requested in
+    List.iter (git_list ()) ~f:(fun (e : registration) ->
+        if
+          Option.equal String.equal e.branch (Some requested)
+          && not (Stdlib.Sys.file_exists e.path)
+        then
+          match (registration_owner e).backend with
+          | Git ->
+              ignore (git [ "worktree"; "remove"; "--force"; e.path ] : string)
+          | Simgit ->
+              ignore
+                (get
+                   (inspect ~path:e.path
+                      ~branch:(Types.Branch.of_string requested))
+                  : checkout option))
+  in
   let reconcile () =
-    let registration_owner (e : registration) =
-      match e.branch with
-      | Some branch ->
-          fst (owning ~path:e.path ~branch:(Types.Branch.of_string branch))
-      | None -> legacy_owner e.path
-    in
     let owners =
       config :: List.map (git_list ()) ~f:registration_owner
       |> List.dedup_and_sort ~compare:compare_config
@@ -630,6 +648,9 @@ let make ~fs ~clock ~process_mgr ~repo_root ~(config : config) ~timeout_seconds
 
     let remove ~discard checkout =
       Eio.Mutex.use_ro mutex (fun () -> remove ~discard checkout)
+
+    let prune_stale_for_branch branch =
+      Eio.Mutex.use_ro mutex (fun () -> prune_stale_for_branch branch)
 
     let reconcile () = Eio.Mutex.use_ro mutex reconcile
   end : S)
