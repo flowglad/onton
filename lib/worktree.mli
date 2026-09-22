@@ -110,7 +110,9 @@ val local_changes_represented_remotely :
   remote:string ->
   bool
 (** Returns [true] only when [git cherry remote local] proves every local-only
-    patch is already represented in the remote history. *)
+    patch is already represented in the remote history and the two commits have
+    identical trees. The tree check prevents patch-ID equivalence from
+    authorizing a reset after the remote has reverted an equivalent patch. *)
 
 (** Outcome of [fetch_origin_branch]. The [Fetch_branch_no_remote_ref] case is
     the routine "brand-new branch — no upstream yet" state, which trips on the

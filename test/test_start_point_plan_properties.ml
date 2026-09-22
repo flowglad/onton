@@ -10,8 +10,10 @@ open Onton_core
 
     - {b SPP-1 Totality}: [plan] never raises on any combination of inputs.
     - {b SPP-2 No silent clobber}: if both refs are present and ancestry is
-      [Local_ahead], [Diverged], or [Unknown], the decision is [Refuse _] — we
-      never silently overwrite local commits the supervisor doesn't know about.
+      [Local_ahead], the decision is [Refuse _]; [Diverged] or [Unknown] also
+      refuses unless the caller has proved the local-only changes are
+      represented remotely and validated the resulting tree. We never silently
+      overwrite local commits the supervisor doesn't know about.
     - {b SPP-3 Remote authoritative}: when both refs are present and ancestry is
       [Equal] or [Remote_ahead], the action is [Reset_and_use_remote_tracking].
     - {b SPP-4 Missing both → create from base}: both refs absent ⇒

@@ -21,9 +21,10 @@
     For an onton-managed branch, the {e remote} is authoritative whenever a
     remote ref exists. A local ref that matches the remote or is strictly behind
     it ([Equal] / [Remote_ahead]) is safe to reset to the remote; a local ref
-    that has commits the remote doesn't ([Local_ahead] / [Diverged]) is treated
-    as suspect unless Git proves every local-only patch is already represented
-    remotely (the common force-push-after-rebase case). *)
+    that has commits the remote doesn't is treated as suspect for [Local_ahead],
+    and for [Diverged] / [Unknown] unless Git proves every local-only patch is
+    already represented remotely and validates the resulting tree (the common
+    force-push-after-rebase case). *)
 
 type sha = string [@@deriving show, eq, sexp_of, compare]
 

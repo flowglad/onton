@@ -34,7 +34,14 @@ module type S = sig
 
   val list : unit -> (string * Types.Branch.t) list
   val remove : discard:bool -> checkout -> unit
+
   val prune_stale_for_branch : Types.Branch.t -> unit
+  (** Removes a stale registration for the requested branch when its working
+      directory is gone, using the recorded owning backend when present and
+      native Git otherwise. Ownership metadata is removed with the registration.
+      Registrations for every other branch are left untouched; backend command,
+      ownership-validation, and metadata errors propagate. *)
+
   val reconcile : unit -> unit
 end
 

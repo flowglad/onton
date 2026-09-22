@@ -204,6 +204,12 @@ let local_changes_represented_remotely ~process_mgr ~repo_root ~local ~remote =
     in
     (not (List.is_empty changes))
     && List.for_all changes ~f:(fun line -> Char.equal line.[0] '-')
+    &&
+    let tree_diff_code, _, _ =
+      run_git_exit_code ~process_mgr
+        [ "git"; "-C"; repo_root; "diff"; "--quiet"; local; remote; "--" ]
+    in
+    tree_diff_code = 0
 
 (* Fetch a single branch from origin into the corresponding remote-tracking
    ref. Returns a typed [fetch_branch_result] so callers can distinguish
@@ -287,7 +293,8 @@ type create_io = {
   ancestry : local:string -> remote:string -> Start_point_plan.ancestry;
       (** Two-way ancestry between an existing local and remote SHA. *)
   local_changes_represented_remotely : local:string -> remote:string -> bool;
-      (** Whether every local-only patch is already represented remotely. *)
+      (** Whether every local-only patch is represented remotely and the
+          resulting trees match. *)
   execute_action :
     path:string ->
     branch_str:string ->
