@@ -25,7 +25,7 @@ let codex_build_args_preserve_prompt =
   QCheck2.Test.make ~name:"codex build_args preserve prompt" ~count:200
     QCheck2.Gen.string_small (fun prompt ->
       let args =
-        Codex_event_parser.build_args ~model:None ~effort:None
+        Codex_event_parser.build_args ~model:None ~effort:None ~extras:[]
           ~cwd_path:"/tmp/work" ~prompt ~resume_session:None
       in
       List.mem prompt args)

@@ -15,6 +15,7 @@ type t = {
   default_backend : string option;
   default_model : string option;
   default_effort : string option;
+  extras : string list;
   worktree : Worktree_lifecycle.config option;
   automerge_timeout : float option;
   review_team : string option;
@@ -27,6 +28,7 @@ let empty =
     default_backend = None;
     default_model = None;
     default_effort = None;
+    extras = [];
     worktree = None;
     automerge_timeout = None;
     review_team = None;
@@ -173,6 +175,68 @@ let parse_automerge_timeout (json : Yojson.Safe.t) =
       Error "automerge_timeout must be a finite number greater than zero"
   | Some _ -> Error "automerge_timeout must be a number of seconds"
 
+let valid_extra_key_segment segment =
+  (not (String.is_empty segment))
+  && String.for_all segment ~f:(fun char ->
+      Char.is_alphanum char || Char.equal char '_' || Char.equal char '-')
+
+let rec toml_value_of_json ~path (json : Yojson.Safe.t) =
+  match json with
+  | `Bool value -> Ok (Bool.to_string value)
+  | `Int value -> Ok (Int.to_string value)
+  | `Intlit value -> (
+      match Stdlib.Int64.of_string_opt value with
+      | Some _ -> Ok value
+      | None -> Error (path ^ " must fit a signed 64-bit integer"))
+  | `Float value when Float.is_finite value ->
+      let encoded = Printf.sprintf "%.17g" value in
+      if
+        String.is_substring encoded ~substring:"."
+        || String.is_substring encoded ~substring:"e"
+        || String.is_substring encoded ~substring:"E"
+      then Ok encoded
+      else Ok (encoded ^ ".0")
+  | `String value -> Ok (Yojson.Safe.to_string (`String value))
+  | `List values ->
+      (* TOML 1.0 permits mixed types, including nested arrays. *)
+      Result.map
+        (List.mapi values ~f:(fun index value ->
+             toml_value_of_json ~path:(Printf.sprintf "%s[%d]" path index) value)
+        |> Result.all)
+        ~f:(fun values -> "[" ^ String.concat ~sep:", " values ^ "]")
+  | `Null -> Error (path ^ " must not be null")
+  | `Assoc _ -> Error (path ^ " must not contain an object inside an array")
+  | `Float _ -> Error (path ^ " must be a finite number")
+
+let parse_extras (json : Yojson.Safe.t) =
+  let rec flatten ~segments fields =
+    List.fold_result fields ~init:[] ~f:(fun acc (segment, value) ->
+        let next_segments = segments @ [ segment ] in
+        let path = "extras." ^ String.concat ~sep:"." next_segments in
+        if not (valid_extra_key_segment segment) then
+          Error
+            (Printf.sprintf
+               "%s has an invalid key segment; use only letters, numbers, \
+                underscores, and hyphens"
+               path)
+        else if String.equal path "extras.model_reasoning_effort" then
+          Error
+            "extras.model_reasoning_effort conflicts with default.effort and \
+             routing effort"
+        else
+          match value with
+          | `Assoc nested ->
+              Result.map (flatten ~segments:next_segments nested)
+                ~f:(fun extras -> acc @ extras)
+          | _ ->
+              Result.map (toml_value_of_json ~path value) ~f:(fun encoded ->
+                  let key = String.concat ~sep:"." next_segments in
+                  acc @ [ key ^ "=" ^ encoded ]))
+  in
+  match json with
+  | `Assoc fields -> flatten ~segments:[] fields
+  | _ -> Error "extras must be an object"
+
 let parse_default ~known_backends (json : Yojson.Safe.t) :
     (string option * string option * string option, string) Result.t =
   match json with
@@ -222,7 +286,7 @@ let parse_string ~known_backends
       Error (Printf.sprintf "config.json: %s" msg)
   | json -> (
       match json with
-      | `Assoc _ ->
+      | `Assoc top_level_fields ->
           let default_json =
             Option.value (Json.field "default" json) ~default:`Null
           in
@@ -232,6 +296,13 @@ let parse_string ~known_backends
           let review_backends_json =
             Option.value (Json.field "reviewBackends" json) ~default:`Null
           in
+          let extras_result =
+            match
+              List.Assoc.find top_level_fields "extras" ~equal:String.equal
+            with
+            | None -> Ok []
+            | Some extras -> parse_extras extras
+          in
           let review_team_result =
             match Json.field "review_team" json with
             | None -> Ok None
@@ -239,31 +310,35 @@ let parse_string ~known_backends
             | Some (`String s) -> Ok (Some (String.strip s))
             | Some _ -> Error "review_team must be a string"
           in
-          Result.bind
-            (Worktree_lifecycle.parse_optional (Json.field "worktree" json))
-            ~f:(fun worktree ->
-              Result.bind (parse_automerge_timeout json)
-                ~f:(fun automerge_timeout ->
-                  Result.bind (parse_default ~known_backends default_json)
-                    ~f:(fun (default_backend, default_model, default_effort) ->
-                      Result.bind review_team_result ~f:(fun review_team ->
-                          Result.bind (parse_routing ~known_backends routing)
-                            ~f:(fun routes ->
-                              Result.map
-                                (Review_backend.parse_array
-                                   ~known_kinds:known_review_kinds
-                                   review_backends_json)
-                                ~f:(fun review_backends ->
-                                  {
-                                    default_backend;
-                                    default_model;
-                                    default_effort;
-                                    worktree;
-                                    automerge_timeout;
-                                    review_team;
-                                    complexity_routes = routes;
-                                    review_backends;
-                                  }))))))
+          Result.bind extras_result ~f:(fun extras ->
+              Result.bind
+                (Worktree_lifecycle.parse_optional (Json.field "worktree" json))
+                ~f:(fun worktree ->
+                  Result.bind (parse_automerge_timeout json)
+                    ~f:(fun automerge_timeout ->
+                      Result.bind (parse_default ~known_backends default_json)
+                        ~f:(fun
+                            (default_backend, default_model, default_effort) ->
+                          Result.bind review_team_result ~f:(fun review_team ->
+                              Result.bind
+                                (parse_routing ~known_backends routing)
+                                ~f:(fun routes ->
+                                  Result.map
+                                    (Review_backend.parse_array
+                                       ~known_kinds:known_review_kinds
+                                       review_backends_json)
+                                    ~f:(fun review_backends ->
+                                      {
+                                        default_backend;
+                                        default_model;
+                                        default_effort;
+                                        extras;
+                                        worktree;
+                                        automerge_timeout;
+                                        review_team;
+                                        complexity_routes = routes;
+                                        review_backends;
+                                      })))))))
       | _ -> Error "config.json: top-level value must be an object")
 
 let load ~config_dir ~known_backends ?known_review_kinds () =
@@ -319,6 +394,85 @@ let%test "parse_string: unknown top-level keys are ignored (forward compat)" =
   let raw = {|{"futureKey":{"foo":"bar"}}|} in
   match parse_string ~known_backends:[ "claude" ] raw with
   | Ok t -> List.is_empty t.complexity_routes
+  | Error _ -> false
+
+let%test "parse_string: extras flatten and encode TOML values" =
+  let raw =
+    {|{"extras":{"features":{"fast_mode":true},"service_tier":"fast","limits":{"retries":3},"tools":["shell","web"]}}|}
+  in
+  match parse_string ~known_backends:[ "codex" ] raw with
+  | Ok t ->
+      List.equal String.equal t.extras
+        [
+          "features.fast_mode=true";
+          "service_tier=\"fast\"";
+          "limits.retries=3";
+          "tools=[\"shell\", \"web\"]";
+        ]
+  | Error _ -> false
+
+let%test "parse_string: extras rejects invalid shapes" =
+  let rejects raw =
+    Result.is_error (parse_string ~known_backends:[ "codex" ] raw)
+  in
+  List.for_all
+    [
+      {|{"extras":null}|};
+      {|{"extras":{"service_tier":null}}|};
+      {|{"extras":{"bad.key":true}}|};
+      {|{"extras":{"servers":[{"url":"https://example.com"}]}}|};
+      {|{"extras":{"model_reasoning_effort":"high"}}|};
+      {|{"extras":{"large":9223372036854775808}}|};
+    ]
+    ~f:rejects
+
+let%test "parse_string: extras preserve float type and 64-bit integer bounds" =
+  let parse raw = parse_string ~known_backends:[ "codex" ] raw in
+  let valid =
+    parse
+      {|{"extras":{"integral_float":1.0,"negative_zero":-0.0,"maximum":9223372036854775807,"minimum":-9223372036854775808}}|}
+  in
+  let rejects raw = Result.is_error (parse raw) in
+  (match valid with
+    | Ok t ->
+        List.equal String.equal t.extras
+          [
+            "integral_float=1.0";
+            "negative_zero=-0.0";
+            "maximum=9223372036854775807";
+            "minimum=-9223372036854775808";
+          ]
+    | Error _ -> false)
+  && rejects {|{"extras":{"too_large":9223372036854775808}}|}
+  && rejects {|{"extras":{"too_small":-9223372036854775809}}|}
+
+let%test "parse_string: extras preserve valid mixed TOML arrays" =
+  match
+    parse_string ~known_backends:[ "codex" ]
+      {|{"extras":{"mixed":["fast",true,[1,false]]}}|}
+  with
+  | Ok t ->
+      List.equal String.equal t.extras [ "mixed=[\"fast\", true, [1, false]]" ]
+  | Error _ -> false
+
+let%test "parse_string: array object error describes unsupported nesting" =
+  match
+    parse_string ~known_backends:[ "codex" ]
+      {|{"extras":{"servers":[{"url":"https://example.com"}]}}|}
+  with
+  | Error message ->
+      String.is_substring message ~substring:"object inside an array"
+  | Ok _ -> false
+
+let%test "parse_string: extras and worktree config coexist" =
+  match
+    parse_string ~known_backends:[ "codex" ]
+      {|{"extras":{"features":{"fast_mode":true}},"worktree":{"backend":"git"}}|}
+  with
+  | Ok t ->
+      List.equal String.equal t.extras [ "features.fast_mode=true" ]
+      && Option.equal Worktree_lifecycle.equal_config t.worktree
+           (Some Worktree_lifecycle.git)
   | Error _ -> false
 
 let%test "parse_string: full routing parses" =

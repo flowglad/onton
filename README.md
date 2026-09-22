@@ -631,6 +631,10 @@ write a per-repo config at
     "model":   "auto",
     "effort":  "medium"
   },
+  "extras": {
+    "features": { "fast_mode": true },
+    "service_tier": "fast"
+  },
   "routing": {
     "1": { "backend": "claude", "model": "haiku", "effort": "default" },
     "3": { "backend": "codex",  "model": "gpt-5.6-sol", "effort": "xhigh" }
@@ -659,6 +663,16 @@ model use its provider default. Codex supports `minimal`, `low`, `medium`,
 `high`, and `xhigh`; Claude supports `low`, `medium`, `high`, `xhigh`, and
 `max`. Onton rejects effort overrides for other backends and values unsupported
 by the selected provider.
+
+Top-level `extras` is an optional object for additional backend configuration.
+Onton flattens nested keys into `key=value` entries. Codex passes each entry as
+a separate `-c` argument. The example above adds
+`-c 'features.fast_mode=true'` and `-c 'service_tier="fast"'` to every Codex
+session. Other backends currently ignore `extras`. Leaves may be strings,
+booleans, numbers, or arrays. `null` values, objects inside arrays, and key
+segments containing characters other than letters, digits, underscores, and
+hyphens are rejected. Use `default.effort` or route effort instead of
+`extras.model_reasoning_effort`.
 
 For Codex, the built-in ladder maps complexity 1/2/3 to `gpt-5.6-luna`,
 `gpt-5.6-terra`, and `gpt-5.6-sol`. Missing or out-of-range complexity

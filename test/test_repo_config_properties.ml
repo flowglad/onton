@@ -67,8 +67,34 @@ let repeated_parse_order_independent =
       in
       List.equal equal_parse_result forward reverse_then_restore)
 
+let extras_boolean_object_flattens_in_order =
+  QCheck2.Test.make ~name:"Extras flatten nested boolean leaves in source order"
+    ~count:300
+    QCheck2.Gen.(list_size (int_range 0 30) bool)
+    (fun values ->
+      let fields =
+        List.mapi
+          (fun index value ->
+            Printf.sprintf "\"flag%d\":%s" index (string_of_bool value))
+          values
+      in
+      let raw =
+        Printf.sprintf {|{"extras":{"features":{%s}}}|}
+          (String.concat "," fields)
+      in
+      let expected =
+        List.mapi
+          (fun index value ->
+            Printf.sprintf "features.flag%d=%s" index (string_of_bool value))
+          values
+      in
+      match Repo_config.parse_string ~known_backends raw with
+      | Ok config -> List.equal String.equal config.extras expected
+      | Error _ -> false)
+
 let () =
   QCheck2.Test.check_exn parse_is_total;
   QCheck2.Test.check_exn positive_automerge_timeout_round_trips;
   QCheck2.Test.check_exn automerge_timeout_boundaries;
-  QCheck2.Test.check_exn repeated_parse_order_independent
+  QCheck2.Test.check_exn repeated_parse_order_independent;
+  QCheck2.Test.check_exn extras_boolean_object_flattens_in_order
