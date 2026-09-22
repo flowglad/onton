@@ -643,6 +643,10 @@ let targeted_prune_ignores_unrelated_owner env =
       let whitespace_stale_path = Filename.concat repo " stale-whitespace " in
       G.run_git ~cwd:repo
         [ "worktree"; "add"; "-b"; "whitespace"; whitespace_stale_path ];
+      let locked_stale_path = Filename.concat repo "stale-locked" in
+      G.run_git ~cwd:repo
+        [ "worktree"; "add"; "-b"; "locked-requested"; locked_stale_path ];
+      G.run_git ~cwd:repo [ "worktree"; "lock"; locked_stale_path ];
       Fun.protect
         ~finally:(fun () ->
           ignore (G.git_exit_code ~cwd:repo [ "worktree"; "unlock"; path ]);
@@ -693,6 +697,7 @@ let targeted_prune_ignores_unrelated_owner env =
           G.sh ~dir:repo ("rm -rf " ^ Filename.quote simgit_stale_path);
           G.sh ~dir:repo ("rm -rf " ^ Filename.quote nested_stale_path);
           G.sh ~dir:repo ("rm -rf " ^ Filename.quote whitespace_stale_path);
+          G.sh ~dir:repo ("rm -rf " ^ Filename.quote locked_stale_path);
           let module B =
             (val Worktree_backend.make ~fs:(Eio.Stdenv.fs env)
                    ~clock:(Eio.Stdenv.clock env)
@@ -711,6 +716,9 @@ let targeted_prune_ignores_unrelated_owner env =
           B.prune_stale_for_branch (branch "whitespace");
           check "whitespace path registration is pruned without normalization"
             (not (List.mem whitespace_stale_path (List.map fst (B.list ()))));
+          B.prune_stale_for_branch (branch "locked-requested");
+          check "locked unavailable registration is preserved"
+            (List.mem locked_stale_path (List.map fst (B.list ())));
           B.prune_stale_for_branch (branch "prefix");
           check "nested branch registration is not pruned by prefix"
             (List.mem nested_stale_path (List.map fst (B.list ())));

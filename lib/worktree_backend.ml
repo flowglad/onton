@@ -601,7 +601,13 @@ let make ~fs ~clock ~process_mgr ~repo_root ~(config : config) ~timeout_seconds
     let requested = Types.Branch.to_string requested in
     List.iter (git_registrations_for_branch requested)
       ~f:(fun (e : registration) ->
-        if not (Stdlib.Sys.file_exists e.path) then
+        let locked =
+          match admin_for e.path with
+          | Some admin ->
+              Stdlib.Sys.file_exists (Stdlib.Filename.concat admin "locked")
+          | None -> false
+        in
+        if (not (Stdlib.Sys.file_exists e.path)) && not locked then
           let owner =
             match
               protect_result (fun () -> read_owner_for_path ~path:e.path)
