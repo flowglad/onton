@@ -27,6 +27,7 @@ module type S = sig
 
   val list : unit -> (string * Types.Branch.t) list
   val remove : discard:bool -> checkout -> unit
+  val prune_stale_for_branch : Types.Branch.t -> unit
   val reconcile : unit -> unit
 end
 
@@ -212,6 +213,20 @@ let make ~fs ~clock ~process_mgr ~repo_root ~(config : config) ~timeout_seconds
   let git_list () =
     let out = git [ "worktree"; "list"; "--porcelain"; "-z" ] in
     get (parse_git_list out)
+  in
+  let git_registrations_for_branch branch =
+    let exact_ref = "refs/heads/" ^ branch in
+    git
+      [ "for-each-ref"; "--format=%(refname)%00%(worktreepath)%00"; exact_ref ]
+    |> String.split_lines
+    |> List.filter_map ~f:(fun line ->
+        match String.lsplit2 line ~on:'\000' with
+        | Some (refname, encoded_path) when String.equal refname exact_ref -> (
+            match String.chop_suffix encoded_path ~suffix:"\000" with
+            | Some path when not (String.is_empty path) ->
+                Some { path; branch = Some branch; mode = None }
+            | Some _ | None -> None)
+        | Some _ | None -> None)
   in
   let admin_for path =
     let dirs = Stdlib.Filename.concat common "worktrees" in
@@ -576,13 +591,38 @@ let make ~fs ~clock ~process_mgr ~repo_root ~(config : config) ~timeout_seconds
     let metadata = metadata_path path in
     if Stdlib.Sys.file_exists metadata then Unix.unlink metadata
   in
+  let registration_owner (e : registration) =
+    match e.branch with
+    | Some branch ->
+        fst (owning ~path:e.path ~branch:(Types.Branch.of_string branch))
+    | None -> legacy_owner e.path
+  in
+  let prune_stale_for_branch requested =
+    let requested = Types.Branch.to_string requested in
+    List.iter (git_registrations_for_branch requested)
+      ~f:(fun (e : registration) ->
+        let locked =
+          match admin_for e.path with
+          | Some admin ->
+              Stdlib.Sys.file_exists (Stdlib.Filename.concat admin "locked")
+          | None -> false
+        in
+        if (not (Stdlib.Sys.file_exists e.path)) && not locked then
+          let owner =
+            match
+              protect_result (fun () -> read_owner_for_path ~path:e.path)
+            with
+            | Ok (Some (_, owner, _)) -> owner
+            | Ok None | Error _ -> Worktree_lifecycle.git
+          in
+          match owner.backend with
+          | Git ->
+              ignore (git [ "worktree"; "remove"; "--force"; e.path ] : string);
+              let metadata = metadata_path e.path in
+              if Stdlib.Sys.file_exists metadata then Unix.unlink metadata
+          | Simgit -> cleanup ~path:e.path owner)
+  in
   let reconcile () =
-    let registration_owner (e : registration) =
-      match e.branch with
-      | Some branch ->
-          fst (owning ~path:e.path ~branch:(Types.Branch.of_string branch))
-      | None -> legacy_owner e.path
-    in
     let owners =
       config :: List.map (git_list ()) ~f:registration_owner
       |> List.dedup_and_sort ~compare:compare_config
@@ -630,6 +670,9 @@ let make ~fs ~clock ~process_mgr ~repo_root ~(config : config) ~timeout_seconds
 
     let remove ~discard checkout =
       Eio.Mutex.use_ro mutex (fun () -> remove ~discard checkout)
+
+    let prune_stale_for_branch branch =
+      Eio.Mutex.use_ro mutex (fun () -> prune_stale_for_branch branch)
 
     let reconcile () = Eio.Mutex.use_ro mutex reconcile
   end : S)

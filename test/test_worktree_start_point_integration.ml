@@ -6,6 +6,8 @@ open Onton
 open Onton_core
 module Git_env = Onton_test_support.Git_env
 
+let check label condition = if not condition then failwith label
+
 (** Git-contract test for the two effectful primitives that feed
     {!Start_point_plan.plan} from a real repository:
     {!Worktree.read_repo_ref_sha} and {!Worktree.compute_repo_ancestry}.
@@ -102,4 +104,32 @@ let () =
   assert_ancestry "diverged" ~want:Start_point_plan.Diverged
     (ancestry ~local:l_sha ~remote:r_sha);
   Stdlib.print_endline "  compute_repo_ancestry: OK";
+
+  Git_env.run_git ~cwd:dir [ "checkout"; "-q"; "-b"; "equiv-local"; base_sha ];
+  let equiv_local =
+    commit ~dir ~file:"patch.txt" ~content:"patch" ~msg:"equivalent patch"
+  in
+  Git_env.run_git ~cwd:dir [ "checkout"; "-q"; "-b"; "equiv-remote"; base_sha ];
+  Git_env.run_git ~cwd:dir [ "commit"; "--allow-empty"; "-qm"; "rewrite base" ];
+  Git_env.run_git ~cwd:dir [ "cherry-pick"; equiv_local ];
+  let equiv_remote = Git_env.git_capture ~cwd:dir [ "rev-parse"; "HEAD" ] in
+  check "patch-equivalent rebased local changes are represented remotely"
+    (Worktree.local_changes_represented_remotely ~process_mgr ~repo_root:dir
+       ~local:equiv_local ~remote:equiv_remote);
+  Git_env.run_git ~cwd:dir [ "revert"; "--no-edit"; equiv_remote ];
+  let reverted_remote = Git_env.git_capture ~cwd:dir [ "rev-parse"; "HEAD" ] in
+  let cherry_after_revert =
+    Git_env.git_capture ~cwd:dir [ "cherry"; reverted_remote; equiv_local ]
+  in
+  check "git cherry still reports equivalence after a remote revert"
+    (String.is_prefix cherry_after_revert ~prefix:"-");
+  check "remote revert invalidates patch-ID equivalence"
+    (not
+       (Worktree.local_changes_represented_remotely ~process_mgr ~repo_root:dir
+          ~local:equiv_local ~remote:reverted_remote));
+  check "distinct local changes are not represented remotely"
+    (not
+       (Worktree.local_changes_represented_remotely ~process_mgr ~repo_root:dir
+          ~local:l_sha ~remote:r_sha));
+  Stdlib.print_endline "  local_changes_represented_remotely: OK";
   Stdlib.print_endline "All git-read contract checks passed."

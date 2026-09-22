@@ -191,6 +191,26 @@ let compute_repo_ancestry ~process_mgr ~repo_root ~local ~remote :
   | Some false, Some false -> Start_point_plan.Diverged
   | _ -> Start_point_plan.Unknown
 
+let local_changes_represented_remotely ~process_mgr ~repo_root ~local ~remote =
+  let code, stdout, _ =
+    run_git_exit_code ~process_mgr
+      [ "git"; "-C"; repo_root; "cherry"; remote; local ]
+  in
+  if code <> 0 then false
+  else
+    let changes =
+      String.split_lines stdout
+      |> List.filter ~f:(fun line -> not (String.is_empty (String.strip line)))
+    in
+    (not (List.is_empty changes))
+    && List.for_all changes ~f:(fun line -> Char.equal line.[0] '-')
+    &&
+    let tree_diff_code, _, _ =
+      run_git_exit_code ~process_mgr
+        [ "git"; "-C"; repo_root; "diff"; "--quiet"; local; remote; "--" ]
+    in
+    tree_diff_code = 0
+
 (* Fetch a single branch from origin into the corresponding remote-tracking
    ref. Returns a typed [fetch_branch_result] so callers can distinguish
    the routine "brand-new branch — no upstream yet" case from genuine
@@ -272,6 +292,9 @@ type create_io = {
       (** Resolve a ref to its SHA, or [None] when the ref is absent. *)
   ancestry : local:string -> remote:string -> Start_point_plan.ancestry;
       (** Two-way ancestry between an existing local and remote SHA. *)
+  local_changes_represented_remotely : local:string -> remote:string -> bool;
+      (** Whether every local-only patch is represented remotely and the
+          resulting trees match. *)
   execute_action :
     path:string ->
     branch_str:string ->
@@ -308,10 +331,21 @@ let create_with_io ~io ~project_name ~patch_id ~branch ~base_ref :
       | Some l, Some r -> io.ancestry ~local:l ~remote:r
       | _ -> Start_point_plan.Unknown
     in
+    let local_changes_represented_remotely =
+      match (local_ref, remote_ref, ancestry) with
+      | Some local, Some remote, (Diverged | Unknown) ->
+          io.local_changes_represented_remotely ~local ~remote
+      | ( None,
+          (None | Some _),
+          (Local_ahead | Remote_ahead | Equal | Diverged | Unknown) )
+      | Some _, None, (Local_ahead | Remote_ahead | Equal | Diverged | Unknown)
+      | Some _, Some _, (Local_ahead | Remote_ahead | Equal) ->
+          false
+    in
     let decision =
       Start_point_plan.plan ~local_ref ~remote_ref ~ancestry
-        ~base_branch:base_ref ~branch_checked_out_in_main_root:false
-        ~existing_worktree_path:None
+        ~base_branch:base_ref ~local_changes_represented_remotely
+        ~branch_checked_out_in_main_root:false ~existing_worktree_path:None
     in
     match decision with
     | Refuse refusal -> Result.Error refusal
@@ -998,7 +1032,7 @@ module type S = sig
   val detect_branch : path:string -> Types.Branch.t
   val list_with_branches : unit -> (string * Types.Branch.t) list
   val find_for_branch : Types.Branch.t -> string option
-  val prune_admin : unit -> unit
+  val prune_stale_for_branch : Types.Branch.t -> unit
 
   val ensure_ready :
     path:string -> branch:Types.Branch.t -> (bool, string) Result.t
@@ -1082,6 +1116,10 @@ let make ~fs ~config ~clock ~process_mgr ~repo_root =
           ancestry =
             (fun ~local ~remote ->
               compute_repo_ancestry ~process_mgr ~repo_root ~local ~remote);
+          local_changes_represented_remotely =
+            (fun ~local ~remote ->
+              local_changes_represented_remotely ~process_mgr ~repo_root ~local
+                ~remote);
           execute_action =
             (fun ~path ~branch_str:_ ~expected_local action ->
               let _, created =
@@ -1105,7 +1143,7 @@ let make ~fs ~config ~clock ~process_mgr ~repo_root =
       List.find_map (B.list ()) ~f:(fun (path, b) ->
           if Types.Branch.equal branch b then Some path else None)
 
-    let prune_admin () = B.reconcile ()
+    let prune_stale_for_branch branch = B.prune_stale_for_branch branch
     let ensure_ready = ready
 
     let run_hook ~clock ~script ~cwd ~env () =

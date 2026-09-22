@@ -184,6 +184,8 @@ let run_ensure ?cancel_stage env ~managed_dir ~project_name ~pid ~branch
         Some (Stdlib.Filename.concat managed_dir "recovery")
       else Real.find_for_branch branch
 
+    let prune_stale_for_branch = Real.prune_stale_for_branch
+
     let create ~project_name ~patch_id ~branch ~base_ref =
       attempted := true;
       (match cancel_stage with

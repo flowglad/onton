@@ -25,7 +25,8 @@ type decision = Plan of action | Refuse of refusal
 [@@deriving show, eq, sexp_of, compare]
 
 let plan ~local_ref ~remote_ref ~ancestry ~base_branch
-    ~branch_checked_out_in_main_root ~existing_worktree_path =
+    ~local_changes_represented_remotely ~branch_checked_out_in_main_root
+    ~existing_worktree_path =
   if branch_checked_out_in_main_root then Refuse Branch_checked_out_in_main_root
   else
     match existing_worktree_path with
@@ -50,6 +51,8 @@ let plan ~local_ref ~remote_ref ~ancestry ~base_branch
                 Plan (Reset_and_use_remote_tracking { remote_sha })
             | Local_ahead ->
                 Refuse (Local_has_unpushed_commits { local_sha; remote_sha })
+            | (Diverged | Unknown) when local_changes_represented_remotely ->
+                Plan (Reset_and_use_remote_tracking { remote_sha })
             | Diverged | Unknown ->
                 Refuse (Local_diverged_from_remote { local_sha; remote_sha })))
 

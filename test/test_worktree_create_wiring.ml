@@ -31,7 +31,8 @@ let remotes = "refs/remotes/origin/feat"
    relationship returned for any (local, remote) pair. The returned trackers
    record what the wiring actually did: which action it executed, and whether it
    consulted the ancestry probe / the collision guard. *)
-let make_io ?(exists = false) ?(refs = []) ?(ancestry = SP.Unknown) () =
+let make_io ?(exists = false) ?(refs = []) ?(ancestry = SP.Unknown)
+    ?(local_changes_represented_remotely = false) () =
   let executed = ref None in
   let ancestry_called = ref false in
   let collision_called = ref false in
@@ -45,6 +46,8 @@ let make_io ?(exists = false) ?(refs = []) ?(ancestry = SP.Unknown) () =
         (fun ~local:_ ~remote:_ ->
           ancestry_called := true;
           ancestry);
+      local_changes_represented_remotely =
+        (fun ~local:_ ~remote:_ -> local_changes_represented_remotely);
       execute_action =
         (fun ~path:_ ~branch_str:_ ~expected_local:_ action ->
           executed := Some action;
@@ -143,6 +146,16 @@ let test_diverged_refuses () =
   check "diverged_refuses: no action executed" (Option.is_none !executed);
   check "diverged_refuses" (String.equal (error_tag res) "diverged")
 
+let test_patch_equivalent_divergence_resets () =
+  let io, executed, _, _ =
+    make_io
+      ~refs:[ (heads, local_sha); (remotes, remote_sha) ]
+      ~ancestry:SP.Diverged ~local_changes_represented_remotely:true ()
+  in
+  let res = run io in
+  check "patch_equivalent_divergence_resets"
+    (is_ok res && executed_is executed reset)
+
 (* Local strictly ahead: refuse (onton is normally the sole writer; unpushed
    local commits are suspicious). No action is executed. *)
 let test_local_ahead_refuses () =
@@ -192,6 +205,7 @@ let () =
   test_local_only ();
   test_brand_new ();
   test_diverged_refuses ();
+  test_patch_equivalent_divergence_resets ();
   test_local_ahead_refuses ();
   test_short_circuit ();
   test_collision_check_runs ();

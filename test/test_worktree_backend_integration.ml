@@ -623,6 +623,111 @@ let mixed_reconcile env =
                 = (name = "sg-two")))
             [ "sg-one"; "sg-two" ]))
 
+let targeted_prune_ignores_unrelated_owner env =
+  G.with_temp_repo (fun repo ->
+      let repo = Unix.realpath repo in
+      G.run_git ~cwd:repo [ "commit"; "--allow-empty"; "-qm"; "base" ];
+      let path = Filename.concat repo "checkout" in
+      G.run_git ~cwd:repo [ "worktree"; "add"; "-b"; "old"; path ];
+      let stale_path = Filename.concat repo "stale-requested" in
+      G.run_git ~cwd:repo [ "worktree"; "add"; "-b"; "requested"; stale_path ];
+      let unrelated_stale_path = Filename.concat repo "stale-unrelated" in
+      G.run_git ~cwd:repo
+        [ "worktree"; "add"; "-b"; "unrelated"; unrelated_stale_path ];
+      let simgit_stale_path = Filename.concat repo "stale-simgit" in
+      G.run_git ~cwd:repo
+        [ "worktree"; "add"; "-b"; "simgit-requested"; simgit_stale_path ];
+      let nested_stale_path = Filename.concat repo "stale-prefix-nested" in
+      G.run_git ~cwd:repo
+        [ "worktree"; "add"; "-b"; "prefix/nested"; nested_stale_path ];
+      let whitespace_stale_path = Filename.concat repo " stale-whitespace " in
+      G.run_git ~cwd:repo
+        [ "worktree"; "add"; "-b"; "whitespace"; whitespace_stale_path ];
+      let locked_stale_path = Filename.concat repo "stale-locked" in
+      G.run_git ~cwd:repo
+        [ "worktree"; "add"; "-b"; "locked-requested"; locked_stale_path ];
+      G.run_git ~cwd:repo [ "worktree"; "lock"; locked_stale_path ];
+      Fun.protect
+        ~finally:(fun () ->
+          ignore (G.git_exit_code ~cwd:repo [ "worktree"; "unlock"; path ]);
+          ignore
+            (G.git_exit_code ~cwd:repo
+               [ "worktree"; "remove"; "--force"; path ]))
+        (fun () ->
+          G.run_git ~cwd:path [ "switch"; "-c"; "new" ];
+          let common = Filename.concat repo ".git" in
+          let registry = Filename.concat common "onton-worktrees" in
+          Unix.mkdir registry 0o700;
+          let metadata =
+            Filename.concat registry
+              (Digest.to_hex (Digest.string path) ^ ".json")
+          in
+          let unavailable_simgit =
+            get
+              (L.configure ~backend:"simgit"
+                 ~executable:(Some (Filename.concat repo "missing-simgit")))
+          in
+          write metadata
+            (Yojson.Safe.to_string
+               (L.ownership_json ~path ~branch:"old" ~phase:L.Ready
+                  unavailable_simgit));
+          let simgit_log = Filename.concat repo "simgit-remove.log" in
+          let simgit = Filename.concat repo "simgit" in
+          write simgit
+            ("#!/bin/sh\n" ^ "case \"$1:$2\" in\n"
+           ^ "--json:doctor) echo \
+              '{\"identity\":\"simgit\",\"version\":\"0.3.0\"}' ;;\n"
+           ^ "unlock:*) exit 0 ;;\n" ^ "remove:*) git -C " ^ Filename.quote repo
+           ^ " worktree remove --force \"$2\" && touch "
+           ^ Filename.quote simgit_log ^ " ;;\n" ^ "*) exit 2 ;;\n" ^ "esac\n");
+          Unix.chmod simgit 0o700;
+          let simgit_owner =
+            get (L.configure ~backend:"simgit" ~executable:(Some simgit))
+          in
+          let simgit_metadata =
+            Filename.concat registry
+              (Digest.to_hex (Digest.string simgit_stale_path) ^ ".json")
+          in
+          write simgit_metadata
+            (Yojson.Safe.to_string
+               (L.ownership_json ~path:simgit_stale_path
+                  ~branch:"renamed-simgit" ~phase:L.Ready simgit_owner));
+          G.sh ~dir:repo ("rm -rf " ^ Filename.quote stale_path);
+          G.sh ~dir:repo ("rm -rf " ^ Filename.quote unrelated_stale_path);
+          G.sh ~dir:repo ("rm -rf " ^ Filename.quote simgit_stale_path);
+          G.sh ~dir:repo ("rm -rf " ^ Filename.quote nested_stale_path);
+          G.sh ~dir:repo ("rm -rf " ^ Filename.quote whitespace_stale_path);
+          G.sh ~dir:repo ("rm -rf " ^ Filename.quote locked_stale_path);
+          let module B =
+            (val Worktree_backend.make ~fs:(Eio.Stdenv.fs env)
+                   ~clock:(Eio.Stdenv.clock env)
+                   ~process_mgr:(Eio.Stdenv.process_mgr env)
+                   ~repo_root:repo ~config:L.git ~timeout_seconds:5.)
+          in
+          B.prune_stale_for_branch (branch "requested");
+          check "requested stale registration is pruned"
+            (not (List.mem stale_path (List.map fst (B.list ()))));
+          B.prune_stale_for_branch (branch "simgit-requested");
+          check "requested stale simgit registration is pruned"
+            (not (List.mem simgit_stale_path (List.map fst (B.list ()))));
+          check "simgit removal was used" (Sys.file_exists simgit_log);
+          check "stale simgit ownership metadata is removed"
+            (not (Sys.file_exists simgit_metadata));
+          B.prune_stale_for_branch (branch "whitespace");
+          check "whitespace path registration is pruned without normalization"
+            (not (List.mem whitespace_stale_path (List.map fst (B.list ()))));
+          B.prune_stale_for_branch (branch "locked-requested");
+          check "locked unavailable registration is preserved"
+            (List.mem locked_stale_path (List.map fst (B.list ())));
+          B.prune_stale_for_branch (branch "prefix");
+          check "nested branch registration is not pruned by prefix"
+            (List.mem nested_stale_path (List.map fst (B.list ())));
+          check "unrelated stale registration is not pruned"
+            (List.mem unrelated_stale_path (List.map fst (B.list ())));
+          check "inconsistent unrelated owner remains registered"
+            (List.mem path (List.map fst (B.list ()))));
+      print_endline "targeted prune ignores unrelated ownership: OK")
+
 let discovery env =
   G.with_temp_repo (fun repo ->
       let bin = Filename.concat repo "bin" in
@@ -872,6 +977,7 @@ let () =
       failed_reset env;
       concurrent_reset env;
       mixed_reconcile env;
+      targeted_prune_ignores_unrelated_owner env;
       interrupted_creation env;
       match Sys.getenv_opt "ONTON_TEST_SIMGIT" with
       | None ->

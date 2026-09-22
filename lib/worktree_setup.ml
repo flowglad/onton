@@ -76,11 +76,10 @@ module Make (W : Worktree.S) (Env : ENV) : S = struct
       let br =
         match branch with Some b -> b | None -> agent.Patch_agent.branch
       in
-      (* The previous worktree directory is gone — prune git's registry first so
-       a stale entry (deleted dir but still listed by [git worktree list])
-       does not steer [find_for_branch] back to the same dead path and
-       prevent [Worktree.create] from re-registering it. *)
-      W.prune_admin ();
+      (* Only prune a stale registration for the branch this patch needs.
+       Full repository reconciliation is maintenance work and an unrelated
+       ownership defect must not block this patch from starting. *)
+      W.prune_stale_for_branch br;
       let found = W.find_for_branch br in
       (* Treat a hit whose directory is gone as a miss — defends against races
        (another process re-registering between our prune and our list) or

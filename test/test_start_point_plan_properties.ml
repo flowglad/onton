@@ -10,8 +10,10 @@ open Onton_core
 
     - {b SPP-1 Totality}: [plan] never raises on any combination of inputs.
     - {b SPP-2 No silent clobber}: if both refs are present and ancestry is
-      [Local_ahead], [Diverged], or [Unknown], the decision is [Refuse _] — we
-      never silently overwrite local commits the supervisor doesn't know about.
+      [Local_ahead], the decision is [Refuse _]; [Diverged] or [Unknown] also
+      refuses unless the caller has proved the local-only changes are
+      represented remotely and validated the resulting tree. We never silently
+      overwrite local commits the supervisor doesn't know about.
     - {b SPP-3 Remote authoritative}: when both refs are present and ancestry is
       [Equal] or [Remote_ahead], the action is [Reset_and_use_remote_tracking].
     - {b SPP-4 Missing both → create from base}: both refs absent ⇒
@@ -111,6 +113,7 @@ type plan_inputs = {
   remote_ref : SP.sha option;
   ancestry : SP.ancestry;
   base_branch : string;
+  local_changes_represented_remotely : bool;
   branch_checked_out_in_main_root : bool;
   existing_worktree_path : string option;
 }
@@ -121,6 +124,7 @@ let gen_inputs : plan_inputs Gen.t =
   let* remote_ref = gen_sha_option in
   let* ancestry = gen_ancestry in
   let* base_branch = gen_branch_name in
+  let* local_changes_represented_remotely = bool in
   let* branch_checked_out_in_main_root = bool in
   let* existing_worktree_path = gen_path_option in
   return
@@ -129,6 +133,7 @@ let gen_inputs : plan_inputs Gen.t =
       remote_ref;
       ancestry;
       base_branch;
+      local_changes_represented_remotely;
       branch_checked_out_in_main_root;
       existing_worktree_path;
     }
@@ -136,6 +141,7 @@ let gen_inputs : plan_inputs Gen.t =
 let call i =
   SP.plan ~local_ref:i.local_ref ~remote_ref:i.remote_ref ~ancestry:i.ancestry
     ~base_branch:i.base_branch
+    ~local_changes_represented_remotely:i.local_changes_represented_remotely
     ~branch_checked_out_in_main_root:i.branch_checked_out_in_main_root
     ~existing_worktree_path:i.existing_worktree_path
 
@@ -160,8 +166,8 @@ let prop_no_silent_clobber =
     (fun (local, remote, anc, base_branch) ->
       let d =
         SP.plan ~local_ref:(Some local) ~remote_ref:(Some remote) ~ancestry:anc
-          ~base_branch ~branch_checked_out_in_main_root:false
-          ~existing_worktree_path:None
+          ~base_branch ~local_changes_represented_remotely:false
+          ~branch_checked_out_in_main_root:false ~existing_worktree_path:None
       in
       is_refuse d)
 
@@ -178,8 +184,8 @@ let prop_remote_authoritative =
     (fun (local, remote, anc, base_branch) ->
       let d =
         SP.plan ~local_ref:(Some local) ~remote_ref:(Some remote) ~ancestry:anc
-          ~base_branch ~branch_checked_out_in_main_root:false
-          ~existing_worktree_path:None
+          ~base_branch ~local_changes_represented_remotely:false
+          ~branch_checked_out_in_main_root:false ~existing_worktree_path:None
       in
       is_reset_to remote d)
 
@@ -193,6 +199,7 @@ let prop_missing_both =
     (fun (base_branch, anc) ->
       let d =
         SP.plan ~local_ref:None ~remote_ref:None ~ancestry:anc ~base_branch
+          ~local_changes_represented_remotely:false
           ~branch_checked_out_in_main_root:false ~existing_worktree_path:None
       in
       is_create_from_base base_branch d)
@@ -242,37 +249,40 @@ let prop_variants_reachable =
     (Gen.return ()) (fun () ->
       let reset =
         SP.plan ~local_ref:None ~remote_ref:(Some "r") ~ancestry:SP.Unknown
-          ~base_branch:"main" ~branch_checked_out_in_main_root:false
-          ~existing_worktree_path:None
+          ~base_branch:"main" ~local_changes_represented_remotely:false
+          ~branch_checked_out_in_main_root:false ~existing_worktree_path:None
       in
       let use_local =
         SP.plan ~local_ref:(Some "l") ~remote_ref:None ~ancestry:SP.Unknown
-          ~base_branch:"main" ~branch_checked_out_in_main_root:false
-          ~existing_worktree_path:None
+          ~base_branch:"main" ~local_changes_represented_remotely:false
+          ~branch_checked_out_in_main_root:false ~existing_worktree_path:None
       in
       let create =
         SP.plan ~local_ref:None ~remote_ref:None ~ancestry:SP.Unknown
-          ~base_branch:"main" ~branch_checked_out_in_main_root:false
-          ~existing_worktree_path:None
+          ~base_branch:"main" ~local_changes_represented_remotely:false
+          ~branch_checked_out_in_main_root:false ~existing_worktree_path:None
       in
       let refuse_diverged =
         SP.plan ~local_ref:(Some "l") ~remote_ref:(Some "r")
           ~ancestry:SP.Diverged ~base_branch:"main"
+          ~local_changes_represented_remotely:false
           ~branch_checked_out_in_main_root:false ~existing_worktree_path:None
       in
       let refuse_ahead =
         SP.plan ~local_ref:(Some "l") ~remote_ref:(Some "r")
           ~ancestry:SP.Local_ahead ~base_branch:"main"
+          ~local_changes_represented_remotely:false
           ~branch_checked_out_in_main_root:false ~existing_worktree_path:None
       in
       let refuse_checked_out =
         SP.plan ~local_ref:None ~remote_ref:None ~ancestry:SP.Unknown
-          ~base_branch:"main" ~branch_checked_out_in_main_root:true
-          ~existing_worktree_path:None
+          ~base_branch:"main" ~local_changes_represented_remotely:false
+          ~branch_checked_out_in_main_root:true ~existing_worktree_path:None
       in
       let refuse_registered =
         SP.plan ~local_ref:None ~remote_ref:None ~ancestry:SP.Unknown
-          ~base_branch:"main" ~branch_checked_out_in_main_root:false
+          ~base_branch:"main" ~local_changes_represented_remotely:false
+          ~branch_checked_out_in_main_root:false
           ~existing_worktree_path:(Some "/tmp/wt")
       in
       is_reset_to "r" reset && is_use_local use_local
@@ -296,10 +306,43 @@ let prop_remote_wins_over_local =
     (fun (local, remote, anc, base_branch) ->
       let d =
         SP.plan ~local_ref:(Some local) ~remote_ref:(Some remote) ~ancestry:anc
-          ~base_branch ~branch_checked_out_in_main_root:false
-          ~existing_worktree_path:None
+          ~base_branch ~local_changes_represented_remotely:false
+          ~branch_checked_out_in_main_root:false ~existing_worktree_path:None
       in
       not (is_use_local d))
+
+let prop_equivalent_divergence_resets =
+  Test.make ~count:500
+    ~name:"SPP-10: represented divergent local changes reset to remote"
+    Gen.(pair gen_sha gen_sha)
+    (fun (local, remote) ->
+      SP.plan ~local_ref:(Some local) ~remote_ref:(Some remote)
+        ~ancestry:SP.Diverged ~base_branch:"main"
+        ~local_changes_represented_remotely:true
+        ~branch_checked_out_in_main_root:false ~existing_worktree_path:None
+      |> is_reset_to remote)
+
+let prop_unrepresented_divergence_refuses =
+  Test.make ~count:500
+    ~name:"SPP-11: unrepresented divergent local changes still refuse"
+    Gen.(pair gen_sha gen_sha)
+    (fun (local, remote) ->
+      SP.plan ~local_ref:(Some local) ~remote_ref:(Some remote)
+        ~ancestry:SP.Diverged ~base_branch:"main"
+        ~local_changes_represented_remotely:false
+        ~branch_checked_out_in_main_root:false ~existing_worktree_path:None
+      |> is_refuse_diverged)
+
+let prop_local_ahead_remains_refused =
+  Test.make ~count:500
+    ~name:"SPP-12: patch equivalence does not waive local-ahead protection"
+    Gen.(pair gen_sha gen_sha)
+    (fun (local, remote) ->
+      SP.plan ~local_ref:(Some local) ~remote_ref:(Some remote)
+        ~ancestry:SP.Local_ahead ~base_branch:"main"
+        ~local_changes_represented_remotely:true
+        ~branch_checked_out_in_main_root:false ~existing_worktree_path:None
+      |> is_refuse_local_ahead)
 
 (* ---------- base_start_point (BSP) ----------
 
@@ -403,6 +446,9 @@ let () =
          prop_label_bounds;
          prop_variants_reachable;
          prop_remote_wins_over_local;
+         prop_equivalent_divergence_resets;
+         prop_unrepresented_divergence_refuses;
+         prop_local_ahead_remains_refused;
          prop_bsp_total_deterministic;
          prop_bsp_main_uses_fetched_sha;
          prop_bsp_non_main_never_remote;
