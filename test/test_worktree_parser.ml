@@ -224,6 +224,45 @@ let () =
             || String.is_prefix lower_colliding ~prefix:(branch_lc ^ "/"))
   in
 
+  let prop_rebase_status_total =
+    Test.make ~name:"rebase status classification is total" ~count:500
+      Gen.(triple int string string)
+      (fun (code, stdout, stderr) ->
+        ignore
+          (Worktree_parser.classify_rebase_worktree_status ~code ~stdout ~stderr
+            : Worktree_parser.rebase_result option);
+        true)
+  in
+
+  let prop_rebase_status_boundaries =
+    Test.make
+      ~name:"rebase status: clean proceeds, dirty prompts, failure errors"
+      ~count:1 Gen.unit (fun () ->
+        Option.is_none
+          (Worktree_parser.classify_rebase_worktree_status ~code:0 ~stdout:" \n"
+             ~stderr:"")
+        && Option.value_map
+             (Worktree_parser.classify_rebase_worktree_status ~code:0
+                ~stdout:" M lib/a.ml\n?? scratch.txt\n" ~stderr:"")
+             ~default:false ~f:(fun result ->
+               Worktree_parser.equal_rebase_result result
+                 (Worktree_parser.Uncommitted_changes
+                    "M lib/a.ml\n?? scratch.txt"))
+        &&
+        match
+          Worktree_parser.classify_rebase_worktree_status ~code:128 ~stdout:""
+            ~stderr:"not a repository"
+        with
+        | Some (Worktree_parser.Error msg) ->
+            String.is_substring msg ~substring:"not a repository"
+        | Some
+            ( Worktree_parser.Ok | Worktree_parser.Noop
+            | Worktree_parser.Conflict _ | Worktree_parser.Uncommitted_changes _
+              )
+        | None ->
+            false)
+  in
+
   let suite =
     [
       prop_empty_input;
@@ -240,6 +279,8 @@ let () =
       prop_collision_none;
       prop_collision_reverse;
       prop_collision_valid;
+      prop_rebase_status_total;
+      prop_rebase_status_boundaries;
     ]
   in
   let errcode = QCheck_base_runner.run_tests ~verbose:true suite in

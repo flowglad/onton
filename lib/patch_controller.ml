@@ -94,6 +94,32 @@ let apply_poll_result ?(merge_queue_ejection_confirmed = false) t patch_id
       poll_observation) =
   let logs = ref [] in
   let log message = logs := { message; patch_id } :: !logs in
+  let deferred_head =
+    Patch_decision.defer_remote_head
+      (Orchestrator.agent t patch_id)
+      ~has_conflict:(Poller.has_conflict poll_result)
+      poll_result.Poller.head_oid
+  in
+  let poll_result =
+    if deferred_head && Poller.has_conflict poll_result then (
+      log
+        (Printf.sprintf
+           "Deferring mergeability for GitHub head %s; waiting for pushed head \
+            %s"
+           (Option.value poll_result.Poller.head_oid ~default:"unknown")
+           (Option.value
+              (Orchestrator.agent t patch_id)
+                .Patch_agent.expected_remote_head_oid ~default:"unknown"));
+      {
+        poll_result with
+        queue =
+          List.filter poll_result.queue ~f:(fun kind ->
+              not (Operation_kind.equal kind Operation_kind.Merge_conflict));
+        merge_state = Pr_state.Unknown;
+        merge_ready = false;
+      })
+    else poll_result
+  in
   let poll_result, merge_queue_failure =
     let agent = Orchestrator.agent t patch_id in
     let application =
@@ -200,14 +226,19 @@ let apply_poll_result ?(merge_queue_ejection_confirmed = false) t patch_id
             if is_new then
               log (Printf.sprintf "Enqueued %s" (Operation_kind.to_label kind));
             Orchestrator.enqueue acc patch_id kind
-        | Operation_kind.Rebase | Operation_kind.Human | Operation_kind.Pr_body
-          ->
+        | Operation_kind.Uncommitted_changes | Operation_kind.Rebase
+        | Operation_kind.Human | Operation_kind.Pr_body ->
             if is_new then
               log (Printf.sprintf "Enqueued %s" (Operation_kind.to_label kind));
             Orchestrator.enqueue acc patch_id kind)
   in
   let t = Orchestrator.set_merge_ready t patch_id poll_result.merge_ready in
-  let t = Orchestrator.set_head_oid t patch_id poll_result.head_oid in
+  let t =
+    if deferred_head then t
+    else
+      let t = Orchestrator.set_head_oid t patch_id poll_result.head_oid in
+      Orchestrator.set_expected_remote_head_oid t patch_id None
+  in
   let t =
     Orchestrator.set_review_decision t patch_id poll_result.review_decision
   in
@@ -520,26 +551,23 @@ let plan_action_for_patch t ~branch_map patch_id =
     && (not agent.Patch_agent.merged)
     && (not agent.Patch_agent.busy)
     && (not agent.Patch_agent.branch_blocked)
-    && List.mem agent.Patch_agent.queue Operation_kind.Rebase
-         ~equal:Operation_kind.equal
+    && Option.value_map
+         (Patch_agent.highest_priority agent)
+         ~default:false
+         ~f:(Operation_kind.equal Operation_kind.Rebase)
   then
-    match Patch_agent.highest_priority agent with
-    | Some highest when Operation_kind.equal highest Operation_kind.Rebase ->
-        let branch_of dep_pid =
-          match Map.find branch_map dep_pid with
-          | Some b -> b
-          | None ->
-              Option.value
-                (Orchestrator.agent t dep_pid).Patch_agent.base_branch
-                ~default:(Orchestrator.main_branch t)
-        in
-        let new_base =
-          Graph.initial_base (Orchestrator.graph t) patch_id ~has_merged
-            ~branch_of
-            ~main:(Orchestrator.main_branch t)
-        in
-        Some (Orchestrator.Rebase (patch_id, new_base))
-    | _ -> None
+    let branch_of dep_pid =
+      match Map.find branch_map dep_pid with
+      | Some b -> b
+      | None ->
+          Option.value (Orchestrator.agent t dep_pid).Patch_agent.base_branch
+            ~default:(Orchestrator.main_branch t)
+    in
+    let new_base =
+      Graph.initial_base (Orchestrator.graph t) patch_id ~has_merged ~branch_of
+        ~main:(Orchestrator.main_branch t)
+    in
+    Some (Orchestrator.Rebase (patch_id, new_base))
   else if
     Patch_agent.is_pr_present agent
     && (not agent.Patch_agent.merged)
@@ -1565,6 +1593,99 @@ let%test "no merge-conflict re-enqueue after noop" =
   Orchestrator.equal_conflict_rebase_decision decision
     Orchestrator.Conflict_resolved
   && not (Orchestrator.agent t pid).Patch_agent.busy
+
+let%test
+    "pending push survives old and unidentified polls and accepts distinct \
+     heads" =
+  let _patch, t = make_orchestrator ~patch_id:pid ~main_branch:main in
+  let t = Orchestrator.fire t (Orchestrator.Start (pid, main)) in
+  let t = Orchestrator.set_pr_number t pid (Pr_number.of_int 42) in
+  let t = Orchestrator.complete t pid in
+  let pushed_head = "new-rebased-head" in
+  let t = Orchestrator.set_head_oid t pid (Some "old-pre-push-head") in
+  let t = Orchestrator.set_expected_remote_head_oid t pid (Some pushed_head) in
+  let poll_result =
+    Poller.
+      {
+        queue = [ Operation_kind.Merge_conflict ];
+        merged = false;
+        closed = false;
+        is_draft = false;
+        merge_state = Pr_state.Conflicting;
+        merge_ready = false;
+        head_oid = Some "old-pre-push-head";
+        review_decision = None;
+        unresolved_comment_count = 0;
+        merge_queue_required = false;
+        merge_queue_entry = None;
+        checks_passing = true;
+        ci_checks = [];
+        merge_commit_sha = None;
+      }
+  in
+  let apply t poll_result =
+    let t, _, _ =
+      apply_poll_result t pid
+        {
+          poll_result;
+          base_branch = Some main;
+          branch_in_root = false;
+          worktree_path = None;
+        }
+    in
+    t
+  in
+  let t =
+    apply t
+      {
+        poll_result with
+        queue = [];
+        merge_state = Pr_state.Mergeable;
+        merge_ready = true;
+      }
+  in
+  let agent = Orchestrator.agent t pid in
+  assert agent.Patch_agent.merge_ready;
+  assert (not agent.mergeability_unknown);
+  assert (
+    Option.equal String.equal agent.expected_remote_head_oid (Some pushed_head));
+  let unidentified =
+    apply t
+      {
+        poll_result with
+        queue = [];
+        head_oid = None;
+        merge_state = Pr_state.Mergeable;
+        merge_ready = true;
+        review_decision = Some "APPROVED";
+      }
+  in
+  let agent = Orchestrator.agent unidentified pid in
+  assert agent.Patch_agent.merge_ready;
+  assert (not agent.mergeability_unknown);
+  assert (Option.equal String.equal agent.review_decision (Some "APPROVED"));
+  assert (Option.is_none agent.head_oid);
+  assert (Option.is_none agent.expected_remote_head_oid);
+  let t = apply t { poll_result with head_oid = None } in
+  let t = apply t poll_result in
+  let agent = Orchestrator.agent t pid in
+  assert (not agent.Patch_agent.has_conflict);
+  assert (not agent.merge_ready);
+  assert (
+    not
+      (List.mem agent.queue Operation_kind.Merge_conflict
+         ~equal:Operation_kind.equal));
+  assert (Option.equal String.equal agent.head_oid (Some "old-pre-push-head"));
+  assert (
+    Option.equal String.equal agent.expected_remote_head_oid (Some pushed_head));
+  List.for_all [ pushed_head; "newer-remote-head" ] ~f:(fun head ->
+      let t = apply t { poll_result with head_oid = Some head } in
+      let agent = Orchestrator.agent t pid in
+      agent.Patch_agent.has_conflict
+      && List.mem agent.queue Operation_kind.Merge_conflict
+           ~equal:Operation_kind.equal
+      && Option.is_none agent.expected_remote_head_oid
+      && Option.equal String.equal agent.head_oid (Some head))
 
 (* -- Automerge reconciliation tests -- *)
 

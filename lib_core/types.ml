@@ -51,6 +51,7 @@ end
 
 module Operation_kind = struct
   type t =
+    | Uncommitted_changes
     | Rebase
     | Human
     | Merge_conflict
@@ -70,6 +71,7 @@ module Operation_kind = struct
     | _ -> t_of_yojson json
 
   let to_label = function
+    | Uncommitted_changes -> "uncommitted-changes"
     | Rebase -> "rebase"
     | Human -> "human"
     | Merge_conflict -> "merge-conflict"

@@ -811,7 +811,8 @@ let render_pr_description ~(project_name : string) (patch : Patch.t)
         optional_list_section ~header:"Acceptance Criteria"
           patch.acceptance_criteria );
       ( "files_section",
-        optional_list_section ~header:"Files to Modify" patch.files );
+        optional_list_section ~header:"Files to Modify"
+          (Pr_body_limit.summarize_files patch.files) );
       ("precedents_section", format_precedents patch.Patch.precedents);
     ]
   in
@@ -1351,6 +1352,57 @@ let render_ci_failure_unknown_prompt ~(project_name : string) ?agents_md
   layered_prefix ~project_name ?pr_number ?patch ?gameplan ?base_branch
     ?agents_md ()
   ^ render_turn_layer_ci_unknown ~project_name ?pr_number ()
+
+let render_turn_layer_uncommitted_changes ~(project_name : string) ?pr_number
+    ~(git_status : string) () : string =
+  let status =
+    if String.is_empty (String.strip git_status) then "(status unavailable)"
+    else
+      let status = String.rstrip git_status in
+      if String.length status > 4000 then
+        String.prefix status 4000 ^ "\n[truncated]"
+      else status
+  in
+  let pr_ctx =
+    match pr_number with
+    | Some n -> Printf.sprintf "\n\nPR: #%d" (Pr_number.to_int n)
+    | None -> ""
+  in
+  let vars =
+    [
+      ("project_name", project_name);
+      ( "pr_number",
+        match pr_number with
+        | Some n -> Int.to_string (Pr_number.to_int n)
+        | None -> "" );
+      ("git_status", status);
+    ]
+  in
+  render_with_override ~project_name ~name:"turn_uncommitted_changes" ~vars
+    ~default:(fun () ->
+      Printf.sprintf
+        "# Uncommitted Changes Block the Required Rebase%s\n\n\
+         The supervisor needs to rebase this branch, but the worktree contains \
+         uncommitted changes. Decide which of these outcomes is correct:\n\n\
+         - If the changes belong to this patch, stage and commit all of them.\n\
+         - If the changes are accidental, obsolete, or generated artifacts, \
+         discard them completely. Include untracked files when applicable.\n\n\
+         Do not rebase or push. The supervisor will retry the rebase after \
+         this session. Before finishing, verify that `git status --porcelain` \
+         emits no output.\n\n\
+         ## Current Worktree Status\n\n\
+         ```text\n\
+         %s\n\
+         ```"
+        pr_ctx status)
+
+let render_uncommitted_changes_prompt ~(project_name : string) ?agents_md
+    ?pr_number ?patch ?gameplan ?base_branch ~(git_status : string) () : string
+    =
+  layered_prefix ~project_name ?pr_number ?patch ?gameplan ?base_branch
+    ?agents_md ()
+  ^ render_turn_layer_uncommitted_changes ~project_name ?pr_number ~git_status
+      ()
 
 let render_recovery_section (ci : Worktree.conflict_info) =
   let bullet (c : Worktree.unique_commit) =
@@ -2266,6 +2318,16 @@ let%test "render_pr_description omits Established Precedents when empty" =
   let patch, _, gameplan = make_layer_test_fixture () in
   let body = render_pr_description ~project_name:"onton" patch gameplan in
   not (String.is_substring body ~substring:"Established Precedents")
+
+let%test "render_pr_description summarizes a large file list" =
+  let patch, _, gameplan = make_layer_test_fixture () in
+  let files = List.init 616 ~f:(fun i -> Printf.sprintf "file-%d" i) in
+  let body =
+    render_pr_description ~project_name:"onton" { patch with files } gameplan
+  in
+  String.is_substring body ~substring:"file-29"
+  && (not (String.is_substring body ~substring:"file-30\n"))
+  && String.is_substring body ~substring:"586 more files"
 
 let%test "follow-up prompts without patch+gameplan emit only the turn layer" =
   let _, _, _gameplan = make_layer_test_fixture () in

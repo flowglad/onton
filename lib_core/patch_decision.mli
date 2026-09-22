@@ -59,6 +59,13 @@ type conflict_decision =
 val on_merge_conflict : Patch_agent.t -> conflict_decision
 (** Decide whether to enqueue merge conflict resolution. *)
 
+val defer_remote_head :
+  Patch_agent.t -> has_conflict:bool -> string option -> bool
+(** Retain the publication marker for a known pre-push head, or an unidentified
+    conflict. This does not suppress non-conflict PR state. An unidentified
+    non-conflict observation, expected head, or distinct head settles the
+    marker. *)
+
 type checks_passing_decision =
   | Reset_ci_failure_count
       (** CI checks now pass after prior failures — reset the counter. *)
@@ -117,9 +124,10 @@ val session_no_commits_is_ok :
   kind:Types.Operation_kind.t option ->
   bool
 (** Whether a no-commit session is an accepted no-op. This exemption is limited
-    to [Respond] deliveries for Human and Findings operations on an existing PR;
-    a Human-carrying [Start] retains Start's no-commit retry/intervention
-    behavior even if it associates a PR mid-session. *)
+    to [Respond] deliveries for Human, Findings, and Uncommitted_changes
+    operations on an existing PR. Cleanup may correctly discard changes rather
+    than create a commit. A Human-carrying [Start] retains Start's ordinary
+    no-commit behavior even if it associates a PR mid-session. *)
 
 (** {2 Respond delivery — pre-session decisions for the runner} *)
 
@@ -130,6 +138,7 @@ type base_change = { old_base : string; new_base : string }
 [@@deriving show, eq, sexp_of, compare]
 
 type delivery_payload =
+  | Uncommitted_changes_payload
   | Human_payload of { messages : string list }
   | Ci_payload of { failed_checks : Ci_check.t list }
   | Review_payload of { comments : Comment.t list }

@@ -53,6 +53,7 @@ type t = {
       (** Validated, flattened configuration overrides from top-level [extras],
           such as [features.fast_mode=true]. Values use TOML syntax; Codex
           passes them to the CLI's [-c] option. *)
+  worktree : Worktree_lifecycle.config option;
   automerge_timeout : float option;
       (** Top-level [automerge_timeout] in seconds. Must be finite and greater
           than zero. Resolution uses a CLI override, then a persisted project

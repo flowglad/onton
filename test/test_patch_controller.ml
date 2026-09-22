@@ -559,6 +559,7 @@ let () =
                 match Patch_decision.start_delivery agent with
                 | Patch_decision.Start_with_human { messages } ->
                     List.equal String.equal messages [ message ]
+                    && (not (Patch_agent.needs_intervention agent))
                     && Option.equal Operation_kind.equal agent.current_op
                          (Some Operation_kind.Human)
                     && not
@@ -597,6 +598,56 @@ let () =
             && List.is_empty restored.inflight_human_messages
             && List.mem restored.queue Operation_kind.Human
                  ~equal:Operation_kind.equal
+        with _ -> false)
+  in
+
+  let prop_capped_human_start_remains_runnable_after_accept =
+    Test.make
+      ~name:
+        "patch_controller: capped no-PR Human Start remains runnable after \
+         accept"
+      ~count:200
+      Gen.(pair gen_patch_id gen_branch)
+      (fun (pid, branch) ->
+        try
+          let patch = make_patch pid branch in
+          let gameplan = make_gameplan patch in
+          let orch = Orchestrator.create ~patches:[ patch ] ~main_branch:main in
+          let orch =
+            Orchestrator.send_human_message orch pid "retry guidance"
+          in
+          let fail_human_start orch =
+            let orch =
+              Orchestrator.fire orch (Orchestrator.Start (pid, main))
+            in
+            let orch =
+              Orchestrator.apply_session_result orch pid
+                Orchestrator.Session_no_commits
+            in
+            Orchestrator.apply_start_outcome orch pid Orchestrator.Start_failed
+          in
+          let orch = fail_human_start orch |> fail_human_start in
+          let capped = Orchestrator.agent orch pid in
+          if
+            not
+              (Int.equal capped.Patch_agent.no_commits_push_count 2
+              && not (Patch_agent.needs_intervention capped))
+          then false
+          else
+            match
+              Patch_controller.plan_actions orch ~patches:gameplan.patches
+              |> List.find ~f:(function
+                | Orchestrator.Start (action_pid, _) ->
+                    Patch_id.equal action_pid pid
+                | Orchestrator.Respond _ | Orchestrator.Rebase _ -> false)
+            with
+            | None -> false
+            | Some action ->
+                let accepted = Orchestrator.fire orch action in
+                let agent = Orchestrator.agent accepted pid in
+                agent.Patch_agent.busy
+                && (not (List.is_empty agent.inflight_human_messages))
+                && not (Patch_agent.needs_intervention agent)
         with _ -> false)
   in
 
@@ -2155,6 +2206,7 @@ let () =
       prop_respond_still_blocked_by_needs_intervention;
       prop_starting_patch_delivers_human_guidance;
       prop_failed_start_restores_undelivered_human_guidance;
+      prop_capped_human_start_remains_runnable_after_accept;
       prop_reconcile_all_converges_after_acknowledged_effects;
       prop_poll_to_controller_promotes_ready_after_pr_body;
       prop_poll_ci_failure_never_erases_pr_body_followup;

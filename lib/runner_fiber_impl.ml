@@ -6,6 +6,113 @@ open Onton_core.Types
 let log_event runtime ?patch_id msg =
   Runtime_logging.log_event runtime ?patch_id msg
 
+(* Install before yielding to the push. A poll may settle the marker while
+   the push runs; successful completion must not re-arm it afterwards. *)
+let with_pending_push ~update ~patch_id ~local_sha push =
+  let published = ref false in
+  Fun.protect
+    ~finally:(fun () ->
+      if not !published then
+        Eio.Cancel.protect (fun () ->
+            update (fun orch ->
+                let agent = Orchestrator.agent orch patch_id in
+                if
+                  Base.Option.equal String.equal
+                    agent.Patch_agent.expected_remote_head_oid local_sha
+                then
+                  Orchestrator.set_expected_remote_head_oid orch patch_id None
+                else orch)))
+    (fun () ->
+      update (fun orch ->
+          Orchestrator.set_expected_remote_head_oid orch patch_id local_sha);
+      let result = push () in
+      (published :=
+         match result with
+         | Worktree.Push_ok -> true
+         | Worktree.Push_up_to_date | Worktree.Push_no_commits
+         | Worktree.Push_rejected _ | Worktree.Push_worktree_missing
+         | Worktree.Push_error _ ->
+             false);
+      result)
+
+let%test_unit "pending push covers publication, noop, errors and cancellation" =
+  Eio_main.run (fun _ ->
+      let patch_id = Patch_id.of_string "pending-push" in
+      let patch =
+        Patch.
+          {
+            id = patch_id;
+            title = "test";
+            description = "";
+            branch = Branch.of_string "branch";
+            dependencies = [];
+            spec = "";
+            acceptance_criteria = [];
+            changes = [];
+            files = [];
+            classification = "";
+            test_stubs_introduced = [];
+            test_stubs_implemented = [];
+            complexity = None;
+            precedents = [];
+            required_context = [];
+          }
+      in
+      let initial =
+        Orchestrator.create ~patches:[ patch ]
+          ~main_branch:(Branch.of_string "main")
+      in
+      let initial = Orchestrator.set_head_oid initial patch_id (Some "old") in
+      let orch = ref initial in
+      let update f = orch := f !orch in
+      let marker () =
+        (Orchestrator.agent !orch patch_id).Patch_agent.expected_remote_head_oid
+      in
+      let run push =
+        with_pending_push ~update ~patch_id ~local_sha:(Some "new") (fun () ->
+            assert (marker () = Some "new");
+            assert (
+              Onton_core.Patch_decision.defer_remote_head ~has_conflict:true
+                (Orchestrator.agent !orch patch_id)
+                (Some "old"));
+            push ())
+      in
+      List.iter
+        (fun result ->
+          orch := initial;
+          ignore (run (fun () -> result));
+          assert (marker () = None))
+        [
+          Worktree.Push_up_to_date;
+          Worktree.Push_no_commits;
+          Worktree.Push_rejected Onton_core.Push_reject_classify.Lease_violation;
+          Worktree.Push_worktree_missing;
+          Worktree.Push_error "failed";
+        ];
+      ignore (run (fun () -> Worktree.Push_ok));
+      assert (marker () = Some "new");
+      orch := initial;
+      ignore
+        (run (fun () ->
+             update (fun t ->
+                 Orchestrator.set_expected_remote_head_oid t patch_id None);
+             Worktree.Push_ok));
+      assert (marker () = None);
+      (try
+         ignore (run (fun () -> raise Exit));
+         assert false
+       with Exit -> ());
+      assert (marker () = None);
+      let started, signal = Eio.Promise.create () in
+      Eio.Fiber.first
+        (fun () ->
+          ignore
+            (run (fun () ->
+                 Eio.Promise.resolve signal ();
+                 Eio.Fiber.await_cancel ())))
+        (fun () -> Eio.Promise.await started);
+      assert (marker () = None))
+
 let patch_complexity ~(gameplan : Gameplan.t) ~patch_id =
   Base.List.find gameplan.Gameplan.patches ~f:(fun (p : Patch.t) ->
       Patch_id.equal p.Patch.id patch_id)
@@ -842,7 +949,8 @@ module Make (Forge : Forge.S) (W : Worktree.S) (Env : Runner_env.S) = struct
                 | Some patch ->
                     Some
                       (fun () ->
-                        With_busy_guard.run ~patch_id (fun () ->
+                        With_busy_guard.run ~patch_id
+                          ~message_id:(Orchestrator.message_id msg) (fun () ->
                             let result =
                               with_session_slot (fun () ->
                                   let agent =
@@ -854,7 +962,11 @@ module Make (Forge : Forge.S) (W : Worktree.S) (Env : Runner_env.S) = struct
                                     agent.Patch_agent.merged
                                     || Patch_agent.needs_intervention agent
                                     || agent.Patch_agent.branch_blocked
-                                    || not agent.Patch_agent.busy
+                                    || (not agent.Patch_agent.busy)
+                                    || not
+                                         (Option.equal Message_id.equal
+                                            agent.Patch_agent.current_message_id
+                                            (Some (Orchestrator.message_id msg)))
                                   then (
                                     log_event runtime ~patch_id
                                       "Skipping action — became stale during \
@@ -1138,7 +1250,8 @@ module Make (Forge : Forge.S) (W : Worktree.S) (Env : Runner_env.S) = struct
             | Orchestrator.Rebase (patch_id, new_base) ->
                 Some
                   (fun () ->
-                    With_busy_guard.run ~patch_id (fun () ->
+                    With_busy_guard.run ~patch_id
+                      ~message_id:(Orchestrator.message_id msg) (fun () ->
                         (* Rebase is orchestrator-executed (no session slot), so
                          work begins immediately under the busy guard. *)
                         Runtime.update_orchestrator runtime (fun orch ->
@@ -1194,6 +1307,10 @@ module Make (Forge : Forge.S) (W : Worktree.S) (Env : Runner_env.S) = struct
                         | Worktree.Conflict _ ->
                             log_event runtime ~patch_id
                               "Rebase conflict — enqueued merge-conflict"
+                        | Worktree.Uncommitted_changes _ ->
+                            log_event runtime ~patch_id
+                              "Rebase blocked by uncommitted changes — \
+                               prompting patch agent"
                         | Worktree.Error msg ->
                             log_event runtime ~patch_id
                               (Printf.sprintf "Rebase failed — %s" msg));
@@ -1231,8 +1348,11 @@ module Make (Forge : Forge.S) (W : Worktree.S) (Env : Runner_env.S) = struct
                                   ~ref_name:("refs/heads/" ^ base_str)
                               in
                               let result =
-                                W.force_push_with_lease ~path:wt_path ~branch
-                                  ~base:new_base
+                                with_pending_push
+                                  ~update:(Runtime.update_orchestrator runtime)
+                                  ~patch_id ~local_sha (fun () ->
+                                    W.force_push_with_lease ~path:wt_path
+                                      ~branch ~base:new_base)
                               in
                               (match result with
                               | Worktree.Push_ok ->
@@ -1408,10 +1528,40 @@ module Make (Forge : Forge.S) (W : Worktree.S) (Env : Runner_env.S) = struct
                               Some "no current failures")
                       else None
                     in
-                    With_busy_guard.run ~patch_id (fun () ->
+                    let message_id = Orchestrator.message_id msg in
+                    let owns_current_message () =
+                      Runtime.read runtime (fun snap ->
+                          let agent =
+                            Orchestrator.agent snap.Runtime.orchestrator
+                              patch_id
+                          in
+                          Option.equal Message_id.equal
+                            agent.Patch_agent.current_message_id
+                            (Some message_id))
+                    in
+                    let update_if_current f =
+                      let updated = ref false in
+                      Runtime.update_orchestrator runtime (fun orch ->
+                          let agent = Orchestrator.agent orch patch_id in
+                          if
+                            Option.equal Message_id.equal
+                              agent.Patch_agent.current_message_id
+                              (Some message_id)
+                          then (
+                            updated := true;
+                            f orch)
+                          else orch);
+                      !updated
+                    in
+                    With_busy_guard.run ~patch_id ~message_id (fun () ->
+                        let ci_run_ids_to_record = ref [] in
                         let result =
-                          match ci_skip_reason with
-                          | Some reason ->
+                          match (owns_current_message (), ci_skip_reason) with
+                          | false, _ ->
+                              log_event runtime ~patch_id
+                                "Skipping action — became stale before delivery";
+                              `Stale
+                          | true, Some reason ->
                               (* Fast path: skip decision already made. Don't
                                consume a session slot for a no-op — that
                                slot can go to another agent. *)
@@ -1419,12 +1569,13 @@ module Make (Forge : Forge.S) (W : Worktree.S) (Env : Runner_env.S) = struct
                                 (Printf.sprintf "Skipped ci delivery — %s"
                                    reason);
                               `Skip_empty
-                          | None ->
+                          | true, None ->
                               with_session_slot (fun () ->
+                                  let owns_after_wait =
+                                    update_if_current (fun orch ->
+                                        Orchestrator.mark_running orch patch_id)
+                                  in
                                   let ci_merge_queue_removal_checks = ref [] in
-                                  Runtime.update_orchestrator runtime
-                                    (fun orch ->
-                                      Orchestrator.mark_running orch patch_id);
                                   (* Write fresh ci_checks under the busy guard
                                    so the write can't race with the poller or
                                    land after a concurrent complete/merge.
@@ -1432,7 +1583,7 @@ module Make (Forge : Forge.S) (W : Worktree.S) (Env : Runner_env.S) = struct
                                    [agent.ci_checks] reflects the fresh
                                    list. *)
                                   (match (is_ci, fresh_pr_state) with
-                                  | true, Some pr_state ->
+                                  | true, Some pr_state when owns_after_wait ->
                                       let synthetic_checks =
                                         Runtime.read runtime (fun snap ->
                                             Orchestrator.agent
@@ -1497,10 +1648,11 @@ module Make (Forge : Forge.S) (W : Worktree.S) (Env : Runner_env.S) = struct
                                         pr_state.Pr_state.ci_checks
                                         @ merge_queue_checks
                                       in
-                                      Runtime.update_orchestrator runtime
-                                        (fun orch ->
-                                          Orchestrator.set_ci_checks orch
-                                            patch_id ci_checks)
+                                      ignore
+                                        (update_if_current (fun orch ->
+                                             Orchestrator.set_ci_checks orch
+                                               patch_id ci_checks)
+                                          : bool)
                                   | _ -> ());
                                   let agent =
                                     Runtime.read runtime (fun snap ->
@@ -1508,10 +1660,15 @@ module Make (Forge : Forge.S) (W : Worktree.S) (Env : Runner_env.S) = struct
                                           snap.Runtime.orchestrator patch_id)
                                   in
                                   let delivery =
-                                    Patch_decision.respond_delivery ~agent ~kind
-                                      ~pre_fire_agent ~prefetched_comments
-                                      ~prefetched_findings
-                                      ~main_branch:(Branch.to_string main)
+                                    if
+                                      owns_after_wait && owns_current_message ()
+                                    then
+                                      Patch_decision.respond_delivery ~agent
+                                        ~kind ~pre_fire_agent
+                                        ~prefetched_comments
+                                        ~prefetched_findings
+                                        ~main_branch:(Branch.to_string main)
+                                    else Patch_decision.Respond_stale
                                   in
                                   let render_base_changed_prefix base_change =
                                     match base_change with
@@ -1749,6 +1906,7 @@ module Make (Forge : Forge.S) (W : Worktree.S) (Env : Runner_env.S) = struct
                                           match rebase_result with
                                           | Worktree.Conflict ci -> Some ci
                                           | Worktree.Ok | Worktree.Noop
+                                          | Worktree.Uncommitted_changes _
                                           | Worktree.Error _ ->
                                               None
                                         in
@@ -1767,6 +1925,11 @@ module Make (Forge : Forge.S) (W : Worktree.S) (Env : Runner_env.S) = struct
                                             log_event runtime ~patch_id
                                               "Conflict rebase hit conflicts — \
                                                delivering to agent"
+                                        | Worktree.Uncommitted_changes _ ->
+                                            log_event runtime ~patch_id
+                                              "Conflict rebase blocked by \
+                                               uncommitted changes — prompting \
+                                               patch agent"
                                         | Worktree.Error msg ->
                                             log_event runtime ~patch_id
                                               (Printf.sprintf
@@ -1830,10 +1993,17 @@ module Make (Forge : Forge.S) (W : Worktree.S) (Env : Runner_env.S) = struct
                                                     ("refs/heads/" ^ base)
                                               in
                                               let result =
-                                                W.force_push_with_lease
-                                                  ~path:wt_path ~branch
-                                                  ~base:
-                                                    (Types.Branch.of_string base)
+                                                with_pending_push
+                                                  ~update:
+                                                    (Runtime.update_orchestrator
+                                                       runtime)
+                                                  ~patch_id ~local_sha
+                                                  (fun () ->
+                                                    W.force_push_with_lease
+                                                      ~path:wt_path ~branch
+                                                      ~base:
+                                                        (Types.Branch.of_string
+                                                           base))
                                               in
                                               (match result with
                                               | Worktree.Push_ok ->
@@ -1927,12 +2097,17 @@ module Make (Forge : Forge.S) (W : Worktree.S) (Env : Runner_env.S) = struct
                                              no-recovery-section prompt
                                              rather than blocking delivery. *)
                                             deliver_to_agent ?conflict_info ()
+                                        | Orchestrator.Conflict_cleanup_queued
+                                          ->
+                                            `Stale
                                         | Orchestrator.Conflict_give_up ->
                                             `Failed)
                                   | Patch_decision.Deliver
                                       {
                                         payload =
-                                          ( Patch_decision.Human_payload _
+                                          ( Patch_decision
+                                            .Uncommitted_changes_payload
+                                          | Patch_decision.Human_payload _
                                           | Patch_decision.Ci_payload _
                                           | Patch_decision.Review_payload _
                                           | Patch_decision.Findings_payload _
@@ -1979,6 +2154,8 @@ module Make (Forge : Forge.S) (W : Worktree.S) (Env : Runner_env.S) = struct
                                               (Project_store
                                                .comment_responses_dir
                                                  ~project_name ~patch_id)
+                                        | Patch_decision
+                                          .Uncommitted_changes_payload
                                         | Patch_decision.Ci_payload _
                                         | Patch_decision.Findings_payload _
                                         | Patch_decision.Human_payload _
@@ -1989,6 +2166,9 @@ module Make (Forge : Forge.S) (W : Worktree.S) (Env : Runner_env.S) = struct
                                       in
                                       log_event runtime ~patch_id
                                         (match payload with
+                                        | Patch_decision
+                                          .Uncommitted_changes_payload ->
+                                            "Delivering uncommitted-changes"
                                         | Patch_decision.Review_payload
                                             { comments } ->
                                             Printf.sprintf "Delivering %s (%s)"
@@ -2020,6 +2200,18 @@ module Make (Forge : Forge.S) (W : Worktree.S) (Env : Runner_env.S) = struct
                                       try
                                         let prompt =
                                           match payload with
+                                          | Patch_decision
+                                            .Uncommitted_changes_payload ->
+                                              Prompt
+                                              .render_uncommitted_changes_prompt
+                                                ~project_name ?agents_md
+                                                ?pr_number
+                                                ?patch:patch_for_layer ~gameplan
+                                                ~base_branch:
+                                                  base_branch_for_layer
+                                                ~git_status:
+                                                  (W.git_status ~path:wt_path)
+                                                ()
                                           | Patch_decision.Ci_payload
                                               { failed_checks } ->
                                               if
@@ -2303,27 +2495,23 @@ module Make (Forge : Forge.S) (W : Worktree.S) (Env : Runner_env.S) = struct
                                             ~default:(Branch.to_string main)
                                             ~f:Branch.to_string
                                         in
-                                        (* Lock in CI run dedup before firing the
-                                       session. Recording pre-flight (rather
-                                       than post-) means a session that starts
-                                       but later fails still counts as
-                                       "delivered", so we don't re-nag the
-                                       agent with the same failing run on the
-                                       next tick. *)
+                                        (* Remember which CI runs this turn is
+                                       about, but do not mark them delivered
+                                       until the turn reaches a non-failure
+                                       outcome. A timeout/process failure has
+                                       not established that the checks were
+                                       addressed; pre-flight recording made
+                                       those still-failing checks permanently
+                                       invisible to later polls. *)
                                         (match payload with
                                         | Patch_decision.Ci_payload
                                             { failed_checks } ->
-                                            let ids =
+                                            ci_run_ids_to_record :=
                                               Base.List.filter_map failed_checks
                                                 ~f:(fun (c : Ci_check.t) ->
                                                   c.Ci_check.id)
-                                            in
-                                            if not (Base.List.is_empty ids) then
-                                              Runtime.update_orchestrator
-                                                runtime (fun orch ->
-                                                  Orchestrator
-                                                  .record_delivered_ci_run_ids
-                                                    orch patch_id ids)
+                                        | Patch_decision
+                                          .Uncommitted_changes_payload
                                         | Patch_decision.Human_payload _
                                         | Patch_decision.Review_payload _
                                         | Patch_decision.Findings_payload _
@@ -2649,6 +2837,8 @@ module Make (Forge : Forge.S) (W : Worktree.S) (Env : Runner_env.S) = struct
                                               else result
                                           | Patch_decision.Human_payload _
                                           | Patch_decision
+                                            .Uncommitted_changes_payload
+                                          | Patch_decision
                                             .Merge_conflict_payload ->
                                               result
                                         in
@@ -2765,6 +2955,29 @@ module Make (Forge : Forge.S) (W : Worktree.S) (Env : Runner_env.S) = struct
                                              | `Stale ])
                                       with Skip_delivery -> `Skip_empty))
                         in
+                        (match result with
+                        | (`Ok | `No_commits)
+                          when not (Base.List.is_empty !ci_run_ids_to_record) ->
+                            (* Ownership is rechecked at commit time. If this
+                               message was superseded during the session, leave
+                               deduplication state to the newer operation; a
+                               conservative repeat is safer than suppressing a
+                               still-failing check that the newer operation has
+                               not handled. *)
+                            Runtime.update_orchestrator runtime (fun orch ->
+                                let agent = Orchestrator.agent orch patch_id in
+                                if
+                                  Option.equal Message_id.equal
+                                    agent.Patch_agent.current_message_id
+                                    (Some message_id)
+                                then
+                                  Orchestrator.record_delivered_ci_run_ids orch
+                                    patch_id !ci_run_ids_to_record
+                                else orch)
+                        | `Failed | `Pr_body_miss | `Review_unresolved
+                        | `Skip_empty | `Stale | `Ok | `No_commits | `Retry_push
+                          ->
+                            ());
                         let respond_outcome =
                           match result with
                           | `Stale -> Orchestrator.Respond_stale
@@ -2777,9 +2990,27 @@ module Make (Forge : Forge.S) (W : Worktree.S) (Env : Runner_env.S) = struct
                               Orchestrator.Respond_review_unresolved
                           | `Ok -> Orchestrator.Respond_ok
                         in
-                        Runtime.update_orchestrator runtime (fun orch ->
-                            Orchestrator.apply_respond_outcome orch patch_id
-                              kind respond_outcome);
+                        let outcome_applied =
+                          match respond_outcome with
+                          | Orchestrator.Respond_stale -> false
+                          | Orchestrator.Respond_failed
+                          | Orchestrator.Respond_retry_push
+                          | Orchestrator.Respond_no_commits
+                          | Orchestrator.Respond_skip_empty
+                          | Orchestrator.Respond_pr_body_miss
+                          | Orchestrator.Respond_review_unresolved
+                          | Orchestrator.Respond_ok ->
+                              update_if_current (fun orch ->
+                                  Orchestrator.apply_respond_outcome orch
+                                    patch_id kind respond_outcome)
+                        in
+                        (* A session can be superseded after delivery begins.
+                           Treat an outcome that no longer owns the message as
+                           stale so it cannot complete the newer operation. *)
+                        let respond_outcome =
+                          if outcome_applied then respond_outcome
+                          else Orchestrator.Respond_stale
+                        in
                         match respond_outcome with
                         | Orchestrator.Respond_failed ->
                             let agent =

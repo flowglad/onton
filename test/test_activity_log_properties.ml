@@ -41,11 +41,13 @@ let gen_status =
       Resolving_conflict;
       Responding_to_human;
       Writing_pr_body;
+      Cleaning_worktree;
       Rebasing;
       Starting;
       Updating;
       Ci_queued;
       Review_queued;
+      Cleanup_queued;
       Awaiting_feedback;
       Blocked_by_dep;
       Pending;

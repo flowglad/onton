@@ -7,10 +7,14 @@ type t = private {
   patch_id : Types.Patch_id.t;
   branch : Types.Branch.t;
   path : string;
+  newly_created : bool;
 }
 [@@deriving show, eq, sexp_of, compare]
 
 val worktree_dir : project_name:string -> patch_id:Types.Patch_id.t -> string
+
+val has_cancellation : exn -> bool
+(** Includes cancellation nested in [Eio.Exn.Multiple]. *)
 
 val is_transient_spawn_failure : exn -> bool
 (** [true] for exceptions that mean a subprocess could not be spawned/run to
@@ -43,47 +47,19 @@ val remote_branch_exists :
   process_mgr:_ Eio.Process.mgr -> repo_root:string -> string -> bool
 (** Returns [true] if [origin/<branch>] exists as a remote tracking ref. *)
 
-val create :
-  process_mgr:_ Eio.Process.mgr ->
-  repo_root:string ->
-  project_name:string ->
-  patch_id:Types.Patch_id.t ->
-  branch:Types.Branch.t ->
-  base_ref:string ->
-  (t, Start_point_plan.refusal) Result.t
-(** Create a git worktree for [branch] under [project_name]/[patch_id].
-
-    Consults {!Start_point_plan.plan} before invoking git: reads the local
-    [refs/heads/<branch>] and remote-tracking [refs/remotes/origin/<branch>]
-    SHAs from [repo_root], computes their two-way ancestry, and executes the
-    action the planner returns. The supervisor is responsible for running
-    [fetch_origin_branch] beforehand so [refs/remotes/origin/<branch>] is fresh;
-    without that step the planner would see a stale remote ref.
-
-    Base freshness vs [origin/<main>] is intentionally not gated here — it is
-    dependency-scoped and enforced by the orchestrator's {!Start_eligibility}
-    scheduling gate. A stacked dependent cut from its base's tip contains
-    everything in that base, so a base lagging main for unrelated reasons must
-    not block the cut.
-
-    Returns [Error refusal] when the planner refuses (local diverged from
-    remote, branch already checked out elsewhere, etc.). The caller surfaces
-    refusals through the orchestrator's intervention path.
-
-    Pre-empted inputs [branch_checked_out_in_main_root] and
-    [existing_worktree_path] are checked by the caller
-    ({!Worktree_setup.ensure_worktree}) before this function runs; this function
-    passes [false] / [None] to the planner. *)
-
 type create_io = {
   worktree_exists : path:string -> bool;
   check_ref_collision : branch_str:string -> unit;
   read_ref : ref_name:string -> string option;
   ancestry : local:string -> remote:string -> Start_point_plan.ancestry;
   execute_action :
-    path:string -> branch_str:string -> Start_point_plan.action -> unit;
+    path:string ->
+    branch_str:string ->
+    expected_local:string option ->
+    Start_point_plan.action ->
+    bool;
 }
-(** The effectful operations {!create} performs. Factored out so the wiring can
+(** The effectful operations used by {!S.create}. Factored out so the wiring can
     be tested with in-memory fakes instead of a live git repository:
     [worktree_exists] drives the short-circuit, [read_ref]/[ancestry] feed
     {!Start_point_plan.plan}, and [execute_action] realises its decision. *)
@@ -95,11 +71,11 @@ val create_with_io :
   branch:Types.Branch.t ->
   base_ref:string ->
   (t, Start_point_plan.refusal) Result.t
-(** The control flow of {!create}, parameterised over its effects. Reads the
-    local and remote refs via [io], computes ancestry only when both exist,
+(** Start-point planning, parameterised over validated lifecycle effects. Reads
+    the local and remote refs via [io], computes ancestry only when both exist,
     consults {!Start_point_plan.plan}, and either runs [io.execute_action] or
-    returns the refusal. {!create} is this with the git-backed [io]. Exposed so
-    the short-circuit, planner dispatch, and refusal mapping can be exercised
+    returns the refusal. {!make} supplies backend-aware [io]. Exposed so the
+    short-circuit, planner dispatch, and refusal mapping can be exercised
     without spawning git. *)
 
 val read_repo_ref_sha :
@@ -155,8 +131,6 @@ val fetch_origin_branch :
     [remote_ref = None] for the brand-new-branch case, so callers proceed on
     every result variant; the distinction matters for log clarity. *)
 
-val remove : process_mgr:_ Eio.Process.mgr -> repo_root:string -> t -> unit
-
 val detect_branch :
   process_mgr:_ Eio.Process.mgr -> path:string -> Types.Branch.t
 
@@ -164,11 +138,6 @@ val parse_porcelain :
   repo_root:string -> string -> (string * Types.Branch.t) list
 (** Parse [git worktree list --porcelain] output into [(path, branch)] pairs.
     Excludes the repo root entry and detached-HEAD worktrees. Pure function. *)
-
-val list_with_branches :
-  process_mgr:_ Eio.Process.mgr ->
-  repo_root:string ->
-  (string * Types.Branch.t) list
 
 val is_ancestor_patch_subject :
   project_name:string -> ancestor_ids:Types.Patch_id.t list -> string -> bool
@@ -308,6 +277,7 @@ type rebase_result = Worktree_parser.rebase_result =
   | Ok
   | Noop
   | Conflict of conflict_info
+  | Uncommitted_changes of string
   | Error of string
 [@@deriving show, eq, sexp_of, compare]
 
@@ -335,9 +305,11 @@ val rebase_onto :
     [~project_name:""] or [~ancestor_ids:[]] to opt out of the subject filter
     entirely; cherry-pick deduplication still applies.
 
-    On [Conflict], the rebase is left in progress and the returned
-    [conflict_info] carries the recovery info the patch-agent prompt threads
-    through to the agent. *)
+    Returns [Uncommitted_changes status] without starting the rebase when
+    [git status --porcelain=v1] reports local changes and a rebase is needed. On
+    [Conflict], the rebase is left in progress and the returned [conflict_info]
+    carries the recovery info the patch-agent prompt threads through to the
+    agent. *)
 
 val read_in_progress_conflict_info :
   process_mgr:_ Eio.Process.mgr ->
@@ -437,11 +409,17 @@ module type S = sig
   val fetch_origin_branch :
     fetch_lock:Eio.Mutex.t -> branch:string -> fetch_branch_result
 
-  val remove : t -> unit
+  val remove : discard:bool -> t -> unit
   val detect_branch : path:string -> Types.Branch.t
   val list_with_branches : unit -> (string * Types.Branch.t) list
   val find_for_branch : Types.Branch.t -> string option
   val prune_admin : unit -> unit
+
+  val ensure_ready :
+    path:string -> branch:Types.Branch.t -> (bool, string) Result.t
+  (** Validate or repair a published checkout. [Ok false] means absent;
+      unfinished creation, ownership conflicts and repair failures return
+      [Error] and must not trigger replacement creation. *)
 
   val run_hook :
     clock:_ Eio.Time.clock ->
@@ -496,27 +474,12 @@ end
 type client = (module S)
 
 val make :
+  fs:Eio.Fs.dir_ty Eio.Path.t ->
+  config:Worktree_lifecycle.config ->
   clock:float Eio.Time.clock_ty Eio.Time.clock ->
   process_mgr:_ Eio.Process.mgr ->
   repo_root:string ->
   client
-
-val find_for_branch :
-  process_mgr:_ Eio.Process.mgr ->
-  repo_root:string ->
-  Types.Branch.t ->
-  string option
-(** Search existing git worktrees for one checked out at [branch]. Returns
-    [None] if no matching worktree is found or if listing fails. The result
-    reflects what [git worktree list] reports, which can include stale entries
-    whose directories were deleted on disk; callers that need disk truth should
-    additionally check [Sys.file_exists] or call {!prune_admin} first. *)
-
-val prune_admin : process_mgr:_ Eio.Process.mgr -> repo_root:string -> unit
-(** Run [git worktree prune] in [repo_root] to drop registry entries whose
-    directories were deleted on disk. Idempotent; silent on failure. Callers use
-    this to bring git's worktree bookkeeping in sync with disk state before
-    {!find_for_branch} or {!create}. *)
 
 val normalize_path : string -> string
 (** Resolve a relative path to absolute using the current working directory. *)
@@ -531,7 +494,7 @@ val find_ci_ref_collision :
     prefix of the given branch name. Returns [Some colliding_branch] or [None].
     Used to detect macOS case-insensitive filesystem ref collisions. *)
 
-val exists : t -> bool
+val newly_created : t -> bool
 val path : t -> string
 val patch_id : t -> Types.Patch_id.t
 val branch : t -> Types.Branch.t

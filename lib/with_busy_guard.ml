@@ -9,7 +9,7 @@ module type ENV = sig
 end
 
 module Make (Env : ENV) = struct
-  let run ~patch_id f =
+  let run ~patch_id ~message_id f =
     let cancelled = ref false in
     let exception_raised = ref false in
     Stdlib.Fun.protect
@@ -26,10 +26,12 @@ module Make (Env : ENV) = struct
             | Some before ->
                 if before.Patch_agent.busy then (
                   let orch' =
-                    Orchestrator.apply_force_complete orch patch_id reason
+                    Orchestrator.apply_force_complete ~message_id orch patch_id
+                      reason
                   in
                   let after = Orchestrator.agent orch' patch_id in
-                  snapshot := Some (before, after);
+                  if not (Patch_agent.equal before after) then
+                    snapshot := Some (before, after);
                   orch')
                 else orch);
         Option.iter !snapshot ~f:(fun (before, after) ->

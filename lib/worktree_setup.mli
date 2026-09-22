@@ -33,14 +33,14 @@ module type S = sig
     ?base_ref:string ->
     unit ->
     ensure_result
-  (** Ensure a worktree exists for the patch. Returns [Path path] on success,
-      [Refused] when the start-point planner found a permanent unsafe local
-      state and has already routed it through [Session_push_failed], or
-      [Missing] when the branch's worktree cannot be created for a
-      reconstructable reason (e.g. it's checked out in the main tree). On
-      creation, runs the user's [on_worktree_create] hook serialised through
-      [Env.hook_mutex] and persists the path on the agent record. All log lines
-      go through [Runtime_logging.log_event]. *)
+  (** Ensure a validated checkout is ready for the patch. Returns [Path path] on
+      success, [Refused] for unsafe start points, previously unfinished creation
+      or failed readiness/recovery checks (routed through
+      [Session_push_failed]), or [Missing] when creation failed without an
+      adoptable checkout. On creation, success uses the validated checkout
+      returned by [create] directly and runs the user's [on_worktree_create]
+      hook serialised through [Env.hook_mutex] and persists the path on the
+      agent record. All log lines go through [Runtime_logging.log_event]. *)
 end
 
 module Make (_ : Worktree.S) (_ : ENV) : S

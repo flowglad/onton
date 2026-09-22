@@ -7,5 +7,9 @@ module type ENV = sig
 end
 
 module Make (_ : ENV) : sig
-  val run : patch_id:Types.Patch_id.t -> (unit -> unit) -> unit
+  val run :
+    patch_id:Types.Patch_id.t ->
+    message_id:Types.Message_id.t ->
+    (unit -> unit) ->
+    unit
 end

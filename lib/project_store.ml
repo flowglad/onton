@@ -150,6 +150,8 @@ type stored_config = {
       (* Per-project automerge idle window. [None] preserves field absence in
          legacy configs so flag-less resumes can consult the repository
          default; newly resolved values are persisted as [Some]. *)
+  worktree_backend : string option; [@yojson.default None]
+  worktree_executable : string option; [@yojson.default None]
   url_scheme : string option; [@yojson.default None]
       (* Persisted transport scheme for the managed clone's [origin]. [None]
          on legacy configs predating P0-D; on the next [ensure_managed_repo]
@@ -160,8 +162,8 @@ type stored_config = {
 
 let save_config ~project_name ?(forge = "github") ~github_owner ~github_repo
     ~backend ~model ~main_branch ~poll_interval ~repo_root ~max_concurrency
-    ~max_ci_failures ~automerge_timeout ?(url_scheme : string option = None) ()
-    =
+    ~max_ci_failures ~automerge_timeout ?(worktree = Worktree_lifecycle.git)
+    ?(url_scheme : string option = None) () =
   let dir = project_dir project_name in
   ensure_dir dir;
   let config =
@@ -178,6 +180,8 @@ let save_config ~project_name ?(forge = "github") ~github_owner ~github_repo
       max_concurrency;
       max_ci_failures;
       automerge_timeout = Some automerge_timeout;
+      worktree_backend = Some (Worktree_lifecycle.backend_name worktree.backend);
+      worktree_executable = worktree.executable;
       url_scheme;
     }
   in
@@ -649,3 +653,25 @@ let%test "save_config round-trips the SourceHut forge" =
       match load_config ~project_name with
       | Ok config -> String.equal config.forge "sourcehut"
       | Error _ -> false)
+
+let%test "save/load config preserves the worktree backend and executable" =
+  with_temp_data_dir (fun () ->
+      match
+        Worktree_lifecycle.configure ~backend:"simgit"
+          ~executable:(Some "/opt/simgit/sg")
+      with
+      | Error _ -> false
+      | Ok worktree -> (
+          let project_name = "simgit-config" in
+          save_config ~project_name ~github_owner:"o" ~github_repo:"r"
+            ~backend:"claude" ~model:"" ~main_branch:"main" ~poll_interval:5.
+            ~repo_root:"/tmp/repo" ~max_concurrency:2
+            ~max_ci_failures:Patch_agent.default_max_ci_failures
+            ~automerge_timeout:Patch_controller.default_automerge_timeout
+            ~worktree ();
+          match load_config ~project_name with
+          | Ok config ->
+              Option.equal String.equal config.worktree_backend (Some "simgit")
+              && Option.equal String.equal config.worktree_executable
+                   (Some "/opt/simgit/sg")
+          | Error _ -> false))

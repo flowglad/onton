@@ -16,6 +16,7 @@ type t = {
   default_model : string option;
   default_effort : string option;
   extras : string list;
+  worktree : Worktree_lifecycle.config option;
   automerge_timeout : float option;
   review_team : string option;
   complexity_routes : (int * route) list;
@@ -28,6 +29,7 @@ let empty =
     default_model = None;
     default_effort = None;
     extras = [];
+    worktree = None;
     automerge_timeout = None;
     review_team = None;
     complexity_routes = [];
@@ -308,28 +310,34 @@ let parse_string ~known_backends
             | Some _ -> Error "review_team must be a string"
           in
           Result.bind extras_result ~f:(fun extras ->
-              Result.bind (parse_automerge_timeout json)
-                ~f:(fun automerge_timeout ->
-                  Result.bind (parse_default ~known_backends default_json)
-                    ~f:(fun (default_backend, default_model, default_effort) ->
-                      Result.bind review_team_result ~f:(fun review_team ->
-                          Result.bind (parse_routing ~known_backends routing)
-                            ~f:(fun routes ->
-                              Result.map
-                                (Review_backend.parse_array
-                                   ~known_kinds:known_review_kinds
-                                   review_backends_json)
-                                ~f:(fun review_backends ->
-                                  {
-                                    default_backend;
-                                    default_model;
-                                    default_effort;
-                                    extras;
-                                    automerge_timeout;
-                                    review_team;
-                                    complexity_routes = routes;
-                                    review_backends;
-                                  }))))))
+              Result.bind
+                (Worktree_lifecycle.parse_optional (Json.field "worktree" json))
+                ~f:(fun worktree ->
+                  Result.bind (parse_automerge_timeout json)
+                    ~f:(fun automerge_timeout ->
+                      Result.bind (parse_default ~known_backends default_json)
+                        ~f:(fun
+                            (default_backend, default_model, default_effort) ->
+                          Result.bind review_team_result ~f:(fun review_team ->
+                              Result.bind
+                                (parse_routing ~known_backends routing)
+                                ~f:(fun routes ->
+                                  Result.map
+                                    (Review_backend.parse_array
+                                       ~known_kinds:known_review_kinds
+                                       review_backends_json)
+                                    ~f:(fun review_backends ->
+                                      {
+                                        default_backend;
+                                        default_model;
+                                        default_effort;
+                                        extras;
+                                        worktree;
+                                        automerge_timeout;
+                                        review_team;
+                                        complexity_routes = routes;
+                                        review_backends;
+                                      })))))))
       | _ -> Error "config.json: top-level value must be an object")
 
 let load ~config_dir ~known_backends ?known_review_kinds () =
@@ -445,6 +453,17 @@ let%test "parse_string: array object error describes unsupported nesting" =
   | Error message ->
       String.is_substring message ~substring:"object inside an array"
   | Ok _ -> false
+
+let%test "parse_string: extras and worktree config coexist" =
+  match
+    parse_string ~known_backends:[ "codex" ]
+      {|{"extras":{"features":{"fast_mode":true}},"worktree":{"backend":"git"}}|}
+  with
+  | Ok t ->
+      List.equal String.equal t.extras [ "features.fast_mode=true" ]
+      && Option.equal Worktree_lifecycle.equal_config t.worktree
+           (Some Worktree_lifecycle.git)
+  | Error _ -> false
 
 let%test "parse_string: full routing parses" =
   let raw =

@@ -18,6 +18,7 @@ let valid_config ~max_concurrency ~max_ci_failures : Resolved_config.config =
     Resolved_config.main_branch = Types.Branch.of_string "main";
     Resolved_config.poll_interval = 1.0;
     Resolved_config.repo_root = ".";
+    worktree = Worktree_lifecycle.git;
     Resolved_config.max_concurrency;
     Resolved_config.max_ci_failures;
     Resolved_config.automerge_timeout =

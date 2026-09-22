@@ -556,6 +556,52 @@ let () =
         with _ -> false)
   in
 
+  let prop_rebase_uncommitted_prompts_cleanup =
+    Test.make
+      ~name:
+        "apply_rebase_result: Uncommitted_changes -> cleanup queued above \
+         rebase"
+      ~count:1 Gen.unit (fun () ->
+        try
+          let first = patch "cleanup" in
+          let patches = [ first ] in
+          let pid = first.Patch.id in
+          let orch = Orchestrator.create ~patches ~main_branch:main in
+          let orch, _effects, _actions = tick orch ~patches in
+          let orch = Orchestrator.set_pr_number orch pid (Pr_number.of_int 1) in
+          let orch, effects =
+            Orchestrator.apply_rebase_result orch pid
+              (Worktree.Uncommitted_changes " M file.ml") main
+          in
+          let a = Orchestrator.agent orch pid in
+          let cleanup_queued =
+            List.mem a.Patch_agent.queue Operation_kind.Uncommitted_changes
+              ~equal:Operation_kind.equal
+          in
+          let orch = Orchestrator.enqueue orch pid Operation_kind.Rebase in
+          let orch =
+            Orchestrator.fire orch
+              (Orchestrator.Respond (pid, Operation_kind.Uncommitted_changes))
+          in
+          let cleanup_running =
+            let running = Orchestrator.agent orch pid in
+            running.Patch_agent.busy
+            && Option.equal Operation_kind.equal running.Patch_agent.current_op
+                 (Some Operation_kind.Uncommitted_changes)
+          in
+          let orch =
+            Orchestrator.apply_respond_outcome orch pid
+              Operation_kind.Uncommitted_changes Orchestrator.Respond_ok
+          in
+          let after_cleanup = Orchestrator.agent orch pid in
+          cleanup_queued
+          && a.Patch_agent.rebase_failure_count = 1
+          && List.is_empty effects && cleanup_running
+          && List.mem after_cleanup.Patch_agent.queue Operation_kind.Rebase
+               ~equal:Operation_kind.equal
+        with _ -> false)
+  in
+
   (* Ok -> conflict cleared *)
   let prop_rebase_ok_clears_conflict =
     Test.make ~name:"apply_rebase_result: Ok -> clears has_conflict"
@@ -1052,6 +1098,33 @@ let () =
               Orchestrator.equal_conflict_rebase_decision decision
                 Orchestrator.Deliver_to_agent
               && a.Patch_agent.busy && a.Patch_agent.has_conflict
+              && List.is_empty effects
+        with _ -> false)
+  in
+
+  let prop_conflict_rebase_uncommitted_prompts_cleanup =
+    Test.make
+      ~name:
+        "apply_conflict_rebase_result: Uncommitted_changes -> Cleanup_needed"
+      (Gen.pair gen_patch_list_unique gen_branch) (fun (patches, new_base) ->
+        try
+          match patches with
+          | [] -> true
+          | first :: _ ->
+              let pid = first.Patch.id in
+              let orch = Orchestrator.create ~patches ~main_branch:main in
+              let orch, _effects, _actions = tick orch ~patches in
+              let orch, decision, effects =
+                Orchestrator.apply_conflict_rebase_result orch pid
+                  (Worktree.Uncommitted_changes "?? scratch") new_base
+              in
+              let a = Orchestrator.agent orch pid in
+              Orchestrator.equal_conflict_rebase_decision decision
+                Orchestrator.Cleanup_needed
+              && (not a.Patch_agent.busy)
+              && a.Patch_agent.rebase_failure_count = 1
+              && List.mem a.Patch_agent.queue Operation_kind.Uncommitted_changes
+                   ~equal:Operation_kind.equal
               && List.is_empty effects
         with _ -> false)
   in
@@ -1848,6 +1921,7 @@ let () =
       prop_rebase_sets_base;
       prop_rebase_ok_noop_complete;
       prop_rebase_conflict_enqueues;
+      prop_rebase_uncommitted_prompts_cleanup;
       prop_rebase_ok_clears_conflict;
       prop_rebase_noop_preserves_conflict;
       prop_rebase_error_fails;
@@ -1866,6 +1940,7 @@ let () =
       prop_conflict_rebase_ok;
       prop_conflict_rebase_noop;
       prop_conflict_rebase_conflict;
+      prop_conflict_rebase_uncommitted_prompts_cleanup;
       prop_conflict_rebase_no_self_enqueue;
       prop_conflict_rebase_error;
       prop_conflict_rebase_conflict_resets_rebase_failure_budget;

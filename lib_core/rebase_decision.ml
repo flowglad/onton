@@ -71,7 +71,9 @@ let plan input ~ancestor_oracle =
 let anchor_after_result ~prev ~(result : Worktree_parser.rebase_result)
     ~resolved_remote_sha ~base_branch =
   match result with
-  | Worktree_parser.Conflict _ | Worktree_parser.Error _ -> prev
+  | Worktree_parser.Conflict _ | Worktree_parser.Uncommitted_changes _
+  | Worktree_parser.Error _ ->
+      prev
   | Worktree_parser.Ok | Worktree_parser.Noop -> (
       match resolved_remote_sha with
       | None -> prev

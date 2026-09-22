@@ -42,17 +42,30 @@ let recover_worktrees_with (module W : Worktree.S) ~patches =
     | Stdlib.Sys_error msg ->
         ([], Some (Printf.sprintf "worktree discovery failed: %s" msg))
   in
+  let readiness_errors = ref [] in
   let recovered =
     List.filter_map worktrees ~f:(fun (path, branch) ->
         match
           List.find patches ~f:(fun (p : Patch.t) ->
               Branch.equal p.branch branch)
         with
-        | Some patch ->
-            Some { worktree_patch_id = patch.Patch.id; worktree_path = path }
+        | Some patch -> (
+            match W.ensure_ready ~path ~branch with
+            | Ok true ->
+                Some
+                  { worktree_patch_id = patch.Patch.id; worktree_path = path }
+            | Ok false -> None
+            | Error msg ->
+                readiness_errors :=
+                  Printf.sprintf "worktree recovery failed at %s: %s" path msg
+                  :: !readiness_errors;
+                None)
         | None -> None)
   in
-  (recovered, list_error)
+  let errors = Option.to_list list_error @ List.rev !readiness_errors in
+  ( recovered,
+    if List.is_empty errors then None else Some (String.concat ~sep:"; " errors)
+  )
 
 (** Find agents that were persisted with [busy=true] — these represent crashed
     sessions that need resetting. *)

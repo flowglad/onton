@@ -4,6 +4,18 @@
 open Base
 open Types
 
+(* While propagation is pending, head_oid remains the pre-push observation.
+   Missing identity defers only conflicts; other observations remain actionable. *)
+let defer_remote_head (agent : Patch_agent.t) ~has_conflict observed =
+  match agent.expected_remote_head_oid with
+  | None -> false
+  | Some expected -> (
+      match observed with
+      | None -> has_conflict
+      | Some head ->
+          (not (String.equal head expected))
+          && Option.equal String.equal observed agent.head_oid)
+
 (** Pure decision functions for patch agents.
 
     Mirrors the Elixir [Anton.PatchDecision] module: given the current agent
@@ -32,9 +44,10 @@ let disposition (a : Patch_agent.t) : disposition =
     | Some k -> (
         match k with
         | Operation_kind.Rebase -> Ready_rebase
-        | Operation_kind.Human | Operation_kind.Merge_conflict
-        | Operation_kind.Ci | Operation_kind.Review_comments
-        | Operation_kind.Findings | Operation_kind.Pr_body ->
+        | Operation_kind.Uncommitted_changes | Operation_kind.Human
+        | Operation_kind.Merge_conflict | Operation_kind.Ci
+        | Operation_kind.Review_comments | Operation_kind.Findings
+        | Operation_kind.Pr_body ->
             Ready_respond k)
 
 type ci_decision =
@@ -118,16 +131,21 @@ let human_acceptance_delivers_messages ~(agent : Patch_agent.t)
   && equal_delivery_mode delivery_mode Respond
   && Option.equal Operation_kind.equal kind (Some Operation_kind.Human)
 
-(** Human and Findings turns may legitimately produce no commit when they are
-    responding to an existing PR. A Human-carrying Start retains the ordinary
-    Start no-commit retry/intervention semantics even after PR association. *)
+(** Human, Findings, and Uncommitted_changes turns may legitimately produce no
+    commit when they are responding to an existing PR. Cleanup can correctly
+    discard changes instead of committing them. A Human-carrying Start retains
+    the ordinary Start no-commit retry/intervention semantics even after PR
+    association. *)
 let session_no_commits_is_ok ~(agent : Patch_agent.t)
     ~(delivery_mode : delivery_mode) ~(kind : Operation_kind.t option) : bool =
   Patch_agent.is_pr_present agent
   && equal_delivery_mode delivery_mode Respond
   &&
   match kind with
-  | Some Operation_kind.Human | Some Operation_kind.Findings -> true
+  | Some Operation_kind.Human
+  | Some Operation_kind.Findings
+  | Some Operation_kind.Uncommitted_changes ->
+      true
   | Some Operation_kind.Ci
   | Some Operation_kind.Review_comments
   | Some Operation_kind.Pr_body
@@ -144,6 +162,7 @@ type base_change = { old_base : string; new_base : string }
 [@@deriving show, eq, sexp_of, compare]
 
 type delivery_payload =
+  | Uncommitted_changes_payload
   | Human_payload of { messages : string list }
   | Ci_payload of { failed_checks : Ci_check.t list }
   | Review_payload of { comments : Comment.t list }
@@ -161,18 +180,34 @@ type respond_delivery =
   | Respond_stale
 [@@deriving show, eq, sexp_of, compare]
 
-(** Keep only failing CI checks that haven't already been delivered to the
-    agent. Checks without a stable [id] (StatusContext entries, legacy
-    snapshots) bypass the dedup — they can't be keyed reliably, and the
-    conservative choice is to deliver rather than silently drop. *)
-let filter_undelivered_ci_failures (agent : Patch_agent.t) : Ci_check.t list =
+(** Keep failing CI checks that are eligible for this attempt. Before the first
+    attempt, stable run ids are delivered once. After an incomplete session
+    ([session_fallback = Tried_fresh]) or a completed attempt whose checks still
+    fail ([ci_failure_count > 0]), the same ids become deliverable again.
+    [Given_up] is terminal, so that fallback state does not itself make
+    delivered ids eligible again. This matches [on_ci_failure]'s retry decision
+    and heals snapshots written by older supervisors that recorded ids before a
+    timed-out session completed.
+
+    Checks without a stable [id] (StatusContext entries, legacy snapshots)
+    bypass dedup — they can't be keyed reliably, and the conservative choice is
+    to deliver rather than silently drop. *)
+let filter_deliverable_ci_failures (agent : Patch_agent.t) : Ci_check.t list =
+  let retrying =
+    agent.ci_failure_count > 0
+    ||
+    match agent.session_fallback with
+    | Patch_agent.Tried_fresh -> true
+    | Patch_agent.Fresh_available | Patch_agent.Given_up -> false
+  in
   List.filter agent.ci_checks ~f:(fun (c : Ci_check.t) ->
       if not (Ci_check.is_failure c) then false
       else
         match c.id with
         | None -> true
         | Some id ->
-            not (List.mem agent.delivered_ci_run_ids id ~equal:Int.equal))
+            retrying
+            || not (List.mem agent.delivered_ci_run_ids id ~equal:Int.equal))
 
 let on_ci_failure (a : Patch_agent.t) : ci_decision =
   if a.ci_failure_count >= a.max_ci_failures then Cap_reached
@@ -185,13 +220,10 @@ let on_ci_failure (a : Patch_agent.t) : ci_decision =
   else
     let has_known_failure = List.exists a.ci_checks ~f:Ci_check.is_failure in
     let has_undelivered_failure =
-      not (List.is_empty (filter_undelivered_ci_failures a))
+      not (List.is_empty (filter_deliverable_ci_failures a))
     in
     match (has_known_failure, has_undelivered_failure) with
-    | true, false ->
-        if a.ci_failure_count > 0 && a.ci_failure_count < a.max_ci_failures then
-          Enqueue_ci
-        else Ci_already_delivered
+    | true, false -> Ci_already_delivered
     | false, _ ->
         (* The poll queue can report a CI failure before GitHub has returned
            the failed check rows. With no stable run id available to dedup
@@ -212,13 +244,13 @@ let respond_delivery ~(agent : Patch_agent.t) ~(kind : Operation_kind.t)
   then Respond_stale
   else
     let source = Option.value pre_fire_agent ~default:agent in
-    (* Precompute the CI failure list once so emptiness and payload agree.
-       Filtering against [delivered_ci_run_ids] is what prevents a second
-       delivery of the same underlying run after an unrelated [generation]
-       bump. *)
-    let ci_undelivered = filter_undelivered_ci_failures agent in
+    (* Precompute the CI failure list once so emptiness and payload agree. The
+       delivery filter deduplicates an initial attempt while allowing explicit
+       retries after failed or completed attempts. *)
+    let ci_deliverable = filter_deliverable_ci_failures agent in
     let is_empty =
       match kind with
+      | Operation_kind.Uncommitted_changes -> false
       | Operation_kind.Review_comments -> List.is_empty prefetched_comments
       | Operation_kind.Findings -> List.is_empty prefetched_findings
       | Operation_kind.Human -> List.is_empty source.human_messages
@@ -230,7 +262,7 @@ let respond_delivery ~(agent : Patch_agent.t) ~(kind : Operation_kind.t)
              (e.g. if a future caller forgets the freshness hop). Also
              catches the case where every fresh failure has already been
              delivered — no new information to send. *)
-          List.is_empty ci_undelivered
+          List.is_empty ci_deliverable
       | Operation_kind.Merge_conflict | Operation_kind.Pr_body
       | Operation_kind.Rebase ->
           false
@@ -252,9 +284,10 @@ let respond_delivery ~(agent : Patch_agent.t) ~(kind : Operation_kind.t)
       in
       let payload =
         match kind with
+        | Operation_kind.Uncommitted_changes -> Uncommitted_changes_payload
         | Operation_kind.Human ->
             Human_payload { messages = List.rev source.human_messages }
-        | Operation_kind.Ci -> Ci_payload { failed_checks = ci_undelivered }
+        | Operation_kind.Ci -> Ci_payload { failed_checks = ci_deliverable }
         | Operation_kind.Review_comments ->
             Review_payload { comments = prefetched_comments }
         | Operation_kind.Findings ->
@@ -361,8 +394,8 @@ let plan_artifact_sync ~(kind : Operation_kind.t) ~(session_ok : bool)
   else
     match kind with
     | Operation_kind.Pr_body -> Sync_skip
-    | Operation_kind.Rebase | Operation_kind.Human
-    | Operation_kind.Merge_conflict | Operation_kind.Ci
+    | Operation_kind.Uncommitted_changes | Operation_kind.Rebase
+    | Operation_kind.Human | Operation_kind.Merge_conflict | Operation_kind.Ci
     | Operation_kind.Review_comments | Operation_kind.Findings ->
         if pr_body_artifact_changed ~pre ~post then Sync_attempt_pr_body
         else Sync_skip

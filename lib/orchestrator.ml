@@ -588,6 +588,10 @@ let set_merge_ready t patch_id v =
 let set_head_oid t patch_id head_oid =
   update_agent t patch_id ~f:(fun a -> Patch_agent.set_head_oid a head_oid)
 
+let set_expected_remote_head_oid t patch_id head_oid =
+  update_agent t patch_id ~f:(fun a ->
+      Patch_agent.set_expected_remote_head_oid a head_oid)
+
 let set_review_decision t patch_id review_decision =
   update_agent t patch_id ~f:(fun a ->
       Patch_agent.set_review_decision a review_decision)
@@ -811,6 +815,13 @@ let apply_rebase_result t patch_id rebase_result new_base =
       let t = set_has_conflict t patch_id in
       let t = enqueue t patch_id Operation_kind.Merge_conflict in
       (complete t patch_id, [])
+  | Worktree.Uncommitted_changes _ ->
+      let t = set_base_branch t patch_id new_base in
+      let t =
+        update_agent t patch_id ~f:Patch_agent.increment_rebase_failure_count
+      in
+      let t = enqueue t patch_id Operation_kind.Uncommitted_changes in
+      (complete t patch_id, [])
   | Worktree.Error _ ->
       let t =
         update_agent t patch_id ~f:Patch_agent.increment_rebase_failure_count
@@ -878,6 +889,7 @@ let apply_rebase_push_result t patch_id
 type conflict_rebase_decision =
   | Conflict_resolved
   | Deliver_to_agent
+  | Cleanup_needed
   | Conflict_failed
 [@@deriving show, eq, sexp_of]
 
@@ -925,6 +937,14 @@ let apply_conflict_rebase_result t patch_id rebase_result new_base =
       in
       let t = set_has_conflict t patch_id in
       (t, Deliver_to_agent, [])
+  | Worktree.Uncommitted_changes _ ->
+      let t = set_base_branch t patch_id new_base in
+      let t =
+        update_agent t patch_id ~f:Patch_agent.increment_rebase_failure_count
+      in
+      let t = enqueue t patch_id Operation_kind.Uncommitted_changes in
+      let t = complete t patch_id in
+      (t, Cleanup_needed, [])
   | Worktree.Error _ ->
       let t =
         update_agent t patch_id ~f:Patch_agent.increment_rebase_failure_count
@@ -946,6 +966,7 @@ type conflict_resolution =
   | Conflict_done
   | Conflict_retry_push
   | Conflict_needs_agent
+  | Conflict_cleanup_queued
   | Conflict_give_up
 [@@deriving show, eq, sexp_of]
 
@@ -987,6 +1008,7 @@ let apply_conflict_push_result t patch_id decision
           | Worktree.Push_no_commits | Worktree.Push_rejected _
           | Worktree.Push_error _ | Worktree.Push_worktree_missing ) ) ) ->
       (t, Conflict_needs_agent)
+  | Cleanup_needed, _ -> (t, Conflict_cleanup_queued)
   | Conflict_failed, _ -> (t, Conflict_give_up)
 
 type session_result =
@@ -1045,9 +1067,19 @@ type force_complete_reason = Cancelled | Unexpected_exception
     The reason that a fiber bailed is carried as data so the same pure function
     can serve both cancellation (clean teardown) and unexpected exception
     (poisoned session) paths. *)
-let apply_force_complete t patch_id reason =
+let apply_force_complete ?message_id t patch_id reason =
   match find_agent t patch_id with
   | None -> t
+  | Some agent
+    when Option.exists message_id ~f:(fun expected ->
+             not
+               (Option.equal Message_id.equal
+                  agent.Patch_agent.current_message_id (Some expected))) ->
+      (* A daemon can remain queued behind the session semaphore after its
+         outbox message has been completed or superseded. It must not clean up
+         a newer operation that happens to be busy when the stale daemon's
+         [finally] runs. *)
+      t
   | Some _ ->
       let t =
         match reason with
@@ -1238,20 +1270,31 @@ type respond_outcome =
 [@@deriving show, eq, sexp_of]
 
 let apply_respond_outcome t patch_id kind outcome =
+  let retry_rebase_after_cleanup t =
+    if Operation_kind.equal kind Operation_kind.Uncommitted_changes then
+      enqueue t patch_id Operation_kind.Rebase
+    else t
+  in
   match outcome with
   | Respond_stale -> t
-  | Respond_failed -> complete_failed t patch_id
-  | Respond_retry_push -> complete t patch_id
-  | Respond_no_commits -> complete t patch_id
-  | Respond_skip_empty -> complete t patch_id
+  | Respond_failed -> complete_failed t patch_id |> retry_rebase_after_cleanup
+  | Respond_retry_push -> complete t patch_id |> retry_rebase_after_cleanup
+  | Respond_no_commits -> complete t patch_id |> retry_rebase_after_cleanup
+  | Respond_skip_empty -> complete t patch_id |> retry_rebase_after_cleanup
   | Respond_pr_body_miss ->
       let t = complete t patch_id in
-      update_agent t patch_id
-        ~f:Patch_agent.increment_pr_body_artifact_miss_count
+      let t =
+        update_agent t patch_id
+          ~f:Patch_agent.increment_pr_body_artifact_miss_count
+      in
+      retry_rebase_after_cleanup t
   | Respond_review_unresolved ->
       let t = complete t patch_id in
-      update_agent t patch_id
-        ~f:Patch_agent.increment_review_unresolved_cycle_count
+      let t =
+        update_agent t patch_id
+          ~f:Patch_agent.increment_review_unresolved_cycle_count
+      in
+      retry_rebase_after_cleanup t
   | Respond_ok ->
       let t = complete t patch_id in
       (* Only count CI fix attempts that actually delivered a payload with
@@ -1277,7 +1320,11 @@ let apply_respond_outcome t patch_id kind outcome =
             ~f:Patch_agent.reset_review_unresolved_cycle_count
         else t
       in
-      if Operation_kind.equal kind Operation_kind.Pr_body then
-        let t = set_pr_body_delivered t patch_id true in
-        update_agent t patch_id ~f:Patch_agent.reset_pr_body_artifact_miss_count
-      else t
+      let t =
+        if Operation_kind.equal kind Operation_kind.Pr_body then
+          let t = set_pr_body_delivered t patch_id true in
+          update_agent t patch_id
+            ~f:Patch_agent.reset_pr_body_artifact_miss_count
+        else t
+      in
+      retry_rebase_after_cleanup t

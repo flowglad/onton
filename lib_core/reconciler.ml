@@ -230,9 +230,10 @@ let plan_operations views ~has_merged ~branch_of ~graph ~main =
                   then None
                   else
                     Some (merge_target graph v.id ~has_merged ~branch_of ~main)
-              | Operation_kind.Human | Operation_kind.Merge_conflict
-              | Operation_kind.Ci | Operation_kind.Review_comments
-              | Operation_kind.Findings | Operation_kind.Pr_body ->
+              | Operation_kind.Uncommitted_changes | Operation_kind.Human
+              | Operation_kind.Merge_conflict | Operation_kind.Ci
+              | Operation_kind.Review_comments | Operation_kind.Findings
+              | Operation_kind.Pr_body ->
                   None
             in
             if

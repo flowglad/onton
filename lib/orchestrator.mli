@@ -126,6 +126,7 @@ val record_delivered_ci_run_ids : t -> Patch_id.t -> int list -> t
 val set_checks_passing : t -> Patch_id.t -> bool -> t
 val set_merge_ready : t -> Patch_id.t -> bool -> t
 val set_head_oid : t -> Patch_id.t -> string option -> t
+val set_expected_remote_head_oid : t -> Patch_id.t -> string option -> t
 val set_review_decision : t -> Patch_id.t -> string option -> t
 val set_unresolved_comment_count : t -> Patch_id.t -> int -> t
 val set_mergeability_unknown : t -> Patch_id.t -> bool -> t
@@ -359,12 +360,15 @@ val apply_respond_outcome :
     naturally). [Respond_review_unresolved] -> complete +
     increment_review_unresolved_cycle_count — the still-unresolved threads
     re-deliver via the next poll until the cap (>=2) surfaces the agent through
-    [needs_intervention]. *)
+    [needs_intervention]. Every non-stale completion for [Uncommitted_changes]
+    also enqueues [Rebase], so both committed and discarded cleanup paths retry
+    the blocked rebase. *)
 
 type force_complete_reason = Cancelled | Unexpected_exception
 [@@deriving show, eq, sexp_of]
 
-val apply_force_complete : t -> Patch_id.t -> force_complete_reason -> t
+val apply_force_complete :
+  ?message_id:Message_id.t -> t -> Patch_id.t -> force_complete_reason -> t
 (** Pure applicator for runner fibers that exited abnormally while the agent was
     [busy]. The single source of truth for the [bin/main.ml] [with_busy_guard]
     finally and [mark_session_failed] sites that previously called [complete]
@@ -375,7 +379,11 @@ val apply_force_complete : t -> Patch_id.t -> force_complete_reason -> t
     - [Unexpected_exception]: always advances [session_fallback] via
       [set_session_failed] then [set_tried_fresh] (preserving the prior
       [mark_session_failed] semantics, which pushed [Fresh_available] all the
-      way to [Given_up]). This still runs even when the agent is not busy.
+      way to [Given_up]). This still runs even when the agent is not busy. When
+      [message_id] is supplied, the transition is applied only while that
+      message still owns the agent. This prevents a stale runner fiber from
+      completing a newer operation for the same patch.
+
     - [Cancelled]: leaves [session_fallback] alone — a clean cancel should not
       poison the fallback chain.
     - If [busy] AND [inflight_human_messages <> []]: routes through
@@ -400,7 +408,9 @@ val apply_rebase_result :
     reset_conflict_noop_count + rewrite cascade + complete + [[Push_branch]].
     [Noop] -> set_base_branch + reset_rebase_failure_count + complete +
     [[Push_branch]]. [Conflict] -> set_base_branch + reset_rebase_failure_count
-    \+ set_has_conflict + enqueue Merge_conflict + complete. [Error _] ->
+    \+ set_has_conflict + enqueue Merge_conflict + complete.
+    [Uncommitted_changes _] -> set_base_branch + increment rebase_failure_count
+    \+ enqueue Uncommitted_changes + complete. [Error _] ->
     increment_rebase_failure_count + complete.
 
     The {e rewrite cascade} on [Ok] is the dual of [mark_merged]'s eager
@@ -455,6 +465,7 @@ val apply_rebase_push_result :
 type conflict_rebase_decision =
   | Conflict_resolved
   | Deliver_to_agent
+  | Cleanup_needed
   | Conflict_failed
 [@@deriving show, eq, sexp_of]
 
@@ -475,8 +486,10 @@ val apply_conflict_rebase_result :
       tracks GitHub state — the poller will re-set and re-enqueue if conflict
       persists; no cascade — the branch was not rewritten). [Conflict] ->
       set_base_branch + reset_rebase_failure_count + set_has_conflict +
-      [Deliver_to_agent] + [[]]. [Error _] -> increment_rebase_failure_count +
-      complete + [Conflict_failed]. *)
+      [Deliver_to_agent] + [[]]. [Uncommitted_changes _] -> set_base_branch +
+      increment_rebase_failure_count + enqueue Uncommitted_changes + complete +
+      [Cleanup_needed]. [Error _] -> increment_rebase_failure_count + complete +
+      [Conflict_failed]. *)
 
 val apply_conflict_rebase_with_anchor :
   t ->
@@ -502,6 +515,7 @@ type conflict_resolution =
   | Conflict_done
   | Conflict_retry_push
   | Conflict_needs_agent
+  | Conflict_cleanup_queued
   | Conflict_give_up
 [@@deriving show, eq, sexp_of]
 
@@ -523,6 +537,8 @@ val apply_conflict_push_result :
     - [Conflict_needs_agent]: the coding agent must resolve the conflict
       manually (rebase was noop/conflict — push result is irrelevant because the
       rebase itself didn't resolve the conflict).
+    - [Conflict_cleanup_queued]: the rebase was blocked before it began and an
+      Uncommitted_changes feedback operation is queued for the patch agent.
     - [Conflict_give_up]: unrecoverable rebase error. *)
 
 val restore :

@@ -30,12 +30,11 @@ let failures = ref 0
 
 let assert_smoke ~name ~result ~got ~expected =
   let open Llm_backend in
-  (* Accept either a clean exit or any status when Final_result was seen:
-     after [saw_final_result] we SIGTERM the child, so a short-lived process
-     like [printf] may race and exit 143 instead of 0. Both are successful
-     runs from onton's perspective. [timed_out] must always be false: a
-     run that also tripped the outer timeout is never a pass, even if we
-     managed to observe Final_result along the way. *)
+  (* Accept either a clean exit or any status when Final_result was seen: a
+     CLI that does not leave during the graceful-shutdown window is terminated
+     by onton and may exit nonzero. Both are successful runs from onton's
+     perspective. [timed_out] must always be false: a run that also tripped the
+     outer timeout is never a pass, even if we observed Final_result. *)
   let exit_ok =
     (not result.timed_out) && (result.exit_code = 0 || result.saw_final_result)
   in
@@ -283,6 +282,104 @@ let () =
     else Stdio.printf "early exit on Final_result: passed (%.2fs)\n" elapsed
   in
   early_exit_test ();
+  (* --- Graceful exit after Final_result: real CLIs may need a brief interval
+     after their terminal event to flush session persistence.  Interrupting
+     that interval left Codex's thread store marked with an active writer and
+     broke the next resume. *)
+  let graceful_exit_test () =
+    let payload =
+      {|{"type":"result","result":"done","stop_reason":"end_turn"}|}
+    in
+    let events = ref [] in
+    let on_event ev = events := ev :: !events in
+    let flush_line = String.make 80 'x' in
+    let started = Eio.Time.now clock in
+    let result =
+      Llm_backend.spawn_and_stream ~process_mgr ~clock ~timeout:30.0 ~cwd
+        ~env:(Unix.environment ()) ~setsid_exec:None
+        ~args:
+          [
+            "sh";
+            "-c";
+            Printf.sprintf
+              "printf '%s\\n'; sleep 0.2; i=0; while [ \"$i\" -lt 2048 ]; do \
+               printf '%s\\n'; i=$((i + 1)); done; printf 'flush complete\\n' \
+               >&2"
+              payload flush_line;
+          ]
+        ~session_uuid:None
+        ~patch_id:(Types.Patch_id.of_string "smoke")
+        ~process_line:process_line_claude ~on_event
+    in
+    let elapsed = Eio.Time.now clock -. started in
+    let expected =
+      Types.Stream_event.Final_result
+        { text = "done"; stop_reason = Types.Stop_reason.End_turn }
+    in
+    if Float.(elapsed > 5.0) then (
+      Stdio.printf "FAIL: graceful exit took %.2fs (expected < 5s)\n" elapsed;
+      Int.incr failures)
+    else if not result.Llm_backend.saw_final_result then (
+      Stdio.printf "FAIL: graceful exit saw_final_result=false\n";
+      Int.incr failures)
+    else if
+      not (List.equal Types.Stream_event.equal (List.rev !events) [ expected ])
+    then (
+      Stdio.printf "FAIL: graceful exit did not emit expected Final_result\n";
+      Int.incr failures)
+    else if result.Llm_backend.exit_code <> 0 then (
+      Stdio.printf "FAIL: graceful exit after Final_result: exit=%d\n"
+        result.Llm_backend.exit_code;
+      Int.incr failures)
+    else Stdio.printf "graceful exit after Final_result: passed\n"
+  in
+  graceful_exit_test ();
+  (* --- Direct-child escalation must not interrupt persistence helpers in the
+     same process group. The child outlives its initial grace and receives
+     TERM, while its helper needs another 0.5s to finish and report success. *)
+  let helper_flush_grace_test () =
+    match Stdlib.Sys.getenv_opt "ONTON_SETSID_EXEC" with
+    | None | Some "" ->
+        Stdio.printf
+          "helper flush grace: SKIPPED (ONTON_SETSID_EXEC not set — dune run \
+           only)\n"
+    | Some shim ->
+        let payload =
+          {|{"type":"result","result":"done","stop_reason":"end_turn"}|}
+        in
+        let script =
+          Printf.sprintf
+            "(sleep 2.5; printf 'helper-flushed\\n' >&2; sleep 0.1) & printf \
+             '%s\\n'; exec sleep 30"
+            payload
+        in
+        let started = Eio.Time.now clock in
+        let result =
+          Llm_backend.spawn_and_stream ~process_mgr ~clock ~timeout:30.0 ~cwd
+            ~env:(Unix.environment ()) ~setsid_exec:(Some shim)
+            ~args:[ "sh"; "-c"; script ] ~session_uuid:None
+            ~patch_id:(Types.Patch_id.of_string "smoke")
+            ~process_line:process_line_claude ~on_event:(fun _ -> ())
+        in
+        let elapsed = Eio.Time.now clock -. started in
+        if Float.(elapsed > 5.0) then (
+          Stdio.printf "FAIL: helper flush grace took %.2fs (expected < 5s)\n"
+            elapsed;
+          Int.incr failures)
+        else if not result.Llm_backend.saw_final_result then (
+          Stdio.printf "FAIL: helper flush grace: Final_result not seen\n";
+          Int.incr failures)
+        else if
+          not
+            (String.is_substring result.Llm_backend.stderr
+               ~substring:"helper-flushed")
+        then (
+          Stdio.printf
+            "FAIL: helper flush grace: persistence helper was interrupted\n";
+          Int.incr failures)
+        else Stdio.printf "helper flush grace: passed (%.2fs)\n" elapsed
+  in
+  helper_flush_grace_test ();
   (* --- Timeout regression: a subprocess that never emits Final_result
      still times out on schedule. *)
   let timeout_test () =
@@ -309,11 +406,11 @@ let () =
     else Stdio.printf "timeout regression: passed (%.2fs)\n" elapsed
   in
   timeout_test ();
-  (* --- Grandchild reap: with the setsid shim, killing the child on
-     Final_result takes the whole process group with it. Without the shim
-     a backgrounded [sleep] would reparent to PID 1 and outlive us. The
-     subprocess embeds its grandchild's pid in a text_delta so we can
-     probe for it after spawn_and_stream returns. *)
+  (* --- Grandchild reap: with the setsid shim, teardown after Final_result
+     sweeps the whole process group once the direct child has exited. Without
+     the shim a backgrounded [sleep] would reparent to PID 1 and outlive us.
+     The subprocess embeds its grandchild's pid in a text_delta so we can probe
+     for it after spawn_and_stream returns. *)
   let grandchild_reap_test () =
     match Stdlib.Sys.getenv_opt "ONTON_SETSID_EXEC" with
     | None | Some "" ->
@@ -345,6 +442,7 @@ printf '{"type":"result","result":"done","stop_reason":"end_turn"}\n'
 exit 0|}
         in
         let args = [ "sh"; "-c"; script ] in
+        let started = Unix.gettimeofday () in
         let result =
           Llm_backend.spawn_and_stream ~process_mgr ~clock ~timeout:30.0 ~cwd
             ~env:(Unix.environment ()) ~setsid_exec:(Some shim) ~args
@@ -352,7 +450,14 @@ exit 0|}
             ~patch_id:(Types.Patch_id.of_string "smoke")
             ~process_line:process_line_claude ~on_event
         in
-        if not result.Llm_backend.saw_final_result then (
+        let elapsed = Unix.gettimeofday () -. started in
+        if Float.(elapsed > 5.0) then (
+          Stdio.printf
+            "FAIL: grandchild reap: took %.2fs (expected < 5s; descendant \
+             likely held a pipe open)\n"
+            elapsed;
+          Int.incr failures)
+        else if not result.Llm_backend.saw_final_result then (
           Stdio.printf "FAIL: grandchild reap: Final_result not seen\n";
           Int.incr failures)
         else

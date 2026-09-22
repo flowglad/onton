@@ -29,12 +29,29 @@ let gen_branch =
 let gen_operation_kind =
   QCheck2.Gen.oneof_list
     Operation_kind.
-      [ Rebase; Human; Merge_conflict; Ci; Review_comments; Findings; Pr_body ]
+      [
+        Uncommitted_changes;
+        Rebase;
+        Human;
+        Merge_conflict;
+        Ci;
+        Review_comments;
+        Findings;
+        Pr_body;
+      ]
 
 let gen_feedback_kind =
   QCheck2.Gen.oneof_list
     Operation_kind.
-      [ Human; Merge_conflict; Ci; Review_comments; Findings; Pr_body ]
+      [
+        Uncommitted_changes;
+        Human;
+        Merge_conflict;
+        Ci;
+        Review_comments;
+        Findings;
+        Pr_body;
+      ]
 
 let gen_operation_kind_queue =
   QCheck2.Gen.(
@@ -572,12 +589,14 @@ let all_display_statuses : Onton.Tui.display_status list =
     | Resolving_conflict -> Resolving_conflict
     | Responding_to_human -> Responding_to_human
     | Writing_pr_body -> Writing_pr_body
+    | Cleaning_worktree -> Cleaning_worktree
     | Rebasing -> Rebasing
     | Starting -> Starting
     | Updating -> Updating
     | Ci_queued -> Ci_queued
     | Review_queued -> Review_queued
     | Findings_queued -> Findings_queued
+    | Cleanup_queued -> Cleanup_queued
     | Awaiting_feedback -> Awaiting_feedback
     | Blocked_by_dep -> Blocked_by_dep
     | Pending -> Pending
@@ -595,12 +614,14 @@ let all_display_statuses : Onton.Tui.display_status list =
       Resolving_conflict;
       Responding_to_human;
       Writing_pr_body;
+      Cleaning_worktree;
       Rebasing;
       Starting;
       Updating;
       Ci_queued;
       Review_queued;
       Findings_queued;
+      Cleanup_queued;
       Awaiting_feedback;
       Blocked_by_dep;
       Pending;

@@ -45,7 +45,13 @@ module Make (W : Worktree.S) (Env : ENV) : S = struct
         in
         path
 
-  let ensure_worktree ~patch_id ~(agent : Patch_agent.t) ?branch ?base_ref () =
+  let is_ready ~path ~branch =
+    match W.ensure_ready ~path ~branch with
+    | Ok ready -> ready
+    | Error msg -> failwith msg
+
+  let ensure_worktree_impl ~patch_id ~(agent : Patch_agent.t) ?branch ?base_ref
+      () =
     let runtime = Env.runtime in
     let clock = Env.clock in
     let fs = Env.fs in
@@ -61,7 +67,8 @@ module Make (W : Worktree.S) (Env : ENV) : S = struct
       Push_reject_classify.Local_state_unsafe { reason }
     in
     let path = resolve_worktree_path ~patch_id ~agent ?branch () in
-    if Stdlib.Sys.file_exists path then (
+    let br = Option.value branch ~default:agent.Patch_agent.branch in
+    if is_ready ~path ~branch:br then (
       Runtime.update_orchestrator runtime (fun orch ->
           Orchestrator.set_worktree_path orch patch_id path);
       Path path)
@@ -81,7 +88,7 @@ module Make (W : Worktree.S) (Env : ENV) : S = struct
        user can see why we are recreating despite git's bookkeeping. *)
       let live_existing =
         match found with
-        | Some p when Stdlib.Sys.file_exists p -> Some p
+        | Some p when is_ready ~path:p ~branch:br -> Some p
         | Some stale ->
             log_event runtime ~patch_id
               (Printf.sprintf
@@ -221,10 +228,15 @@ module Make (W : Worktree.S) (Env : ENV) : S = struct
                       ~base_ref:
                         (Start_point_plan.base_start_point_ref start_point))
               with
-              | Ok _ -> `Created
+              | Ok checkout -> `Created checkout
               | Error refusal -> `Refused refusal
-              | exception (Eio.Cancel.Cancelled _ as exn) -> raise exn
+              | exception exn when Worktree.has_cancellation exn -> raise exn
               | exception exn -> `Raised exn
+            in
+            let path =
+              match create_outcome with
+              | `Created checkout -> Worktree.path checkout
+              | `Refused _ | `Raised _ -> path
             in
             let log_decision label =
               log_event runtime ~patch_id
@@ -232,7 +244,7 @@ module Make (W : Worktree.S) (Env : ENV) : S = struct
             in
             let created =
               match create_outcome with
-              | `Created ->
+              | `Created _ ->
                   log_decision "ok";
                   true
               | `Refused refusal ->
@@ -255,11 +267,19 @@ module Make (W : Worktree.S) (Env : ENV) : S = struct
                        (Stdlib.Printexc.to_string exn));
                   false
             in
-            match (created, Stdlib.Sys.file_exists path) with
-            | true, true ->
+            (* A successful create carries a validated, published checkout.
+               Re-inspection here would turn a transient recovery failure into
+               a refusal after provisioning has already succeeded. *)
+            match created with
+            | true ->
                 Runtime.update_orchestrator runtime (fun orch ->
                     Orchestrator.set_worktree_path orch patch_id path);
-                (match user_config.User_config.on_worktree_create with
+                (match
+                   match create_outcome with
+                   | `Created checkout when Worktree.newly_created checkout ->
+                       user_config.User_config.on_worktree_create
+                   | `Created _ | `Refused _ | `Raised _ -> None
+                 with
                 | Some script -> (
                     let env =
                       [
@@ -286,14 +306,10 @@ module Make (W : Worktree.S) (Env : ENV) : S = struct
                              msg))
                 | None -> ());
                 Path path
-            | true, false ->
-                log_event runtime ~patch_id
-                  (Printf.sprintf "Worktree still missing at %s" path);
-                Missing
-            | false, _ -> (
+            | false -> (
                 match create_outcome with
                 | `Refused _ -> Refused
-                | `Created -> Missing
+                | `Created _ -> Missing
                 | `Raised _ -> (
                     (* [Worktree.create] raised. A concurrent fiber may have already
                  added a real worktree for [br] before our attempt collided.
@@ -305,7 +321,7 @@ module Make (W : Worktree.S) (Env : ENV) : S = struct
                  mirroring the existing "Found existing worktree for branch"
                  path above. *)
                     match W.find_for_branch br with
-                    | Some existing ->
+                    | Some existing when is_ready ~path:existing ~branch:br ->
                         log_event runtime ~patch_id
                           (Printf.sprintf
                              "Adopting concurrently-created worktree at %s"
@@ -314,5 +330,18 @@ module Make (W : Worktree.S) (Env : ENV) : S = struct
                             Orchestrator.set_worktree_path orch patch_id
                               existing);
                         Path existing
-                    | None -> Missing)))
+                    | Some _ | None -> Missing)))
+
+  let ensure_worktree ~patch_id ~agent ?branch ?base_ref () =
+    try ensure_worktree_impl ~patch_id ~agent ?branch ?base_ref () with
+    | exn when Worktree.has_cancellation exn -> raise exn
+    | exn ->
+        let reason = Exn.to_string exn in
+        Runtime_logging.log_event Env.runtime ~patch_id
+          ("Worktree unavailable — " ^ reason);
+        Runtime.update_orchestrator Env.runtime (fun orch ->
+            Orchestrator.apply_session_result orch patch_id
+              (Orchestrator.Session_push_failed
+                 (Some (Push_reject_classify.Local_state_unsafe { reason }))));
+        Refused
 end

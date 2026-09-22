@@ -579,7 +579,8 @@ let rec apply_command orch patches cmd =
             in
             match decision with
             | Orchestrator.Deliver_to_agent -> orch'
-            | Orchestrator.Conflict_resolved | Orchestrator.Conflict_failed ->
+            | Orchestrator.Conflict_resolved | Orchestrator.Cleanup_needed
+            | Orchestrator.Conflict_failed ->
                 orch'
           with Invalid_argument _ -> orch)
       | _ -> orch)
@@ -1445,7 +1446,7 @@ let conflict_noop_cycle orch pid patches =
   match resolution with
   | Orchestrator.Conflict_done -> orch
   | Orchestrator.Conflict_needs_agent | Orchestrator.Conflict_retry_push
-  | Orchestrator.Conflict_give_up ->
+  | Orchestrator.Conflict_cleanup_queued | Orchestrator.Conflict_give_up ->
       failwith "unexpected resolution in conflict_noop_cycle"
 
 (** PI-6: Repeated Noop conflict rebase converges to needs_intervention. If the
