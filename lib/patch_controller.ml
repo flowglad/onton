@@ -94,6 +94,41 @@ let apply_poll_result ?(merge_queue_ejection_confirmed = false) t patch_id
       poll_observation) =
   let logs = ref [] in
   let log message = logs := { message; patch_id } :: !logs in
+  (* A successful force-push updates the local branch before GitHub's PR
+     GraphQL view necessarily advances to that commit.  During that window a
+     poll can return the old head together with its old CONFLICTING result.
+     Never turn a head-scoped conflict into work when it is not for the head
+     we most recently pushed.  [expected_remote_head_oid] is recorded by the
+     runner after a successful rebase/conflict push and cleared below once
+     GitHub observes that head (or reports a non-conflicting newer head). *)
+  let stale_conflict =
+    let agent = Orchestrator.agent t patch_id in
+    Poller.has_conflict poll_result
+    && Option.is_some agent.Patch_agent.expected_remote_head_oid
+    && Option.is_some poll_result.Poller.head_oid
+    && not
+         (Option.equal String.equal agent.Patch_agent.expected_remote_head_oid
+            poll_result.Poller.head_oid)
+  in
+  let poll_result =
+    if stale_conflict then (
+      log
+        (Printf.sprintf
+           "Ignoring stale conflict for GitHub head %s; waiting for pushed \
+            head %s"
+           (Option.value poll_result.Poller.head_oid ~default:"unknown")
+           (Option.value
+              (Orchestrator.agent t patch_id)
+                .Patch_agent.expected_remote_head_oid ~default:"unknown"));
+      {
+        poll_result with
+        queue =
+          List.filter poll_result.queue ~f:(fun kind ->
+              not (Operation_kind.equal kind Operation_kind.Merge_conflict));
+        merge_state = Pr_state.Unknown;
+      })
+    else poll_result
+  in
   let poll_result, merge_queue_failure =
     let agent = Orchestrator.agent t patch_id in
     let application =
@@ -207,7 +242,12 @@ let apply_poll_result ?(merge_queue_ejection_confirmed = false) t patch_id
             Orchestrator.enqueue acc patch_id kind)
   in
   let t = Orchestrator.set_merge_ready t patch_id poll_result.merge_ready in
-  let t = Orchestrator.set_head_oid t patch_id poll_result.head_oid in
+  let t =
+    if stale_conflict then t
+    else
+      let t = Orchestrator.set_head_oid t patch_id poll_result.head_oid in
+      Orchestrator.set_expected_remote_head_oid t patch_id None
+  in
   let t =
     Orchestrator.set_review_decision t patch_id poll_result.review_decision
   in
@@ -1562,6 +1602,52 @@ let%test "no merge-conflict re-enqueue after noop" =
   Orchestrator.equal_conflict_rebase_decision decision
     Orchestrator.Conflict_resolved
   && not (Orchestrator.agent t pid).Patch_agent.busy
+
+let%test "stale conflicting poll for pre-push head is ignored" =
+  let _patch, t = make_orchestrator ~patch_id:pid ~main_branch:main in
+  let t = Orchestrator.fire t (Orchestrator.Start (pid, main)) in
+  let t = Orchestrator.set_pr_number t pid (Pr_number.of_int 42) in
+  let t = Orchestrator.complete t pid in
+  let pushed_head = "new-rebased-head" in
+  let t = Orchestrator.set_head_oid t pid (Some "old-pre-push-head") in
+  let t = Orchestrator.set_expected_remote_head_oid t pid (Some pushed_head) in
+  let poll_result =
+    Poller.
+      {
+        queue = [ Operation_kind.Merge_conflict ];
+        merged = false;
+        closed = false;
+        is_draft = false;
+        merge_state = Pr_state.Conflicting;
+        merge_ready = false;
+        head_oid = Some "old-pre-push-head";
+        review_decision = None;
+        unresolved_comment_count = 0;
+        merge_queue_required = false;
+        merge_queue_entry = None;
+        checks_passing = true;
+        ci_checks = [];
+        merge_commit_sha = None;
+      }
+  in
+  let t, logs, _ =
+    apply_poll_result t pid
+      {
+        poll_result;
+        base_branch = Some main;
+        branch_in_root = false;
+        worktree_path = None;
+      }
+  in
+  let agent = Orchestrator.agent t pid in
+  (not agent.Patch_agent.has_conflict)
+  && (not
+        (List.mem agent.queue Operation_kind.Merge_conflict
+           ~equal:Operation_kind.equal))
+  && Option.equal String.equal agent.head_oid (Some "old-pre-push-head")
+  && Option.equal String.equal agent.expected_remote_head_oid (Some pushed_head)
+  && List.exists logs ~f:(fun entry ->
+      String.is_prefix entry.message ~prefix:"Ignoring stale conflict")
 
 (* -- Automerge reconciliation tests -- *)
 

@@ -1285,6 +1285,25 @@ module Make (Forge : Forge.S) (W : Worktree.S) (Env : Runner_env.S) = struct
                                 Orchestrator.apply_rebase_push_result orch
                                   patch_id push_outcome
                               in
+                              let pushed_local_sha =
+                                match push_record with
+                                | Some (Worktree.Push_ok, sha, _, _)
+                                | Some (Worktree.Push_up_to_date, sha, _, _) ->
+                                    sha
+                                | None
+                                | Some (Worktree.Push_no_commits, _, _, _)
+                                | Some (Worktree.Push_rejected _, _, _, _)
+                                | Some (Worktree.Push_worktree_missing, _, _, _)
+                                | Some (Worktree.Push_error _, _, _, _) ->
+                                    None
+                              in
+                              let orch =
+                                match pushed_local_sha with
+                                | Some sha ->
+                                    Orchestrator.set_expected_remote_head_oid
+                                      orch patch_id (Some sha)
+                                | None -> orch
+                              in
                               let push_agent_after =
                                 Orchestrator.agent orch patch_id
                               in
@@ -1941,6 +1960,48 @@ module Make (Forge : Forge.S) (W : Worktree.S) (Env : Runner_env.S) = struct
                                                 Orchestrator
                                                 .apply_conflict_push_result orch
                                                   patch_id decision push_outcome
+                                              in
+                                              let pushed_local_sha =
+                                                match push_record with
+                                                | Some
+                                                    (Worktree.Push_ok, sha, _, _)
+                                                | Some
+                                                    ( Worktree.Push_up_to_date,
+                                                      sha,
+                                                      _,
+                                                      _ ) ->
+                                                    sha
+                                                | None
+                                                | Some
+                                                    ( Worktree.Push_no_commits,
+                                                      _,
+                                                      _,
+                                                      _ )
+                                                | Some
+                                                    ( Worktree.Push_rejected _,
+                                                      _,
+                                                      _,
+                                                      _ )
+                                                | Some
+                                                    ( Worktree
+                                                      .Push_worktree_missing,
+                                                      _,
+                                                      _,
+                                                      _ )
+                                                | Some
+                                                    ( Worktree.Push_error _,
+                                                      _,
+                                                      _,
+                                                      _ ) ->
+                                                    None
+                                              in
+                                              let orch =
+                                                match pushed_local_sha with
+                                                | Some sha ->
+                                                    Orchestrator
+                                                    .set_expected_remote_head_oid
+                                                      orch patch_id (Some sha)
+                                                | None -> orch
                                               in
                                               let push_agent_after =
                                                 Orchestrator.agent orch patch_id

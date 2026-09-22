@@ -35,6 +35,7 @@ type t = {
   ci_checks : Ci_check.t list;
   merge_ready : bool;
   head_oid : string option;
+  expected_remote_head_oid : string option;
   review_decision : string option;
   unresolved_comment_count : int;
   mergeability_unknown : bool;
@@ -252,6 +253,7 @@ let create ~branch ?(max_ci_failures = default_max_ci_failures) patch_id =
     ci_checks = [];
     merge_ready = false;
     head_oid = None;
+    expected_remote_head_oid = None;
     review_decision = None;
     unresolved_comment_count = 0;
     mergeability_unknown = false;
@@ -314,6 +316,7 @@ let create_adhoc ~patch_id ~branch ~pr_number ~max_ci_failures =
     ci_checks = [];
     merge_ready = false;
     head_oid = None;
+    expected_remote_head_oid = None;
     review_decision = None;
     unresolved_comment_count = 0;
     mergeability_unknown = false;
@@ -460,6 +463,10 @@ let base_branch_changed t =
 
 let set_merge_ready t v = { t with merge_ready = v }
 let set_head_oid t head_oid = { t with head_oid }
+
+let set_expected_remote_head_oid t expected_remote_head_oid =
+  { t with expected_remote_head_oid }
+
 let set_review_decision t review_decision = { t with review_decision }
 
 let set_unresolved_comment_count t unresolved_comment_count =
@@ -627,10 +634,11 @@ let restore ~patch_id ~branch ~pr_status ~has_session ~busy ~merged ~queue
     ~satisfies ~changed ~has_conflict ~base_branch ~notified_base_branch
     ~ci_failure_count ?(max_ci_failures = default_max_ci_failures)
     ~session_fallback ~human_messages ~inflight_human_messages ~ci_checks
-    ~merge_ready ?(head_oid = None) ?(review_decision = None)
-    ?(unresolved_comment_count = 0) ~mergeability_unknown ~merge_queue_required
-    ~merge_queue_entry ~merge_commit_sha ~base_contains_merged_siblings
-    ~is_draft ~pr_body_delivered ~pr_body_artifact_miss_count
+    ~merge_ready ?(head_oid = None) ?(expected_remote_head_oid = None)
+    ?(review_decision = None) ?(unresolved_comment_count = 0)
+    ~mergeability_unknown ~merge_queue_required ~merge_queue_entry
+    ~merge_commit_sha ~base_contains_merged_siblings ~is_draft
+    ~pr_body_delivered ~pr_body_artifact_miss_count
     ?(review_unresolved_cycle_count = 0) ~start_attempts_without_pr
     ~conflict_noop_count ~no_commits_push_count ~context_exhaustion_count
     ~push_failure_count ~rebase_failure_count ~branch_rebased_onto
@@ -661,6 +669,7 @@ let restore ~patch_id ~branch ~pr_status ~has_session ~busy ~merged ~queue
     ci_checks;
     merge_ready;
     head_oid;
+    expected_remote_head_oid;
     review_decision;
     unresolved_comment_count;
     mergeability_unknown;
@@ -719,6 +728,7 @@ let set_pr_number t pr_number =
         is_draft = true;
         merge_ready = false;
         head_oid = None;
+        expected_remote_head_oid = None;
         review_decision = None;
         unresolved_comment_count = 0;
         mergeability_unknown = false;
@@ -741,6 +751,7 @@ let clear_pr t =
     is_draft = false;
     merge_ready = false;
     head_oid = None;
+    expected_remote_head_oid = None;
     review_decision = None;
     unresolved_comment_count = 0;
     mergeability_unknown = false;
@@ -771,6 +782,7 @@ let mark_pr_missing t =
     is_draft = false;
     merge_ready = false;
     head_oid = None;
+    expected_remote_head_oid = None;
     review_decision = None;
     unresolved_comment_count = 0;
     mergeability_unknown = false;

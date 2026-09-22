@@ -588,6 +588,10 @@ let set_merge_ready t patch_id v =
 let set_head_oid t patch_id head_oid =
   update_agent t patch_id ~f:(fun a -> Patch_agent.set_head_oid a head_oid)
 
+let set_expected_remote_head_oid t patch_id head_oid =
+  update_agent t patch_id ~f:(fun a ->
+      Patch_agent.set_expected_remote_head_oid a head_oid)
+
 let set_review_decision t patch_id review_decision =
   update_agent t patch_id ~f:(fun a ->
       Patch_agent.set_review_decision a review_decision)
