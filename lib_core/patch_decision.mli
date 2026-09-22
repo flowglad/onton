@@ -3,13 +3,6 @@
 
 open Types
 
-val defer_remote_head :
-  Patch_agent.t -> has_conflict:bool -> string option -> bool
-(** Retain the publication marker for a known pre-push head, or an unidentified
-    conflict. This does not suppress non-conflict PR state. An unidentified
-    non-conflict observation, expected head, or distinct head settles the
-    marker. *)
-
 (** Pure decision functions for patch agents.
 
     Each function inspects agent state and returns a decision value. The caller
@@ -65,6 +58,13 @@ type conflict_decision =
 
 val on_merge_conflict : Patch_agent.t -> conflict_decision
 (** Decide whether to enqueue merge conflict resolution. *)
+
+val defer_remote_head :
+  Patch_agent.t -> has_conflict:bool -> string option -> bool
+(** Retain the publication marker for a known pre-push head, or an unidentified
+    conflict. This does not suppress non-conflict PR state. An unidentified
+    non-conflict observation, expected head, or distinct head settles the
+    marker. *)
 
 type checks_passing_decision =
   | Reset_ci_failure_count
