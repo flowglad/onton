@@ -634,6 +634,9 @@ let targeted_prune_ignores_unrelated_owner env =
       let unrelated_stale_path = Filename.concat repo "stale-unrelated" in
       G.run_git ~cwd:repo
         [ "worktree"; "add"; "-b"; "unrelated"; unrelated_stale_path ];
+      let simgit_stale_path = Filename.concat repo "stale-simgit" in
+      G.run_git ~cwd:repo
+        [ "worktree"; "add"; "-b"; "simgit-requested"; simgit_stale_path ];
       Fun.protect
         ~finally:(fun () ->
           ignore (G.git_exit_code ~cwd:repo [ "worktree"; "unlock"; path ]);
@@ -658,8 +661,30 @@ let targeted_prune_ignores_unrelated_owner env =
             (Yojson.Safe.to_string
                (L.ownership_json ~path ~branch:"old" ~phase:L.Ready
                   unavailable_simgit));
+          let simgit_log = Filename.concat repo "simgit-remove.log" in
+          let simgit = Filename.concat repo "simgit" in
+          write simgit
+            ("#!/bin/sh\n" ^ "case \"$1:$2\" in\n"
+           ^ "--json:doctor) echo \
+              '{\"identity\":\"simgit\",\"version\":\"0.3.0\"}' ;;\n"
+           ^ "unlock:*) exit 0 ;;\n" ^ "remove:*) git -C " ^ Filename.quote repo
+           ^ " worktree remove --force \"$2\" && touch "
+           ^ Filename.quote simgit_log ^ " ;;\n" ^ "*) exit 2 ;;\n" ^ "esac\n");
+          Unix.chmod simgit 0o700;
+          let simgit_owner =
+            get (L.configure ~backend:"simgit" ~executable:(Some simgit))
+          in
+          let simgit_metadata =
+            Filename.concat registry
+              (Digest.to_hex (Digest.string simgit_stale_path) ^ ".json")
+          in
+          write simgit_metadata
+            (Yojson.Safe.to_string
+               (L.ownership_json ~path:simgit_stale_path
+                  ~branch:"simgit-requested" ~phase:L.Ready simgit_owner));
           G.sh ~dir:repo ("rm -rf " ^ Filename.quote stale_path);
           G.sh ~dir:repo ("rm -rf " ^ Filename.quote unrelated_stale_path);
+          G.sh ~dir:repo ("rm -rf " ^ Filename.quote simgit_stale_path);
           let module B =
             (val Worktree_backend.make ~fs:(Eio.Stdenv.fs env)
                    ~clock:(Eio.Stdenv.clock env)
@@ -669,6 +694,12 @@ let targeted_prune_ignores_unrelated_owner env =
           B.prune_stale_for_branch (branch "requested");
           check "requested stale registration is pruned"
             (not (List.mem stale_path (List.map fst (B.list ()))));
+          B.prune_stale_for_branch (branch "simgit-requested");
+          check "requested stale simgit registration is pruned"
+            (not (List.mem simgit_stale_path (List.map fst (B.list ()))));
+          check "simgit removal was used" (Sys.file_exists simgit_log);
+          check "stale simgit ownership metadata is removed"
+            (not (Sys.file_exists simgit_metadata));
           check "unrelated stale registration is not pruned"
             (List.mem unrelated_stale_path (List.map fst (B.list ())));
           check "inconsistent unrelated owner remains registered"

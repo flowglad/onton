@@ -214,6 +214,14 @@ let make ~fs ~clock ~process_mgr ~repo_root ~(config : config) ~timeout_seconds
     let out = git [ "worktree"; "list"; "--porcelain"; "-z" ] in
     get (parse_git_list out)
   in
+  let git_registrations_for_branch branch =
+    git [ "for-each-ref"; "--format=%(worktreepath)"; "refs/heads/" ^ branch ]
+    |> String.split_lines
+    |> List.filter_map ~f:(fun path ->
+        let path = String.strip path in
+        if String.is_empty path then None
+        else Some { path; branch = Some branch; mode = None })
+  in
   let admin_for path =
     let dirs = Stdlib.Filename.concat common "worktrees" in
     if not (Stdlib.Sys.file_exists dirs) then None
@@ -585,20 +593,22 @@ let make ~fs ~clock ~process_mgr ~repo_root ~(config : config) ~timeout_seconds
   in
   let prune_stale_for_branch requested =
     let requested = Types.Branch.to_string requested in
-    List.iter (git_list ()) ~f:(fun (e : registration) ->
-        if
-          Option.equal String.equal e.branch (Some requested)
-          && not (Stdlib.Sys.file_exists e.path)
-        then
-          match (registration_owner e).backend with
+    List.iter (git_registrations_for_branch requested)
+      ~f:(fun (e : registration) ->
+        if not (Stdlib.Sys.file_exists e.path) then
+          let owner =
+            match
+              read_owner ~path:e.path ~branch:(Types.Branch.of_string requested)
+            with
+            | Some (owner, _) -> owner
+            | None -> Worktree_lifecycle.git
+          in
+          match owner.backend with
           | Git ->
-              ignore (git [ "worktree"; "remove"; "--force"; e.path ] : string)
-          | Simgit ->
-              ignore
-                (get
-                   (inspect ~path:e.path
-                      ~branch:(Types.Branch.of_string requested))
-                  : checkout option))
+              ignore (git [ "worktree"; "remove"; "--force"; e.path ] : string);
+              let metadata = metadata_path e.path in
+              if Stdlib.Sys.file_exists metadata then Unix.unlink metadata
+          | Simgit -> cleanup ~path:e.path owner)
   in
   let reconcile () =
     let owners =
