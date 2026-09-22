@@ -67,9 +67,8 @@ let repeated_parse_order_independent =
       in
       List.equal equal_parse_result forward reverse_then_restore)
 
-let codex_extras_boolean_object_flattens_in_order =
-  QCheck2.Test.make
-    ~name:"Codex extras flatten nested boolean leaves in source order"
+let extras_boolean_object_flattens_in_order =
+  QCheck2.Test.make ~name:"Extras flatten nested boolean leaves in source order"
     ~count:300
     QCheck2.Gen.(list_size (int_range 0 30) bool)
     (fun values ->
@@ -90,7 +89,7 @@ let codex_extras_boolean_object_flattens_in_order =
           values
       in
       match Repo_config.parse_string ~known_backends raw with
-      | Ok config -> List.equal String.equal config.codex_extras expected
+      | Ok config -> List.equal String.equal config.extras expected
       | Error _ -> false)
 
 let () =
@@ -98,4 +97,4 @@ let () =
   QCheck2.Test.check_exn positive_automerge_timeout_round_trips;
   QCheck2.Test.check_exn automerge_timeout_boundaries;
   QCheck2.Test.check_exn repeated_parse_order_independent;
-  QCheck2.Test.check_exn codex_extras_boolean_object_flattens_in_order
+  QCheck2.Test.check_exn extras_boolean_object_flattens_in_order

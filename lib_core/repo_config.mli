@@ -5,15 +5,15 @@
     [~/.config/onton/<owner>/<repo>/config.json] (the same directory layout the
     [User_config] hook lives in — see [User_config.config_dir]).
 
-    Carries repository-level defaults and three sections:
+    Carries repository-level defaults and configuration sections:
     - [automerge_timeout] — the default idle window in seconds before an
       eligible PR is automatically merged.
     - [default] — per-repo defaults for backend, model, and reasoning effort.
       Each field may be omitted. Backend and model slot into the resolution
       chain below [Project_store] (stored values from previous runs) but above
       the hard-coded built-in default.
-    - [extras] — Codex CLI configuration overrides represented as a nested JSON
-      object and flattened to dotted [-c key=value] arguments.
+    - [extras] — additional backend configuration represented as a nested JSON
+      object. Codex flattens it to dotted [-c key=value] arguments.
     - [routing] — a per-patch override that binds each complexity tier (1/2/3)
       to a [(backend, model, effort)] tuple. Fires when the effective model (CLI
       or [default.model]) is the literal ["auto"] (case-insensitive). Otherwise
@@ -49,10 +49,10 @@ type t = {
   default_effort : string option;
       (** Top-level [default.effort]. [None] lets the selected provider use its
           own reasoning-effort default. *)
-  codex_extras : string list;
-      (** Validated, flattened Codex configuration overrides from top-level
-          [extras], such as [features.fast_mode=true]. Values use TOML syntax
-          expected by the Codex CLI's [-c] option. *)
+  extras : string list;
+      (** Validated, flattened configuration overrides from top-level [extras],
+          such as [features.fast_mode=true]. Values use TOML syntax; Codex
+          passes them to the CLI's [-c] option. *)
   automerge_timeout : float option;
       (** Top-level [automerge_timeout] in seconds. Must be finite and greater
           than zero. Resolution uses a CLI override, then a persisted project
@@ -125,10 +125,11 @@ val load :
       }
     ]}
     Inside [routing.<n>], [backend] is required and [model] is optional. Inside
-    [default], [backend], [model], [effort], and [extras] are optional. A
-    missing route effort inherits [default.effort]; ["default"] explicitly omits
-    the provider flag. [extras] is Codex-only; nested objects become dotted
-    configuration keys and scalar or array leaves become TOML values. Top-level
+    [default] is optional, as are its [backend], [model], and [effort] fields.
+    [extras] is a separate optional top-level field. A missing route effort
+    inherits [default.effort]; ["default"] explicitly omits the provider flag.
+    Nested [extras] objects become dotted configuration keys and scalar or array
+    leaves become TOML values. Codex passes them as [-c] overrides. Top-level
     unknown keys are ignored so the file can grow without breaking older
     binaries. *)
 

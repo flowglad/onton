@@ -15,7 +15,7 @@ type t = {
   default_backend : string option;
   default_model : string option;
   default_effort : string option;
-  codex_extras : string list;
+  extras : string list;
   automerge_timeout : float option;
   review_team : string option;
   complexity_routes : (int * route) list;
@@ -27,7 +27,7 @@ let empty =
     default_backend = None;
     default_model = None;
     default_effort = None;
-    codex_extras = [];
+    extras = [];
     automerge_timeout = None;
     review_team = None;
     complexity_routes = [];
@@ -182,8 +182,18 @@ let rec toml_value_of_json ~path (json : Yojson.Safe.t) =
   match json with
   | `Bool value -> Ok (Bool.to_string value)
   | `Int value -> Ok (Int.to_string value)
-  | `Intlit value -> Ok value
-  | `Float value when Float.is_finite value -> Ok (Printf.sprintf "%.17g" value)
+  | `Intlit value -> (
+      match Stdlib.Int64.of_string_opt value with
+      | Some _ -> Ok value
+      | None -> Error (path ^ " must fit a signed 64-bit integer"))
+  | `Float value when Float.is_finite value ->
+      let encoded = Printf.sprintf "%.17g" value in
+      if
+        String.is_substring encoded ~substring:"."
+        || String.is_substring encoded ~substring:"e"
+        || String.is_substring encoded ~substring:"E"
+      then Ok encoded
+      else Ok (encoded ^ ".0")
   | `String value -> Ok (Yojson.Safe.to_string (`String value))
   | `List values ->
       Result.map
@@ -192,13 +202,10 @@ let rec toml_value_of_json ~path (json : Yojson.Safe.t) =
         |> Result.all)
         ~f:(fun values -> "[" ^ String.concat ~sep:", " values ^ "]")
   | `Null -> Error (path ^ " must not be null")
-  | `Assoc _ ->
-      Error
-        (path
-       ^ " must be a scalar or array; use a nested object to form dotted keys")
+  | `Assoc _ -> Error (path ^ " must not contain an object inside an array")
   | `Float _ -> Error (path ^ " must be a finite number")
 
-let parse_codex_extras (json : Yojson.Safe.t) =
+let parse_extras (json : Yojson.Safe.t) =
   let rec flatten ~segments fields =
     List.fold_result fields ~init:[] ~f:(fun acc (segment, value) ->
         let next_segments = segments @ [ segment ] in
@@ -209,6 +216,10 @@ let parse_codex_extras (json : Yojson.Safe.t) =
                "%s has an invalid key segment; use only letters, numbers, \
                 underscores, and hyphens"
                path)
+        else if String.equal path "extras.model_reasoning_effort" then
+          Error
+            "extras.model_reasoning_effort conflicts with default.effort and \
+             routing effort"
         else
           match value with
           | `Assoc nested ->
@@ -282,12 +293,12 @@ let parse_string ~known_backends
           let review_backends_json =
             Option.value (Json.field "reviewBackends" json) ~default:`Null
           in
-          let codex_extras_result =
+          let extras_result =
             match
               List.Assoc.find top_level_fields "extras" ~equal:String.equal
             with
             | None -> Ok []
-            | Some extras -> parse_codex_extras extras
+            | Some extras -> parse_extras extras
           in
           let review_team_result =
             match Json.field "review_team" json with
@@ -296,7 +307,7 @@ let parse_string ~known_backends
             | Some (`String s) -> Ok (Some (String.strip s))
             | Some _ -> Error "review_team must be a string"
           in
-          Result.bind codex_extras_result ~f:(fun codex_extras ->
+          Result.bind extras_result ~f:(fun extras ->
               Result.bind (parse_automerge_timeout json)
                 ~f:(fun automerge_timeout ->
                   Result.bind (parse_default ~known_backends default_json)
@@ -313,7 +324,7 @@ let parse_string ~known_backends
                                     default_backend;
                                     default_model;
                                     default_effort;
-                                    codex_extras;
+                                    extras;
                                     automerge_timeout;
                                     review_team;
                                     complexity_routes = routes;
@@ -376,13 +387,13 @@ let%test "parse_string: unknown top-level keys are ignored (forward compat)" =
   | Ok t -> List.is_empty t.complexity_routes
   | Error _ -> false
 
-let%test "parse_string: Codex extras flatten and encode TOML values" =
+let%test "parse_string: extras flatten and encode TOML values" =
   let raw =
     {|{"extras":{"features":{"fast_mode":true},"service_tier":"fast","limits":{"retries":3},"tools":["shell","web"]}}|}
   in
   match parse_string ~known_backends:[ "codex" ] raw with
   | Ok t ->
-      List.equal String.equal t.codex_extras
+      List.equal String.equal t.extras
         [
           "features.fast_mode=true";
           "service_tier=\"fast\"";
@@ -391,7 +402,7 @@ let%test "parse_string: Codex extras flatten and encode TOML values" =
         ]
   | Error _ -> false
 
-let%test "parse_string: Codex extras rejects invalid shapes" =
+let%test "parse_string: extras rejects invalid shapes" =
   let rejects raw =
     Result.is_error (parse_string ~known_backends:[ "codex" ] raw)
   in
@@ -401,8 +412,39 @@ let%test "parse_string: Codex extras rejects invalid shapes" =
       {|{"extras":{"service_tier":null}}|};
       {|{"extras":{"bad.key":true}}|};
       {|{"extras":{"servers":[{"url":"https://example.com"}]}}|};
+      {|{"extras":{"model_reasoning_effort":"high"}}|};
+      {|{"extras":{"large":9223372036854775808}}|};
     ]
     ~f:rejects
+
+let%test "parse_string: extras preserve float type and 64-bit integer bounds" =
+  let parse raw = parse_string ~known_backends:[ "codex" ] raw in
+  let valid =
+    parse
+      {|{"extras":{"integral_float":1.0,"negative_zero":-0.0,"maximum":9223372036854775807,"minimum":-9223372036854775808}}|}
+  in
+  let rejects raw = Result.is_error (parse raw) in
+  (match valid with
+    | Ok t ->
+        List.equal String.equal t.extras
+          [
+            "integral_float=1.0";
+            "negative_zero=-0.0";
+            "maximum=9223372036854775807";
+            "minimum=-9223372036854775808";
+          ]
+    | Error _ -> false)
+  && rejects {|{"extras":{"too_large":9223372036854775808}}|}
+  && rejects {|{"extras":{"too_small":-9223372036854775809}}|}
+
+let%test "parse_string: array object error describes unsupported nesting" =
+  match
+    parse_string ~known_backends:[ "codex" ]
+      {|{"extras":{"servers":[{"url":"https://example.com"}]}}|}
+  with
+  | Error message ->
+      String.is_substring message ~substring:"object inside an array"
+  | Ok _ -> false
 
 let%test "parse_string: full routing parses" =
   let raw =

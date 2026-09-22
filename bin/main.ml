@@ -943,7 +943,7 @@ let construct_capabilities ~net (setup : runtime_setup) =
   let registry =
     Backend_registry.create ~process_mgr:setup.process_mgr ~clock:setup.clock
       ~timeout:session_timeout ~setsid_exec
-      ~codex_extras:repo_config.Repo_config.codex_extras
+      ~extras:repo_config.Repo_config.extras
   in
   let pick_backend ~complexity =
     let ({ Backend_routing.backend; model; effort } as decision) =

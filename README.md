@@ -592,12 +592,15 @@ model use its provider default. Codex supports `minimal`, `low`, `medium`,
 `max`. Onton rejects effort overrides for other backends and values unsupported
 by the selected provider.
 
-Top-level `extras` is an optional Codex-only object for additional CLI
-configuration. Onton flattens nested keys and passes every leaf as a separate
-`-c key=value` argument. The example above adds
+Top-level `extras` is an optional object for additional backend configuration.
+Onton flattens nested keys into `key=value` entries. Codex passes each entry as
+a separate `-c` argument. The example above adds
 `-c 'features.fast_mode=true'` and `-c 'service_tier="fast"'` to every Codex
-session. Leaves may be strings, booleans, numbers, or arrays; `null` values and
-objects inside arrays are rejected during config validation.
+session. Other backends currently ignore `extras`. Leaves may be strings,
+booleans, numbers, or arrays. `null` values, objects inside arrays, and key
+segments containing characters other than letters, digits, underscores, and
+hyphens are rejected. Use `default.effort` or route effort instead of
+`extras.model_reasoning_effort`.
 
 For Codex, the built-in ladder maps complexity 1/2/3 to `gpt-5.6-luna`,
 `gpt-5.6-terra`, and `gpt-5.6-sol`. Missing or out-of-range complexity

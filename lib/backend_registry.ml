@@ -25,7 +25,7 @@ let display_name_of_claude_model = function
   | None -> "Claude"
 
 let make_factory ~(process_mgr : Eio_unix.Process.mgr_ty Eio.Resource.t) ~clock
-    ~timeout ~setsid_exec ~codex_extras :
+    ~timeout ~setsid_exec ~extras :
     backend:string -> model:string option -> effort:string option -> kind =
  fun ~backend ~model ~effort ->
   match backend with
@@ -36,8 +36,8 @@ let make_factory ~(process_mgr : Eio_unix.Process.mgr_ty Eio.Resource.t) ~clock
            ~model ~effort ~process_mgr ~clock ~timeout ~setsid_exec)
   | "codex" ->
       Ephemeral
-        (Codex_backend.create ~model ~effort ~extras:codex_extras ~process_mgr
-           ~clock ~timeout ~setsid_exec)
+        (Codex_backend.create ~model ~effort ~extras ~process_mgr ~clock
+           ~timeout ~setsid_exec)
   | "opencode" ->
       Ephemeral
         (Opencode_backend.create ~model ~process_mgr ~clock ~timeout
@@ -57,10 +57,9 @@ let make_factory ~(process_mgr : Eio_unix.Process.mgr_ty Eio.Resource.t) ~clock
         (Printf.sprintf "Backend_registry.get: unknown backend %S" other)
 
 let create ~(process_mgr : Eio_unix.Process.mgr_ty Eio.Resource.t) ~clock
-    ~timeout ~setsid_exec ~codex_extras =
+    ~timeout ~setsid_exec ~extras =
   {
-    factory =
-      make_factory ~process_mgr ~clock ~timeout ~setsid_exec ~codex_extras;
+    factory = make_factory ~process_mgr ~clock ~timeout ~setsid_exec ~extras;
     cache = Hashtbl.Poly.create ();
   }
 
