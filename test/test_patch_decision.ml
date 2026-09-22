@@ -61,6 +61,26 @@ let () =
   let open QCheck2 in
   let tests =
     [
+      Test.make
+        ~name:"pending publication defers only old or unidentified heads"
+        Gen.(pair (option string) (option string))
+        (fun (old, expected) ->
+          let a =
+            create ~branch:(Branch.of_string "b") (Patch_id.of_string "p")
+          in
+          let a = set_head_oid a old in
+          let a = set_expected_remote_head_oid a expected in
+          match expected with
+          | None ->
+              (not (defer_remote_head a old)) && not (defer_remote_head a None)
+          | Some head ->
+              defer_remote_head a None
+              && (not (defer_remote_head a (Some head)))
+              && Bool.equal (defer_remote_head a old)
+                   (not (Option.equal String.equal old expected))
+              && not
+                   (defer_remote_head a
+                      (Some (head ^ Option.value old ~default:"" ^ "x"))));
       (* ---- disposition: merged always Skip ---- *)
       Test.make ~name:"disposition: merged -> Skip"
         Gen.(pair gen_pid gen_branch)

@@ -52,9 +52,10 @@ type t = private {
           GitHub's [mergeStateStatus]. *)
   head_oid : string option;
   expected_remote_head_oid : string option;
-      (** Local head from the latest successful force-push, until GitHub's PR
-          view observes that head. Used to reject stale head-scoped conflict
-          results during propagation. *)
+      (** Head awaiting publication, installed before a force-push and retained
+          only on Push_ok. While pending, [head_oid] retains the pre-push
+          observation. Polls for that old head or without identity are deferred;
+          the expected head or a distinct known head settles the marker. *)
   review_decision : string option;
   unresolved_comment_count : int;
   mergeability_unknown : bool;

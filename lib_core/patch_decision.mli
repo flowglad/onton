@@ -3,6 +3,10 @@
 
 open Types
 
+val defer_remote_head : Patch_agent.t -> string option -> bool
+(** Defer an unidentified or pre-push head while waiting for publication. The
+    expected head and distinct known heads remain actionable. *)
+
 (** Pure decision functions for patch agents.
 
     Each function inspects agent state and returns a decision value. The caller
