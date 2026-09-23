@@ -189,23 +189,28 @@ let codex_auto_tiers_pass_model_and_effort_to_cli =
       let args complexity =
         let decision =
           Backend_routing.decide ~repo_config:Repo_config.empty
-            ~default_backend:"codex" ~effective_model:(Some "auto")
-            ~complexity:(Some complexity)
+            ~default_backend:"codex" ~effective_model:(Some "auto") ~complexity
           |> fun decision ->
           Backend_routing.resolve_auto decision
-            ~auto_model:Codex_event_parser.auto_model
-            ~complexity:(Some complexity)
+            ~auto_model:Codex_event_parser.auto_model ~complexity
         in
         Codex_event_parser.build_args ~model:decision.model
           ~effort:decision.effort ~extras:[] ~cwd_path:"/tmp/work"
           ~prompt:"do work" ~resume_session:None
       in
-      let tier2 = args 2 in
-      let tier3 = args 3 in
-      List.mem tier2 "gpt-6-sol" ~equal:String.equal
+      let tier1 = args (Some 1) in
+      let tier2 = args (Some 2) in
+      let tier3 = args (Some 3) in
+      let fallback = args None in
+      List.mem tier1 "gpt-6-luna" ~equal:String.equal
+      && (not (List.mem tier1 "-c" ~equal:String.equal))
+      && List.mem tier2 "gpt-6-sol" ~equal:String.equal
       && List.mem tier2 "model_reasoning_effort=\"low\"" ~equal:String.equal
       && List.mem tier3 "gpt-6-sol" ~equal:String.equal
-      && List.mem tier3 "model_reasoning_effort=\"medium\"" ~equal:String.equal)
+      && List.mem tier3 "model_reasoning_effort=\"medium\"" ~equal:String.equal
+      && List.mem fallback "gpt-6-sol" ~equal:String.equal
+      && List.mem fallback "model_reasoning_effort=\"medium\""
+           ~equal:String.equal)
 
 let () =
   let open QCheck2 in
