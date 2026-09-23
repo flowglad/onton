@@ -90,6 +90,18 @@ let update t f =
       Eio.Mutex.unlock t.mutex;
       raise ex
 
+let update_persisting t ~persist f =
+  Eio.Mutex.lock t.mutex;
+  Fun.protect
+    ~finally:(fun () -> Eio.Mutex.unlock t.mutex)
+    (fun () ->
+      let snap, value = f t.snap in
+      match persist snap with
+      | Error _ as error -> error
+      | Ok () ->
+          t.snap <- snap;
+          Ok value)
+
 let update_orchestrator t f =
   update t (fun s -> { s with orchestrator = f s.orchestrator })
 

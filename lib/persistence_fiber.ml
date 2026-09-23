@@ -28,8 +28,9 @@ module Make (_ : Forge.S) (_ : Worktree.S) (Env : Persistence_env.S) = struct
             (fun k v -> Base.Hashtbl.set t ~key:k ~data:v)
             Env.transcripts;
           snap);
-      let snap = Runtime.snapshot_unsync Env.runtime in
-      (match Persistence.save ~path snap with
+      (match
+         Runtime.read Env.runtime (fun snap -> Persistence.save ~path snap)
+       with
       | Ok () -> ()
       | Error msg ->
           log_event Env.runtime

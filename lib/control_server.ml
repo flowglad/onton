@@ -11,29 +11,34 @@ let response ~id ~status =
   ^ "\n"
 
 let execute runtime ~snapshot_path = function
-  | Control_command.Set_automerge { patch_id; enabled; _ } -> (
+  | Control_command.Set_automerge { patch_id; enabled; _ } ->
       let outcome =
-        Runtime.update_orchestrator_returning runtime (fun orch ->
+        Runtime.update_persisting runtime
+          ~persist:(Persistence.save ~path:snapshot_path) (fun snapshot ->
+            let orch = snapshot.Runtime.orchestrator in
             match Orchestrator.find_agent orch patch_id with
-            | None -> (orch, "unknown_patch")
+            | None -> (snapshot, "unknown_patch")
             | Some agent
               when Bool.equal agent.Patch_agent.automerge_enabled enabled ->
-                (orch, "already_applied")
+                (snapshot, "already_applied")
             | Some _ ->
-                ( Orchestrator.set_automerge_enabled orch patch_id enabled,
+                ( {
+                    snapshot with
+                    orchestrator =
+                      Orchestrator.set_automerge_enabled orch patch_id enabled;
+                  },
                   "applied" ))
+      in
+      let outcome =
+        match outcome with
+        | Ok outcome -> outcome
+        | Error _ -> "persistence_failed"
       in
       if String.equal outcome "applied" then
         Runtime_logging.log_event runtime ~patch_id
           (if enabled then "Automerge enabled by control command"
            else "Automerge disabled by control command");
-      match outcome with
-      | "applied" | "already_applied" -> (
-          let snapshot = Runtime.read runtime Fn.id in
-          match Persistence.save ~path:snapshot_path snapshot with
-          | Ok () -> outcome
-          | Error _ -> "persistence_failed")
-      | _ -> outcome)
+      outcome
 
 let handle runtime ~snapshot_path flow =
   let reply =
@@ -55,14 +60,32 @@ let handle runtime ~snapshot_path flow =
   Eio.Flow.copy_string reply flow
 
 let run ~net ~runtime ~snapshot_path ~path () =
+  let parent = Stdlib.Filename.dirname path in
+  if Stdlib.Filename.is_relative path then
+    invalid_arg "control socket path must be absolute";
+  (try Unix.mkdir parent 0o700 with Unix.Unix_error (Unix.EEXIST, _, _) -> ());
+  let stat = Unix.lstat parent in
+  if
+    (not (Poly.equal stat.Unix.st_kind Unix.S_DIR))
+    || stat.Unix.st_uid <> Unix.geteuid ()
+    || stat.Unix.st_perm land 0o077 <> 0
+  then invalid_arg "control socket parent must be an owner-only directory";
   Project_store.ensure_dir (Stdlib.Filename.dirname snapshot_path);
-  Eio.Switch.run @@ fun sw ->
-  let socket =
-    Eio.Net.listen ~sw ~backlog:16 ~reuse_addr:true net (`Unix path)
-  in
-  Unix.chmod path 0o600;
-  Eio.Net.run_server ~max_connections:16
-    ~on_error:(fun ex ->
-      Stdlib.Printf.eprintf "onton control socket: %s\n%!" (Exn.to_string ex))
-    socket
-    (fun flow _ -> handle runtime ~snapshot_path flow)
+  let bound = ref false in
+  Stdlib.Fun.protect
+    ~finally:(fun () ->
+      if !bound then
+        try Unix.unlink path with Unix.Unix_error (Unix.ENOENT, _, _) -> ())
+    (fun () ->
+      Eio.Switch.run @@ fun sw ->
+      let socket =
+        Eio.Net.listen ~sw ~backlog:16 ~reuse_addr:true net (`Unix path)
+      in
+      bound := true;
+      Unix.chmod path 0o600;
+      Eio.Net.run_server ~max_connections:16
+        ~on_error:(fun ex ->
+          Stdlib.Printf.eprintf "onton control socket: %s\n%!"
+            (Exn.to_string ex))
+        socket
+        (fun flow _ -> handle runtime ~snapshot_path flow))

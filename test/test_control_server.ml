@@ -101,5 +101,28 @@ let () =
                          snapshot.Onton.Runtime.orchestrator))
                     patch_id))
                 .Patch_agent.automerge_enabled;
-            send false "applied");
-        ])
+            send false "applied";
+            Sys.remove snapshot_path;
+            Unix.mkdir snapshot_path 0o700;
+            send true "persistence_failed";
+            assert (
+              not
+                (Option.get
+                   (Onton.Orchestrator.find_agent
+                      (Onton.Runtime.read runtime (fun snapshot ->
+                           snapshot.Onton.Runtime.orchestrator))
+                      patch_id))
+                  .Patch_agent.automerge_enabled);
+            Unix.rmdir snapshot_path);
+        ];
+      assert (not (Sys.file_exists path));
+      Unix.chmod directory 0o755;
+      let rejected_shared_parent =
+        match
+          Onton.Control_server.run ~net ~runtime ~snapshot_path ~path ()
+        with
+        | () -> false
+        | exception Invalid_argument _ -> true
+      in
+      assert rejected_shared_parent;
+      Unix.chmod directory 0o700)

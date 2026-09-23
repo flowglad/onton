@@ -738,7 +738,9 @@ dedup-based entry tracking.
 
 When `ONTON_CONTROL_SOCKET` names a Unix socket path, headless Onton listens
 there for one JSON command per connection and replies with one JSON line. The
-supervisor owns the socket's private parent directory and retries a command
+path must be absolute and its parent directory must be owned by the current
+user with no group or other access; Onton creates that directory with mode
+`0700` if needed. The supervisor retries a command
 until it receives `applied` or `already_applied`. The current command is
 `{"version":1,"id":"delivery-id","type":"set_automerge","payload":{"patch_id":"1","enabled":true}}`;
 the response contains the same `id` and a `status` (`applied`,
