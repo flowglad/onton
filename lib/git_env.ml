@@ -45,7 +45,9 @@ case "$1" in
     printf '%s\n' 'x-access-token'
     ;;
   *Password*)
-    if [ -n "$GITHUB_TOKEN" ]; then
+    if [ -n "$ONTON_GITHUB_TOKEN_FILE" ]; then
+      cat "$ONTON_GITHUB_TOKEN_FILE"
+    elif [ -n "$GITHUB_TOKEN" ]; then
       printf '%s\n' "$GITHUB_TOKEN"
     elif [ -n "$GH_TOKEN" ]; then
       printf '%s\n' "$GH_TOKEN"
@@ -67,22 +69,57 @@ esac
 
 let is_env_binding name s = String.is_prefix s ~prefix:(name ^ "=")
 
+let github_token_from ~token_file ~fallback ~read_first_line =
+  match token_file with
+  | None -> fallback
+  | Some path -> (
+      match read_first_line path with
+      | Some line -> String.strip line
+      | None -> "")
+
+let github_token ~fallback =
+  github_token_from
+    ~token_file:(Stdlib.Sys.getenv_opt "ONTON_GITHUB_TOKEN_FILE") ~fallback
+    ~read_first_line:(fun path ->
+      try
+        let channel = Stdlib.open_in path in
+        Stdlib.Fun.protect
+          ~finally:(fun () -> Stdlib.close_in_noerr channel)
+          (fun () -> Some (Stdlib.input_line channel))
+      with _ -> None)
+
+let%test "GitHub token file overrides the initial token" =
+  String.equal
+    (github_token_from ~token_file:(Some "/token") ~fallback:"initial"
+       ~read_first_line:(fun _ -> Some " rotated\n"))
+    "rotated"
+
+let%test "GitHub token file fails closed when unreadable" =
+  String.equal
+    (github_token_from ~token_file:(Some "/missing") ~fallback:"initial"
+       ~read_first_line:(fun _ -> None))
+    ""
+
 let with_configured_tokens env =
-  match !configured_credentials with
-  | None -> env
-  | Some credentials -> (
-      let env =
-        List.filter env ~f:(fun s ->
-            not
-              (is_env_binding "GITHUB_TOKEN" s
-              || is_env_binding "GH_TOKEN" s
-              || is_env_binding "SRHT_USERNAME" s
-              || is_env_binding "SRHT_TOKEN" s))
-      in
-      match credentials with
-      | Github token -> ("GITHUB_TOKEN=" ^ token) :: env
-      | Sourcehut (username, token) ->
-          ("SRHT_USERNAME=" ^ username) :: ("SRHT_TOKEN=" ^ token) :: env)
+  if Option.is_some (Stdlib.Sys.getenv_opt "ONTON_GITHUB_TOKEN_FILE") then
+    List.filter env ~f:(fun s ->
+        not (is_env_binding "GITHUB_TOKEN" s || is_env_binding "GH_TOKEN" s))
+  else
+    match !configured_credentials with
+    | None -> env
+    | Some credentials -> (
+        let env =
+          List.filter env ~f:(fun s ->
+              not
+                (is_env_binding "GITHUB_TOKEN" s
+                || is_env_binding "GH_TOKEN" s
+                || is_env_binding "SRHT_USERNAME" s
+                || is_env_binding "SRHT_TOKEN" s))
+        in
+        match credentials with
+        | Github token -> ("GITHUB_TOKEN=" ^ token) :: env
+        | Sourcehut (username, token) ->
+            ("SRHT_USERNAME=" ^ username) :: ("SRHT_TOKEN=" ^ token) :: env)
 
 let clean_env () =
   let askpass = Stdlib.Lazy.force askpass_script in

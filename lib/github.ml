@@ -1177,7 +1177,8 @@ let request ~net ~clock ?(timeout = default_timeout) t ~meth ~path ?(query = [])
           let headers =
             Http.Header.of_list
               [
-                ("Authorization", "Bearer " ^ t.token);
+                ( "Authorization",
+                  "Bearer " ^ Git_env.github_token ~fallback:t.token );
                 ("Content-Type", "application/json");
                 ("Accept", "application/vnd.github+json");
                 ("User-Agent", "onton/0.1.0");
@@ -1275,7 +1276,8 @@ let fetch_job_log ~net ~clock t ~id =
           let headers =
             Http.Header.of_list
               [
-                ("Authorization", "Bearer " ^ t.token);
+                ( "Authorization",
+                  "Bearer " ^ Git_env.github_token ~fallback:t.token );
                 ("Accept", "application/vnd.github+json");
                 ("User-Agent", "onton/0.1.0");
                 ("X-GitHub-Api-Version", "2022-11-28");

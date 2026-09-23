@@ -111,6 +111,12 @@ unattended supervisor session. There are two supported transports:
   `workflow_scope_missing` and the agent flips to `needs_intervention`
   immediately (no retry loop). Fix:
   `gh auth refresh -h github.com -s workflow`.
+- **HTTPS + renewable GitHub App token** — unattended workers can set
+  `ONTON_GITHUB_TOKEN_FILE` to a private file containing a current installation
+  token. On each GitHub API request and Git HTTPS credential challenge, onton
+  reads the file again. A supervisor must rotate it atomically before the
+  installation token expires. If the file cannot be read, authentication fails
+  closed. This transport does not require a personal access token.
 - **SSH** — onton auto-detects whether the user already maintains a clone of
   `owner/repo` under one of `$PWD/..`, `~/code-src/`, `~/src/`, `~/code/`,
   `~/dev/`, or `~/projects/`. If the sibling's `origin` uses SSH

@@ -32,6 +32,11 @@ val set_github_token : string -> unit
     results for supervised git HTTPS authentication. Empty tokens are ignored.
 *)
 
+val github_token : fallback:string -> string
+(** Read the renewable installation token when [ONTON_GITHUB_TOKEN_FILE] is set.
+    A missing or unreadable file yields an empty token so authentication fails
+    closed. Without a token file, return [fallback]. *)
+
 val set_sourcehut_token : username:string -> string -> unit
 (** [set_sourcehut_token ~username token] makes the SourceHut HTTPS credentials
     available to future [clean_env ()] results. Empty values are ignored. *)
