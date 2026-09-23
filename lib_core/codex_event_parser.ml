@@ -144,34 +144,6 @@ let auto_settings ~complexity =
 let auto_model ~complexity = Some (auto_settings ~complexity).model
 let auto_effort ~complexity = (auto_settings ~complexity).effort
 
-let%test "auto_model: complexity 1 -> Luna" =
-  Option.equal String.equal
-    (auto_model ~complexity:(Some 1))
-    (Some "gpt-6-luna")
-
-let%test "auto_model: complexity 2 -> Sol" =
-  Option.equal String.equal (auto_model ~complexity:(Some 2)) (Some "gpt-6-sol")
-
-let%test "auto_model: complexity 3 -> Sol" =
-  Option.equal String.equal (auto_model ~complexity:(Some 3)) (Some "gpt-6-sol")
-
-let%test "auto_model: missing or invalid complexity -> Sol" =
-  Option.equal String.equal (auto_model ~complexity:None) (Some "gpt-6-sol")
-  && Option.equal String.equal
-       (auto_model ~complexity:(Some 4))
-       (Some "gpt-6-sol")
-
-let%test "auto_effort: tier 2 is low, tier 3 and fallback are medium" =
-  Option.is_none (auto_effort ~complexity:(Some 1))
-  && Option.equal String.equal (auto_effort ~complexity:(Some 2)) (Some "low")
-  && Option.equal String.equal
-       (auto_effort ~complexity:(Some 3))
-       (Some "medium")
-  && Option.equal String.equal (auto_effort ~complexity:None) (Some "medium")
-  && Option.equal String.equal
-       (auto_effort ~complexity:(Some 4))
-       (Some "medium")
-
 let%test "build_args fresh (no resume, no model)" =
   let args =
     build_args ~model:None ~effort:None ~extras:[] ~cwd_path:"/tmp/work"

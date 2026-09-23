@@ -39,18 +39,24 @@ let codex_auto_model_is_total =
       | Some m -> String.length m > 0
       | None -> false)
 
-let codex_auto_settings_are_usable =
-  QCheck2.Test.make ~name:"codex auto settings use a model and supported effort"
+let codex_auto_settings_select_tier =
+  QCheck2.Test.make ~name:"codex auto settings select the model and effort tier"
     ~count:200
     QCheck2.Gen.(option (int_range (-5) 10))
     (fun complexity ->
       let open Codex_event_parser in
       let settings = Codex_event_parser.auto_settings ~complexity in
-      String.length settings.model > 0
-      &&
-      match Codex_event_parser.auto_effort ~complexity with
-      | None -> true
-      | Some effort -> Repo_config.effort_is_supported ~backend:"codex" effort)
+      let expected_model, expected_effort =
+        match complexity with
+        | Some 1 -> ("gpt-6-luna", None)
+        | Some 2 -> ("gpt-6-sol", Some "low")
+        | Some _ | None -> ("gpt-6-sol", Some "medium")
+      in
+      String.equal settings.model expected_model
+      && Option.equal String.equal settings.effort expected_effort
+      && Option.equal String.equal
+           (Codex_event_parser.auto_effort ~complexity)
+           expected_effort)
 
 let public_codex_parser_surface_is_linked =
   QCheck2.Test.make ~name:"codex parser public surface is linked"
@@ -65,5 +71,5 @@ let () =
   QCheck2.Test.check_exn codex_parse_event_is_total;
   QCheck2.Test.check_exn codex_build_args_preserve_prompt;
   QCheck2.Test.check_exn codex_auto_model_is_total;
-  QCheck2.Test.check_exn codex_auto_settings_are_usable;
+  QCheck2.Test.check_exn codex_auto_settings_select_tier;
   QCheck2.Test.check_exn public_codex_parser_surface_is_linked
