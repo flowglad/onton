@@ -24,6 +24,7 @@ let roundtrip =
         let json =
           `Assoc
             [
+              ("version", `Int 1);
               ("id", `String id);
               ("type", `String "set_automerge");
               ( "payload",
@@ -46,12 +47,36 @@ let rejects_incomplete =
         (Control_command.decode
            (`Assoc
               [
+                ("version", `Int 1);
                 ("id", `String "1");
                 ("type", `String "set_automerge");
                 ("payload", `Assoc [ ("patch_id", `String "1") ]);
               ])))
 
+let rejects_unsupported_versions =
+  QCheck2.Test.make ~name:"commands require supported envelope version" ~count:1
+    QCheck2.Gen.unit (fun () ->
+      let fields =
+        [
+          ("id", `String "1");
+          ("type", `String "set_automerge");
+          ( "payload",
+            `Assoc [ ("patch_id", `String "1"); ("enabled", `Bool true) ] );
+        ]
+      in
+      List.for_all
+        (fun version ->
+          let fields =
+            match version with
+            | None -> fields
+            | Some value -> ("version", value) :: fields
+          in
+          Control_command.decode (`Assoc fields)
+          = Error "unsupported command version")
+        [ None; Some (`Int 0); Some (`Int 2); Some (`String "1"); Some `Null ])
+
 let () =
   QCheck2.Test.check_exn totality;
   QCheck2.Test.check_exn roundtrip;
-  QCheck2.Test.check_exn rejects_incomplete
+  QCheck2.Test.check_exn rejects_incomplete;
+  QCheck2.Test.check_exn rejects_unsupported_versions

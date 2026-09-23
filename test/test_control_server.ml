@@ -60,6 +60,7 @@ let () =
                 Yojson.Safe.to_string
                   (`Assoc
                      [
+                       ("version", `Int 1);
                        ("id", `String "test-1");
                        ("type", `String "set_automerge");
                        ( "payload",

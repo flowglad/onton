@@ -13,8 +13,11 @@ type t =
 let decode = function
   | `Assoc fields -> (
       let find name = List.assoc_opt name fields in
-      match (find "id", find "type", find "payload") with
-      | Some (`String id), Some (`String "set_automerge"), Some (`Assoc payload)
+      match (find "version", find "id", find "type", find "payload") with
+      | ( Some (`Int 1),
+          Some (`String id),
+          Some (`String "set_automerge"),
+          Some (`Assoc payload) )
         when id <> "" -> (
           match
             (List.assoc_opt "patch_id" payload, List.assoc_opt "enabled" payload)
@@ -24,6 +27,8 @@ let decode = function
                 (Set_automerge
                    { id; patch_id = Types.Patch_id.of_string patch_id; enabled })
           | _ -> Error "invalid command")
+      | _ when find "version" <> Some (`Int 1) ->
+          Error "unsupported command version"
       | _ -> Error "invalid command")
   | _ -> Error "invalid command"
 

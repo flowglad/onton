@@ -740,7 +740,7 @@ When `ONTON_CONTROL_SOCKET` names a Unix socket path, headless Onton listens
 there for one JSON command per connection and replies with one JSON line. The
 supervisor owns the socket's private parent directory and retries a command
 until it receives `applied` or `already_applied`. The current command is
-`{"id":"delivery-id","type":"set_automerge","payload":{"patch_id":"1","enabled":true}}`;
+`{"version":1,"id":"delivery-id","type":"set_automerge","payload":{"patch_id":"1","enabled":true}}`;
 the response contains the same `id` and a `status` (`applied`,
 `already_applied`, `unknown_patch`, `invalid_command`, or
 `persistence_failed`). The set operation
