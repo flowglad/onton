@@ -1,3 +1,6 @@
+(* @archlint.module core
+   @archlint.domain control-command *)
+
 (* Commands accepted by the task-local headless control socket. Each command
    has an id so callers can safely retry an absolute state change. *)
 type t =

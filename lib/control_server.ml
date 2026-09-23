@@ -1,3 +1,6 @@
+(* @archlint.module shell
+   @archlint.domain control-command *)
+
 (* The socket is local to one Onton process and its supervising task. Durable
    delivery belongs to the caller; this server acknowledges each command. *)
 open Base

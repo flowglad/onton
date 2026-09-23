@@ -1,3 +1,6 @@
+(* @archlint.module interface
+   @archlint.domain control-command *)
+
 type t =
   | Set_automerge of {
       id : string;
