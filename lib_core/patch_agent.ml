@@ -50,6 +50,7 @@ type t = {
           and after [clear_pr]. *)
   merge_queue_required : bool;
   merge_queue_entry : Pr_state.merge_queue_entry option;
+  native_stack : bool;
   merge_commit_sha : string option;
       (** Squash/merge commit SHA once this patch's PR is merged (GitHub
           [mergeCommit.oid]). Persisted, because merged agents are not
@@ -259,6 +260,7 @@ let create ~branch ?(max_ci_failures = default_max_ci_failures) patch_id =
     mergeability_unknown = false;
     merge_queue_required = false;
     merge_queue_entry = None;
+    native_stack = false;
     merge_commit_sha = None;
     (* Defaults to [true] ("no known missing sibling"): the poller recomputes
        this every tick before any fan-in start can become eligible, and a fresh
@@ -322,6 +324,7 @@ let create_adhoc ~patch_id ~branch ~pr_number ~max_ci_failures =
     mergeability_unknown = false;
     merge_queue_required = false;
     merge_queue_entry = None;
+    native_stack = false;
     merge_commit_sha = None;
     (* Defaults to [true] ("no known missing sibling"): the poller recomputes
        this every tick before any fan-in start can become eligible, and a fresh
@@ -475,6 +478,7 @@ let set_unresolved_comment_count t unresolved_comment_count =
 let set_mergeability_unknown t v = { t with mergeability_unknown = v }
 let set_merge_queue_required t v = { t with merge_queue_required = v }
 let set_merge_queue_entry t merge_queue_entry = { t with merge_queue_entry }
+let set_native_stack t native_stack = { t with native_stack }
 let in_merge_queue t = Option.is_some t.merge_queue_entry
 let set_merge_commit_sha t sha = { t with merge_commit_sha = sha }
 
@@ -637,8 +641,8 @@ let restore ~patch_id ~branch ~pr_status ~has_session ~busy ~merged ~queue
     ~merge_ready ?(head_oid = None) ?(expected_remote_head_oid = None)
     ?(review_decision = None) ?(unresolved_comment_count = 0)
     ~mergeability_unknown ~merge_queue_required ~merge_queue_entry
-    ~merge_commit_sha ~base_contains_merged_siblings ~is_draft
-    ~pr_body_delivered ~pr_body_artifact_miss_count
+    ?(native_stack = false) ~merge_commit_sha ~base_contains_merged_siblings
+    ~is_draft ~pr_body_delivered ~pr_body_artifact_miss_count
     ?(review_unresolved_cycle_count = 0) ~start_attempts_without_pr
     ~conflict_noop_count ~no_commits_push_count ~context_exhaustion_count
     ~push_failure_count ~rebase_failure_count ~branch_rebased_onto
@@ -675,6 +679,7 @@ let restore ~patch_id ~branch ~pr_status ~has_session ~busy ~merged ~queue
     mergeability_unknown;
     merge_queue_required;
     merge_queue_entry;
+    native_stack;
     merge_commit_sha;
     base_contains_merged_siblings;
     is_draft;
@@ -732,6 +737,7 @@ let set_pr_number t pr_number =
         review_decision = None;
         unresolved_comment_count = 0;
         mergeability_unknown = false;
+        native_stack = false;
         pr_body_delivered = false;
         checks_passing = false;
         start_attempts_without_pr = 0;
@@ -755,6 +761,7 @@ let clear_pr t =
     review_decision = None;
     unresolved_comment_count = 0;
     mergeability_unknown = false;
+    native_stack = false;
     checks_passing = false;
     ci_checks = [];
     ci_failure_count = 0;

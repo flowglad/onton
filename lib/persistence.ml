@@ -207,6 +207,7 @@ let patch_agent_to_yojson (a : Patch_agent.t) =
             `String s) );
       ("unresolved_comment_count", `Int a.unresolved_comment_count);
       ("mergeability_unknown", `Bool a.mergeability_unknown);
+      ("native_stack", `Bool a.native_stack);
       ("is_draft", `Bool a.is_draft);
       ("pr_body_delivered", `Bool a.pr_body_delivered);
       ("pr_body_artifact_miss_count", `Int a.pr_body_artifact_miss_count);
@@ -390,6 +391,8 @@ let patch_agent_of_yojson ~gameplan json =
          (match member "merge_queue_entry" json with
          | `Null -> None
          | v -> Result.ok (try_of_yojson Pr_state.merge_queue_entry_of_yojson v))
+       ~native_stack:
+         (Option.value (bool_member_opt "native_stack" json) ~default:false)
        ~merge_commit_sha:(string_member_opt "merge_commit_sha" json)
        ~base_contains_merged_siblings:
          (* Default [false] (fail-closed) when the key is absent — an older

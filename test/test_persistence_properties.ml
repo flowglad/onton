@@ -196,6 +196,18 @@ let () =
           | Error _msg -> false
         with _ -> false)
   in
+  let native_stack_roundtrip =
+    QCheck2.Test.make ~name:"native stack membership survives snapshot"
+      ~count:100 gen_patch_agent_fully_populated (fun agent ->
+        try
+          let agent = Onton_core.Patch_agent.set_native_stack agent true in
+          let gameplan = gameplan_for_agent agent in
+          let json = Onton.Persistence.patch_agent_to_yojson agent in
+          match Onton.Persistence.patch_agent_of_yojson ~gameplan json with
+          | Ok restored -> restored.Onton_core.Patch_agent.native_stack
+          | Error _ -> false
+        with _ -> false)
+  in
   (* anchor_history is a new field; exercise it explicitly by pushing 1-8
      synthetic anchors onto an agent before round-tripping. The generic
      gen_patch_agent_fully_populated leaves history empty, which would
@@ -554,6 +566,7 @@ let () =
         snapshot_json_structure;
         file_roundtrip;
         patch_agent_roundtrip_fully_populated;
+        native_stack_roundtrip;
         anchor_history_roundtrip;
         missing_anchor_history_defaults_empty;
         pr_number_roundtrip;

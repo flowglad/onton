@@ -476,6 +476,7 @@ let rec apply_command orch patches cmd =
           {
             poll_result;
             base_branch = None;
+            native_stack = false;
             branch_in_root = false;
             worktree_path = None;
           }
@@ -694,6 +695,7 @@ let rec apply_command_with_logs orch patches cmd =
               {
                 poll_result;
                 base_branch = None;
+                native_stack = false;
                 branch_in_root = false;
                 worktree_path = None;
               }
@@ -1415,6 +1417,7 @@ let conflict_noop_cycle orch pid patches =
       {
         poll_result;
         base_branch = None;
+        native_stack = false;
         branch_in_root = false;
         worktree_path = None;
       }
@@ -1493,6 +1496,7 @@ let () =
             {
               poll_result;
               base_branch = None;
+              native_stack = false;
               branch_in_root = false;
               worktree_path = None;
             }
@@ -1580,6 +1584,7 @@ let () =
             {
               poll_result;
               base_branch = None;
+              native_stack = false;
               branch_in_root = false;
               worktree_path = None;
             }
@@ -1622,6 +1627,7 @@ let () =
             {
               poll_result;
               base_branch = None;
+              native_stack = false;
               branch_in_root = false;
               worktree_path = None;
             }
@@ -1720,6 +1726,7 @@ let () =
                   {
                     poll_result;
                     base_branch = None;
+                    native_stack = false;
                     branch_in_root = false;
                     worktree_path = None;
                   }
@@ -1796,6 +1803,7 @@ let () =
                   {
                     poll_result;
                     base_branch = None;
+                    native_stack = false;
                     branch_in_root = false;
                     worktree_path = None;
                   }

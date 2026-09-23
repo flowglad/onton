@@ -1492,6 +1492,7 @@ let () =
                     {
                       poll_result = poll;
                       base_branch = None;
+                      native_stack = false;
                       branch_in_root = false;
                       worktree_path = None;
                     }
@@ -1537,6 +1538,7 @@ let () =
                     {
                       poll_result = poll;
                       base_branch = None;
+                      native_stack = false;
                       branch_in_root = false;
                       worktree_path = None;
                     }
@@ -1583,6 +1585,7 @@ let () =
                     {
                       poll_result = poll;
                       base_branch = None;
+                      native_stack = false;
                       branch_in_root = false;
                       worktree_path = None;
                     }
@@ -1633,6 +1636,7 @@ let () =
                     {
                       poll_result = poll;
                       base_branch = None;
+                      native_stack = false;
                       branch_in_root = false;
                       worktree_path = None;
                     }
@@ -1685,6 +1689,7 @@ let () =
                     {
                       poll_result = poll;
                       base_branch = None;
+                      native_stack = false;
                       branch_in_root = false;
                       worktree_path = None;
                     }
@@ -1731,6 +1736,7 @@ let () =
                     {
                       poll_result = poll;
                       base_branch = None;
+                      native_stack = false;
                       branch_in_root = false;
                       worktree_path = None;
                     }
@@ -1786,6 +1792,7 @@ let () =
                     {
                       poll_result = poll;
                       base_branch = None;
+                      native_stack = false;
                       branch_in_root = false;
                       worktree_path = None;
                     }
@@ -1844,6 +1851,7 @@ let () =
                     {
                       poll_result = poll;
                       base_branch = None;
+                      native_stack = false;
                       branch_in_root = false;
                       worktree_path = None;
                     }
@@ -1892,6 +1900,7 @@ let () =
                     {
                       poll_result = poll;
                       base_branch = None;
+                      native_stack = false;
                       branch_in_root = false;
                       worktree_path = None;
                     }

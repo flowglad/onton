@@ -332,6 +332,7 @@ let gen_pr_state =
           head_branch;
           head_oid = None;
           base_branch;
+          native_stack = false;
           is_fork;
           merge_commit_sha = None;
         })

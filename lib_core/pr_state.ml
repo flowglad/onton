@@ -63,6 +63,7 @@ type t = {
   node_id : string option;
   merge_queue_required : bool;
   merge_queue_entry : merge_queue_entry option;
+  native_stack : bool;
   head_branch : Types.Branch.t option;
   head_oid : string option;
   merge_commit_sha : string option;
@@ -391,6 +392,7 @@ let truncated_pending_state : t =
     node_id = None;
     merge_queue_required = false;
     merge_queue_entry = None;
+    native_stack = false;
     head_branch = None;
     head_oid = Some "deadbeef";
     merge_commit_sha = None;

@@ -433,6 +433,7 @@ let make ~net ~clock ~process_mgr ~token ~owner ~repo ~repo_root ~main_branch
                               merge_commit_sha =
                                 (if merged then Some base_sha else None);
                               base_branch = Some base;
+                              native_stack = false;
                               is_fork = false;
                             }))))
 

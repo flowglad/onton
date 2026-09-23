@@ -39,6 +39,7 @@ let base : Pr_state.t =
     node_id = None;
     merge_queue_required = false;
     merge_queue_entry = None;
+    native_stack = false;
     head_branch = None;
     head_oid = None;
     merge_commit_sha = None;

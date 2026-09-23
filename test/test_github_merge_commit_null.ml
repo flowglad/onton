@@ -9,7 +9,7 @@
    into [Json_parse_error] — failing the *entire* poll on every cycle and
    blinding the orchestrator to the PR's state. See [lib/github.ml]. *)
 
-let pr_json ?(merge_queue_entry = "null") ~merge_commit () =
+let pr_json ?(merge_queue_entry = "null") ?(stack = "null") ~merge_commit () =
   Printf.sprintf
     {|{
       "data": {
@@ -25,6 +25,7 @@ let pr_json ?(merge_queue_entry = "null") ~merge_commit () =
             "headRefName": "feature-branch",
             "headRefOid": "abc123",
             "mergeQueueEntry": %s,
+            "stack": %s,
             "mergeCommit": %s,
             "baseRefName": "main",
             "headRepositoryOwner": { "login": "flowglad" }
@@ -32,7 +33,7 @@ let pr_json ?(merge_queue_entry = "null") ~merge_commit () =
         }
       }
     }|}
-    merge_queue_entry merge_commit
+    merge_queue_entry stack merge_commit
 
 let parse s =
   Onton.Github.parse_response_json ~owner:"flowglad" (Yojson.Safe.from_string s)
@@ -174,6 +175,22 @@ let pending_patch_3_merge_queue_405_detection () =
   assert (not (Onton.Github.is_merge_queue_required_error base_modified_err))
 
 let () =
+  (match
+     parse
+       (pr_json ~merge_commit:"null"
+          ~stack:{|{"id":"STACK_1","number":7,"size":2}|} ())
+   with
+  | Ok st -> assert st.Onton_core.Pr_state.native_stack
+  | Error e ->
+      Printf.eprintf "  FAIL: stacked PR poll errored: %s\n"
+        (Onton.Github.show_error e);
+      Stdlib.exit 1);
+  (match parse (pr_json ~merge_commit:"null" ()) with
+  | Ok st -> assert (not st.Onton_core.Pr_state.native_stack)
+  | Error e ->
+      Printf.eprintf "  FAIL: unstacked PR poll errored: %s\n"
+        (Onton.Github.show_error e);
+      Stdlib.exit 1);
   pending_patch_2_parse_merge_queue_and_entry ();
   pending_patch_3_enqueue_and_dequeue_parsing ();
   pending_patch_3_merge_queue_405_detection ();

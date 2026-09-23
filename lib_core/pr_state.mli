@@ -69,6 +69,9 @@ type t = {
   node_id : string option;
   merge_queue_required : bool;
   merge_queue_entry : merge_queue_entry option;
+  native_stack : bool;
+      (** Whether GitHub linked this PR into a native pull request stack.
+          Distinct from Onton's patch dependency graph. *)
   head_branch : Branch.t option;
   head_oid : string option;
   merge_commit_sha : string option;

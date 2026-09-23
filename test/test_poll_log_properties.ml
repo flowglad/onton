@@ -69,7 +69,13 @@ let make_agent ~patch_id ~branch ~has_conflict ~ci_failure_count ~current_op
 
 let make_poll_observation ~branch_in_root ~worktree_path poll_result =
   Patch_controller.
-    { poll_result; base_branch = None; branch_in_root; worktree_path }
+    {
+      poll_result;
+      base_branch = None;
+      native_stack = false;
+      branch_in_root;
+      worktree_path;
+    }
 
 let make_poll ~has_conflict ~merged ~checks_passing ~is_draft ~queue =
   {
