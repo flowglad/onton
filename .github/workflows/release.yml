@@ -9,15 +9,15 @@ permissions:
 
 jobs:
   build:
-    name: Build (${{ matrix.arch }})
+    name: Build (${{ matrix.target }})
     runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
       matrix:
         include:
-          - arch: arm64
+          - target: arm64-apple-darwin
             runner: macos-14
-          - arch: x86_64
+          - target: x86_64-apple-darwin
             # macos-15-intel is GitHub's free, standard Intel/x86_64 image
             # (shipped 2025-09-19) — the supported replacement for the retired
             # macos-13. Unlike the paid macos-13-large larger runner (which
@@ -26,10 +26,14 @@ jobs:
             # setup. It's the last x86_64 macOS image GitHub offers; Intel
             # support ends when macOS 15 retires (~Fall 2027). Tracked in #316.
             runner: macos-15-intel
+          # Ubuntu 22.04 keeps the glibc baseline compatible with Daytona
+          # containers created from ubuntu:22.04 images.
+          - target: x86_64-unknown-linux-gnu
+            runner: ubuntu-22.04
+          - target: aarch64-unknown-linux-gnu
+            runner: ubuntu-22.04-arm
     steps:
-      # Plain actions/checkout here: this job runs on GitHub-hosted macOS
-      # (Blacksmith is Linux-only), where the Blacksmith checkout fork's git
-      # mirror has nothing to talk to.
+      # All build targets use GitHub-hosted runners.
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
       # We deliberately do NOT cache [_opam/]. setup-ocaml@v3 caches its own
@@ -40,9 +44,8 @@ jobs:
       # here: actions/cache freezes the first entry for a given `*.opam` hash, so
       # one half-consistent [_opam/] (e.g. from a cancelled run) poisons every
       # later run until the cache is manually evicted. CI's build-and-test job
-      # sidesteps this with a Blacksmith sticky disk, but Blacksmith is
-      # Linux-only — no such option on these macOS runners. [dune-cache: true]
-      # plus the opam.ocaml.org archive mirror keep `opam install` fast without it.
+      # sidesteps this with a Blacksmith sticky disk. [dune-cache: true]
+      # plus the opam.ocaml.org archive mirror keep `opam install` fast.
       - uses: ocaml/setup-ocaml@e32b06a3e831ff2fbc6f08cf35be2085e3918014 # v3.6.1
         with:
           ocaml-compiler: '5.5.0'
@@ -69,15 +72,21 @@ jobs:
           cp _build/default/bin/setsid_exec/main.exe _dist/bin/onton-setsid-exec
           test -x _dist/bin/onton
           test -x _dist/bin/onton-setsid-exec
-          tar czf onton-${{ matrix.arch }}-apple-darwin.tar.gz \
+          tar czf onton-${{ matrix.target }}.tar.gz \
             -C _dist/bin onton onton-setsid-exec
-          test "$(tar tzf onton-${{ matrix.arch }}-apple-darwin.tar.gz | sort | tr '\n' ' ')" = \
+          test "$(tar tzf onton-${{ matrix.target }}.tar.gz | sort | tr '\n' ' ')" = \
             "onton onton-setsid-exec "
+
+      - name: Smoke test in Ubuntu 22.04 container
+        if: runner.os == 'Linux'
+        run: |
+          docker run --rm -v "$PWD/_dist/bin:/dist:ro" ubuntu:22.04 \
+            sh -c 'apt-get update -qq && apt-get install -y -qq libgmp10 >/dev/null && /dist/onton --version && /dist/onton-setsid-exec /bin/true'
 
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: onton-${{ matrix.arch }}-apple-darwin
-          path: onton-${{ matrix.arch }}-apple-darwin.tar.gz
+          name: onton-${{ matrix.target }}
+          path: onton-${{ matrix.target }}.tar.gz
 
   release:
     name: Create Release
@@ -97,7 +106,9 @@ jobs:
             --title "$GITHUB_REF_NAME" \
             --generate-notes \
             onton-arm64-apple-darwin.tar.gz \
-            onton-x86_64-apple-darwin.tar.gz
+            onton-x86_64-apple-darwin.tar.gz \
+            onton-x86_64-unknown-linux-gnu.tar.gz \
+            onton-aarch64-unknown-linux-gnu.tar.gz
 
   homebrew:
     name: Update Homebrew Formula
