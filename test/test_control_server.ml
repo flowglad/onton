@@ -102,6 +102,36 @@ let () =
                     patch_id))
                 .Patch_agent.automerge_enabled;
             send false "applied";
+            let sidecar_path = Filename.concat directory "llm-session-ids" in
+            Unix.mkdir sidecar_path 0o700;
+            let blocker_path = Filename.concat sidecar_path "branch-24.txt" in
+            Unix.mkdir blocker_path 0o700;
+            assert (
+              Result.is_error
+                (Onton.Runtime.read runtime (fun snapshot ->
+                     Onton.Persistence.save ~path:snapshot_path snapshot)));
+            send true "applied";
+            (match
+               Onton.Persistence.snapshot_of_yojson
+                 (Yojson.Safe.from_file snapshot_path)
+             with
+            | Ok saved ->
+                assert
+                  (Option.get
+                     (Onton.Orchestrator.find_agent
+                        saved.Onton.Runtime.orchestrator patch_id))
+                    .Patch_agent.automerge_enabled
+            | Error msg -> failwith msg);
+            assert
+              (Option.get
+                 (Onton.Orchestrator.find_agent
+                    (Onton.Runtime.read runtime (fun snapshot ->
+                         snapshot.Onton.Runtime.orchestrator))
+                    patch_id))
+                .Patch_agent.automerge_enabled;
+            Unix.rmdir blocker_path;
+            Unix.rmdir sidecar_path;
+            send false "applied";
             Sys.remove snapshot_path;
             Unix.mkdir snapshot_path 0o700;
             send true "persistence_failed";

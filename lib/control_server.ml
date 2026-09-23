@@ -14,7 +14,8 @@ let execute runtime ~snapshot_path = function
   | Control_command.Set_automerge { patch_id; enabled; _ } ->
       let outcome =
         Runtime.update_persisting runtime
-          ~persist:(Persistence.save ~path:snapshot_path) (fun snapshot ->
+          ~persist:(Persistence.save_snapshot ~path:snapshot_path)
+          (fun snapshot ->
             let orch = snapshot.Runtime.orchestrator in
             match Orchestrator.find_agent orch patch_id with
             | None -> (snapshot, "unknown_patch")

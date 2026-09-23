@@ -7,9 +7,14 @@
     crash recovery — the system can resume from the last persisted state rather
     than starting from scratch. *)
 
+val save_snapshot : path:string -> Runtime.snapshot -> (unit, string) result
+(** Write only the snapshot using atomic rename. The result reports whether the
+    snapshot was replaced, so callers can use it as a transaction commit result.
+*)
+
 val save : path:string -> Runtime.snapshot -> (unit, string) result
-(** Write the snapshot to [path] as JSON. Uses atomic rename for crash safety.
-    Returns [Error msg] on I/O failure. *)
+(** Write the snapshot and then clean up obsolete session-ID sidecars. A sidecar
+    error may be returned after the snapshot has already been replaced. *)
 
 val load : path:string -> (Runtime.snapshot, string) result
 (** Read a snapshot from [path]. Restores the persisted gameplan and
