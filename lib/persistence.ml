@@ -809,13 +809,16 @@ let snapshot_of_yojson json =
 
 (* ---------- File I/O ---------- *)
 
-let save ~path (snap : Runtime.snapshot) =
+let save_snapshot ~path (snap : Runtime.snapshot) =
   try
     let json = snapshot_to_yojson snap in
     let content = Yojson.Safe.pretty_to_string json in
-    Result.bind (write_file_atomically ~path ~content) ~f:(fun () ->
-        sync_session_id_sidecars ~snapshot_path:path snap)
+    write_file_atomically ~path ~content
   with exn -> Error (Stdlib.Printexc.to_string exn)
+
+let save ~path (snap : Runtime.snapshot) =
+  Result.bind (save_snapshot ~path snap) ~f:(fun () ->
+      sync_session_id_sidecars ~snapshot_path:path snap)
 
 let load ~path =
   try

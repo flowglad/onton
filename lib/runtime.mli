@@ -46,6 +46,15 @@ val update : t -> (snapshot -> snapshot) -> unit
 (** [update t f] acquires the mutex, applies [f] to the current snapshot, stores
     the result, and releases. *)
 
+val update_persisting :
+  t ->
+  persist:(snapshot -> (unit, string) result) ->
+  (snapshot -> snapshot * 'a) ->
+  ('a, string) result
+(** Compute a new snapshot, persist that exact value, then publish it in memory
+    under the same mutex. If persistence fails, leave the in-memory state as it
+    was. Callers performing other snapshot saves must hold this mutex too. *)
+
 val update_orchestrator : t -> (Orchestrator.t -> Orchestrator.t) -> unit
 (** Convenience: update only the orchestrator. *)
 

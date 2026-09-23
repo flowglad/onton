@@ -736,6 +736,18 @@ The input prompt is visible in the footer as `: <text>`.
 Headless mode (`--headless`) outputs plain timestamped log lines to stdout with
 dedup-based entry tracking.
 
+When `ONTON_CONTROL_SOCKET` names a Unix socket path, headless Onton listens
+there for one JSON command per connection and replies with one JSON line. The
+path must be absolute and its parent directory must be owned by the current
+user with no group or other access; Onton creates that directory with mode
+`0700` if needed. The supervisor retries a command
+until it receives `applied` or `already_applied`. The current command is
+`{"version":1,"id":"delivery-id","type":"set_automerge","payload":{"patch_id":"1","enabled":true}}`;
+the response contains the same `id` and a `status` (`applied`,
+`already_applied`, `unknown_patch`, `invalid_command`, or
+`persistence_failed`). The set operation
+is safe to retry after an interrupted connection.
+
 ## Formal spec
 
 The state machine is specified in
