@@ -1146,7 +1146,7 @@ let build_fiber_env (setup : runtime_setup) (cap : constructed_capabilities)
   end in
   (module Fiber_env : FIBER_ENV)
 
-let run_main_loop (setup : runtime_setup) (cap : constructed_capabilities)
+let run_main_loop ~net (setup : runtime_setup) (cap : constructed_capabilities)
     ((module Fiber_env) : built_fiber_env) ~(tui_state : Tui_state.t) =
   let module Forge = (val cap.forge) in
   let module WorktreeClient = (val cap.worktree_client) in
@@ -1184,11 +1184,23 @@ let run_main_loop (setup : runtime_setup) (cap : constructed_capabilities)
     ]
   in
   if headless then (
+    let control_fibers =
+      match Stdlib.Sys.getenv_opt "ONTON_CONTROL_SOCKET" with
+      | Some path when not (String.is_empty path) ->
+          [
+            guard_fiber "control"
+              (Control_server.run ~net ~runtime:setup.runtime
+                 ~snapshot_path:(Project_store.snapshot_path project_name)
+                 ~path);
+          ]
+      | Some _ | None -> []
+    in
     try
       Eio.Fiber.all
         (guard_fiber "headless" (fun () -> Fibers.Headless.run ())
-        :: guard_fiber "runner" (fun () -> Fibers.Runner.run ())
-        :: common_fibers);
+         :: guard_fiber "runner" (fun () -> Fibers.Runner.run ())
+         :: control_fibers
+        @ common_fibers);
       report_fatal ()
     with Supervisor_guard.Fatal_supervisor_error _ ->
       save_snapshot ();
@@ -1467,7 +1479,8 @@ let run_with_config ~no_lock ~auto_merge ~pr_ops (config : config) gameplan
   apply_pr_ops ~setup ~cap:capabilities pr_ops;
   let tui_state = Tui_state.create () in
   let fiber_env = build_fiber_env setup capabilities ~tui_state in
-  run_main_loop setup capabilities fiber_env ~tui_state
+  run_main_loop ~net:(Eio.Stdenv.net env) setup capabilities fiber_env
+    ~tui_state
 
 (** {1 Prune}
 

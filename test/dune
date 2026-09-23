@@ -4,6 +4,16 @@
  (libraries onton_core qcheck-core qcheck-core.runner))
 
 (test
+ (name test_control_command_properties)
+ (modules test_control_command_properties)
+ (libraries onton_core qcheck-core qcheck-core.runner))
+
+(test
+ (name test_control_server)
+ (modules test_control_server)
+ (libraries onton onton_core eio_main unix yojson))
+
+(test
  (name test_worktree_lifecycle_properties)
  (modules test_worktree_lifecycle_properties)
  (flags (:standard -w -40-42))
