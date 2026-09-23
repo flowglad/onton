@@ -49,6 +49,55 @@ let askpass_response env prompt =
             (Printf.sprintf "askpass interrupted by signal %d: %s" signal stderr));
       stdout
 
+let test_token_file_auth () =
+  let name = "ONTON_GITHUB_TOKEN_FILE" in
+  let old_file = Sys.getenv_opt name in
+  let old_token = Sys.getenv_opt "GITHUB_TOKEN" in
+  let old_gh_token = Sys.getenv_opt "GH_TOKEN" in
+  let path = Filename.temp_file "onton-token-" ".txt" in
+  Fun.protect
+    ~finally:(fun () ->
+      restore_env name old_file;
+      restore_env "GITHUB_TOKEN" old_token;
+      restore_env "GH_TOKEN" old_gh_token;
+      Sys.remove path)
+    (fun () ->
+      let oc = open_out path in
+      output_string oc "installation-token\n";
+      close_out oc;
+      Unix.putenv name path;
+      Unix.putenv "GITHUB_TOKEN" "stale-token";
+      Unix.putenv "GH_TOKEN" "stale-gh-token";
+      assert_true "startup resolves the token file"
+        (String.equal (Managed_repo.infer_github_token ()) "installation-token");
+      let env = env_list () in
+      assert_true "token file removes inherited GitHub tokens"
+        (not
+           (List.exists
+              (fun s -> binding "GITHUB_TOKEN" s || binding "GH_TOKEN" s)
+              env));
+      assert_true "askpass reads the token file"
+        (String.equal
+           (askpass_response env "Password for 'https://github.com':")
+           "installation-token");
+      Unix.putenv name "";
+      assert_true "empty token file path fails startup resolution"
+        (String.equal (Managed_repo.infer_github_token ()) "");
+      let env = env_list () in
+      match value "GIT_ASKPASS" env with
+      | None -> failwith "GIT_ASKPASS missing"
+      | Some askpass ->
+          let input, output, error =
+            Unix.open_process_args_full askpass
+              [| askpass; "Password for 'https://github.com':" |]
+              (Array.of_list env)
+          in
+          let stdout = In_channel.input_all input in
+          let _stderr = In_channel.input_all error in
+          let status = Unix.close_process_full (input, output, error) in
+          assert_true "empty token file path fails askpass"
+            (String.equal stdout "" && status <> Unix.WEXITED 0))
+
 let test_clean_env_scrubs_git_and_installs_auth () =
   let old_git_dir = Sys.getenv_opt "GIT_DIR" in
   let old_gh_token = Sys.getenv_opt "GH_TOKEN" in
@@ -181,6 +230,7 @@ let is_feedback_classifies_kinds =
 
 let () =
   test_clean_env_scrubs_git_and_installs_auth ();
+  test_token_file_auth ();
   QCheck2.Test.check_exn highest_priority_matches_peek;
   QCheck2.Test.check_exn is_feedback_classifies_kinds;
   QCheck2.Test.check_exn

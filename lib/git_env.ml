@@ -45,7 +45,7 @@ case "$1" in
     printf '%s\n' 'x-access-token'
     ;;
   *Password*)
-    if [ -n "$ONTON_GITHUB_TOKEN_FILE" ]; then
+    if [ "${ONTON_GITHUB_TOKEN_FILE+x}" = x ]; then
       cat "$ONTON_GITHUB_TOKEN_FILE"
     elif [ -n "$GITHUB_TOKEN" ]; then
       printf '%s\n' "$GITHUB_TOKEN"

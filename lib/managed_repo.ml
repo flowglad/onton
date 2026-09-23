@@ -381,26 +381,30 @@ let ensure_managed_repo ?(clone_scheme = None) ?(forge = "github") ~project_name
     | Ok true -> clone_with_probe ~target_dir:repo_root
   else clone_with_probe ~target_dir:repo_root
 
-(** Resolve GitHub token: check GITHUB_TOKEN env var, then try [gh auth token].
-    Uses argv (no shell). *)
+(** Resolve GitHub token: prefer the renewable token file when configured,
+    otherwise check GITHUB_TOKEN and then [gh auth token]. Uses argv (no shell).
+*)
 let infer_github_token () =
-  match Stdlib.Sys.getenv_opt "GITHUB_TOKEN" with
-  | Some t when not (String.is_empty (String.strip t)) -> String.strip t
-  | _ -> (
-      try
-        match
-          read_process_capture (fun () ->
-              Unix.open_process_args_in "gh" [| "gh"; "auth"; "token" |])
-        with
-        | Some (Unix.WEXITED 0, out) ->
-            let t = String.strip out in
-            if String.is_empty t then "" else t
-        | Some (Unix.WEXITED _, _)
-        | Some (Unix.WSIGNALED _, _)
-        | Some (Unix.WSTOPPED _, _)
-        | None ->
-            ""
-      with _ -> "")
+  match Stdlib.Sys.getenv_opt "ONTON_GITHUB_TOKEN_FILE" with
+  | Some _ -> Git_env.github_token ~fallback:""
+  | None -> (
+      match Stdlib.Sys.getenv_opt "GITHUB_TOKEN" with
+      | Some t when not (String.is_empty (String.strip t)) -> String.strip t
+      | _ -> (
+          try
+            match
+              read_process_capture (fun () ->
+                  Unix.open_process_args_in "gh" [| "gh"; "auth"; "token" |])
+            with
+            | Some (Unix.WEXITED 0, out) ->
+                let t = String.strip out in
+                if String.is_empty t then "" else t
+            | Some (Unix.WEXITED _, _)
+            | Some (Unix.WSIGNALED _, _)
+            | Some (Unix.WSTOPPED _, _)
+            | None ->
+                ""
+          with _ -> ""))
 
 let infer_sourcehut_token () =
   match Stdlib.Sys.getenv_opt "SRHT_TOKEN" with
