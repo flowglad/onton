@@ -13,8 +13,9 @@ type decision = {
   backend : string;
   model : string option;
       (** [Some "auto"] (case-insensitive) signals the per-backend hardcoded
-          complexity → model ladder; [Some other] is an explicit model name;
-          [None] drops [--model] from the CLI invocation entirely. *)
+          complexity → model and effort ladder; [Some other] is an explicit
+          model name; [None] drops [--model] from the CLI invocation entirely.
+      *)
   effort : string option;
       (** Concrete provider reasoning effort. [None] omits the effort override
           and lets the selected model use its own default. *)
@@ -44,7 +45,9 @@ val decide :
       complexity): result is
       [{ backend = default_backend; model = Some "auto"; effort = ... }]. The
       downstream backend will see [Some "auto"] and apply its own hardcoded
-      ladder via [Llm_backend.resolve_auto_model].
+      model ladder via [Llm_backend.resolve_auto_model]. For Codex, the decision
+      also supplies its built-in tier effort unless [default.effort] overrides
+      it.
 
     The function never raises and is total over all inputs. *)
 

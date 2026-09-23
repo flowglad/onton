@@ -120,7 +120,7 @@ val load :
         "automerge_timeout": 300,
         "routing": {
           "1": { "backend": "claude", "model": "haiku", "effort": "default" },
-          "2": { "backend": "codex",  "model": "gpt-5.6-terra", "effort": "high" },
+          "2": { "backend": "codex",  "model": "gpt-6-sol", "effort": "low" },
           "3": { "backend": "claude", "model": "opus", "effort": "xhigh" }
         }
       }

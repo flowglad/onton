@@ -182,6 +182,31 @@ let effort_support_matches_provider_contract =
       in
       Bool.equal (Backend_routing.effort_is_supported ~backend effort) expected)
 
+let codex_auto_tiers_pass_model_and_effort_to_cli =
+  QCheck2.Test.make
+    ~name:"Codex auto tiers pass the selected model and effort to the CLI"
+    ~count:1 QCheck2.Gen.unit (fun () ->
+      let args complexity =
+        let decision =
+          Backend_routing.decide ~repo_config:Repo_config.empty
+            ~default_backend:"codex" ~effective_model:(Some "auto")
+            ~complexity:(Some complexity)
+          |> fun decision ->
+          Backend_routing.resolve_auto decision
+            ~auto_model:Codex_event_parser.auto_model
+            ~complexity:(Some complexity)
+        in
+        Codex_event_parser.build_args ~model:decision.model
+          ~effort:decision.effort ~extras:[] ~cwd_path:"/tmp/work"
+          ~prompt:"do work" ~resume_session:None
+      in
+      let tier2 = args 2 in
+      let tier3 = args 3 in
+      List.mem tier2 "gpt-6-sol" ~equal:String.equal
+      && List.mem tier2 "model_reasoning_effort=\"low\"" ~equal:String.equal
+      && List.mem tier3 "gpt-6-sol" ~equal:String.equal
+      && List.mem tier3 "model_reasoning_effort=\"medium\"" ~equal:String.equal)
+
 let () =
   let open QCheck2 in
   let prop_explicit_model_passes_through =
@@ -446,6 +471,7 @@ let () =
       prop_resolve_auto_leaves_explicit;
       prop_unsupported_efforts_are_complete_sound_and_total;
       effort_support_matches_provider_contract;
+      codex_auto_tiers_pass_model_and_effort_to_cli;
       prop_public_surface_is_linked;
     ]
   in
