@@ -15,6 +15,14 @@ let is_auto_model = function
 
 let effort_is_supported = Repo_config.effort_is_supported
 
+let auto_effort ~backend ~model ~complexity =
+  if String.equal backend "codex" && is_auto_model model then
+    Codex_event_parser.auto_effort ~complexity
+  else None
+
+let inherited_effort ~backend ~model ~complexity ~default_effort =
+  Option.first_some default_effort (auto_effort ~backend ~model ~complexity)
+
 let first_nonempty (xs : string list) ~default =
   match List.find xs ~f:(fun s -> not (String.is_empty (String.strip s))) with
   | Some s -> String.strip s
@@ -51,7 +59,9 @@ let decide ~(repo_config : Repo_config.t) ~default_backend ~effective_model
     | Some { Repo_config.backend; model; effort } ->
         let effort =
           match effort with
-          | Repo_config.Inherit -> repo_config.default_effort
+          | Repo_config.Inherit ->
+              inherited_effort ~backend ~model ~complexity
+                ~default_effort:repo_config.default_effort
           | Repo_config.Provider_default -> None
           | Repo_config.Level level -> Some level
         in
@@ -64,7 +74,9 @@ let decide ~(repo_config : Repo_config.t) ~default_backend ~effective_model
         {
           backend = default_backend;
           model = Some "auto";
-          effort = repo_config.default_effort;
+          effort =
+            inherited_effort ~backend:default_backend ~model:(Some "auto")
+              ~complexity ~default_effort:repo_config.default_effort;
         }
 
 type unsupported_effort = {
@@ -126,6 +138,51 @@ let%test "resolve_auto: leaves None unchanged" =
   let dec = { backend = "claude"; model = None; effort = None } in
   let out = resolve_auto dec ~auto_model ~complexity:(Some 2) in
   Option.is_none out.model
+
+let%test "Codex auto routes select Sol with tier-specific effort" =
+  let decide complexity =
+    decide ~repo_config:Repo_config.empty ~default_backend:"codex"
+      ~effective_model:(Some "auto") ~complexity
+    |> fun d ->
+    resolve_auto d ~auto_model:Codex_event_parser.auto_model ~complexity
+  in
+  let tier2 = decide (Some 2) in
+  let tier3 = decide (Some 3) in
+  let fallback = decide None in
+  Option.equal String.equal tier2.model (Some "gpt-6-sol")
+  && Option.equal String.equal tier2.effort (Some "low")
+  && Option.equal String.equal tier3.model (Some "gpt-6-sol")
+  && Option.equal String.equal tier3.effort (Some "medium")
+  && Option.equal String.equal fallback.model (Some "gpt-6-sol")
+  && Option.equal String.equal fallback.effort (Some "medium")
+
+let%test "Codex auto effort respects configured and route overrides" =
+  let with_default =
+    decide
+      ~repo_config:{ Repo_config.empty with default_effort = Some "high" }
+      ~default_backend:"codex" ~effective_model:(Some "auto")
+      ~complexity:(Some 2)
+  in
+  let with_route =
+    decide
+      ~repo_config:
+        {
+          Repo_config.empty with
+          complexity_routes =
+            [
+              ( 2,
+                {
+                  backend = "codex";
+                  model = Some "auto";
+                  effort = Provider_default;
+                } );
+            ];
+        }
+      ~default_backend:"codex" ~effective_model:(Some "auto")
+      ~complexity:(Some 2)
+  in
+  Option.equal String.equal with_default.effort (Some "high")
+  && Option.is_none with_route.effort
 
 let%test "decide: route effort inherits, clears, or overrides default" =
   let route effort = { Repo_config.backend = "codex"; model = None; effort } in

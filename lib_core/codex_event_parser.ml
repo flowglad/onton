@@ -133,33 +133,16 @@ let parse_event (line : string) : Types.Stream_event.t list =
     (parse_event_with_cost_tracking ~model:None ~budget_cap_nano_usd:None
        ~cost_state:Codex_cost.initial_cost_state line)
 
-let auto_model ~complexity =
+type auto_settings = { model : string; effort : string option }
+
+let auto_settings ~complexity =
   match complexity with
-  | Some 1 -> Some "gpt-5.6-luna"
-  | Some 2 -> Some "gpt-5.6-terra"
-  | Some 3 -> Some "gpt-5.6-sol"
-  | Some _ | None -> Some "gpt-5.6-sol"
+  | Some 1 -> { model = "gpt-6-luna"; effort = None }
+  | Some 2 -> { model = "gpt-6-sol"; effort = Some "low" }
+  | Some _ | None -> { model = "gpt-6-sol"; effort = Some "medium" }
 
-let%test "auto_model: complexity 1 -> Luna" =
-  Option.equal String.equal
-    (auto_model ~complexity:(Some 1))
-    (Some "gpt-5.6-luna")
-
-let%test "auto_model: complexity 2 -> Terra" =
-  Option.equal String.equal
-    (auto_model ~complexity:(Some 2))
-    (Some "gpt-5.6-terra")
-
-let%test "auto_model: complexity 3 -> Sol" =
-  Option.equal String.equal
-    (auto_model ~complexity:(Some 3))
-    (Some "gpt-5.6-sol")
-
-let%test "auto_model: missing or invalid complexity -> Sol" =
-  Option.equal String.equal (auto_model ~complexity:None) (Some "gpt-5.6-sol")
-  && Option.equal String.equal
-       (auto_model ~complexity:(Some 4))
-       (Some "gpt-5.6-sol")
+let auto_model ~complexity = Some (auto_settings ~complexity).model
+let auto_effort ~complexity = (auto_settings ~complexity).effort
 
 let%test "build_args fresh (no resume, no model)" =
   let args =

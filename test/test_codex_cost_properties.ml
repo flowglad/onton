@@ -97,6 +97,8 @@ let gen_pricing =
 let gen_model_name =
   QCheck2.Gen.oneof_list
     [
+      Some "gpt-6-luna";
+      Some "gpt-6-sol";
       Some "gpt-5.6-luna";
       Some "gpt-5.6-terra";
       Some "gpt-5.6-sol";
