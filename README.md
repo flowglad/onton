@@ -77,9 +77,11 @@ brew install onton
 
 ### Option B: GitHub Releases
 
-Download a prebuilt binary from
-[Releases](https://github.com/flowglad/onton/releases) (macOS ARM64 and
-x86_64).
+Download a prebuilt archive from
+[Releases](https://github.com/flowglad/onton/releases) for macOS or Linux
+(ARM64 and x86_64). Each archive contains `onton` and `onton-setsid-exec`.
+Linux containers need `libgmp10` installed (for example,
+`apt-get install libgmp10` in an Ubuntu-based Daytona image).
 
 ### Option C: From source
 
@@ -109,8 +111,7 @@ selected forge and coding backend before onton can run.
 | `gh` (GitHub CLI) | Token resolution, PR discovery (`gh pr list`), and the main vehicle agents use to interact with GitHub (`gh pr create`, `gh pr edit`, `gh pr view`, `gh api`, `gh api graphql`) | `brew install gh`, then `gh auth login` |
 | Coding-agent CLI | Drives the actual patches. One of: `claude` ([Claude Code](https://docs.anthropic.com/en/docs/claude-code)), `codex` ([OpenAI Codex CLI](https://github.com/openai/codex)), `opencode` ([OpenCode](https://opencode.ai)), `pi`, `gemini` ([Gemini CLI](https://github.com/google-gemini/gemini-cli)). Selected via `--backend` (default `claude`) and `--model` (see [Backend & model](#backend--model) below). Must be on `PATH` | See each tool's docs |
 
-Onton is built and tested on macOS (ARM64 and x86_64). Linux should work but is
-not part of the release pipeline.
+Onton is built and tested on macOS and Linux (ARM64 and x86_64).
 
 ### GitHub authentication
 
@@ -694,8 +695,9 @@ need reproducibility. The names below are accurate as of July 2026 —
 | `opencode` | Provider-prefixed, e.g. `anthropic/claude-sonnet-4-5`, `openai/gpt-5` | [OpenCode docs](https://opencode.ai/docs) |
 | `pi` | Run `pi --help` for the current list | Pi CLI |
 
-Pushing a `v*` tag builds macOS ARM64 and x86_64 binaries, creates a GitHub
-release, and updates the Homebrew formula.
+Pushing a `v*` tag builds macOS and Linux ARM64 and x86_64 binaries, checks
+the Linux binaries in Ubuntu 22.04 containers, creates a GitHub release, and
+updates the Homebrew formula.
 
 ## TUI
 
