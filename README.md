@@ -111,7 +111,7 @@ selected forge and coding backend before onton can run.
 | `gh` (GitHub CLI) | Token resolution, PR discovery (`gh pr list`), and the main vehicle agents use to interact with GitHub (`gh pr create`, `gh pr edit`, `gh pr view`, `gh api`, `gh api graphql`) | `brew install gh`, then `gh auth login` |
 | Coding-agent CLI | Drives the actual patches. One of: `claude` ([Claude Code](https://docs.anthropic.com/en/docs/claude-code)), `codex` ([OpenAI Codex CLI](https://github.com/openai/codex)), `opencode` ([OpenCode](https://opencode.ai)), `pi`, `gemini` ([Gemini CLI](https://github.com/google-gemini/gemini-cli)). Selected via `--backend` (default `claude`) and `--model` (see [Backend & model](#backend--model) below). Must be on `PATH` | See each tool's docs |
 
-Onton is built and tested on macOS and Linux (ARM64 and x86_64).
+Onton is built and tested on Apple Silicon macOS and Linux (ARM64 and x86_64).
 
 ### GitHub authentication
 
