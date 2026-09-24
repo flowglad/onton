@@ -185,6 +185,12 @@ let () =
       Printf.eprintf "  FAIL: stacked PR poll errored: %s\n"
         (Onton.Github.show_error e);
       Stdlib.exit 1);
+  (match parse (pr_json ~merge_commit:"null" ~stack:"{}" ()) with
+  | Ok st -> assert st.Onton_core.Pr_state.native_stack
+  | Error e ->
+      Printf.eprintf "  FAIL: stack without id errored: %s\n"
+        (Onton.Github.show_error e);
+      Stdlib.exit 1);
   (match parse (pr_json ~merge_commit:"null" ()) with
   | Ok st -> assert (not st.Onton_core.Pr_state.native_stack)
   | Error e ->

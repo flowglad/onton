@@ -201,10 +201,13 @@ let () =
       ~count:100 gen_patch_agent_fully_populated (fun agent ->
         try
           let agent = Onton_core.Patch_agent.set_native_stack agent true in
+          let agent = Onton_core.Patch_agent.set_native_stack agent false in
           let gameplan = gameplan_for_agent agent in
           let json = Onton.Persistence.patch_agent_to_yojson agent in
           match Onton.Persistence.patch_agent_of_yojson ~gameplan json with
-          | Ok restored -> restored.Onton_core.Patch_agent.native_stack
+          | Ok restored ->
+              restored.Onton_core.Patch_agent.native_stack
+              && restored.native_stack_absent_polls = 1
           | Error _ -> false
         with _ -> false)
   in

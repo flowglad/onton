@@ -71,8 +71,10 @@ type t = private {
   merge_queue_required : bool;
   merge_queue_entry : Pr_state.merge_queue_entry option;
   native_stack : bool;
-      (** Latest poll says GitHub linked this PR into a native stack. Separate
-          from Onton's dependency graph; reset when the PR identity changes. *)
+      (** GitHub linked this PR into a native stack. Cleared after two
+          consecutive polls without membership or when the PR changes. *)
+  native_stack_absent_polls : int;
+      (** Consecutive polls without membership, capped at one while stacked. *)
   merge_commit_sha : string option;
       (** Squash/merge commit SHA once this patch's PR is merged (GitHub
           [mergeCommit.oid]). Persisted, because merged agents are not
@@ -419,7 +421,9 @@ val set_merge_queue_entry : t -> Pr_state.merge_queue_entry option -> t
 (** Set the current merge-queue entry, if any. *)
 
 val set_native_stack : t -> bool -> t
-(** Set GitHub's native stack membership from a PR poll. *)
+(** Observe GitHub's native stack membership from a PR poll. A positive
+    observation takes effect immediately; two consecutive negative observations
+    clear membership. *)
 
 val in_merge_queue : t -> bool
 (** [true] when the PR currently sits in a merge queue
@@ -732,6 +736,7 @@ val restore :
   merge_queue_required:bool ->
   merge_queue_entry:Pr_state.merge_queue_entry option ->
   ?native_stack:bool ->
+  ?native_stack_absent_polls:int ->
   merge_commit_sha:string option ->
   base_contains_merged_siblings:bool ->
   is_draft:bool ->

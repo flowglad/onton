@@ -1374,6 +1374,7 @@ let () =
             ~gameplan
         in
         let orch = Orchestrator.set_native_stack orch pid false in
+        let orch = Orchestrator.set_native_stack orch pid false in
         let _, unstacked_effects =
           Patch_controller.reconcile_all orch ~project_name:"test-project"
             ~gameplan
@@ -1402,7 +1403,11 @@ let () =
         let paused =
           Patch_controller.plan_actions orch ~patches:[ patch ] |> List.is_empty
         in
-        let unstacked = Orchestrator.set_native_stack orch pid false in
+        let unstacked =
+          orch |> fun orch ->
+          Orchestrator.set_native_stack orch pid false |> fun orch ->
+          Orchestrator.set_native_stack orch pid false
+        in
         let resumed =
           Patch_controller.plan_actions unstacked ~patches:[ patch ]
           |> List.exists ~f:(function
@@ -1411,6 +1416,60 @@ let () =
             | Orchestrator.Start _ | Orchestrator.Respond _ -> false)
         in
         paused && resumed)
+  in
+
+  let prop_native_stack_absence_requires_two_polls =
+    Test.make
+      ~name:
+        "patch_controller: one missing stack observation retains safety gate"
+      ~count:100 gen_patch_id (fun pid ->
+        let branch = Branch.of_string "patch-head" in
+        let patch = make_patch pid branch in
+        let agent =
+          make_agent ~patch_id:pid ~branch
+            ~pr_status:(Patch_pr_status.Present (Pr_number.of_int 42))
+            ~merged:false ~queue:[] ~base_branch:(Some main) ~is_draft:true
+            ~pr_body_delivered:true ~start_attempts_without_pr:0
+            ~native_stack:true ()
+        in
+        let poll =
+          Poller.
+            {
+              queue = [];
+              merged = false;
+              closed = false;
+              is_draft = true;
+              merge_state = Pr_state.Mergeable;
+              merge_ready = false;
+              head_oid = None;
+              review_decision = None;
+              unresolved_comment_count = 0;
+              merge_queue_required = false;
+              merge_queue_entry = None;
+              checks_passing = false;
+              ci_checks = [];
+              merge_commit_sha = None;
+            }
+        in
+        let observe orch native_stack =
+          let observation =
+            { (make_poll_observation poll) with native_stack }
+          in
+          let orch, _, _ =
+            Patch_controller.apply_poll_result orch pid observation
+          in
+          orch
+        in
+        let stacked orch =
+          (Orchestrator.agent orch pid).Patch_agent.native_stack
+        in
+        let orch = make_orch patch agent |> fun orch -> observe orch false in
+        let first_absence_retained = stacked orch in
+        let orch = observe orch true |> fun orch -> observe orch false in
+        let absence_after_recovery_retained = stacked orch in
+        let orch = observe orch false in
+        first_absence_retained && absence_after_recovery_retained
+        && not (stacked orch))
   in
 
   let prop_set_pr_base_converges =
@@ -2291,6 +2350,7 @@ let () =
       prop_set_pr_base_not_emitted_when_correct;
       prop_native_stack_never_patches_base;
       prop_native_stack_base_mismatch_pauses_work;
+      prop_native_stack_absence_requires_two_polls;
       prop_set_pr_base_converges;
       prop_poll_always_refreshes_base;
       prop_discovery_intents_filters_correctly;

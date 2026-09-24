@@ -337,10 +337,7 @@ let apply_poll_result ?(merge_queue_ejection_confirmed = false) t patch_id
     | Some branch -> Orchestrator.set_base_branch t patch_id branch
     | None -> t
   in
-  if
-    native_stack && (not was_native_stack)
-    && native_stack_base_mismatch t patch_id
-  then
+  if native_stack_base_mismatch t patch_id then
     log
       "GitHub stack base differs from Onton's dependency base; waiting for \
        GitHub to retarget the stack before patch work continues";

@@ -398,8 +398,9 @@ let merge_queue_entry_of_node (node : merge_queue_entry_node) =
       let position = Option.value node.position ~default:0 in
       Some { Pr_state.id; state; position }
 
-type stack_node = { id : string option [@yojson.default None] }
-[@@deriving of_yojson] [@@yojson.allow_extra_fields]
+type stack_node = Stack
+
+let stack_node_of_yojson _ = Stack
 
 type pull_request = {
   id : string option; [@yojson.default None]
@@ -743,8 +744,7 @@ let pr_state_of_pull_request ~owner ~merge_queue_required (pr : pull_request) :
     head_oid = pr.head_ref_oid;
     merge_commit_sha = Option.bind pr.merge_commit ~f:(fun o -> o.oid);
     base_branch = Option.map pr.base_ref_name ~f:Types.Branch.of_string;
-    native_stack =
-      Option.exists pr.stack ~f:(fun stack -> Option.is_some stack.id);
+    native_stack = Option.is_some pr.stack;
     is_fork;
   }
 
