@@ -1373,6 +1373,7 @@ let () =
           Patch_controller.reconcile_all orch ~project_name:"test-project"
             ~gameplan
         in
+        (* Two consecutive absent polls clear native stack membership. *)
         let orch = Orchestrator.set_native_stack orch pid false in
         let orch = Orchestrator.set_native_stack orch pid false in
         let _, unstacked_effects =
@@ -1403,6 +1404,7 @@ let () =
         let paused =
           Patch_controller.plan_actions orch ~patches:[ patch ] |> List.is_empty
         in
+        (* One absent poll preserves the pause; the second clears it. *)
         let unstacked =
           orch |> fun orch ->
           Orchestrator.set_native_stack orch pid false |> fun orch ->
