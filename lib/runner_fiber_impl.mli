@@ -23,6 +23,7 @@ module Runner_env : sig
       list
 
     val transcripts : (Patch_id.t, string) Stdlib.Hashtbl.t
+    val transcript_updates : (Patch_id.t, string) Stdlib.Hashtbl.t
     val event_log : Event_log.t
 
     val pick_backend :

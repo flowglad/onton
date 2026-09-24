@@ -145,6 +145,9 @@ module type FIBER_ENV = sig
     list
 
   val transcripts : (Patch_id.t, string) Stdlib.Hashtbl.t
+  val transcript_updates : (Patch_id.t, string) Stdlib.Hashtbl.t
+  val initial_transcript_positions : (Patch_id.t, int) Stdlib.Hashtbl.t
+  val headless_transcript : bool
   val event_log : Event_log.t
   val branch_of : Patch_id.t -> Branch.t
   val resolve_routing : complexity:int option -> Backend_routing.decision
@@ -193,6 +196,7 @@ struct
         let findings_registry = Env.findings_registry
         let review_clients = review_clients
         let transcripts = Env.transcripts
+        let transcript_updates = Env.transcript_updates
         let event_log = Env.event_log
         let pick_backend = Env.pick_backend
         let register_pr = Env.register_pr_number
@@ -255,6 +259,9 @@ struct
         let runtime = Env.runtime
         let clock = Env.clock
         let stdout = Env.stdout
+        let transcript_updates = Env.transcript_updates
+        let initial_transcript_positions = Env.initial_transcript_positions
+        let include_transcripts = Env.headless_transcript
       end)
 
   module Persistence =
@@ -812,6 +819,7 @@ type constructed_capabilities = {
        with type error = Review_service_client.error)
     list;
   transcripts : (Patch_id.t, string) Stdlib.Hashtbl.t;
+  transcript_updates : (Patch_id.t, string) Stdlib.Hashtbl.t;
   event_log : Event_log.t;
   worktree_mutex : Eio.Mutex.t;
   hook_mutex : Eio.Mutex.t;
@@ -1110,6 +1118,7 @@ let construct_capabilities ~net (setup : runtime_setup) =
     findings_registry = Findings_registry.create ();
     review_clients;
     transcripts;
+    transcript_updates = Hashtbl.create 16;
     event_log;
     worktree_mutex = Eio.Mutex.create ();
     hook_mutex = Eio.Mutex.create ();
@@ -1118,7 +1127,13 @@ let construct_capabilities ~net (setup : runtime_setup) =
   }
 
 let build_fiber_env (setup : runtime_setup) (cap : constructed_capabilities)
-    ~(tui_state : Tui_state.t) : built_fiber_env =
+    ~(tui_state : Tui_state.t) ~headless_transcript : built_fiber_env =
+  let initial_transcript_positions = Stdlib.Hashtbl.create 16 in
+  Stdlib.Hashtbl.iter
+    (fun patch_id transcript ->
+      Stdlib.Hashtbl.replace initial_transcript_positions patch_id
+        (String.length transcript))
+    cap.transcripts;
   let module Fiber_env : FIBER_ENV = struct
     let runtime = setup.runtime
     let clock = setup.clock
@@ -1130,6 +1145,9 @@ let build_fiber_env (setup : runtime_setup) (cap : constructed_capabilities)
     let findings_registry = cap.findings_registry
     let review_clients = cap.review_clients
     let transcripts = cap.transcripts
+    let transcript_updates = cap.transcript_updates
+    let initial_transcript_positions = initial_transcript_positions
+    let headless_transcript = headless_transcript
     let event_log = cap.event_log
     let branch_of = cap.branch_of
     let resolve_routing = cap.resolve_routing
@@ -1409,8 +1427,8 @@ let apply_pr_ops ~(setup : runtime_setup) ~(cap : constructed_capabilities)
         | Adhoc_target.Remove_pr n -> apply_remove_pr ~setup ~cap n)
       ops
 
-let run_with_config ~no_lock ~auto_merge ~pr_ops (config : config) gameplan
-    existing_snapshot =
+let run_with_config ~no_lock ~auto_merge ~pr_ops ~headless_transcript
+    (config : config) gameplan existing_snapshot =
   let resolved = Resolved_config.of_config config |> ok_or_exit in
   let {
     Resolved_config.forge;
@@ -1478,7 +1496,9 @@ let run_with_config ~no_lock ~auto_merge ~pr_ops (config : config) gameplan
   let capabilities = construct_capabilities ~net:(Eio.Stdenv.net env) setup in
   apply_pr_ops ~setup ~cap:capabilities pr_ops;
   let tui_state = Tui_state.create () in
-  let fiber_env = build_fiber_env setup capabilities ~tui_state in
+  let fiber_env =
+    build_fiber_env setup capabilities ~tui_state ~headless_transcript
+  in
   run_main_loop ~net:(Eio.Stdenv.net env) setup capabilities fiber_env
     ~tui_state
 
@@ -1499,7 +1519,8 @@ let run_with_config ~no_lock ~auto_merge ~pr_ops (config : config) gameplan
 let run ~project ~gameplan_path ~forge ~github_token ~backend ~model
     ~(main_branch : Branch.t option) ~poll_interval ~(repo_root : string option)
     ~max_concurrency ~max_ci_failures ~automerge_timeout ~worktree_backend
-    ~worktree_executable ~headless ~no_lock ~auto_merge ~clone_scheme ~pr_ops =
+    ~worktree_executable ~headless ~headless_transcript ~no_lock ~auto_merge
+    ~clone_scheme ~pr_ops =
   match
     resolve_config ~project ~gameplan_path ~forge ~github_token ~backend ~model
       ~main_branch ~poll_interval ~repo_root ~max_concurrency ~max_ci_failures
@@ -1510,8 +1531,8 @@ let run ~project ~gameplan_path ~forge ~github_token ~backend ~model
       Base.List.iter errs ~f:(fun e -> Printf.eprintf "Error: %s\n" e);
       Stdlib.exit 1
   | Ok (config, gameplan, existing_snapshot) ->
-      run_with_config ~no_lock ~auto_merge ~pr_ops config gameplan
-        existing_snapshot
+      run_with_config ~no_lock ~auto_merge ~pr_ops ~headless_transcript config
+        gameplan existing_snapshot
 
 (** {1 CLI via Cmdliner} *)
 
@@ -1740,7 +1761,15 @@ let headless_arg =
   let open Cmdliner in
   Arg.(
     value & flag
-    & info [ "headless" ] ~doc:"Run without TUI (plain log output).")
+    & info [ "headless" ] ~doc:"Run without TUI (structured JSONL output).")
+
+let headless_transcript_arg =
+  let open Cmdliner in
+  Arg.(
+    value & flag
+    & info [ "headless-transcript" ]
+        ~doc:
+          "Include live patch-agent transcript chunks in headless JSONL output.")
 
 let upload_debug_arg =
   let open Cmdliner in
@@ -1817,8 +1846,8 @@ let main_cmd ~pr_ops =
   let open Cmdliner in
   let run_cmd project gameplan_path forge github_token backend model main_branch
       poll_interval repo_root max_concurrency max_ci_failures automerge_timeout
-      worktree_backend worktree_executable headless upload_debug no_lock prune
-      no_refresh auto_merge clone_scheme =
+      worktree_backend worktree_executable headless headless_transcript
+      upload_debug no_lock prune no_refresh auto_merge clone_scheme =
     if prune then
       Stdlib.exit
         ( Eio_main.run @@ fun env ->
@@ -1843,6 +1872,9 @@ let main_cmd ~pr_ops =
           Debug_upload.run ~net:(Eio.Stdenv.net env) ~project_name
             ~version:Version.s)
     else (
+      if headless_transcript && not headless then (
+        Printf.eprintf "Error: --headless-transcript requires --headless.\n%!";
+        Stdlib.exit 1);
       if auto_merge && Base.Option.is_none gameplan_path then (
         Printf.eprintf
           "Error: --auto-merge requires --gameplan. It only seeds the initial \
@@ -1856,8 +1888,8 @@ let main_cmd ~pr_ops =
         ~backend:(Base.String.strip backend)
         ~model:(Base.String.strip model) ~main_branch ~poll_interval ~repo_root
         ~max_concurrency ~max_ci_failures ~automerge_timeout ~worktree_backend
-        ~worktree_executable ~headless ~no_lock ~auto_merge ~clone_scheme
-        ~pr_ops)
+        ~worktree_executable ~headless ~headless_transcript ~no_lock ~auto_merge
+        ~clone_scheme ~pr_ops)
   in
   let term =
     Term.(
@@ -1865,8 +1897,8 @@ let main_cmd ~pr_ops =
       $ github_token_arg $ backend_arg $ model_arg $ main_branch_arg
       $ poll_interval_arg $ repo_arg $ max_concurrency_arg $ max_ci_failures_arg
       $ automerge_timeout_arg $ worktree_backend_arg $ worktree_executable_arg
-      $ headless_arg $ upload_debug_arg $ no_lock_arg $ prune_arg
-      $ no_refresh_arg $ auto_merge_arg $ clone_scheme_arg)
+      $ headless_arg $ headless_transcript_arg $ upload_debug_arg $ no_lock_arg
+      $ prune_arg $ no_refresh_arg $ auto_merge_arg $ clone_scheme_arg)
   in
   let info =
     Cmd.info "onton" ~version:Version.s
