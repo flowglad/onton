@@ -45,7 +45,8 @@ let make_orch patch agent =
     ~main_branch:main ()
 
 let make_agent ~patch_id ~branch ~has_conflict ~ci_failure_count ~current_op
-    ~checks_passing ~queue ~merged ~is_draft ~branch_blocked ~worktree_path =
+    ~checks_passing ~queue ~merged ~is_draft ~branch_blocked ~worktree_path
+    ~native_stack =
   let busy = Option.is_some current_op in
   Patch_agent.restore ~patch_id ~branch
     ~pr_status:(Patch_pr_status.Present (Pr_number.of_int 42))
@@ -54,7 +55,7 @@ let make_agent ~patch_id ~branch ~has_conflict ~ci_failure_count ~current_op
     ~ci_failure_count ~session_fallback:Patch_agent.Fresh_available
     ~human_messages:[] ~inflight_human_messages:[] ~ci_checks:[]
     ~merge_ready:false ~mergeability_unknown:false ~merge_queue_required:false
-    ~merge_queue_entry:None ~is_draft ~pr_body_delivered:true
+    ~merge_queue_entry:None ~native_stack ~is_draft ~pr_body_delivered:true
     ~pr_body_artifact_miss_count:0 ~start_attempts_without_pr:0
     ~conflict_noop_count:0 ~no_commits_push_count:0 ~context_exhaustion_count:0
     ~push_failure_count:0 ~rebase_failure_count:0 ~branch_rebased_onto:None
@@ -67,9 +68,10 @@ let make_agent ~patch_id ~branch ~has_conflict ~ci_failure_count ~current_op
     ~automerge_inflight:false ~automerge_failure_count:0
     ~delivered_ci_run_ids:[] ()
 
-let make_poll_observation ~branch_in_root ~worktree_path poll_result =
+let make_poll_observation ~branch_in_root ~worktree_path ~native_stack
+    ~base_branch poll_result =
   Patch_controller.
-    { poll_result; base_branch = None; branch_in_root; worktree_path }
+    { poll_result; base_branch; native_stack; branch_in_root; worktree_path }
 
 let make_poll ~has_conflict ~merged ~checks_passing ~is_draft ~queue =
   {
@@ -121,6 +123,7 @@ let gen_poll_log_case =
     in
     let* agent_is_draft = bool in
     let* agent_branch_blocked = bool in
+    let* agent_native_stack = bool in
     (* Agent worktree_path: generate optionally *)
     let* has_agent_worktree_path = bool in
     let* agent_worktree_path =
@@ -140,6 +143,11 @@ let gen_poll_log_case =
     in
     (* Observation dimensions *)
     let* obs_branch_in_root = bool in
+    let* obs_native_stack = bool in
+    let* has_obs_base_branch = bool in
+    let* obs_base_branch =
+      if has_obs_base_branch then map Option.some gen_branch else pure None
+    in
     let* has_obs_worktree_path = bool in
     let* obs_worktree_path =
       if has_obs_worktree_path then
@@ -152,6 +160,7 @@ let gen_poll_log_case =
         ~ci_failure_count ~current_op ~checks_passing:agent_checks_passing
         ~queue:agent_queue ~merged:agent_merged ~is_draft:agent_is_draft
         ~branch_blocked:agent_branch_blocked ~worktree_path:agent_worktree_path
+        ~native_stack:agent_native_stack
     in
     let orch = make_orch patch agent in
     let poll =
@@ -161,7 +170,8 @@ let gen_poll_log_case =
     in
     let observation =
       make_poll_observation ~branch_in_root:obs_branch_in_root
-        ~worktree_path:obs_worktree_path poll
+        ~worktree_path:obs_worktree_path ~native_stack:obs_native_stack
+        ~base_branch:obs_base_branch poll
     in
     return (patch, pid, orch, agent, observation, poll))
 
@@ -169,19 +179,23 @@ let print_case =
  fun (patch, pid, _orch, agent, obs, poll) ->
   Printf.sprintf
     "patch=%s pid=%s agent={merged=%b has_conflict=%b ci_failure_count=%d \
-     checks_passing=%b is_draft=%b branch_blocked=%b queue=[%s] current_op=%s} \
-     poll={merged=%b has_conflict=%b checks_passing=%b is_draft=%b queue=[%s]} \
-     obs={branch_in_root=%b worktree_path=%s}"
+     checks_passing=%b is_draft=%b native_stack=%b branch_blocked=%b \
+     queue=[%s] current_op=%s} poll={merged=%b has_conflict=%b \
+     checks_passing=%b is_draft=%b queue=[%s]} obs={native_stack=%b \
+     base_branch=%s branch_in_root=%b worktree_path=%s}"
     (Patch_id.to_string patch.Patch.id)
     (Patch_id.to_string pid) agent.Patch_agent.merged agent.has_conflict
     agent.ci_failure_count agent.checks_passing agent.is_draft
-    agent.branch_blocked
+    agent.native_stack agent.branch_blocked
     (String.concat ~sep:"," (List.map agent.queue ~f:Operation_kind.to_label))
     (Option.value_map agent.current_op ~default:"none"
        ~f:Operation_kind.to_label)
     poll.Poller.merged (Poller.has_conflict poll) poll.checks_passing
     poll.is_draft
     (String.concat ~sep:"," (List.map poll.queue ~f:Operation_kind.to_label))
+    obs.Patch_controller.native_stack
+    (Option.value_map obs.Patch_controller.base_branch ~default:"none"
+       ~f:Branch.to_string)
     obs.Patch_controller.branch_in_root
     (Option.value obs.Patch_controller.worktree_path ~default:"none")
 
@@ -369,6 +383,43 @@ let () =
         with _ -> false)
   in
 
+  let prop_native_stack_link_logged_on_transition =
+    Test.make
+      ~name:"poll-log L-9: native stack link logged exactly on transition"
+      ~count:300 ~print:print_case gen_poll_log_case
+      (fun (_patch, pid, orch, agent, observation, _poll) ->
+        try
+          let _orch, logs, _blocked =
+            Patch_controller.apply_poll_result orch pid observation
+          in
+          Bool.equal
+            (has_log_matching "GitHub linked this PR into a native stack" logs)
+            (observation.Patch_controller.native_stack
+            && not agent.Patch_agent.native_stack)
+        with _ -> false)
+  in
+
+  let prop_native_stack_mismatch_logged_while_current =
+    Test.make
+      ~name:"poll-log L-10: current native stack base mismatch is logged"
+      ~count:300 ~print:print_case gen_poll_log_case
+      (fun (_patch, pid, orch, _agent, observation, _poll) ->
+        try
+          let orch, logs, _blocked =
+            Patch_controller.apply_poll_result orch pid observation
+          in
+          let agent = Orchestrator.agent orch pid in
+          let mismatched =
+            agent.Patch_agent.native_stack
+            && Option.value_map agent.base_branch ~default:false ~f:(fun base ->
+                not (Branch.equal base main))
+          in
+          Bool.equal
+            (has_log_matching "GitHub stack base differs" logs)
+            mismatched
+        with _ -> false)
+  in
+
   let suite =
     [
       prop_no_phantom_conflict_cleared;
@@ -379,6 +430,8 @@ let () =
       prop_ci_decision_exclusive;
       prop_ci_reset_requires_conditions;
       prop_enqueue_log_only_when_new;
+      prop_native_stack_link_logged_on_transition;
+      prop_native_stack_mismatch_logged_while_current;
     ]
   in
   let errcode = QCheck_base_runner.run_tests ~verbose:true suite in

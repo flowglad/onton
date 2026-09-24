@@ -56,9 +56,30 @@ type poll_log_entry = { message : string; patch_id : Patch_id.t }
 type poll_observation = {
   poll_result : Poller.t;
   base_branch : Branch.t option;
+  native_stack : bool;
   branch_in_root : bool;
   worktree_path : string option;
 }
+
+let expected_base_if_unique t patch_id =
+  let graph = Orchestrator.graph t in
+  let has_merged pid = (Orchestrator.agent t pid).Patch_agent.merged in
+  if List.length (Graph.open_pr_deps graph patch_id ~has_merged) > 1 then None
+  else
+    let branch_of pid = (Orchestrator.agent t pid).Patch_agent.branch in
+    Some
+      (Graph.initial_base graph patch_id ~has_merged ~branch_of
+         ~main:(Orchestrator.main_branch t))
+
+let native_stack_base_mismatch t patch_id =
+  let agent = Orchestrator.agent t patch_id in
+  if not agent.Patch_agent.native_stack then false
+  else
+    match
+      (agent.Patch_agent.base_branch, expected_base_if_unique t patch_id)
+    with
+    | Some actual, Some expected -> not (Branch.equal actual expected)
+    | None, _ | _, None -> false
 
 let discovery_intents orch =
   Orchestrator.all_agents orch
@@ -90,10 +111,13 @@ let enqueue_pr_body_if_needed t patch_id (agent : Patch_agent.t) =
     else Orchestrator.enqueue t patch_id Operation_kind.Pr_body
 
 let apply_poll_result ?(merge_queue_ejection_confirmed = false) t patch_id
-    ({ poll_result; base_branch; branch_in_root; worktree_path } :
+    ({ poll_result; base_branch; native_stack; branch_in_root; worktree_path } :
       poll_observation) =
   let logs = ref [] in
   let log message = logs := { message; patch_id } :: !logs in
+  let was_native_stack =
+    (Orchestrator.agent t patch_id).Patch_agent.native_stack
+  in
   let deferred_head =
     Patch_decision.defer_remote_head
       (Orchestrator.agent t patch_id)
@@ -255,6 +279,12 @@ let apply_poll_result ?(merge_queue_ejection_confirmed = false) t patch_id
       ~required:poll_result.merge_queue_required
       ~entry:poll_result.merge_queue_entry
   in
+  let t = Orchestrator.set_native_stack t patch_id native_stack in
+  if native_stack && not was_native_stack then
+    log
+      "GitHub linked this PR into a native stack — base retargeting and Onton \
+       automerge are unavailable until the stack is dissolved or merged on \
+       GitHub";
   let t =
     let was_draft = (Orchestrator.agent t patch_id).Patch_agent.is_draft in
     let t = Orchestrator.set_is_draft t patch_id poll_result.is_draft in
@@ -307,6 +337,10 @@ let apply_poll_result ?(merge_queue_ejection_confirmed = false) t patch_id
     | Some branch -> Orchestrator.set_base_branch t patch_id branch
     | None -> t
   in
+  if native_stack_base_mismatch t patch_id then
+    log
+      "GitHub stack base differs from Onton's dependency base; waiting for \
+       GitHub to retarget the stack before patch work continues";
   let t =
     let agent = Orchestrator.agent t patch_id in
     match worktree_path with
@@ -381,7 +415,7 @@ let open_dep_review_ready t pid =
    [allow_draft_flip] scopes the mark-for-review ratchet to gameplan patches:
    onton opened those PRs as drafts and owns the draft→ready transition,
    whereas an ad-hoc PR's draft bit belongs to whoever created the PR. The
-   base retarget applies to every managed agent — a PR left targeting a merged
+   base retarget applies to unstacked managed agents — a PR left targeting a merged
    dependency's branch diffs against frozen pre-merge history, so GitHub
    reports conflicts that no rebase onto main can clear (the local rebase
    noops, the poller re-reads the stale base, and the two spin forever). *)
@@ -397,39 +431,33 @@ let reconcile_pr_settings t patch_id ~allow_draft_flip =
     (match Patch_agent.pr_number agent with
     | Some pr_number when Patch_agent.is_pr_present agent -> (
         match agent.base_branch with
-        | Some actual_base ->
-            let has_merged pid =
-              (Orchestrator.agent t pid).Patch_agent.merged
-            in
-            let open_deps =
-              Graph.open_pr_deps (Orchestrator.graph t) patch_id ~has_merged
-            in
-            if List.length open_deps <= 1 then begin
-              let branch_of pid =
-                (Orchestrator.agent t pid).Patch_agent.branch
-              in
-              let expected_base =
-                Graph.initial_base (Orchestrator.graph t) patch_id ~has_merged
-                  ~branch_of
-                  ~main:(Orchestrator.main_branch t)
-              in
-              (* Mark-for-review is a one-way ratchet: we only emit
+        | Some actual_base -> (
+            match expected_base_if_unique t patch_id with
+            | Some expected_base ->
+                (* Mark-for-review is a one-way ratchet: we only emit
                  [draft = false]. Re-drafting a ready PR is disruptive to
                  reviewers, so the controller defers the transition until the
                  patch reaches the [ready_for_review] fixpoint and then never
                  flips back. *)
-              if
-                allow_draft_flip && agent.is_draft
-                && ready_for_review t patch_id
-              then
-                effects :=
-                  Set_pr_draft { patch_id; pr_number; draft = false }
-                  :: !effects;
-              if not (Branch.equal actual_base expected_base) then
-                effects :=
-                  Set_pr_base { patch_id; pr_number; base = expected_base }
-                  :: !effects
-            end
+                if
+                  allow_draft_flip && agent.is_draft
+                  && (not (native_stack_base_mismatch t patch_id))
+                  && ready_for_review t patch_id
+                then
+                  effects :=
+                    Set_pr_draft { patch_id; pr_number; draft = false }
+                    :: !effects;
+                (* GitHub owns the base links of a native stack and rejects the
+                 ordinary PR PATCH even when Onton's graph expects a different
+                 base. GitHub retargets the remaining stack after a merge. *)
+                if
+                  (not agent.Patch_agent.native_stack)
+                  && not (Branch.equal actual_base expected_base)
+                then
+                  effects :=
+                    Set_pr_base { patch_id; pr_number; base = expected_base }
+                    :: !effects
+            | None -> ())
         | None -> ())
     | Some _ | None -> ());
     List.rev !effects
@@ -516,7 +544,8 @@ let plan_action_for_patch t ~branch_map patch_id =
            out. *)
         && List.for_all open_deps ~f:(fun dep -> open_dep_review_ready t dep)
   in
-  if
+  if native_stack_base_mismatch t patch_id then None
+  else if
     (not (Patch_agent.has_pr agent))
     && (not agent.Patch_agent.busy)
     && (not agent.Patch_agent.merged)
@@ -734,6 +763,9 @@ let is_automerge_candidate ?(ignore_inflight = false) (agent : Patch_agent.t)
      sufficient on its own. *)
   && (not agent.Patch_agent.merged)
   && agent.Patch_agent.automerge_enabled
+  (* Native stacks require GitHub's asynchronous merge API; the Forge merge
+     operation still uses the synchronous PR endpoint. Never issue it here. *)
+  && (not agent.Patch_agent.native_stack)
   && Patch_agent.is_approved agent ~main_branch
   && (not enqueued_and_still_approved)
   && agent.Patch_agent.checks_passing
@@ -768,6 +800,7 @@ let automerge_transient_hold (agent : Patch_agent.t) ~main_branch =
   && (not agent.Patch_agent.automerge_inflight)
   && (not agent.Patch_agent.merged)
   && agent.Patch_agent.automerge_enabled
+  && (not agent.Patch_agent.native_stack)
   && Patch_agent.is_approved_modulo_merge_ready agent ~main_branch
   && agent.Patch_agent.checks_passing
   && List.is_empty agent.Patch_agent.queue
@@ -1572,6 +1605,7 @@ let%test "no merge-conflict re-enqueue after noop" =
     {
       poll_result = poll_conflict;
       base_branch = Some main;
+      native_stack = false;
       branch_in_root = false;
       worktree_path = None;
     }
@@ -1629,6 +1663,7 @@ let%test
         {
           poll_result;
           base_branch = Some main;
+          native_stack = false;
           branch_in_root = false;
           worktree_path = None;
         }
@@ -1732,6 +1767,7 @@ let%test "apply_poll_result turns merge queue ejection into CI feedback" =
       {
         poll_result;
         base_branch = Some main;
+        native_stack = false;
         branch_in_root = false;
         worktree_path = None;
       }
@@ -1779,6 +1815,7 @@ let%test "apply_poll_result leaves an unmergeable in-queue entry untouched" =
       {
         poll_result;
         base_branch = Some main;
+        native_stack = false;
         branch_in_root = false;
         worktree_path = None;
       }
@@ -1825,6 +1862,7 @@ let%test "apply_poll_result leaves an unconfirmed (conflict) ejection alone" =
       {
         poll_result;
         base_branch = Some main;
+        native_stack = false;
         branch_in_root = false;
         worktree_path = None;
       }
@@ -1876,6 +1914,15 @@ let%test "reconcile_automerge clears deadline when checks_passing flips false" =
   let t = Orchestrator.set_automerge_deadline t pid 1300.0 in
   let t = Orchestrator.set_checks_passing t pid false in
   let t, decisions = reconcile_automerge t ~now:1000.0 in
+  List.is_empty decisions
+  && Option.is_none (Orchestrator.agent t pid).Patch_agent.automerge_deadline
+
+let%test "native stack cannot use the synchronous automerge endpoint" =
+  let _patch, t = make_orchestrator ~patch_id:pid ~main_branch:main in
+  let t = make_approved_agent t in
+  let t = Orchestrator.set_automerge_deadline t pid 1.0 in
+  let t = Orchestrator.set_native_stack t pid true in
+  let t, decisions = reconcile_automerge t ~now:100.0 in
   List.is_empty decisions
   && Option.is_none (Orchestrator.agent t pid).Patch_agent.automerge_deadline
 

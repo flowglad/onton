@@ -327,6 +327,7 @@ let () =
              (fun a -> Patch_agent.set_merge_commit_sha a (Some "deadbeef"));
              (fun a -> Patch_agent.set_merge_queue_entry a None);
              (fun a -> Patch_agent.set_merge_queue_required a flag);
+             (fun a -> Patch_agent.set_native_stack a flag);
              (fun a -> Patch_agent.set_mergeability_unknown a flag);
              (fun a -> Patch_agent.set_worktree_path a "/tmp/wt");
              (fun a -> Patch_agent.clear_worktree_path a);

@@ -56,12 +56,13 @@ let make_orch patch agent =
 
 let make_agent ?(merge_ready = false) ?(mergeability_unknown = false)
     ?(merge_queue_required = false) ?(merge_queue_entry = None)
-    ?(checks_passing = false) ?(ci_checks = []) ?(has_conflict = false)
-    ?(head_oid = None) ?(review_decision = None) ?(unresolved_comment_count = 0)
-    ?(review_requested_for_oid = None) ?(review_request_inflight = false)
-    ?(automerge_enabled = false) ?automerge_deadline
-    ?(automerge_failure_count = 0) ~patch_id ~branch ~pr_status ~merged ~queue
-    ~base_branch ~is_draft ~pr_body_delivered ~start_attempts_without_pr () =
+    ?(native_stack = false) ?(checks_passing = false) ?(ci_checks = [])
+    ?(has_conflict = false) ?(head_oid = None) ?(review_decision = None)
+    ?(unresolved_comment_count = 0) ?(review_requested_for_oid = None)
+    ?(review_request_inflight = false) ?(automerge_enabled = false)
+    ?automerge_deadline ?(automerge_failure_count = 0) ~patch_id ~branch
+    ~pr_status ~merged ~queue ~base_branch ~is_draft ~pr_body_delivered
+    ~start_attempts_without_pr () =
   Patch_agent.restore ~patch_id ~branch ~pr_status ~has_session:false
     ~busy:false ~merged ~queue ~satisfies:false ~changed:false ~has_conflict
     ~base_branch ~notified_base_branch:base_branch ~ci_failure_count:0
@@ -69,7 +70,7 @@ let make_agent ?(merge_ready = false) ?(mergeability_unknown = false)
     ~inflight_human_messages:[] ~ci_checks ~merge_ready ~head_oid
     ~review_decision ~unresolved_comment_count ~mergeability_unknown
     ~merge_queue_required ~merge_queue_entry ~is_draft ~pr_body_delivered
-    ~pr_body_artifact_miss_count:0 ~start_attempts_without_pr
+    ~native_stack ~pr_body_artifact_miss_count:0 ~start_attempts_without_pr
     ~conflict_noop_count:0 ~no_commits_push_count:0 ~context_exhaustion_count:0
     ~push_failure_count:0 ~rebase_failure_count:0 ~branch_rebased_onto:None
     ~branch_rebased_onto_sha:None ~merge_commit_sha:None
@@ -108,6 +109,7 @@ let make_poll_observation poll_result =
     {
       poll_result;
       base_branch = None;
+      native_stack = false;
       branch_in_root = false;
       worktree_path = None;
     }
@@ -1186,11 +1188,12 @@ let () =
             {
               poll_result = poll;
               base_branch = Some observed_base;
+              native_stack = true;
               branch_in_root = true;
               worktree_path = Some "/tmp/custom-worktree";
             }
         in
-        let orch, _logs, newly_blocked =
+        let orch, logs, newly_blocked =
           Patch_controller.apply_poll_result orch pid observation
         in
         let a = Orchestrator.agent orch pid in
@@ -1198,6 +1201,10 @@ let () =
         && Option.equal String.equal a.Patch_agent.worktree_path
              (Some "/tmp/custom-worktree")
         && (not a.Patch_agent.branch_blocked)
+        && a.Patch_agent.native_stack
+        && List.exists logs ~f:(fun entry ->
+            String.is_substring entry.Patch_controller.message
+              ~substring:"GitHub stack base differs")
         && newly_blocked)
   in
 
@@ -1345,6 +1352,128 @@ let () =
         not (has_base_effect effects))
   in
 
+  let prop_native_stack_never_patches_base =
+    Test.make
+      ~name:
+        "patch_controller: native stack keeps GitHub-owned base until unstacked"
+      ~count:200
+      Gen.(pair gen_patch_id gen_branch)
+      (fun (pid, branch) ->
+        let patch = make_patch pid branch in
+        let gameplan = make_gameplan patch in
+        let agent =
+          make_agent ~patch_id:pid ~branch
+            ~pr_status:(Patch_pr_status.Present (Pr_number.of_int 42))
+            ~merged:false ~queue:[] ~base_branch:(Some branch) ~is_draft:true
+            ~pr_body_delivered:true ~start_attempts_without_pr:0
+            ~native_stack:true ()
+        in
+        let orch = make_orch patch agent in
+        let _, stacked_effects =
+          Patch_controller.reconcile_all orch ~project_name:"test-project"
+            ~gameplan
+        in
+        (* Two consecutive absent polls clear native stack membership. *)
+        let orch = Orchestrator.set_native_stack orch pid false in
+        let orch = Orchestrator.set_native_stack orch pid false in
+        let _, unstacked_effects =
+          Patch_controller.reconcile_all orch ~project_name:"test-project"
+            ~gameplan
+        in
+        (not (has_base_effect stacked_effects))
+        && Bool.equal
+             (has_base_effect unstacked_effects)
+             (not (Branch.equal branch main)))
+  in
+
+  let prop_native_stack_base_mismatch_pauses_work =
+    Test.make
+      ~name:"patch_controller: native stack base mismatch pauses patch work"
+      ~count:100 gen_patch_id (fun pid ->
+        let branch = Branch.of_string "patch-head" in
+        let patch = make_patch pid branch in
+        let agent =
+          make_agent ~patch_id:pid ~branch
+            ~pr_status:(Patch_pr_status.Present (Pr_number.of_int 42))
+            ~merged:false ~queue:[ Operation_kind.Rebase ]
+            ~base_branch:(Some (Branch.of_string "stack-parent"))
+            ~is_draft:true ~pr_body_delivered:true ~start_attempts_without_pr:0
+            ~native_stack:true ()
+        in
+        let orch = make_orch patch agent in
+        let paused =
+          Patch_controller.plan_actions orch ~patches:[ patch ] |> List.is_empty
+        in
+        (* One absent poll preserves the pause; the second clears it. *)
+        let unstacked =
+          orch |> fun orch ->
+          Orchestrator.set_native_stack orch pid false |> fun orch ->
+          Orchestrator.set_native_stack orch pid false
+        in
+        let resumed =
+          Patch_controller.plan_actions unstacked ~patches:[ patch ]
+          |> List.exists ~f:(function
+            | Orchestrator.Rebase (action_pid, base) ->
+                Patch_id.equal action_pid pid && Branch.equal base main
+            | Orchestrator.Start _ | Orchestrator.Respond _ -> false)
+        in
+        paused && resumed)
+  in
+
+  let prop_native_stack_absence_requires_two_polls =
+    Test.make
+      ~name:
+        "patch_controller: one missing stack observation retains safety gate"
+      ~count:100 gen_patch_id (fun pid ->
+        let branch = Branch.of_string "patch-head" in
+        let patch = make_patch pid branch in
+        let agent =
+          make_agent ~patch_id:pid ~branch
+            ~pr_status:(Patch_pr_status.Present (Pr_number.of_int 42))
+            ~merged:false ~queue:[] ~base_branch:(Some main) ~is_draft:true
+            ~pr_body_delivered:true ~start_attempts_without_pr:0
+            ~native_stack:true ()
+        in
+        let poll =
+          Poller.
+            {
+              queue = [];
+              merged = false;
+              closed = false;
+              is_draft = true;
+              merge_state = Pr_state.Mergeable;
+              merge_ready = false;
+              head_oid = None;
+              review_decision = None;
+              unresolved_comment_count = 0;
+              merge_queue_required = false;
+              merge_queue_entry = None;
+              checks_passing = false;
+              ci_checks = [];
+              merge_commit_sha = None;
+            }
+        in
+        let observe orch native_stack =
+          let observation =
+            { (make_poll_observation poll) with native_stack }
+          in
+          let orch, _, _ =
+            Patch_controller.apply_poll_result orch pid observation
+          in
+          orch
+        in
+        let stacked orch =
+          (Orchestrator.agent orch pid).Patch_agent.native_stack
+        in
+        let orch = make_orch patch agent |> fun orch -> observe orch false in
+        let first_absence_retained = stacked orch in
+        let orch = observe orch true |> fun orch -> observe orch false in
+        let absence_after_recovery_retained = stacked orch in
+        let orch = observe orch false in
+        first_absence_retained && absence_after_recovery_retained
+        && not (stacked orch))
+  in
+
   let prop_set_pr_base_converges =
     Test.make
       ~name:
@@ -1411,6 +1540,7 @@ let () =
                     merge_commit_sha = None;
                   };
               base_branch = Some new_base;
+              native_stack = false;
               branch_in_root = false;
               worktree_path = None;
             }
@@ -1592,6 +1722,7 @@ let () =
             {
               poll_result;
               base_branch = None;
+              native_stack = false;
               branch_in_root = false;
               worktree_path = None;
             }
@@ -2219,6 +2350,9 @@ let () =
       prop_mixed_cycle_converges_for_bootstrap_patch;
       prop_set_pr_base_emitted_on_mismatch;
       prop_set_pr_base_not_emitted_when_correct;
+      prop_native_stack_never_patches_base;
+      prop_native_stack_base_mismatch_pauses_work;
+      prop_native_stack_absence_requires_two_polls;
       prop_set_pr_base_converges;
       prop_poll_always_refreshes_base;
       prop_discovery_intents_filters_correctly;

@@ -135,6 +135,8 @@ val set_merge_queue_required : t -> Patch_id.t -> bool -> t
 val set_merge_queue_entry :
   t -> Patch_id.t -> Pr_state.merge_queue_entry option -> t
 
+val set_native_stack : t -> Patch_id.t -> bool -> t
+
 val observe_merge_queue :
   t ->
   Patch_id.t ->

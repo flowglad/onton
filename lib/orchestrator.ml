@@ -610,6 +610,10 @@ let set_merge_queue_entry t patch_id entry =
   update_agent t patch_id ~f:(fun a ->
       Patch_agent.set_merge_queue_entry a entry)
 
+let set_native_stack t patch_id native_stack =
+  update_agent t patch_id ~f:(fun a ->
+      Patch_agent.set_native_stack a native_stack)
+
 let observe_merge_queue t patch_id ~required ~entry =
   update_agent t patch_id ~f:(fun a ->
       Automerge_state.observe_merge_queue a ~required ~entry)

@@ -22,6 +22,7 @@ type poll_log_entry = { message : string; patch_id : Patch_id.t }
 type poll_observation = {
   poll_result : Poller.t;
   base_branch : Branch.t option;
+  native_stack : bool;
   branch_in_root : bool;
   worktree_path : string option;
 }
@@ -76,10 +77,10 @@ val reconcile_all :
     Ad-hoc agents receive only the PR base retarget ([Set_pr_base]) — never the
     draft→ready flip or a Pr_body demand: onton owns the draft lifecycle only
     for PRs it opened itself, and the PR body contract is a gameplan artifact.
-    The base retarget must cover ad-hoc agents: without it, an ad-hoc PR whose
-    base branch merges is never retargeted on GitHub, GitHub keeps diffing the
-    PR against the frozen pre-merge base (phantom conflicts no rebase can
-    clear), and the poller/rebase pair loops until intervention. *)
+    The base retarget must cover unstacked ad-hoc agents: without it, an ad-hoc
+    PR whose base branch merges is never retargeted on GitHub, GitHub keeps
+    diffing the PR against the frozen pre-merge base (phantom conflicts no
+    rebase can clear), and the poller/rebase pair loops until intervention. *)
 
 val plan_actions :
   Orchestrator.t -> patches:Patch.t list -> Orchestrator.action list
@@ -156,9 +157,10 @@ val is_automerge_candidate :
   ?ignore_inflight:bool -> Patch_agent.t -> main_branch:Branch.t -> bool
 (** A patch is a candidate to START a new automerge call when it is not already
     merged, no merge is currently in flight, automerge is enabled, the PR is
-    approved, CI is passing, the queue is empty, and the consecutive failure
-    count is under [automerge_max_failures]. Any queued feedback
-    (Review_comments, Human, Ci, Merge_conflict, Pr_body) resets the deadline.
+    approved, outside a GitHub native stack, CI is passing, the queue is empty,
+    and the consecutive failure count is under [automerge_max_failures]. Any
+    queued feedback (Review_comments, Human, Ci, Merge_conflict, Pr_body) resets
+    the deadline.
 
     [?ignore_inflight] defaults to [false]; the default answers the
     concurrency-safe question ("is this patch eligible to start a new merge

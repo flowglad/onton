@@ -484,6 +484,7 @@ module Make (Forge : Forge.S) (W : Worktree.S) (Env : Poller_env.S) = struct
                     {
                       poll_result;
                       base_branch = pr_state.Pr_state.base_branch;
+                      native_stack = pr_state.Pr_state.native_stack;
                       branch_in_root;
                       worktree_path = worktree_candidate;
                     }

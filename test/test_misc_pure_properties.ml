@@ -84,6 +84,7 @@ let sample_pr_state ~merge_queue_required ~merge_queue_entry =
       head_oid = None;
       merge_commit_sha = None;
       base_branch = None;
+      native_stack = false;
       is_fork = false;
     }
 

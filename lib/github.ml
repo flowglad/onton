@@ -182,6 +182,7 @@ let graphql_query =
       headRefName
       headRefOid
       baseRefName
+      stack { id }
       mergeCommit { oid }
       mergeQueueEntry {
         id
@@ -397,6 +398,10 @@ let merge_queue_entry_of_node (node : merge_queue_entry_node) =
       let position = Option.value node.position ~default:0 in
       Some { Pr_state.id; state; position }
 
+type stack_node = Stack
+
+let stack_node_of_yojson _ = Stack
+
 type pull_request = {
   id : string option; [@yojson.default None]
   state : string;
@@ -409,6 +414,7 @@ type pull_request = {
   head_ref_name : string option; [@key "headRefName"] [@yojson.default None]
   head_ref_oid : string option; [@key "headRefOid"] [@yojson.default None]
   base_ref_name : string option; [@key "baseRefName"] [@yojson.default None]
+  stack : stack_node option; [@yojson.default None]
   merge_commit : oid_obj option; [@key "mergeCommit"] [@yojson.default None]
   commits : commits; [@yojson.default { nodes = [] }]
   review_threads : review_threads;
@@ -738,6 +744,7 @@ let pr_state_of_pull_request ~owner ~merge_queue_required (pr : pull_request) :
     head_oid = pr.head_ref_oid;
     merge_commit_sha = Option.bind pr.merge_commit ~f:(fun o -> o.oid);
     base_branch = Option.map pr.base_ref_name ~f:Types.Branch.of_string;
+    native_stack = Option.is_some pr.stack;
     is_fork;
   }
 
