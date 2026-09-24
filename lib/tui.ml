@@ -1404,15 +1404,7 @@ let views_of_orchestrator ~(orchestrator : Orchestrator.t)
         in
         { pv with recent_stream = List.take filtered 10; intervention_reason })
   in
-  (* Sort by gameplan order (numeric patch IDs sort naturally). *)
-  let order =
-    List.mapi gameplan.patches ~f:(fun i (p : Patch.t) -> (p.Patch.id, i))
-    |> Map.of_alist_reduce (module Patch_id) ~f:(fun a _ -> a)
-  in
-  List.sort views ~compare:(fun a b ->
-      let idx_a = Map.find order a.patch_id |> Option.value ~default:999 in
-      let idx_b = Map.find order b.patch_id |> Option.value ~default:999 in
-      Int.compare idx_a idx_b)
+  List.sort views ~compare:(fun a b -> Patch_id.compare a.patch_id b.patch_id)
 
 let render_frame ~width ~height ~selected ~scroll_offset ~view_mode
     ~(activity : activity_entry list) ~project_name ~backend_name ~version

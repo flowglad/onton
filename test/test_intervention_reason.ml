@@ -177,6 +177,32 @@ let () =
       print_endline "PASS: branch-blocked patches render as needs-help"
   | _ -> assert false
 
+let () =
+  let ids = [ "patch-10"; "patch-2"; "patch-1" ] in
+  let patches =
+    List.map
+      (fun id ->
+        make_patch ~id:(Patch_id.of_string id)
+          ~branch:(Branch.of_string ("branch-" ^ id))
+          ~title:id ())
+      ids
+  in
+  let gameplan = make_gameplan patches in
+  let orchestrator =
+    Orchestrator.create ~patches ~main_branch:(Branch.of_string "main")
+  in
+  let views =
+    Tui.views_of_orchestrator ~orchestrator ~gameplan ~activity:[]
+      ~resolve_routing:(fun ~complexity:_ ->
+        { Backend_routing.backend = "claude"; model = None; effort = None })
+      ()
+  in
+  let ordered_ids =
+    List.map (fun view -> Patch_id.to_string view.Tui.patch_id) views
+  in
+  assert (ordered_ids = [ "patch-1"; "patch-10"; "patch-2" ]);
+  print_endline "PASS: overview patches sort lexicographically by ID"
+
 let assert_raw_fields ~merged ~has_pr ~is_pr_missing ~session_given_up
     ~human_pending ~ci_failure_count ~start_attempts_without_pr
     ~conflict_noop_count ~no_commits_push_count ~context_exhaustion_count
