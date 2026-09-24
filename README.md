@@ -326,7 +326,8 @@ onton --repo ../my-repo [OPTIONS]        # Ad-hoc mode (no gameplan)
 | `--poll-interval` | `30.0` | Forge polling interval in seconds |
 | `--max-concurrency` | `5` / `$ONTON_MAX_CONCURRENCY` | Maximum concurrent Claude processes |
 | `--auto-merge` | off | Enable automerge for every patch when starting a fresh `--gameplan` project; ignored on resume so per-patch TUI toggles persist |
-| `--headless` | off | Run without TUI (plain log output to stdout) |
+| `--headless` | off | Run without TUI (structured JSONL activity output to stdout) |
+| `--headless-transcript` | off | With `--headless`, include live patch-agent transcript chunks on stdout |
 
 Project config and state are persisted to `~/.local/share/onton/<project>/`.
 Resuming a project reloads the saved snapshot (including agent transcripts) and
@@ -733,8 +734,13 @@ Text mode (Enter in detail view, or `:` in list):
 
 The input prompt is visible in the footer as `: <text>`.
 
-Headless mode (`--headless`) outputs plain timestamped log lines to stdout with
-dedup-based entry tracking.
+Headless mode (`--headless`) outputs one JSON object per line to stdout. Activity
+records have `timestamp` (Unix seconds), `source: "activity"`, `message`, and
+`patch_id` when applicable. `--headless-transcript` also emits records with
+`source: "transcript"` as each patch agent's transcript grows. These records
+contain only new text from the current process; a resumed project's existing
+transcript is not replayed. Transcript output can include prompts, agent text,
+and tool summaries, so enable it only where the stdout destination is suitable.
 
 When `ONTON_CONTROL_SOCKET` names a Unix socket path, headless Onton listens
 there for one JSON command per connection and replies with one JSON line. The
