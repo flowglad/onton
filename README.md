@@ -68,7 +68,7 @@ transition that originally accepted them.
 
 Pick **one** of the following methods:
 
-### Option A: Homebrew (macOS)
+### Option A: Homebrew (Apple Silicon macOS)
 
 ```sh
 brew tap flowglad/onton https://github.com/flowglad/onton
@@ -78,8 +78,8 @@ brew install onton
 ### Option B: GitHub Releases
 
 Download a prebuilt archive from
-[Releases](https://github.com/flowglad/onton/releases) for macOS or Linux
-(ARM64 and x86_64). Each archive contains `onton` and `onton-setsid-exec`.
+[Releases](https://github.com/flowglad/onton/releases) for Apple Silicon macOS
+or ARM64 and x86_64 Linux. Each archive contains `onton` and `onton-setsid-exec`.
 Linux containers need `libgmp10` installed (for example,
 `apt-get install libgmp10` in an Ubuntu-based Daytona image).
 
@@ -697,7 +697,7 @@ need reproducibility. The names below are accurate as of September 2026 —
 | `opencode` | Provider-prefixed, e.g. `anthropic/claude-sonnet-4-5`, `openai/gpt-5` | [OpenCode docs](https://opencode.ai/docs) |
 | `pi` | Run `pi --help` for the current list | Pi CLI |
 
-Pushing a `v*` tag builds macOS and Linux ARM64 and x86_64 binaries, checks
+Pushing a `v*` tag builds Apple Silicon macOS and Linux ARM64 and x86_64 binaries, checks
 the Linux binaries in Ubuntu 22.04 containers, creates a GitHub release, and
 updates the Homebrew formula.
 

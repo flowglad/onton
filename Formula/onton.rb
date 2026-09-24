@@ -12,11 +12,6 @@ class Onton < Formula
     sha256 "bcdca9006448269b44bf982a2ce0d4e3870be42434d6156bbe367c5a92be743f"
   end
 
-  on_intel do
-    url "https://github.com/flowglad/onton/releases/download/v0.58.0/onton-x86_64-apple-darwin.tar.gz"
-    sha256 "bbe2bf6473c4e055fc895d7c98a64b4818ca97735c13c22ceced0c9d3caf593c"
-  end
-
   depends_on "gmp"
 
   def install

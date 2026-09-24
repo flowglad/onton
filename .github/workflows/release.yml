@@ -17,15 +17,6 @@ jobs:
         include:
           - target: arm64-apple-darwin
             runner: macos-14
-          - target: x86_64-apple-darwin
-            # macos-15-intel is GitHub's free, standard Intel/x86_64 image
-            # (shipped 2025-09-19) — the supported replacement for the retired
-            # macos-13. Unlike the paid macos-13-large larger runner (which
-            # needs a >$0 Actions spending limit and otherwise queues forever),
-            # this standard image provisions on public repos with no billing
-            # setup. It's the last x86_64 macOS image GitHub offers; Intel
-            # support ends when macOS 15 retires (~Fall 2027). Tracked in #316.
-            runner: macos-15-intel
           # Ubuntu 22.04 keeps the glibc baseline compatible with Daytona
           # containers created from ubuntu:22.04 images.
           - target: x86_64-unknown-linux-gnu
@@ -106,7 +97,6 @@ jobs:
             --title "$GITHUB_REF_NAME" \
             --generate-notes \
             onton-arm64-apple-darwin.tar.gz \
-            onton-x86_64-apple-darwin.tar.gz \
             onton-x86_64-unknown-linux-gnu.tar.gz \
             onton-aarch64-unknown-linux-gnu.tar.gz
 
@@ -123,7 +113,6 @@ jobs:
         id: sha
         run: |
           echo "arm64=$(shasum -a 256 onton-arm64-apple-darwin.tar.gz | cut -d ' ' -f 1)" >> "$GITHUB_OUTPUT"
-          echo "x86_64=$(shasum -a 256 onton-x86_64-apple-darwin.tar.gz | cut -d ' ' -f 1)" >> "$GITHUB_OUTPUT"
 
       - uses: useblacksmith/checkout@41cdeedae8edb2e684ba22896a5fd2a3cb85db6b # v4 (Blacksmith fork)
         with:
@@ -134,7 +123,6 @@ jobs:
           VERSION="${GITHUB_REF_NAME#v}"
           sed -e "s/VERSION/$VERSION/g" \
               -e "s/SHA256_ARM64/${{ steps.sha.outputs.arm64 }}/g" \
-              -e "s/SHA256_X86_64/${{ steps.sha.outputs.x86_64 }}/g" \
               Formula/onton.rb.template > Formula/onton.rb
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
