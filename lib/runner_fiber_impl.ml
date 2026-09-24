@@ -138,6 +138,7 @@ module Runner_env = struct
       list
 
     val transcripts : (Patch_id.t, string) Stdlib.Hashtbl.t
+    val transcript_updates : (Patch_id.t, string) Stdlib.Hashtbl.t
     val event_log : Event_log.t
 
     val pick_backend :
@@ -167,6 +168,7 @@ module Make (Forge : Forge.S) (W : Worktree.S) (Env : Runner_env.S) = struct
     let owner = Env.owner
     let repo = Env.repo
     let transcripts = Env.transcripts
+    let transcript_updates = Env.transcript_updates
     let user_config = Env.user_config
     let worktree_mutex = Env.worktree_mutex
     let hook_mutex = Env.hook_mutex

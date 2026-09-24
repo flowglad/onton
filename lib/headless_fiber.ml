@@ -29,7 +29,7 @@ module Headless_env = struct
     val runtime : Runtime.t
     val clock : float Eio.Time.clock_ty Eio.Time.clock
     val stdout : Eio_unix.sink_ty Eio.Resource.t
-    val transcripts : (Patch_id.t, string) Stdlib.Hashtbl.t
+    val transcript_updates : (Patch_id.t, string) Stdlib.Hashtbl.t
     val initial_transcript_positions : (Patch_id.t, int) Stdlib.Hashtbl.t
     val include_transcripts : bool
   end
@@ -69,13 +69,20 @@ module Make (_ : Forge.S) (_ : Worktree.S) (Env : Headless_env.S) = struct
                   format_transition transition )))
       in
       List.iter entries ~f:(fun (ts, (patch_id, msg)) ->
-          let key = (ts, msg) in
+          let key = (ts, patch_id, msg) in
           if not (Stdlib.Hashtbl.mem seen key) then (
             Stdlib.Hashtbl.replace seen key true;
             write_record ~source:"activity" ~timestamp:ts ?patch_id msg));
-      if Env.include_transcripts then
-        Stdlib.Hashtbl.iter
-          (fun patch_id transcript ->
+      if Env.include_transcripts then (
+        (* Drain without yielding. Session fibers replace entries in this table,
+           so the snapshot contains only producers changed since the last poll. *)
+        let updates =
+          Stdlib.Hashtbl.fold
+            (fun patch_id transcript acc -> (patch_id, transcript) :: acc)
+            Env.transcript_updates []
+        in
+        Stdlib.Hashtbl.clear Env.transcript_updates;
+        List.iter updates ~f:(fun (patch_id, transcript) ->
             let length = String.length transcript in
             let previous =
               Stdlib.Hashtbl.find_opt transcript_positions patch_id
@@ -102,12 +109,11 @@ module Make (_ : Forge.S) (_ : Worktree.S) (Env : Headless_env.S) = struct
                 emit stop)
             in
             emit offset;
-            Stdlib.Hashtbl.replace transcript_positions patch_id length)
-          Env.transcripts;
+            Stdlib.Hashtbl.replace transcript_positions patch_id length));
       if Stdlib.Hashtbl.length seen > 2000 then (
         let current = Stdlib.Hashtbl.create 256 in
-        List.iter entries ~f:(fun (ts, (_, msg)) ->
-            Stdlib.Hashtbl.replace current (ts, msg) true);
+        List.iter entries ~f:(fun (ts, (patch_id, msg)) ->
+            Stdlib.Hashtbl.replace current (ts, patch_id, msg) true);
         Stdlib.Hashtbl.reset seen;
         Stdlib.Hashtbl.iter (fun k v -> Stdlib.Hashtbl.replace seen k v) current);
       Eio.Time.sleep Env.clock 1.0;

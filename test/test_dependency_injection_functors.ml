@@ -122,6 +122,7 @@ module Fake_sd_env : Session_driver.ENV = struct
   let owner = ""
   let repo = ""
   let transcripts = Stdlib.Hashtbl.create 0
+  let transcript_updates = Stdlib.Hashtbl.create 0
   let user_config = { User_config.on_worktree_create = None }
   let event_log = Event_log.create ~path:"/dev/null"
 end
@@ -221,6 +222,7 @@ let () =
     let owner = "test-owner"
     let repo = "test-repo"
     let transcripts = transcripts
+    let transcript_updates = Stdlib.Hashtbl.create 0
     let user_config = { User_config.on_worktree_create = None }
     let worktree_mutex = Eio.Mutex.create ()
     let hook_mutex = Eio.Mutex.create ()
@@ -265,6 +267,7 @@ let () =
     let hook_mutex = Eio.Mutex.create ()
     let fetch_mutex = Eio.Mutex.create ()
     let transcripts = transcripts
+    let transcript_updates = Stdlib.Hashtbl.create 0
     let event_log = Event_log.create ~path:"/dev/null"
   end in
   let module WS3_Env : Worktree_setup.ENV = struct
@@ -285,6 +288,7 @@ let () =
     let owner = Fake_fiber_env.owner
     let repo = Fake_fiber_env.repo
     let transcripts = Fake_fiber_env.transcripts
+    let transcript_updates = Fake_fiber_env.transcript_updates
     let user_config = Fake_fiber_env.user_config
     let worktree_mutex = Fake_fiber_env.worktree_mutex
     let hook_mutex = Fake_fiber_env.hook_mutex

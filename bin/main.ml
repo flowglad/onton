@@ -145,6 +145,7 @@ module type FIBER_ENV = sig
     list
 
   val transcripts : (Patch_id.t, string) Stdlib.Hashtbl.t
+  val transcript_updates : (Patch_id.t, string) Stdlib.Hashtbl.t
   val initial_transcript_positions : (Patch_id.t, int) Stdlib.Hashtbl.t
   val headless_transcript : bool
   val event_log : Event_log.t
@@ -195,6 +196,7 @@ struct
         let findings_registry = Env.findings_registry
         let review_clients = review_clients
         let transcripts = Env.transcripts
+        let transcript_updates = Env.transcript_updates
         let event_log = Env.event_log
         let pick_backend = Env.pick_backend
         let register_pr = Env.register_pr_number
@@ -257,7 +259,7 @@ struct
         let runtime = Env.runtime
         let clock = Env.clock
         let stdout = Env.stdout
-        let transcripts = Env.transcripts
+        let transcript_updates = Env.transcript_updates
         let initial_transcript_positions = Env.initial_transcript_positions
         let include_transcripts = Env.headless_transcript
       end)
@@ -817,6 +819,7 @@ type constructed_capabilities = {
        with type error = Review_service_client.error)
     list;
   transcripts : (Patch_id.t, string) Stdlib.Hashtbl.t;
+  transcript_updates : (Patch_id.t, string) Stdlib.Hashtbl.t;
   event_log : Event_log.t;
   worktree_mutex : Eio.Mutex.t;
   hook_mutex : Eio.Mutex.t;
@@ -1115,6 +1118,7 @@ let construct_capabilities ~net (setup : runtime_setup) =
     findings_registry = Findings_registry.create ();
     review_clients;
     transcripts;
+    transcript_updates = Hashtbl.create 16;
     event_log;
     worktree_mutex = Eio.Mutex.create ();
     hook_mutex = Eio.Mutex.create ();
@@ -1141,6 +1145,7 @@ let build_fiber_env (setup : runtime_setup) (cap : constructed_capabilities)
     let findings_registry = cap.findings_registry
     let review_clients = cap.review_clients
     let transcripts = cap.transcripts
+    let transcript_updates = cap.transcript_updates
     let initial_transcript_positions = initial_transcript_positions
     let headless_transcript = headless_transcript
     let event_log = cap.event_log

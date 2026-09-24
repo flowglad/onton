@@ -148,6 +148,7 @@ module type ENV = sig
   val owner : string
   val repo : string
   val transcripts : (Types.Patch_id.t, string) Stdlib.Hashtbl.t
+  val transcript_updates : (Types.Patch_id.t, string) Stdlib.Hashtbl.t
   val event_log : Event_log.t
 end
 
@@ -173,6 +174,10 @@ module Make (W : Worktree.S) (Env : ENV) = struct
     let owner = Env.owner in
     let repo = Env.repo in
     let transcripts = Env.transcripts in
+    let publish_transcript text =
+      Stdlib.Hashtbl.replace transcripts patch_id text;
+      Stdlib.Hashtbl.replace Env.transcript_updates patch_id text
+    in
     let log_event = Runtime_logging.log_event in
     let log_stream_entry = Runtime_logging.log_stream_entry in
     match session_mode_for_agent agent with
@@ -237,7 +242,7 @@ module Make (W : Worktree.S) (Env : ENV) = struct
               Buffer.add_string buf prompt;
               Buffer.add_string buf
                 (Printf.sprintf "\n\n---\n**%s response:**\n\n" backend_name);
-              Stdlib.Hashtbl.replace transcripts patch_id (Buffer.contents buf);
+              publish_transcript (Buffer.contents buf);
               buf
             in
             let error_buf = Buffer.create 256 in
@@ -288,8 +293,7 @@ module Make (W : Worktree.S) (Env : ENV) = struct
                 in
                 let last_sync = ref (Unix.gettimeofday ()) in
                 let sync_transcript () =
-                  Stdlib.Hashtbl.replace transcripts patch_id
-                    (Buffer.contents text_buf)
+                  publish_transcript (Buffer.contents text_buf)
                 in
                 let maybe_sync_transcript () =
                   let now = Unix.gettimeofday () in
