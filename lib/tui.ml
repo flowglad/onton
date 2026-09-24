@@ -1369,47 +1369,47 @@ let views_of_orchestrator ~(orchestrator : Orchestrator.t)
       ~init:(Map.empty (module Patch_id))
       ~f:(fun acc (a : Patch_agent.t) -> Map.set acc ~key:a.patch_id ~data:a)
   in
-  let views =
-    List.map agents ~f:(fun agent ->
-        let main_branch = Orchestrator.main_branch orchestrator in
-        let pv =
-          patch_view_of_agent agent ~patches_by_id ~graph ~main_branch
-            ~agents_by_id ~resolve_routing
-        in
-        let pid_str = Patch_id.to_string agent.patch_id in
-        let filtered =
-          List.filter activity ~f:(fun entry ->
-              match entry with
-              | Transition { patch_id = pid; _ } -> String.equal pid pid_str
-              | Event { patch_id = Some pid; _ } -> String.equal pid pid_str
-              | Event { patch_id = None; _ } -> false)
-        in
-        let intervention_reason =
-          if pv.needs_intervention then
-            (* Prefer the authoritative reason derived from the agent's own
+  List.map agents ~f:(fun agent ->
+      let main_branch = Orchestrator.main_branch orchestrator in
+      let pv =
+        patch_view_of_agent agent ~patches_by_id ~graph ~main_branch
+          ~agents_by_id ~resolve_routing
+      in
+      let pid_str = Patch_id.to_string agent.patch_id in
+      let filtered =
+        List.filter activity ~f:(fun entry ->
+            match entry with
+            | Transition { patch_id = pid; _ } -> String.equal pid pid_str
+            | Event { patch_id = Some pid; _ } -> String.equal pid pid_str
+            | Event { patch_id = None; _ } -> false)
+      in
+      let intervention_reason =
+        if pv.needs_intervention then
+          (* Prefer the authoritative reason derived from the agent's own
                failure counters (set in [patch_view_of_agent]). The activity-log
                map and recent stream are only deep fallbacks: scraping the most
                recent event surfaces whatever happened last (e.g. "pushed after
                session"), which is rarely the reason the patch is stuck. *)
-            match pv.intervention_reason with
-            | Some _ as r -> r
-            | None -> (
-                match Map.Poly.find intervention_reasons pv.patch_id with
-                | Some _ as r -> r
-                | None ->
-                    List.find_map filtered ~f:(function
-                      | Event { message; _ } -> Some message
-                      | Transition _ -> None))
-          else None
-        in
-        { pv with recent_stream = List.take filtered 10; intervention_reason })
-  in
-  List.sort views ~compare:(fun a b -> Patch_id.compare a.patch_id b.patch_id)
+          match pv.intervention_reason with
+          | Some _ as r -> r
+          | None -> (
+              match Map.Poly.find intervention_reasons pv.patch_id with
+              | Some _ as r -> r
+              | None ->
+                  List.find_map filtered ~f:(function
+                    | Event { message; _ } -> Some message
+                    | Transition _ -> None))
+        else None
+      in
+      { pv with recent_stream = List.take filtered 10; intervention_reason })
 
 let render_frame ~width ~height ~selected ~scroll_offset ~view_mode
     ~(activity : activity_entry list) ~project_name ~backend_name ~version
     ~show_help ~show_checks ~checks_scroll ~show_manage ~now ?(transcript = "")
     ?status_msg ?prompt_line ?dep_select (views : patch_view list) =
+  let views =
+    List.sort views ~compare:(fun a b -> Patch_id.compare a.patch_id b.patch_id)
+  in
   let no_patches =
     {
       lines = [];

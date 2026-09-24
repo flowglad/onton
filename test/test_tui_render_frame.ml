@@ -204,6 +204,20 @@ let test_patches_render_above_activity () =
   | Some p, Some a -> assert (p < a)
   | _ -> assert false
 
+let test_patches_sort_lexicographically_by_id () =
+  let views =
+    [ "patch-2"; "patch-1"; "patch-10" ]
+    |> List.map ~f:(fun id -> make_view ~id ~title:("title-" ^ id))
+  in
+  let lines = render views |> plain_lines in
+  let row_index id =
+    find_index lines ~f:(String.is_substring ~substring:("title-" ^ id))
+  in
+  match (row_index "patch-1", row_index "patch-10", row_index "patch-2") with
+  | Some first, Some second, Some third ->
+      assert (first < second && second < third)
+  | _ -> assert false
+
 let make_checks n =
   List.init n ~f:(fun i ->
       {
@@ -342,6 +356,7 @@ let () =
   test_checks_overlay_zero_visible_range ();
   test_timeline_view_no_summary ();
   test_patches_render_above_activity ();
+  test_patches_sort_lexicographically_by_id ();
   QCheck2.Test.check_exn
     (QCheck2.Test.make ~name:"render_frame handles generated dimensions"
        ~count:100
