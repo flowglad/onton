@@ -1353,6 +1353,9 @@ let detail_info_height (pv : patch_view) =
 
 (** {1 Public API} *)
 
+let sort_views views =
+  List.sort views ~compare:(fun a b -> Patch_id.compare a.patch_id b.patch_id)
+
 let views_of_orchestrator ~(orchestrator : Orchestrator.t)
     ~(gameplan : Gameplan.t) ~(activity : activity_entry list)
     ~(resolve_routing : complexity:int option -> Backend_routing.decision)
@@ -1402,14 +1405,13 @@ let views_of_orchestrator ~(orchestrator : Orchestrator.t)
         else None
       in
       { pv with recent_stream = List.take filtered 10; intervention_reason })
+  |> sort_views
 
 let render_frame ~width ~height ~selected ~scroll_offset ~view_mode
     ~(activity : activity_entry list) ~project_name ~backend_name ~version
     ~show_help ~show_checks ~checks_scroll ~show_manage ~now ?(transcript = "")
     ?status_msg ?prompt_line ?dep_select (views : patch_view list) =
-  let views =
-    List.sort views ~compare:(fun a b -> Patch_id.compare a.patch_id b.patch_id)
-  in
+  let views = sort_views views in
   let no_patches =
     {
       lines = [];
