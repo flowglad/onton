@@ -829,7 +829,7 @@ type constructed_capabilities = {
 
 type built_fiber_env = (module FIBER_ENV)
 
-let setup_runtime env ~config ~gameplan ~existing_snapshot ~auto_merge =
+let setup_runtime env ~config ~gameplan ~existing_snapshot =
   let {
     Resolved_config.headless;
     project_name;
@@ -866,14 +866,6 @@ let setup_runtime env ~config ~gameplan ~existing_snapshot ~auto_merge =
            original full description was unavailable.\n\
            %!"
           (Patch_id.to_string patch_id));
-  (* [--auto-merge] only seeds the initial state of a fresh project. On resume,
-     each patch's persisted [automerge_enabled] wins so per-patch user toggles
-     are not silently re-enabled across restarts. *)
-  if auto_merge && Base.Option.is_none existing_snapshot then
-    Runtime.update_orchestrator runtime (fun orch ->
-        Base.Map.fold (Orchestrator.agents_map orch) ~init:orch
-          ~f:(fun ~key:pid ~data:_ acc ->
-            Orchestrator.set_automerge_enabled acc pid true));
   Unix.putenv "ONTON_SNAPSHOT_PATH" (Project_store.snapshot_path project_name);
   {
     config;
@@ -1490,11 +1482,16 @@ let run_with_config ~no_lock ~auto_merge ~pr_ops ~headless_transcript
       Base.Option.iter lock ~f:Project_lock.release)
   @@ fun () ->
   Eio_main.run @@ fun env ->
-  let setup =
-    setup_runtime env ~config:resolved ~gameplan ~existing_snapshot ~auto_merge
-  in
+  let setup = setup_runtime env ~config:resolved ~gameplan ~existing_snapshot in
   let capabilities = construct_capabilities ~net:(Eio.Stdenv.net env) setup in
   apply_pr_ops ~setup ~cap:capabilities pr_ops;
+  (* Apply the initial flag after ad-hoc additions so +PR can be enabled too.
+     On resume, persisted per-patch toggles take precedence. *)
+  if auto_merge && Base.Option.is_none existing_snapshot then
+    Runtime.update_orchestrator setup.runtime (fun orch ->
+        Base.Map.fold (Orchestrator.agents_map orch) ~init:orch
+          ~f:(fun ~key:pid ~data:_ acc ->
+            Orchestrator.set_automerge_enabled acc pid true));
   let tui_state = Tui_state.create () in
   let fiber_env =
     build_fiber_env setup capabilities ~tui_state ~headless_transcript
@@ -1819,10 +1816,10 @@ let auto_merge_arg =
     value & flag
     & info [ "auto-merge" ]
         ~doc:
-          "Enable automerge for every patch in the gameplan at project start. \
-           Only valid when paired with --gameplan; ignored on resume so \
-           per-patch toggles set via the TUI survive restarts. Individual \
-           patches can still be toggled off in the TUI manage overlay.")
+          "Enable automerge for every initial patch at project start. Requires \
+           --gameplan or an ad-hoc addition; ignored on resume so per-patch \
+           toggles set via the TUI survive restarts. Individual patches can \
+           still be toggled off in the TUI manage overlay.")
 
 let worktree_backend_arg =
   let open Cmdliner.Arg in
@@ -1875,10 +1872,17 @@ let main_cmd ~pr_ops =
       if headless_transcript && not headless then (
         Printf.eprintf "Error: --headless-transcript requires --headless.\n%!";
         Stdlib.exit 1);
-      if auto_merge && Base.Option.is_none gameplan_path then (
+      if
+        auto_merge
+        && Base.Option.is_none gameplan_path
+        && not
+             (Base.List.exists pr_ops ~f:(function
+               | Adhoc_target.Add _ -> true
+               | Adhoc_target.Remove_pr _ -> false))
+      then (
         Printf.eprintf
-          "Error: --auto-merge requires --gameplan. It only seeds the initial \
-           state of a fresh project.\n";
+          "Error: --auto-merge requires --gameplan or an ad-hoc addition. It \
+           only seeds the initial state of a fresh project.\n";
         Stdlib.exit 1);
       let main_branch =
         Base.Option.map main_branch ~f:(fun s ->
