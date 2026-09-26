@@ -1517,6 +1517,25 @@ let () =
           ->
             false)
   in
+  let prop_classify_push_result_rejection =
+    Test.make
+      ~name:"classify_push_result: porcelain rejection reason reaches caller"
+      Gen.unit (fun () ->
+        let stdout =
+          "To github.com:o/r.git\n\
+           !\trefs/heads/b:refs/heads/b\t[rejected] (remote ref updated since \
+           checkout)\n\
+           Done\n"
+        in
+        let stderr =
+          "error: failed to push some refs to 'github.com:o/r.git'"
+        in
+        Worktree_parser.equal_push_result
+          (Worktree_parser.classify_push_result ~code:1 ~stdout ~stderr)
+          (Worktree_parser.Push_rejected
+             (Push_reject_classify.Unknown
+                "[rejected] (remote ref updated since checkout)")))
+  in
   (* is_ancestor_patch_subject: empty project_name never matches any subject. *)
   let prop_is_ancestor_empty_project =
     Test.make ~name:"is_ancestor_patch_subject: empty project never matches"
@@ -1567,6 +1586,7 @@ let () =
       prop_parse_commit_count;
       prop_push_gate_from_count;
       prop_classify_push_result_ok;
+      prop_classify_push_result_rejection;
       prop_is_ancestor_empty_project;
       prop_parse_push_porcelain_flag;
       prop_parse_rebase_merge_state_some;
