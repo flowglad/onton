@@ -58,8 +58,8 @@ remote: associated pull request.
           is dequeued/ejected — never escalate it to intervention, and never
           read it as a merge conflict. *)
   | Hook_failure of string
-      (** Any other [remote: …] message preceding [! [remote rejected]]; the
-          excerpt is preserved verbatim for the activity log. *)
+      (** Any other [remote: …] message or porcelain server hook decline; the
+          excerpt is preserved for the activity log. *)
   | Unknown of string
       (** Nothing recognizable in either output stream; the excerpt is preserved
           (truncated to 200 chars) so the user has a starting point for
@@ -75,8 +75,8 @@ remote: associated pull request.
 val classify : stderr:string -> stdout:string -> rejection
 (** Decide why a push was rejected, given the captured stderr and stdout from
     [git push --porcelain --force-with-lease]. Total over arbitrary input. The
-    parenthesized reason on a porcelain [!] line is used when stderr has no
-    server diagnostic. *)
+    parenthesized reason on a porcelain [!] line is used when stderr is empty or
+    contains only Git's generic push-failure trailer. *)
 
 val short_label : rejection -> string
 (** A short, lowercase, snake_case label suitable for an activity-log line

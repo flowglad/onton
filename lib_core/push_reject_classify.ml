@@ -102,16 +102,29 @@ let classify ~stderr ~stdout =
   then Lease_violation
   else
     let remote_excerpt = pick_remote_line stderr in
+    let porcelain_reason = pick_porcelain_reason stdout in
     let excerpt =
       (if contains_ci stderr "remote:" then remote_excerpt
-       else Option.value (pick_porcelain_reason stdout) ~default:remote_excerpt)
+       else if
+         String.is_prefix
+           (String.lowercase remote_excerpt)
+           ~prefix:"error: failed to push some refs to"
+       then Option.value porcelain_reason ~default:remote_excerpt
+       else if String.is_empty remote_excerpt then
+         Option.value porcelain_reason ~default:remote_excerpt
+       else remote_excerpt)
       |> truncate_200
     in
     if String.is_empty excerpt then Unknown (truncate_200 (String.strip stderr))
     else if
       (* If we extracted a remote: line, treat as a hook failure (server-side
-         policy spoke up but didn't match a named recognizer). *)
+         policy spoke up but didn't match a named recognizer). A porcelain
+         server hook decline is also permanent; the excerpt still prefers a
+         specific stderr diagnostic when present. *)
       contains_ci stderr "remote:"
+      || Option.value_map porcelain_reason ~default:false ~f:(fun reason ->
+          contains_ci reason "[remote rejected]"
+          && contains_ci reason "hook declined")
     then Hook_failure excerpt
     else Unknown excerpt
 
