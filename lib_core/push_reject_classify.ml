@@ -14,12 +14,9 @@ type rejection =
   | Local_state_unsafe of { reason : string }
 [@@deriving show, eq, sexp_of, compare]
 
-(* GitHub's remote-rejected stderr is a mix of [remote: ...] lines and a
-   trailing [ ! [remote rejected] ...] line. Recognizers below match against the
-   whole stderr blob (case-insensitive on the substring) rather than parsing
-   line-by-line — the fingerprints are stable across years of GitHub history
-   and false positives would require the message to contain literally these
-   phrases. *)
+(* With [git push --porcelain], the [!] status and its parenthesized reason are
+   written to stdout, while server diagnostics and the generic failure trailer
+   are written to stderr. Match fingerprints across both streams. *)
 
 let contains_ci hay needle =
   let h = String.lowercase hay in
@@ -58,43 +55,58 @@ let pick_remote_line stderr =
       | Some l -> String.strip l
       | None -> "")
 
-let classify ~stderr ~stdout:_ =
+let pick_porcelain_reason stdout =
+  String.split_lines stdout
+  |> List.find_map ~f:(fun line ->
+      match String.split line ~on:'\t' with
+      | flag :: _ref :: status :: _ when String.equal (String.strip flag) "!" ->
+          let status = String.strip status in
+          if String.is_empty status then None else Some status
+      | _ -> None)
+
+let classify ~stderr ~stdout =
+  let output = stderr ^ "\n" ^ stdout in
   (* Recognizer order matters: workflow scope is the most specific message.
      GH013 workflow-scope failures include "Repository rule violations found",
      so [Workflow_scope_missing] must stay before [Push_pattern_block]. It can
      also co-occur with the generic "remote rejected" trailer, so it must be
      checked before the catch-all hook-failure branch. *)
   if
-    contains_ci stderr
+    contains_ci output
       "refusing to allow an OAuth App to create or update workflow"
-    || contains_ci stderr
+    || contains_ci output
          "refusing to allow a Personal Access Token to create or update \
           workflow"
-    || contains_ci stderr "without `workflow` scope"
+    || contains_ci output "without `workflow` scope"
   then Workflow_scope_missing
   else if
     (* Must precede [Branch_protection]: the merge-queue lock message carries
        both of that recognizer's fingerprints (GH006 + the hook-declined
        trailer) alongside its own queue-specific lines. *)
-    contains_ci stderr "has been added to a merge queue"
-    || contains_ci stderr "queued for merging cannot be updated"
+    contains_ci output "has been added to a merge queue"
+    || contains_ci output "queued for merging cannot be updated"
   then Merge_queue_locked
   else if
-    contains_ci stderr "GH006: Protected branch update failed"
-    || contains_ci stderr "protected branch hook declined"
-    || contains_ci stderr "Cannot force-push to a protected branch"
+    contains_ci output "GH006: Protected branch update failed"
+    || contains_ci output "protected branch hook declined"
+    || contains_ci output "Cannot force-push to a protected branch"
   then Branch_protection
   else if
-    contains_ci stderr "push declined due to repository rule violations"
-    || contains_ci stderr "Repository rule violations found"
+    contains_ci output "push declined due to repository rule violations"
+    || contains_ci output "Repository rule violations found"
   then Push_pattern_block
   else if
-    contains_ci stderr "stale info"
-    || contains_ci stderr "fetch first"
-    || contains_ci stderr "non-fast-forward"
+    contains_ci output "stale info"
+    || contains_ci output "fetch first"
+    || contains_ci output "non-fast-forward"
   then Lease_violation
   else
-    let excerpt = truncate_200 (pick_remote_line stderr) in
+    let remote_excerpt = pick_remote_line stderr in
+    let excerpt =
+      (if contains_ci stderr "remote:" then remote_excerpt
+       else Option.value (pick_porcelain_reason stdout) ~default:remote_excerpt)
+      |> truncate_200
+    in
     if String.is_empty excerpt then Unknown (truncate_200 (String.strip stderr))
     else if
       (* If we extracted a remote: line, treat as a hook failure (server-side

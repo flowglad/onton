@@ -4,9 +4,9 @@
 (** Pure classifier for [git push] server-side rejection messages.
 
     [classify_push_result] in [Worktree_parser] decides that a push was rejected
-    (porcelain [!]); this module decides {e why}. The wording lives entirely in
-    the captured stderr, since [git push --porcelain] strips it out of stdout.
-    Distinguishing causes matters because:
+    (porcelain [!]); this module decides {e why}. Git writes its porcelain
+    rejection status to stdout and server diagnostics to stderr. Distinguishing
+    causes matters because:
 
     - [Workflow_scope_missing] / [Branch_protection] / [Push_pattern_block] /
       [Hook_failure] are {e permanent} under the current credentials — retrying
@@ -61,8 +61,9 @@ remote: associated pull request.
       (** Any other [remote: …] message preceding [! [remote rejected]]; the
           excerpt is preserved verbatim for the activity log. *)
   | Unknown of string
-      (** Nothing recognizable in stderr; the excerpt is preserved (truncated to
-          200 chars) so the user has a starting point for diagnosis. *)
+      (** Nothing recognizable in either output stream; the excerpt is preserved
+          (truncated to 200 chars) so the user has a starting point for
+          diagnosis. *)
   | Local_state_unsafe of { reason : string }
       (** Pre-flight refusal produced by [Push_plan.plan] — the local worktree
           state would make the push unsafe (wrong branch checked out, local
@@ -73,10 +74,9 @@ remote: associated pull request.
 
 val classify : stderr:string -> stdout:string -> rejection
 (** Decide why a push was rejected, given the captured stderr and stdout from
-    [git push --porcelain --force-with-lease]. Total over arbitrary input.
-    Stdout is currently unused but accepted so future porcelain hints (e.g. the
-    parenthesized reason on the [!] line) can be folded in without churning call
-    sites. *)
+    [git push --porcelain --force-with-lease]. Total over arbitrary input. The
+    parenthesized reason on a porcelain [!] line is used when stderr has no
+    server diagnostic. *)
 
 val short_label : rejection -> string
 (** A short, lowercase, snake_case label suitable for an activity-log line
