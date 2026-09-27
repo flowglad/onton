@@ -289,6 +289,71 @@ let prop_merge_queue_beats_branch_protection =
               ~stdout:"")
            Push_reject_classify.Branch_protection)
 
+let prop_porcelain_lease_reason =
+  Test.make ~name:"PRC-18: porcelain stdout identifies a lease rejection"
+    (Gen.return ()) (fun () ->
+      Push_reject_classify.equal_rejection
+        (Push_reject_classify.classify
+           ~stderr:
+             "error: failed to push some refs to 'https://github.com/o/r.git'"
+           ~stdout:
+             "To https://github.com/o/r.git\n\
+              !\tfoo:foo\t[rejected] (stale info)\n\
+              Done\n")
+        Push_reject_classify.Lease_violation)
+
+let prop_porcelain_unknown_reason =
+  Test.make
+    ~name:"PRC-19: unknown porcelain reason survives the generic stderr trailer"
+    (Gen.return ()) (fun () ->
+      Push_reject_classify.equal_rejection
+        (Push_reject_classify.classify
+           ~stderr:
+             "error: failed to push some refs to 'https://github.com/o/r.git'"
+           ~stdout:
+             "To https://github.com/o/r.git\n\
+              !\tfoo:foo\t[rejected] (remote ref updated since checkout)\n\
+              Done\n")
+        (Push_reject_classify.Unknown
+           "[rejected] (remote ref updated since checkout)"))
+
+let prop_server_diagnostic_preferred =
+  Test.make
+    ~name:"PRC-20: server diagnostic is more useful than porcelain hook status"
+    (Gen.return ()) (fun () ->
+      Push_reject_classify.equal_rejection
+        (Push_reject_classify.classify
+           ~stderr:
+             "remote: custom policy rejected this update\n\
+              error: failed to push some refs"
+           ~stdout:"!\tfoo:foo\t[remote rejected] (pre-receive hook declined)\n")
+        (Push_reject_classify.Hook_failure "custom policy rejected this update"))
+
+let prop_stderr_diagnostic_preferred =
+  Test.make ~name:"PRC-21: non-generic stderr diagnostic beats porcelain status"
+    (Gen.return ()) (fun () ->
+      Push_reject_classify.equal_rejection
+        (Push_reject_classify.classify
+           ~stderr:
+             "fatal: unable to access repository\n\
+              error: failed to push some refs to 'https://github.com/o/r.git'"
+           ~stdout:"!\tfoo:foo\t[rejected] (remote ref updated)\n")
+        (Push_reject_classify.Unknown "fatal: unable to access repository"))
+
+let prop_porcelain_hook_decline =
+  Test.make ~name:"PRC-22: porcelain server hook decline is permanent"
+    (Gen.return ()) (fun () ->
+      let reason = "[remote rejected] (pre-receive hook declined)" in
+      let rejection =
+        Push_reject_classify.classify
+          ~stderr:
+            "error: failed to push some refs to 'https://github.com/o/r.git'"
+          ~stdout:("!\tfoo:foo\t" ^ reason ^ "\n")
+      in
+      Push_reject_classify.equal_rejection rejection
+        (Push_reject_classify.Hook_failure reason)
+      && Push_reject_classify.is_permanent rejection)
+
 let () =
   List.iter
     ~f:(fun t -> QCheck2.Test.check_exn t)
@@ -310,5 +375,10 @@ let () =
       prop_unknown_truncation;
       prop_merge_queue_locked;
       prop_merge_queue_beats_branch_protection;
+      prop_porcelain_lease_reason;
+      prop_porcelain_unknown_reason;
+      prop_server_diagnostic_preferred;
+      prop_stderr_diagnostic_preferred;
+      prop_porcelain_hook_decline;
     ];
   Stdlib.print_endline "Push_reject_classify: all properties passed"
