@@ -60,7 +60,8 @@ type t = private {
           observation. Conflicts for that old head or without identity are
           deferred. Non-conflict state remains actionable; an unidentified
           non-conflict poll, expected head or distinct head settles the marker.
-      *)
+          Snapshot restore clears it because a push interrupted by process exit
+          may never be retried. *)
   review_decision : string option;
   unresolved_comment_count : int;
   mergeability_unknown : bool;
