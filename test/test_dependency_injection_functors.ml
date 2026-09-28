@@ -32,6 +32,7 @@ module Fake_worktree : Worktree.S = struct
     assert false
 
   let git_status ~path:_ = assert false
+  let has_uncommitted_changes ~path:_ = assert false
   let conflict_diff ~path:_ = assert false
 
   let rebase_onto ~path:_ ~target:_ ~upstream:_ ~project_name:_ ~ancestor_ids:_

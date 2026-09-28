@@ -165,4 +165,23 @@ let () =
     Stdlib.print_endline "FAIL: dirty: status was not capped at 4000 bytes";
     Stdlib.exit 1)
 
+let () =
+  let clean = Prompt.render_turn_layer_start ~project_name:"" () in
+  let dirty =
+    Prompt.render_turn_layer_start ~project_name:"" ~has_existing_changes:true
+      ()
+  in
+  assert_not_contains "clean start has no existing-changes instruction" clean
+    ~substring:"This worktree already has uncommitted changes";
+  assert_contains "dirty start includes existing changes" dirty
+    ~substring:"This worktree already has uncommitted changes";
+  assert_contains "dirty start permits a separate commit" dirty
+    ~substring:"commit them separately";
+  assert_contains "dirty start permits inclusion in current commit" dirty
+    ~substring:"include them in your current commit";
+  assert_contains "dirty start permits reverting" dirty
+    ~substring:"revert them if they are not needed";
+  assert_contains "dirty start forbids ignoring prior work" dirty
+    ~substring:"Do not leave them uncommitted because they predate this session"
+
 let () = Stdlib.print_endline "All prompt-recovery tests passed."

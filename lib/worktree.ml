@@ -552,6 +552,13 @@ let git_status ~process_mgr ~path =
   in
   if code <> 0 then "" else String.strip stdout
 
+let has_uncommitted_changes ~process_mgr ~path =
+  let code, stdout, _ =
+    run_git_exit_code ~process_mgr
+      [ "git"; "-C"; path; "status"; "--porcelain=v1" ]
+  in
+  code = 0 && not (String.is_empty stdout)
+
 let conflict_diff ~process_mgr ~path =
   let code, stdout, _ =
     run_git_exit_code ~process_mgr
@@ -1049,6 +1056,7 @@ module type S = sig
     fetch_lock:Eio.Mutex.t -> path:string -> (unit, string) Result.t
 
   val git_status : path:string -> string
+  val has_uncommitted_changes : path:string -> bool
   val conflict_diff : path:string -> string
 
   val rebase_onto :
@@ -1156,6 +1164,10 @@ let make ~fs ~config ~clock ~process_mgr ~repo_root =
       fetch_origin_branch ~fetch_lock ~process_mgr ~repo_root ~branch_str:branch
 
     let git_status ~path = git_status ~process_mgr ~path
+
+    let has_uncommitted_changes ~path =
+      has_uncommitted_changes ~process_mgr ~path
+
     let conflict_diff ~path = conflict_diff ~process_mgr ~path
 
     let rebase_onto ~path ~target ~upstream ~project_name ~ancestor_ids () =

@@ -70,7 +70,8 @@ val render_patch_layer_of_gameplan :
     by [Patch_controller.plan_action_for_patch]), so the files exist by the time
     the layer is first read. *)
 
-val render_turn_layer_start : project_name:string -> string
+val render_turn_layer_start :
+  project_name:string -> ?has_existing_changes:bool -> unit -> string
 
 val render_turn_layer_review :
   project_name:string ->
@@ -136,6 +137,7 @@ val render_patch_prompt :
   project_name:string ->
   ?agents_md:string ->
   ?pr_number:Pr_number.t ->
+  ?has_existing_changes:bool ->
   Patch.t ->
   Gameplan.t ->
   base_branch:string ->

@@ -1050,6 +1050,9 @@ module Make (Forge : Forge.S) (W : Worktree.S) (Env : Runner_env.S) = struct
                                         let initial_prompt =
                                           Prompt.render_patch_prompt
                                             ~project_name ?agents_md
+                                            ~has_existing_changes:
+                                              (W.has_uncommitted_changes
+                                                 ~path:_wt_path)
                                             ?pr_number:
                                               (Patch_agent.pr_number agent)
                                             patch gameplan

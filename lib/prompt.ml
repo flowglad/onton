@@ -588,18 +588,30 @@ let layered_prefix ~project_name ?pr_number ?patch ?gameplan ?base_branch
           ~base_branch:b
   | _ -> repo_context
 
-let render_turn_layer_start ~(project_name : string) : string =
+let render_turn_layer_start ~(project_name : string)
+    ?(has_existing_changes = false) () : string =
   let vars = [ ("project_name", project_name) ] in
-  render_with_override ~project_name ~name:"turn_start" ~vars
-    ~default:(fun () -> "Continue implementing until all tests pass.\n")
+  let start =
+    render_with_override ~project_name ~name:"turn_start" ~vars
+      ~default:(fun () -> "Continue implementing until all tests pass.\n")
+  in
+  if has_existing_changes then
+    start
+    ^ "\n\
+       This worktree already has uncommitted changes from an earlier session. "
+    ^ "Handle them as part of this patch: commit them separately, include "
+    ^ "them in your current commit, or revert them if they are not needed. "
+    ^ "Do not leave them uncommitted because they predate this session.\n"
+  else start
 
 let render_patch_prompt ~(project_name : string) ?agents_md ?pr_number
-    (patch : Patch.t) (gameplan : Gameplan.t) ~(base_branch : string) =
+    ?(has_existing_changes = false) (patch : Patch.t) (gameplan : Gameplan.t)
+    ~(base_branch : string) =
   render_gameplan_layer ~project_name gameplan
   ^ agents_md_section agents_md
   ^ render_patch_layer_of_gameplan ~project_name ?pr_number patch gameplan
       ~base_branch
-  ^ render_turn_layer_start ~project_name
+  ^ render_turn_layer_start ~project_name ~has_existing_changes ()
 
 let render_spec_suffix (patch : Patch.t) (gameplan : Gameplan.t) : string =
   let gp =
