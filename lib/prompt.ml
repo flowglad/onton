@@ -597,11 +597,12 @@ let render_turn_layer_start ~(project_name : string)
   in
   if has_existing_changes then
     start
-    ^ "\n\
-       This worktree already has uncommitted changes from an earlier session. "
-    ^ "Handle them as part of this patch: commit them separately, include "
+    ^ "\nThis worktree already has uncommitted changes. Inspect each changed "
+    ^ "and untracked file before acting; some may be unrelated to this patch. "
+    ^ "For changes that belong to this patch, commit them separately, include "
     ^ "them in your current commit, or revert them if they are not needed. "
-    ^ "Do not leave them uncommitted because they predate this session.\n"
+    ^ "Preserve unrelated files and do not include them in patch commits. "
+    ^ "Do not leave patch-related changes uncommitted.\n"
   else start
 
 let render_patch_prompt ~(project_name : string) ?agents_md ?pr_number

@@ -555,7 +555,7 @@ let git_status ~process_mgr ~path =
 let has_uncommitted_changes ~process_mgr ~path =
   let code, stdout, stderr =
     run_git_exit_code ~process_mgr
-      [ "git"; "-C"; path; "status"; "--porcelain=v1" ]
+      [ "git"; "-C"; path; "status"; "--porcelain=v1"; "--untracked-files=all" ]
   in
   if code = 0 then Result.Ok (not (String.is_empty stdout))
   else

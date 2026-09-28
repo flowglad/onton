@@ -21,8 +21,9 @@ let status_failure_is_not_clean env =
       let process_mgr = Eio.Stdenv.process_mgr env in
       check "clean worktree status"
         (Worktree.has_uncommitted_changes ~process_mgr ~path:repo = Ok false);
+      G.run_git ~cwd:repo [ "config"; "status.showUntrackedFiles"; "no" ];
       write (Filename.concat repo "untracked") "change";
-      check "dirty worktree status"
+      check "untracked worktree status despite config"
         (Worktree.has_uncommitted_changes ~process_mgr ~path:repo = Ok true);
       check "failed worktree status"
         (Result.is_error
