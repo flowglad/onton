@@ -148,7 +148,16 @@ let () =
     |> fun orchestrator ->
     Onton.Orchestrator.set_pr_number orchestrator added_id
       (Pr_number.of_int 417)
+    |> fun orchestrator ->
+    Onton.Orchestrator.set_head_oid orchestrator added_id (Some "old-head")
+    |> fun orchestrator ->
+    Onton.Orchestrator.set_expected_remote_head_oid orchestrator added_id
+      (Some "push-interrupted-before-publication")
   in
+  let before_restart = Onton.Orchestrator.agent orchestrator added_id in
+  assert (
+    Patch_decision.defer_remote_head before_restart ~has_conflict:true
+      (Some "old-head"));
   let make_snapshot ~gameplan ~activity_log =
     {
       Onton.Runtime.orchestrator;
@@ -172,6 +181,18 @@ let () =
         Base.List.find snapshot.Onton.Runtime.gameplan.Gameplan.patches
           ~f:(fun patch -> Patch_id.equal patch.Patch.id added_id))
   in
+  let after_restart =
+    Onton.Runtime.read intact_runtime (fun snapshot ->
+        Onton.Orchestrator.agent snapshot.Onton.Runtime.orchestrator added_id)
+  in
+  assert (Base.Option.is_none after_restart.Patch_agent.expected_remote_head_oid);
+  assert (
+    Base.Option.equal String.equal after_restart.Patch_agent.head_oid
+      (Some "old-head"));
+  assert (
+    not
+      (Patch_decision.defer_remote_head after_restart ~has_conflict:true
+         (Some "old-head")));
   assert (Base.Option.equal Patch.equal intact_patch (Some added_patch));
   assert (
     Base.List.count

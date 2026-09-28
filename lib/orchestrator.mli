@@ -127,6 +127,10 @@ val set_checks_passing : t -> Patch_id.t -> bool -> t
 val set_merge_ready : t -> Patch_id.t -> bool -> t
 val set_head_oid : t -> Patch_id.t -> string option -> t
 val set_expected_remote_head_oid : t -> Patch_id.t -> string option -> t
+
+(* Discard in-flight push expectations when restoring a snapshot. No push
+   fiber survives a process restart, so a retained marker may never settle. *)
+val clear_pending_remote_heads : t -> t
 val set_review_decision : t -> Patch_id.t -> string option -> t
 val set_unresolved_comment_count : t -> Patch_id.t -> int -> t
 val set_mergeability_unknown : t -> Patch_id.t -> bool -> t

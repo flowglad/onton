@@ -768,7 +768,10 @@ module Make (W : Worktree.S) (Env : ENV) = struct
                       Orchestrator.agent snap.Runtime.orchestrator patch_id)
                 in
                 let push_outcome =
-                  W.force_push_with_lease ~path:worktree_path ~branch ~base
+                  Push_publication.with_pending_push
+                    ~update:(Runtime.update_orchestrator runtime)
+                    ~patch_id ~local_sha:push_local_sha (fun () ->
+                      W.force_push_with_lease ~path:worktree_path ~branch ~base)
                 in
                 let branch_changed =
                   match (pre_session_branch_sha, push_local_sha) with

@@ -28,7 +28,9 @@ val create :
 (** Build initial runtime state from a gameplan, optionally restoring a previous
     [snapshot]. [max_ci_failures] is the resolved per-project CI-failure cap; it
     is stamped onto the orchestrator (and every agent) in both the fresh and the
-    restore path, so config always wins over persisted values. *)
+    restore path, so config always wins over persisted values. On restore,
+    pending push expectations are cleared because their owning fibers are gone.
+*)
 
 val resume_repairs : t -> Resume_gameplan.repair list
 (** Patches preserved or reconstructed while reconciling a resume snapshot with

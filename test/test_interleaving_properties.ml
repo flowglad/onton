@@ -1475,6 +1475,85 @@ let () =
   QCheck2.Test.check_exn prop_pi6;
   Stdlib.print_endline "PI-6 passed"
 
+(* A successful session-end push can race a poll of GitHub's old head. The
+   pending-head marker must span both the push call and its propagation delay,
+   so those old conflict observations cannot start conflict-noop retries. *)
+let () =
+  let stale_poll =
+    make_poll_result ~has_conflict:true ~merged:false ~ci_failed:false
+      ~checks_passing:true ~review_comments:false
+  in
+  let property =
+    QCheck2.Test.make ~count:200
+      ~name:"PI-6b: stale conflict polls around session push do not intervene"
+      QCheck2.Gen.(pair (list_size (int_range 1 8) bool) (int_range 0 8))
+      (fun (unidentified, split) ->
+        try
+          let orch, pid, _ = mk_bootstrapped () in
+          let orch = ref (Orchestrator.set_head_oid orch pid (Some "old")) in
+          let update f = orch := f !orch in
+          let apply_poll result =
+            let next, _, _ =
+              Patch_controller.apply_poll_result !orch pid
+                {
+                  poll_result = result;
+                  base_branch = Some main;
+                  native_stack = false;
+                  branch_in_root = false;
+                  worktree_path = None;
+                }
+            in
+            orch := next;
+            let agent = Orchestrator.agent !orch pid in
+            (not agent.Patch_agent.has_conflict)
+            && agent.conflict_noop_count = 0
+            && (not (Patch_agent.needs_intervention agent))
+            && not
+                 (List.mem agent.queue Operation_kind.Merge_conflict
+                    ~equal:Operation_kind.equal)
+          in
+          let poll_old unidentified =
+            apply_poll
+              {
+                stale_poll with
+                head_oid = (if unidentified then None else Some "old");
+              }
+          in
+          let inside = List.take unidentified split in
+          let after = List.drop unidentified split in
+          let inside_ok = ref true in
+          let push_result =
+            Push_publication.with_pending_push ~update ~patch_id:pid
+              ~local_sha:(Some "new") (fun () ->
+                List.iter inside ~f:(fun stale ->
+                    inside_ok := poll_old stale && !inside_ok);
+                Worktree.Push_ok)
+          in
+          let after_ok = List.for_all after ~f:poll_old in
+          let agent = Orchestrator.agent !orch pid in
+          let still_pending =
+            Option.equal String.equal agent.expected_remote_head_oid
+              (Some "new")
+          in
+          let new_head_ok =
+            apply_poll
+              {
+                stale_poll with
+                queue = [];
+                merge_state = Pr_state.Mergeable;
+                merge_ready = true;
+                head_oid = Some "new";
+              }
+          in
+          !inside_ok && after_ok && still_pending && new_head_ok
+          && Worktree.equal_push_result push_result Worktree.Push_ok
+          && Option.is_none
+               (Orchestrator.agent !orch pid).expected_remote_head_oid
+        with _ -> false)
+  in
+  QCheck2.Test.check_exn property;
+  Stdlib.print_endline "PI-6b passed"
+
 (** PI-7: Rebase push failure converges to Merge_conflict retry. After a
     successful rebase whose push is rejected, the system must enqueue
     Merge_conflict and fire it on the next tick. *)
