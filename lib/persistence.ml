@@ -162,6 +162,8 @@ let patch_agent_to_yojson (a : Patch_agent.t) =
       ("patch_id", Patch_id.yojson_of_t a.patch_id);
       ("branch", Branch.yojson_of_t a.branch);
       ("pr_status", Patch_pr_status.yojson_of_t a.pr_status);
+      ( "complexity",
+        Option.value_map a.complexity ~default:`Null ~f:(fun n -> `Int n) );
       (* Legacy field, written alongside [pr_status] so an older onton binary
          can still load snapshots produced by this version. The legacy reader
          maps null -> Absent and bare int -> Present, which silently
@@ -344,6 +346,7 @@ let patch_agent_of_yojson ~gameplan json =
                  match int_member_opt "pr_number" json with
                  | None -> Patch_pr_status.Absent
                  | Some n -> Patch_pr_status.Present (Pr_number.of_int n))))
+       ~complexity:(int_member_opt "complexity" json)
        ~has_session ~busy:(bool_member "busy" json)
        ~merged:(bool_member "merged" json)
        ~queue

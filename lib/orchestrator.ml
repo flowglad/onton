@@ -736,7 +736,7 @@ let set_max_ci_failures t ~max_ci_failures =
 
 let agents_map t = t.agents
 
-let add_agent t ~patch_id ~branch ~base_branch ~pr_number =
+let add_agent ?(complexity = None) t ~patch_id ~branch ~base_branch ~pr_number =
   if Map.mem t.agents patch_id then t
   else
     let deps =
@@ -754,7 +754,7 @@ let add_agent t ~patch_id ~branch ~base_branch ~pr_number =
        stale-rebase state on round-trip. The poller populates it next tick. *)
     let agent =
       Patch_agent.create_adhoc ~patch_id ~branch ~pr_number
-        ~max_ci_failures:t.max_ci_failures
+        ~max_ci_failures:t.max_ci_failures ~complexity
     in
     let graph = Graph.add_patch_with_deps t.graph patch_id ~deps in
     { t with graph; agents = Map.set t.agents ~key:patch_id ~data:agent }

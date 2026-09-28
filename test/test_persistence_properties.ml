@@ -473,8 +473,9 @@ let () =
                 let branch =
                   Branch.of_string ("feature/pr-" ^ Int.to_string n)
                 in
-                Onton.Orchestrator.add_agent orch ~patch_id ~branch
-                  ~base_branch:main_branch ~pr_number)
+                Onton.Orchestrator.add_agent
+                  ~complexity:(Some (Int.rem n 3 + 1))
+                  orch ~patch_id ~branch ~base_branch:main_branch ~pr_number)
           in
           let snap =
             {

@@ -19,7 +19,8 @@ let numeric_priority =
   QCheck2.Test.make ~name:"positive numeric add targets remain PR numbers"
     ~count:1 QCheck2.Gen.unit (fun () ->
       match Adhoc_target.parse_operation "+123" with
-      | Ok (Add (Pull_request pr)) -> Types.Pr_number.to_int pr = 123
+      | Ok (Add (Pull_request (pr, None))) -> Types.Pr_number.to_int pr = 123
+      | Ok (Add (Pull_request (_, Some _))) -> false
       | Ok (Add (Remote_branch _) | Remove_pr _) | Error _ -> false)
 
 let remote_branch_forms =
@@ -100,7 +101,7 @@ let additions_follow_identity_capabilities =
       let pull_request =
         Adhoc_target.operation_supported ~supports_pull_request_changes
           ~supports_branch_changes
-          (Add (Pull_request (Types.Pr_number.of_int 1)))
+          (Add (Pull_request (Types.Pr_number.of_int 1, None)))
       in
       let remote_branch =
         Adhoc_target.operation_supported ~supports_pull_request_changes
@@ -109,6 +110,22 @@ let additions_follow_identity_capabilities =
       in
       Bool.equal pull_request supports_pull_request_changes
       && Bool.equal remote_branch supports_branch_changes)
+
+let complexity_suffix =
+  QCheck2.Test.make ~name:"each PR operation carries its own complexity"
+    ~count:1 QCheck2.Gen.unit (fun () ->
+      Stdlib.List.for_all
+        (fun (number, complexity) ->
+          match parse_operation (Printf.sprintf "+%d:%d" number complexity) with
+          | Ok (Add (Pull_request (pr, Some level))) ->
+              Types.Pr_number.to_int pr = number && level = complexity
+          | Ok (Add (Pull_request (_, None) | Remote_branch _) | Remove_pr _)
+          | Error _ ->
+              false)
+        [ (1, 1); (42, 2); (999, 3) ]
+      && Stdlib.List.for_all
+           (fun value -> Result.is_error (parse_operation value))
+           [ "+42:0"; "+42:4"; "+42:"; "+0:2"; "+42:2:3" ])
 
 let () =
   QCheck_base_runner.run_tests_main
@@ -120,4 +137,5 @@ let () =
       safe_patch_id;
       removals_are_capability_independent;
       additions_follow_identity_capabilities;
+      complexity_suffix;
     ]

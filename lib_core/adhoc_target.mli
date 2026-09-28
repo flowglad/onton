@@ -4,7 +4,7 @@
 (** Pure parsing and validation for ad-hoc change arguments. *)
 
 type add_target =
-  | Pull_request of Types.Pr_number.t
+  | Pull_request of Types.Pr_number.t * int option
   | Remote_branch of Types.Branch.t
 [@@deriving show, eq]
 
@@ -25,8 +25,8 @@ val validate_remote_branch : string -> (Types.Branch.t, string) Result.t
 
 val parse_add_value : string -> (add_target, string) Result.t
 (** Parse text entered after the TUI's add prompt. Positive integers denote PR
-    numbers; other values denote remote branches. [branch:<name>] forces branch
-    interpretation, including for numeric branch names. *)
+    numbers and may include [:1], [:2], or [:3] complexity. Other values denote
+    remote branches. [branch:<name>] forces branch interpretation. *)
 
 val looks_like_operation : string -> bool
 (** Whether a CLI token is an ad-hoc operation: [+<target>] or [-<number>]. *)

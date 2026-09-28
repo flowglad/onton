@@ -25,6 +25,9 @@ type t = private {
       (** Lifecycle status of the patch's PR. Use the accessor functions
           ([has_pr], [is_pr_present], [is_pr_missing], [pr_number]) rather than
           pattern-matching the field — see {!Patch_pr_status}. *)
+  complexity : int option;
+      (** Model-routing complexity for an adopted PR. Planned patches keep their
+          complexity in the gameplan. *)
   has_session : bool;
   busy : bool;
   merged : bool;
@@ -190,6 +193,7 @@ val create :
     defaults to {!default_max_ci_failures}. *)
 
 val create_adhoc :
+  complexity:int option ->
   patch_id:Types.Patch_id.t ->
   branch:Types.Branch.t ->
   pr_number:Types.Pr_number.t ->
@@ -712,6 +716,7 @@ val restore :
   patch_id:Types.Patch_id.t ->
   branch:Types.Branch.t ->
   pr_status:Patch_pr_status.t ->
+  ?complexity:int option ->
   has_session:bool ->
   busy:bool ->
   merged:bool ->

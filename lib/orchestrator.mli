@@ -218,6 +218,7 @@ val set_max_ci_failures : t -> max_ci_failures:int -> t
 val agents_map : t -> Patch_agent.t Map.M(Patch_id).t
 
 val add_agent :
+  ?complexity:int option ->
   t ->
   patch_id:Patch_id.t ->
   branch:Branch.t ->
