@@ -1054,7 +1054,18 @@ module Make (Forge : Forge.S) (W : Worktree.S) (Env : Runner_env.S) = struct
                                                 ~path:_wt_path
                                             with
                                             | Ok changes -> changes
-                                            | Error error -> failwith error
+                                            | Error first_error -> (
+                                                log_event runtime ~patch_id
+                                                  (Printf.sprintf
+                                                     "Worktree status failed; \
+                                                      retrying: %s"
+                                                     first_error);
+                                                match
+                                                  W.has_uncommitted_changes
+                                                    ~path:_wt_path
+                                                with
+                                                | Ok changes -> changes
+                                                | Error error -> failwith error)
                                           in
                                           Prompt.render_patch_prompt
                                             ~project_name ?agents_md
