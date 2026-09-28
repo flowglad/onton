@@ -9,6 +9,14 @@ Create a structured, machine-readable gameplan for a complex codebase change. Th
 
 **Core principle**: It should be 5-10x easier to review a gameplan than the code it produces.
 
+## Set Scope Before Designing
+
+Start with the behavior the user actually requested and the constraints they supplied. Inspect the existing path for that behavior, then choose the smallest change that can deliver it. A workstream milestone, schema field, or operational checklist is context for that choice; it does not authorize additional product behavior or infrastructure.
+
+Before drafting patches or JSON, identify any missing decision whose answer would materially change the product surface, persistence model, authority boundary, or architecture. Ask the programmer then, with the concrete alternatives and their cost. For example, "view candidates and run tests" does not establish that the flow needs a web page rather than an existing CLI, or that test runs need a durable attempt ledger, recovery after interruption, or retry semantics. Those are separate requirements. If the codebase and supplied context settle a decision, record the evidence and proceed. If the answer changes the design substantially and cannot be inferred, wait for it before committing to a design; do not bury a preferred answer in `explicitOpinions` and ask only after writing the plan.
+
+Keep an explicit boundary between requested outcomes, existing constraints, and optional ideas. Include an optional capability only when it is necessary to deliver the requested outcome or the programmer chooses it. Ordinary failure handling for a chosen path still belongs in the plan, but do not turn every conceivable failure mode into a new table, workflow, UI, or retry protocol. Use `openQuestions` for consequential decisions discovered later; resolve them before finalizing the affected patches.
+
 ## Atomicity Constraint (Read This First)
 
 A gameplan is, by definition, a bundle of work with two non-negotiable properties:
@@ -310,7 +318,7 @@ Downstream consumers (notably onton's patch prompt renderer) read `functionalCha
 
 ## Operational Considerations
 
-Beyond *what changes*, a gameplan must engage with *how the system behaves operationally* under the change. These concerns share a failure shape: vague descriptions get scattered across patches, every patch author assumes some other patch owns the decision, and the question surfaces in production. The `operationalConsiderations` schema field is required and contains five sub-fields — each is a required string. The schema enforces presence; the rubric below makes each response substantive. A sub-field may state "not applicable" with a brief justification when the gameplan genuinely does not touch that surface, but it must be present and engage with this gameplan's actual code.
+Beyond *what changes*, a gameplan must explain how the **chosen scope** behaves operationally. The `operationalConsiderations` schema field contains five required strings. Fill them from the actual paths and state the plan introduces; these fields are not a mandate to introduce new paths or state. "Not applicable" with a brief gameplan-specific reason is valid when a concern does not arise. If an operational requirement would materially expand the design, clarify that requirement with the programmer before adding the machinery.
 
 ### `externalSystemAccess`
 
@@ -322,15 +330,15 @@ Any data format crossing a runtime boundary (queue payloads, DB rows read or wri
 
 ### `failureBehavior`
 
-For each new dependency or runtime path, describe behavior under realistic failure: dependency slow/throttling/5xx/garbage, retry storms, partial writes, timeouts, oversized inputs, expired credentials. State which failures are handled deliberately (documented recovery path or error surface) and which are intentionally left to the caller or operator. Failure mode: only the happy path is tested against a fake, and production discovers the rest.
+For each new dependency or runtime path, describe the realistic failures relevant to it and what the existing or proposed path does when they occur. State which failures receive a deliberate recovery path and which return an error or remain with the caller or operator. A possible timeout or interruption does not by itself require durable execution, automatic retry, or persisted diagnostic history.
 
 ### `concurrencyAndIdempotency`
 
-Any new code path entered concurrently or under retry (queue workers, scheduled jobs, race-able write paths, parallel access to the same DB row or S3 key) has a concurrency contract: locking, idempotency keys, ordering guarantees, deduplication. State it explicitly. Failure mode: a quiet double-write or deadlock that only manifests under production load.
+For a new path that actually permits concurrent entry or retry (queue workers, scheduled jobs, shared writes), state the relevant contract. It may be an existing serialization rule, an explicit rejection, or a new mechanism when required. Do not assume a manually initiated test run must survive interruption, be replayable, or be idempotent unless that behavior is requested or necessary for the chosen operation.
 
 ### `rollbackStrategy`
 
-For stateful changes (DB schema, data writes, materialized artifacts, mutations to external systems), describe the rollback story: if a patch must be reverted after data is written, what's the recovery path? Expand/contract migrations, backfill plans, opt-in flags that wind down gracefully, compensating writes. Failure mode: assuming forward-only and stranding data in a half-migrated state.
+For stateful changes the plan actually makes (DB schema, data writes, materialized artifacts, external mutations), describe what happens if the code is reverted after a write. Use a migration, compensation, or operator procedure when the chosen state requires one. This analysis is not a reason to create durable state solely so there is something to roll back.
 
 ## Patch Complexity
 
@@ -551,7 +559,7 @@ The rest is human judgement. Walk these before setting the relevant `mergability
 
 ## Resolving Open Questions
 
-After the gameplan is written and verified, automatically proceed to this step without waiting for an additional prompt — work through the `openQuestions` array with the programmer **one question at a time** until the array is empty.
+Resolve scope-changing questions before drafting, as described in [Set Scope Before Designing](#set-scope-before-designing). After the gameplan is written and verified, work through any remaining `openQuestions` with the programmer **one question at a time** until the array is empty. Do not defer an unanswered question that determines the plan's architecture to this final pass.
 
 Why this step is mandatory:
 
