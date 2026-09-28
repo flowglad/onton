@@ -113,10 +113,15 @@ let%test_unit "pending push covers publication, noop, errors and cancellation" =
         (fun () -> Eio.Promise.await started);
       assert (marker () = None))
 
-let patch_complexity ~(gameplan : Gameplan.t) ~patch_id =
-  Base.List.find gameplan.Gameplan.patches ~f:(fun (p : Patch.t) ->
-      Patch_id.equal p.Patch.id patch_id)
-  |> Base.Option.bind ~f:(fun (p : Patch.t) -> p.Patch.complexity)
+let patch_complexity ~(gameplan : Gameplan.t) ~(agent : Patch_agent.t) ~patch_id
+    =
+  match
+    Base.List.find gameplan.Gameplan.patches ~f:(fun (p : Patch.t) ->
+        Patch_id.equal p.Patch.id patch_id)
+    |> Base.Option.bind ~f:(fun (p : Patch.t) -> p.Patch.complexity)
+  with
+  | Some _ as complexity -> complexity
+  | None -> agent.complexity
 
 module Runner_env = struct
   module type S = sig
@@ -1071,7 +1076,8 @@ module Make (Forge : Forge.S) (W : Worktree.S) (Env : Runner_env.S) = struct
                                      backend session finishes *)
                                         let on_pr_detected _pr_number = () in
                                         let complexity =
-                                          patch_complexity ~gameplan ~patch_id
+                                          patch_complexity ~gameplan ~agent
+                                            ~patch_id
                                         in
                                         let gameplan_prompt =
                                           Prompt.render_gameplan_layer
@@ -1777,7 +1783,8 @@ module Make (Forge : Forge.S) (W : Worktree.S) (Env : Runner_env.S) = struct
                                         in
                                         let on_pr_detected _pr_number = () in
                                         let complexity =
-                                          patch_complexity ~gameplan ~patch_id
+                                          patch_complexity ~gameplan ~agent
+                                            ~patch_id
                                         in
                                         let gameplan_prompt =
                                           Prompt.render_gameplan_layer
@@ -2534,7 +2541,8 @@ module Make (Forge : Forge.S) (W : Worktree.S) (Env : Runner_env.S) = struct
                                                ~project_name ~patch_id)
                                         in
                                         let complexity =
-                                          patch_complexity ~gameplan ~patch_id
+                                          patch_complexity ~gameplan ~agent
+                                            ~patch_id
                                         in
                                         let gameplan_prompt =
                                           Prompt.render_gameplan_layer

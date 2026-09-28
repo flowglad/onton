@@ -4,7 +4,7 @@
 open Base
 
 type add_target =
-  | Pull_request of Types.Pr_number.t
+  | Pull_request of Types.Pr_number.t * int option
   | Remote_branch of Types.Branch.t
 [@@deriving show, eq]
 
@@ -67,18 +67,33 @@ let positive_pr_number raw =
   | Some n when n > 0 -> Ok (Types.Pr_number.of_int n)
   | Some _ | None -> Error (Printf.sprintf "invalid PR number %S" raw)
 
+let pr_complexity raw =
+  match Int.of_string_opt raw with
+  | Some ((1 | 2 | 3) as value) -> Ok value
+  | Some _ | None ->
+      Error (Printf.sprintf "invalid PR complexity %S; expected 1, 2, or 3" raw)
+
 let parse_add_value raw =
   let raw = String.strip raw in
   match String.chop_prefix raw ~prefix:"branch:" with
   | Some branch ->
       Result.map (validate_remote_branch branch) ~f:(fun branch ->
           Remote_branch branch)
-  | None ->
+  | None -> (
       if (not (String.is_empty raw)) && String.for_all raw ~f:Char.is_digit then
-        Result.map (positive_pr_number raw) ~f:(fun pr -> Pull_request pr)
+        Result.map (positive_pr_number raw) ~f:(fun pr ->
+            Pull_request (pr, None))
       else
-        Result.map (validate_remote_branch raw) ~f:(fun branch ->
-            Remote_branch branch)
+        match String.rsplit2 raw ~on:':' with
+        | Some (number, level)
+          when (not (String.is_empty number))
+               && String.for_all number ~f:Char.is_digit ->
+            Result.bind (positive_pr_number number) ~f:(fun pr ->
+                Result.map (pr_complexity level) ~f:(fun complexity ->
+                    Pull_request (pr, Some complexity)))
+        | Some _ | None ->
+            Result.map (validate_remote_branch raw) ~f:(fun branch ->
+                Remote_branch branch))
 
 let looks_like_operation value =
   let length = String.length value in

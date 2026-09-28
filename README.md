@@ -658,6 +658,11 @@ are optional; pin any combination. Run
 `onton-check-repo-config <owner> <repo>` to verify how a `config.json`
 parses.
 
+For a newly adopted GitHub PR, append `:1`, `:2`, or `:3` to its `+PR`
+operation. Onton saves each value with that PR agent, uses it for auto model
+routing, and retains it when the project resumes. Multiple PRs can carry
+different levels in one invocation: `onton --model auto +123:2 +456:3`.
+
 `effort` is optional in both `default` and each route. A route with no effort
 inherits `default.effort`; the literal `"default"` explicitly lets the selected
 model use its provider default. Codex supports `minimal`, `low`, `medium`,

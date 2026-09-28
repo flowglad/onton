@@ -18,6 +18,7 @@ type t = {
   patch_id : Patch_id.t;
   branch : Branch.t;
   pr_status : Patch_pr_status.t;
+  complexity : int option;
   has_session : bool;
   busy : bool;
   merged : bool;
@@ -238,6 +239,7 @@ let create ~branch ?(max_ci_failures = default_max_ci_failures) patch_id =
     patch_id;
     branch;
     pr_status = Patch_pr_status.Absent;
+    complexity = None;
     has_session = false;
     busy = false;
     merged = false;
@@ -298,11 +300,12 @@ let create ~branch ?(max_ci_failures = default_max_ci_failures) patch_id =
     delivered_ci_run_ids = [];
   }
 
-let create_adhoc ~patch_id ~branch ~pr_number ~max_ci_failures =
+let create_adhoc ~complexity ~patch_id ~branch ~pr_number ~max_ci_failures =
   {
     patch_id;
     branch;
     pr_status = Patch_pr_status.Present pr_number;
+    complexity;
     has_session = false;
     busy = false;
     merged = false;
@@ -643,11 +646,12 @@ let reset_intervention_state t =
 
 let reset_busy t = if not t.busy then t else { t with busy = false }
 
-let restore ~patch_id ~branch ~pr_status ~has_session ~busy ~merged ~queue
-    ~satisfies ~changed ~has_conflict ~base_branch ~notified_base_branch
-    ~ci_failure_count ?(max_ci_failures = default_max_ci_failures)
-    ~session_fallback ~human_messages ~inflight_human_messages ~ci_checks
-    ~merge_ready ?(head_oid = None) ?(expected_remote_head_oid = None)
+let restore ~patch_id ~branch ~pr_status ?(complexity = None) ~has_session ~busy
+    ~merged ~queue ~satisfies ~changed ~has_conflict ~base_branch
+    ~notified_base_branch ~ci_failure_count
+    ?(max_ci_failures = default_max_ci_failures) ~session_fallback
+    ~human_messages ~inflight_human_messages ~ci_checks ~merge_ready
+    ?(head_oid = None) ?(expected_remote_head_oid = None)
     ?(review_decision = None) ?(unresolved_comment_count = 0)
     ~mergeability_unknown ~merge_queue_required ~merge_queue_entry
     ?(native_stack = false) ?(native_stack_absent_polls = 0) ~merge_commit_sha
@@ -665,6 +669,7 @@ let restore ~patch_id ~branch ~pr_status ~has_session ~busy ~merged ~queue
     patch_id;
     branch;
     pr_status;
+    complexity;
     has_session;
     busy;
     merged;

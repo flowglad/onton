@@ -617,7 +617,7 @@ module Make (Forge : Forge.S) (W : Worktree.S) (Env : Tui_env.S) = struct
                              "%s does not accept PR-number changes; use \
                               branch:%s if it accepts remote branches"
                              Forge.name line)
-                    | Ok (Adhoc_target.Pull_request pr_number) ->
+                    | Ok (Adhoc_target.Pull_request (pr_number, complexity)) ->
                         let n = Pr_number.to_int pr_number in
                         let patch_id = Patch_id.of_string (Int.to_string n) in
                         let already_exists =
@@ -669,8 +669,9 @@ module Make (Forge : Forge.S) (W : Worktree.S) (Env : Tui_env.S) = struct
                                           ~default:
                                             (Orchestrator.main_branch orch)
                                       in
-                                      Orchestrator.add_agent orch ~patch_id
-                                        ~branch ~base_branch ~pr_number);
+                                      Orchestrator.add_agent ~complexity orch
+                                        ~patch_id ~branch ~base_branch
+                                        ~pr_number);
                                   log_event Env.runtime ~patch_id
                                     (Printf.sprintf "Ad-hoc PR #%d added (%s)" n
                                        (Branch.to_string branch))))

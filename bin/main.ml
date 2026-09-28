@@ -1259,7 +1259,7 @@ let report_global setup msg =
     [tui_fiber.ml]: fetch PR state, skip forks/missing head branches, no-op when
     already registered. *)
 let apply_add_pr ~(setup : runtime_setup) ~(cap : constructed_capabilities)
-    pr_number =
+    ~complexity pr_number =
   let module Forge = (val cap.forge) in
   let n = Pr_number.to_int pr_number in
   let patch_id = Patch_id.of_string (string_of_int n) in
@@ -1291,8 +1291,8 @@ let apply_add_pr ~(setup : runtime_setup) ~(cap : constructed_capabilities)
                   Base.Option.value pr_state.Pr_state.base_branch
                     ~default:(Orchestrator.main_branch orch)
                 in
-                Orchestrator.add_agent orch ~patch_id ~branch ~base_branch
-                  ~pr_number);
+                Orchestrator.add_agent ~complexity orch ~patch_id ~branch
+                  ~base_branch ~pr_number);
             report setup ~patch_id
               (Printf.sprintf "Ad-hoc PR #%d added (%s)" n
                  (Branch.to_string branch)))
@@ -1412,8 +1412,8 @@ let apply_pr_ops ~(setup : runtime_setup) ~(cap : constructed_capabilities)
   else
     List.iter
       (function
-        | Adhoc_target.Add (Adhoc_target.Pull_request n) ->
-            apply_add_pr ~setup ~cap n
+        | Adhoc_target.Add (Adhoc_target.Pull_request (n, complexity)) ->
+            apply_add_pr ~setup ~cap ~complexity n
         | Adhoc_target.Add (Adhoc_target.Remote_branch branch) ->
             apply_add_branch ~setup ~cap branch
         | Adhoc_target.Remove_pr n -> apply_remove_pr ~setup ~cap n)
