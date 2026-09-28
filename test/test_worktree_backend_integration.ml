@@ -16,6 +16,20 @@ let write path text =
     ~finally:(fun () -> close_out oc)
     (fun () -> output_string oc text)
 
+let status_failure_is_not_clean env =
+  G.with_temp_repo (fun repo ->
+      let process_mgr = Eio.Stdenv.process_mgr env in
+      check "clean worktree status"
+        (Worktree.has_uncommitted_changes ~process_mgr ~path:repo = Ok false);
+      G.run_git ~cwd:repo [ "config"; "status.showUntrackedFiles"; "no" ];
+      write (Filename.concat repo "untracked") "change";
+      check "untracked worktree status despite config"
+        (Worktree.has_uncommitted_changes ~process_mgr ~path:repo = Ok true);
+      check "failed worktree status"
+        (Result.is_error
+           (Worktree.has_uncommitted_changes ~process_mgr
+              ~path:(Filename.concat repo "missing"))))
+
 let rejects f =
   try
     f ();
@@ -967,6 +981,7 @@ let lifecycle_sequences env =
 
 let () =
   Eio_main.run (fun env ->
+      status_failure_is_not_clean env;
       QCheck2.Test.check_exn (lifecycle_sequences env);
       fixture env L.git;
       renamed_checkout env;

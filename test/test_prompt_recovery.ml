@@ -165,4 +165,82 @@ let () =
     Stdlib.print_endline "FAIL: dirty: status was not capped at 4000 bytes";
     Stdlib.exit 1)
 
+let () =
+  let clean = Prompt.render_turn_layer_start ~project_name:"" () in
+  let dirty =
+    Prompt.render_turn_layer_start ~project_name:"" ~has_existing_changes:true
+      ()
+  in
+  if not (String.equal clean "Continue implementing until all tests pass.\n")
+  then failwith "clean start text drifted";
+  if not (String.is_prefix dirty ~prefix:clean) then
+    failwith "dirty start must preserve clean start text";
+  assert_not_contains "clean start has no existing-changes instruction" clean
+    ~substring:"This worktree already has uncommitted changes";
+  assert_contains "dirty start includes existing changes" dirty
+    ~substring:"This worktree already has uncommitted changes";
+  assert_contains "dirty start permits a separate commit" dirty
+    ~substring:"commit them separately";
+  assert_contains "dirty start permits inclusion in current commit" dirty
+    ~substring:"include them in your current commit";
+  assert_contains "dirty start permits reverting" dirty
+    ~substring:"revert them if they are not needed";
+  assert_contains "dirty start requires inspection" dirty
+    ~substring:"Inspect each changed and untracked file before acting";
+  assert_contains "dirty start preserves unrelated files" dirty
+    ~substring:"Preserve unrelated files";
+  assert_contains "dirty start forbids ignoring patch work" dirty
+    ~substring:"Do not leave patch-related changes uncommitted"
+
+let () =
+  let open Onton_core.Types in
+  let patch : Patch.t =
+    Patch.
+      {
+        id = Patch_id.of_string "prompt-recovery";
+        title = "Prompt recovery";
+        description = "";
+        branch = Branch.of_string "prompt-recovery";
+        dependencies = [];
+        spec = "";
+        acceptance_criteria = [];
+        files = [];
+        classification = "";
+        changes = [];
+        test_stubs_introduced = [];
+        test_stubs_implemented = [];
+        complexity = None;
+        precedents = [];
+        required_context = [];
+      }
+  in
+  let gameplan : Gameplan.t =
+    Gameplan.
+      {
+        project_name = "";
+        repo_owner = "";
+        repo_name = "";
+        problem_statement = "";
+        solution_summary = "";
+        final_state_spec = "";
+        patches = [ patch ];
+        current_state_analysis = "";
+        explicit_opinions = "";
+        acceptance_criteria = [];
+        open_questions = [];
+        functional_changes = [];
+        context_resources = [];
+        reachability_traces = [];
+      }
+  in
+  let render ?has_existing_changes () =
+    Prompt.render_patch_prompt ~project_name:"" ?has_existing_changes patch
+      gameplan ~base_branch:"main"
+  in
+  assert_not_contains "clean patch prompt omits existing changes" (render ())
+    ~substring:"This worktree already has uncommitted changes";
+  assert_contains "dirty patch prompt includes existing changes"
+    (render ~has_existing_changes:true ())
+    ~substring:"This worktree already has uncommitted changes"
+
 let () = Stdlib.print_endline "All prompt-recovery tests passed."

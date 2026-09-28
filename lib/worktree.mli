@@ -197,6 +197,11 @@ val git_status : process_mgr:_ Eio.Process.mgr -> path:string -> string
 (** Run [git status] in the worktree and return its output. Returns empty string
     on failure. *)
 
+val has_uncommitted_changes :
+  process_mgr:_ Eio.Process.mgr -> path:string -> (bool, string) Result.t
+(** Whether porcelain status reports staged, unstaged, or untracked changes.
+    Returns an error with the exit status and stderr if the command fails. *)
+
 val conflict_diff : process_mgr:_ Eio.Process.mgr -> path:string -> string
 (** Run [git diff --diff-filter=U] to show conflict markers for unmerged files.
     Returns empty string if no conflicts or on failure. Truncates at 4000 chars.
@@ -446,6 +451,7 @@ module type S = sig
     fetch_lock:Eio.Mutex.t -> path:string -> (unit, string) Result.t
 
   val git_status : path:string -> string
+  val has_uncommitted_changes : path:string -> (bool, string) Result.t
   val conflict_diff : path:string -> string
 
   val rebase_onto :
