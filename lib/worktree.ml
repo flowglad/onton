@@ -553,11 +553,15 @@ let git_status ~process_mgr ~path =
   if code <> 0 then "" else String.strip stdout
 
 let has_uncommitted_changes ~process_mgr ~path =
-  let code, stdout, _ =
+  let code, stdout, stderr =
     run_git_exit_code ~process_mgr
       [ "git"; "-C"; path; "status"; "--porcelain=v1" ]
   in
-  code = 0 && not (String.is_empty stdout)
+  if code = 0 then Result.Ok (not (String.is_empty stdout))
+  else
+    Result.Error
+      (Printf.sprintf "git status failed in %s (exit %d): %s" path code
+         (String.strip stderr))
 
 let conflict_diff ~process_mgr ~path =
   let code, stdout, _ =
@@ -1056,7 +1060,7 @@ module type S = sig
     fetch_lock:Eio.Mutex.t -> path:string -> (unit, string) Result.t
 
   val git_status : path:string -> string
-  val has_uncommitted_changes : path:string -> bool
+  val has_uncommitted_changes : path:string -> (bool, string) Result.t
   val conflict_diff : path:string -> string
 
   val rebase_onto :
