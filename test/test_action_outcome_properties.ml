@@ -1015,6 +1015,44 @@ let () =
          List.length (Orchestrator.all_messages orch) >= 0));
   Stdlib.print_endline "orchestrator public surface linked"
 
+(* A restored orchestrator must discard every in-flight push expectation while
+   retaining each agent's last observed remote head. *)
+let () =
+  QCheck2.Test.check_exn
+    (QCheck2.Test.make
+       ~name:"AO: clearing pending remote heads preserves observed heads"
+       ~count:100
+       QCheck2.Gen.(pair bool bool)
+       (fun (first_pending, second_pending) ->
+         try
+           let patches = mk_patches 2 in
+           let first = pid_of_idx patches 0 in
+           let second = pid_of_idx patches 1 in
+           let orch = Orchestrator.create ~patches ~main_branch:main in
+           let orch = Orchestrator.set_head_oid orch first (Some "old-first") in
+           let orch =
+             Orchestrator.set_head_oid orch second (Some "old-second")
+           in
+           let pending present value = if present then Some value else None in
+           let orch =
+             Orchestrator.set_expected_remote_head_oid orch first
+               (pending first_pending "new-first")
+           in
+           let orch =
+             Orchestrator.set_expected_remote_head_oid orch second
+               (pending second_pending "new-second")
+           in
+           let cleared = Orchestrator.clear_pending_remote_heads orch in
+           List.for_all
+             [ (first, "old-first"); (second, "old-second") ]
+             ~f:(fun (pid, old_head) ->
+               let agent = Orchestrator.agent cleared pid in
+               Option.is_none agent.Patch_agent.expected_remote_head_oid
+               && Option.equal String.equal agent.Patch_agent.head_oid
+                    (Some old_head))
+         with _ -> false));
+  Stdlib.print_endline "AO pending remote heads cleared"
+
 (* AO-MQ: merge-queue/automerge failure wrappers preserve the shared
    agent-level automerge invariants when reached through the orchestrator and
    patch-controller public surfaces. *)
