@@ -161,7 +161,7 @@ let smoke_test =
         | Eio.Cancel.Cancelled _ as exn -> raise exn
         | _ -> false)
 
-let run_fake_agent ~script ~timeout =
+let run_fake_agent ?(on_event = fun _ _ -> ()) ~script ~timeout () =
   Eio_main.run @@ fun env ->
   let tmp = mktempdir "onton-patch-agent-idle-timeout" in
   Stdlib.Fun.protect
@@ -198,7 +198,8 @@ let run_fake_agent ~script ~timeout =
             (fun () ->
               let started = Eio.Time.now clock in
               let result =
-                prompt_backend handle ~prompt:"go" ~timeout ~on_event:ignore
+                prompt_backend handle ~prompt:"go" ~timeout
+                  ~on_event:(on_event clock)
               in
               (result, Eio.Time.now clock -. started))))
 
@@ -220,6 +221,7 @@ printf '%s\n' '{"type":"text_delta","delta":"two"}'
 sleep 0.4
 printf '%s\n' '{"type":"done","stop_reason":"stop","final_text":"done"}'
 |}
+            ()
         in
         Float.(elapsed > 1.0)
         && (not result.Llm_backend.timed_out)
@@ -240,6 +242,7 @@ IFS= read -r prompt || exit 1
 printf '%s\n' '{"type":"turn_started","turn_index":0}'
 exec sleep 5
 |}
+            ()
         in
         result.Llm_backend.timed_out && result.Llm_backend.got_events
         && (not result.Llm_backend.saw_final_result)
@@ -248,9 +251,36 @@ exec sleep 5
       | Eio.Cancel.Cancelled _ as exn -> raise exn
       | _ -> false)
 
+let blocked_callback_timeout_test =
+  QCheck2.Test.make
+    ~name:"Patch_agent_backend_integration > blocked callback times out"
+    ~count:1 QCheck2.Gen.unit (fun () ->
+      try
+        let result, elapsed =
+          run_fake_agent ~timeout:0.3
+            ~on_event:(fun clock _ -> Eio.Time.sleep clock 5.0)
+            ~script:
+              {|#!/bin/sh
+IFS= read -r prompt || exit 1
+printf '%s\n' '{"type":"turn_started","turn_index":0}'
+exec sleep 5
+|}
+            ()
+        in
+        result.Llm_backend.timed_out && result.Llm_backend.got_events
+        && Float.(elapsed < 3.0)
+      with
+      | Eio.Cancel.Cancelled _ as exn -> raise exn
+      | _ -> false)
+
 let () =
   let exit_code =
     QCheck_base_runner.run_tests ~verbose:true
-      [ smoke_test; idle_timeout_test; silence_timeout_test ]
+      [
+        smoke_test;
+        idle_timeout_test;
+        silence_timeout_test;
+        blocked_callback_timeout_test;
+      ]
   in
   if exit_code <> 0 then Stdlib.exit exit_code

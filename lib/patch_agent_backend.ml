@@ -250,36 +250,41 @@ let prompt_session ~clock long_lived_handle ~prompt ~timeout ~on_event =
                (Exn.to_string ex))
       | Ok () ->
           let rec loop () =
-            (* Each received line starts a new idle window. EOF still waits
-               for the child within that window, so a closed stdout cannot
-               leave a live child waiting forever. *)
-            match
+            (* Keep the idle window active through event dispatch. EOF also
+               waits for the child within that window. *)
+            let continue =
               with_idle_timeout (fun () ->
-                  try `Line (Eio.Buf_read.line handle.stdout_buf)
-                  with End_of_file -> `Exited (await_child handle))
-            with
-            | `Line line ->
-                capture_stdout line;
-                let event =
-                  match Patch_agent_rpc.parse_event line with
-                  | Ok rpc_event -> Patch_agent_event_mapper.map_event rpc_event
-                  | Error reason ->
-                      Types.Stream_event.Error
-                        (Printf.sprintf "patch-agent RPC parse error: %s" reason)
-                in
-                got_events := true;
-                if is_final event then saw_final_result := true;
-                on_event event;
-                if is_terminal event then () else loop ()
-            | `Exited status ->
-                let code = exit_code_of_status status in
-                exit_code := code;
-                if code <> 0 then (
-                  got_events := true;
-                  on_event
-                    (Types.Stream_event.Error
-                       (Printf.sprintf "patch-agent exited with code %d" code)));
-                ()
+                  match
+                    try `Line (Eio.Buf_read.line handle.stdout_buf)
+                    with End_of_file -> `Exited (await_child handle)
+                  with
+                  | `Line line ->
+                      capture_stdout line;
+                      let event =
+                        match Patch_agent_rpc.parse_event line with
+                        | Ok rpc_event ->
+                            Patch_agent_event_mapper.map_event rpc_event
+                        | Error reason ->
+                            Types.Stream_event.Error
+                              (Printf.sprintf "patch-agent RPC parse error: %s"
+                                 reason)
+                      in
+                      got_events := true;
+                      if is_final event then saw_final_result := true;
+                      on_event event;
+                      not (is_terminal event)
+                  | `Exited status ->
+                      let code = exit_code_of_status status in
+                      exit_code := code;
+                      if code <> 0 then (
+                        got_events := true;
+                        on_event
+                          (Types.Stream_event.Error
+                             (Printf.sprintf "patch-agent exited with code %d"
+                                code)));
+                      false)
+            in
+            if continue then loop ()
           in
           loop ();
           {
