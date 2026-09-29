@@ -46,7 +46,7 @@ let execute runtime ~snapshot_path = function
                     | Control_command.Set_automerge { enabled; _ } ->
                         if
                           Bool.equal agent.Patch_agent.automerge_enabled enabled
-                        then Some orch
+                        then None
                         else
                           Some
                             (Orchestrator.set_automerge_enabled orch patch_id
@@ -64,7 +64,15 @@ let execute runtime ~snapshot_path = function
                                message)
                   in
                   match next with
-                  | None -> (snapshot, "not_applicable")
+                  | None ->
+                      let status =
+                        match command with
+                        | Control_command.Set_automerge _ -> "already_applied"
+                        | Control_command.Bump _
+                        | Control_command.Send_human_message _ ->
+                            "not_applicable"
+                      in
+                      (snapshot, status)
                   | Some orchestrator ->
                       ( {
                           snapshot with

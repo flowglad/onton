@@ -53,25 +53,20 @@ let () =
           Onton.Control_server.run ~net ~runtime ~snapshot_path ~path;
           (fun () ->
             Eio.Time.sleep (Eio.Stdenv.clock env) 0.05;
-            let send id enabled expected_status =
+            let envelope ?(version = 1) id kind payload =
+              `Assoc
+                [
+                  ("version", `Int version);
+                  ("id", `String id);
+                  ("type", `String kind);
+                  ( "payload",
+                    `Assoc (("patch_id", `String "branch-24") :: payload) );
+                ]
+            in
+            let send command expected_id expected_status =
               Eio.Switch.run @@ fun sw ->
               let flow = Eio.Net.connect ~sw net (`Unix path) in
-              let command =
-                Yojson.Safe.to_string
-                  (`Assoc
-                     [
-                       ("version", `Int 1);
-                       ("id", `String id);
-                       ("type", `String "set_automerge");
-                       ( "payload",
-                         `Assoc
-                           [
-                             ("patch_id", `String "branch-24");
-                             ("enabled", `Bool enabled);
-                           ] );
-                     ])
-              in
-              Eio.Flow.copy_string (command ^ "\n") flow;
+              Eio.Flow.copy_string (Yojson.Safe.to_string command ^ "\n") flow;
               let response =
                 Eio.Buf_read.line (Eio.Buf_read.of_flow ~max_size:4096 flow)
                 |> Yojson.Safe.from_string
@@ -79,17 +74,30 @@ let () =
               assert (
                 response
                 = `Assoc
-                    [ ("id", `String id); ("status", `String expected_status) ])
+                    [
+                      ("id", `String expected_id);
+                      ("status", `String expected_status);
+                    ])
             in
-            send "test-1" true "applied";
-            send "test-1" true "already_applied";
+            let send_automerge id enabled expected_status =
+              send
+                (envelope id "set_automerge" [ ("enabled", `Bool enabled) ])
+                id expected_status
+            in
+            send_automerge "test-1" true "applied";
+            send_automerge "test-1" true "already_applied";
+            send_automerge "test-noop" true "already_applied";
             (match Onton.Persistence.load ~path:snapshot_path with
             | Ok saved ->
                 assert
                   (Option.get
                      (Onton.Orchestrator.find_agent
                         saved.Onton.Runtime.orchestrator patch_id))
-                    .Patch_agent.automerge_enabled
+                    .Patch_agent.automerge_enabled;
+                assert (
+                  not
+                    (List.mem "test-noop"
+                       saved.Onton.Runtime.applied_control_ids))
             | Error msg -> failwith msg);
             assert
               (Option.get
@@ -98,14 +106,11 @@ let () =
                          snapshot.Onton.Runtime.orchestrator))
                     patch_id))
                 .Patch_agent.automerge_enabled;
-            send "test-2" false "applied";
-            let fresh_bump =
-              Control_command.Bump { id = "bump-fresh"; patch_id }
-            in
-            assert (
-              String.equal
-                (Onton.Control_server.execute runtime ~snapshot_path fresh_bump)
-                "not_applicable");
+            send_automerge "test-2" false "applied";
+            send (envelope "bump-fresh" "bump" []) "bump-fresh" "not_applicable";
+            send
+              (envelope ~version:2 "bump-version" "bump" [])
+              "" "invalid_command";
             Onton.Runtime.update_orchestrator runtime (fun orch ->
                 let rec cap n orch =
                   if n = 0 then orch
@@ -115,42 +120,27 @@ let () =
                          patch_id)
                 in
                 cap Patch_agent.default_max_ci_failures orch);
-            let bump_command =
-              Control_command.Bump { id = "bump-1"; patch_id }
-            in
-            assert (
-              String.equal
-                (Onton.Control_server.execute runtime ~snapshot_path
-                   bump_command)
-                "applied");
-            assert (
-              String.equal
-                (Onton.Control_server.execute runtime ~snapshot_path
-                   bump_command)
-                "already_applied");
+            send (envelope "bump-1" "bump" []) "bump-1" "applied";
+            send (envelope "bump-1" "bump" []) "bump-1" "already_applied";
             assert (
               (Onton.Runtime.read runtime (fun snapshot ->
                    Onton.Orchestrator.agent snapshot.Onton.Runtime.orchestrator
                      patch_id))
                 .Patch_agent.ci_failure_count = 0);
-            let human_command =
-              Control_command.Send_human_message
-                {
-                  id = "message-1";
-                  patch_id;
-                  message = "Please investigate CI";
-                }
+            let human_message =
+              envelope "message-1" "send_human_message"
+                [ ("message", `String "Please investigate CI") ]
             in
-            assert (
-              String.equal
-                (Onton.Control_server.execute runtime ~snapshot_path
-                   human_command)
-                "applied");
-            assert (
-              String.equal
-                (Onton.Control_server.execute runtime ~snapshot_path
-                   human_command)
-                "already_applied");
+            send human_message "message-1" "applied";
+            send human_message "message-1" "already_applied";
+            send
+              (envelope ~version:2 "message-version" "send_human_message"
+                 [ ("message", `String "Please investigate CI") ])
+              "" "invalid_command";
+            send
+              (envelope "message-blank" "send_human_message"
+                 [ ("message", `String "   ") ])
+              "" "invalid_command";
             let agent =
               Onton.Runtime.read runtime (fun snapshot ->
                   Onton.Orchestrator.agent snapshot.Onton.Runtime.orchestrator
@@ -174,7 +164,7 @@ let () =
               Result.is_error
                 (Onton.Runtime.read runtime (fun snapshot ->
                      Onton.Persistence.save ~path:snapshot_path snapshot)));
-            send "test-3" true "applied";
+            send_automerge "test-3" true "applied";
             (match
                Onton.Persistence.snapshot_of_yojson
                  (Yojson.Safe.from_file snapshot_path)
@@ -195,10 +185,10 @@ let () =
                 .Patch_agent.automerge_enabled;
             Unix.rmdir blocker_path;
             Unix.rmdir sidecar_path;
-            send "test-4" false "applied";
+            send_automerge "test-4" false "applied";
             Sys.remove snapshot_path;
             Unix.mkdir snapshot_path 0o700;
-            send "test-5" true "persistence_failed";
+            send_automerge "test-5" true "persistence_failed";
             assert (
               not
                 (Option.get
@@ -210,15 +200,10 @@ let () =
             Unix.rmdir snapshot_path;
             Onton.Runtime.update_orchestrator runtime (fun orch ->
                 Onton.Orchestrator.mark_merged orch patch_id);
-            let merged_message =
-              Control_command.Send_human_message
-                { id = "message-merged"; patch_id; message = "too late" }
-            in
-            assert (
-              String.equal
-                (Onton.Control_server.execute runtime ~snapshot_path
-                   merged_message)
-                "not_applicable");
+            send
+              (envelope "message-merged" "send_human_message"
+                 [ ("message", `String "too late") ])
+              "message-merged" "not_applicable";
             let snapshot = Onton.Runtime.read runtime Fun.id in
             assert (
               List.length
