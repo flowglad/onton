@@ -262,7 +262,7 @@ let write_and_first_read_share_deadline_test =
       "Patch_agent_backend_integration > write and first read share deadline"
     ~count:1 QCheck2.Gen.unit (fun () ->
       try
-        let result, _elapsed =
+        let result, elapsed =
           run_fake_agent ~timeout:1.0
             ~prompt:(String.make (128 * 1024) 'x')
             ~script:
@@ -272,7 +272,9 @@ exec python3 -u -c 'import sys, time; sys.stdin.readline(); time.sleep(0.7); pri
 |}
             ()
         in
-        result.Llm_backend.timed_out && not result.Llm_backend.got_events
+        result.Llm_backend.timed_out
+        && (not result.Llm_backend.got_events)
+        && Float.(elapsed < 4.0)
       with
       | Eio.Cancel.Cancelled _ as exn -> raise exn
       | _ -> false)
