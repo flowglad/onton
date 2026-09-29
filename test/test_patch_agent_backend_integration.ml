@@ -22,6 +22,13 @@ let read_file path =
       let len = Stdlib.in_channel_length ic in
       Stdlib.really_input_string ic len)
 
+let write_executable path contents =
+  let oc = Stdlib.open_out_bin path in
+  Stdlib.Fun.protect
+    ~finally:(fun () -> Stdlib.close_out_noerr oc)
+    (fun () -> Stdlib.output_string oc contents);
+  Unix.chmod path 0o755
+
 let mktempdir prefix =
   let base = Stdlib.Filename.get_temp_dir_name () in
   let rec loop n =
@@ -154,6 +161,96 @@ let smoke_test =
         | Eio.Cancel.Cancelled _ as exn -> raise exn
         | _ -> false)
 
+let run_fake_agent ~script ~timeout =
+  Eio_main.run @@ fun env ->
+  let tmp = mktempdir "onton-patch-agent-idle-timeout" in
+  Stdlib.Fun.protect
+    ~finally:(fun () -> rm_rf tmp)
+    (fun () ->
+      let binary_path = Stdlib.Filename.concat tmp "fake-patch-agent" in
+      write_executable binary_path script;
+      let clock = Eio.Stdenv.clock env in
+      let backend =
+        Patch_agent_backend.create
+          ~process_mgr:(Eio.Stdenv.process_mgr env)
+          ~clock ~timeout ~binary_path ~setsid_exec:None
+      in
+      Eio.Switch.run (fun sw ->
+          let (Llm_backend_long_lived.T
+                 { start; prompt = prompt_backend; shutdown; _ }) =
+            backend
+          in
+          let handle =
+            start ~sw
+              {
+                Llm_backend_long_lived.project_name = "onton";
+                worktree = Eio.Path.(Eio.Stdenv.fs env / tmp);
+                patch_id = Types.Patch_id.of_string "patch-idle-timeout";
+                provider = "test";
+                model = "test";
+                effort = "test";
+                gameplan_prompt = "gameplan";
+                patch_prompt = "patch";
+              }
+          in
+          Stdlib.Fun.protect
+            ~finally:(fun () -> shutdown handle)
+            (fun () ->
+              let started = Eio.Time.now clock in
+              let result =
+                prompt_backend handle ~prompt:"go" ~timeout ~on_event:ignore
+              in
+              (result, Eio.Time.now clock -. started))))
+
+let idle_timeout_test =
+  QCheck2.Test.make
+    ~name:"Patch_agent_backend_integration > activity extends the turn" ~count:1
+    QCheck2.Gen.unit (fun () ->
+      try
+        let result, elapsed =
+          run_fake_agent ~timeout:1.0
+            ~script:
+              {|#!/bin/sh
+IFS= read -r prompt || exit 1
+printf '%s\n' '{"type":"turn_started","turn_index":0}'
+sleep 0.4
+printf '%s\n' '{"type":"text_delta","delta":"one"}'
+sleep 0.4
+printf '%s\n' '{"type":"text_delta","delta":"two"}'
+sleep 0.4
+printf '%s\n' '{"type":"done","stop_reason":"stop","final_text":"done"}'
+|}
+        in
+        Float.(elapsed > 1.0)
+        && (not result.Llm_backend.timed_out)
+        && result.Llm_backend.saw_final_result
+      with
+      | Eio.Cancel.Cancelled _ as exn -> raise exn
+      | _ -> false)
+
+let silence_timeout_test =
+  QCheck2.Test.make ~name:"Patch_agent_backend_integration > silence times out"
+    ~count:1 QCheck2.Gen.unit (fun () ->
+      try
+        let result, elapsed =
+          run_fake_agent ~timeout:0.3
+            ~script:
+              {|#!/bin/sh
+IFS= read -r prompt || exit 1
+printf '%s\n' '{"type":"turn_started","turn_index":0}'
+exec sleep 5
+|}
+        in
+        result.Llm_backend.timed_out && result.Llm_backend.got_events
+        && (not result.Llm_backend.saw_final_result)
+        && Float.(elapsed < 3.0)
+      with
+      | Eio.Cancel.Cancelled _ as exn -> raise exn
+      | _ -> false)
+
 let () =
-  let exit_code = QCheck_base_runner.run_tests ~verbose:true [ smoke_test ] in
+  let exit_code =
+    QCheck_base_runner.run_tests ~verbose:true
+      [ smoke_test; idle_timeout_test; silence_timeout_test ]
+  in
   if exit_code <> 0 then Stdlib.exit exit_code
