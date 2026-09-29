@@ -99,6 +99,7 @@ let gen_snapshot =
           activity_log;
           gameplan;
           transcripts = Base.Hashtbl.create (module Patch_id);
+          applied_control_ids = [];
         })
       gen_gameplan gen_branch gen_activity_log)
 
@@ -148,6 +149,7 @@ let () =
               activity_log = log;
               gameplan;
               transcripts = Base.Hashtbl.create (module Patch_id);
+              applied_control_ids = [];
             }
           in
           let json = Onton.Persistence.snapshot_to_yojson snap in
@@ -483,6 +485,7 @@ let () =
               activity_log = Onton_core.Activity_log.empty;
               gameplan;
               transcripts = Base.Hashtbl.create (module Patch_id);
+              applied_control_ids = [];
             }
           in
           let json = Onton.Persistence.snapshot_to_yojson snap in
@@ -549,6 +552,7 @@ let () =
               activity_log = Onton_core.Activity_log.empty;
               gameplan;
               transcripts = Base.Hashtbl.create (module Patch_id);
+              applied_control_ids = [];
             }
           in
           let json = Onton.Persistence.snapshot_to_yojson snap in

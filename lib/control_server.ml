@@ -11,34 +11,78 @@ let response ~id ~status =
   ^ "\n"
 
 let execute runtime ~snapshot_path = function
-  | Control_command.Set_automerge { patch_id; enabled; _ } ->
+  | command ->
+      let id = Control_command.id command in
       let outcome =
         Runtime.update_persisting runtime
           ~persist:(Persistence.save_snapshot ~path:snapshot_path)
           (fun snapshot ->
-            let orch = snapshot.Runtime.orchestrator in
-            match Orchestrator.find_agent orch patch_id with
-            | None -> (snapshot, "unknown_patch")
-            | Some agent
-              when Bool.equal agent.Patch_agent.automerge_enabled enabled ->
-                (snapshot, "already_applied")
-            | Some _ ->
-                ( {
-                    snapshot with
-                    orchestrator =
-                      Orchestrator.set_automerge_enabled orch patch_id enabled;
-                  },
-                  "applied" ))
+            if List.mem snapshot.applied_control_ids id ~equal:String.equal then
+              (snapshot, "already_applied")
+            else
+              let orch = snapshot.Runtime.orchestrator in
+              let patch_id =
+                match command with
+                | Control_command.Set_automerge { patch_id; _ }
+                | Control_command.Bump { patch_id; _ }
+                | Control_command.Send_human_message { patch_id; _ } ->
+                    patch_id
+              in
+              match Orchestrator.find_agent orch patch_id with
+              | None -> (snapshot, "unknown_patch")
+              | Some agent -> (
+                  let next =
+                    match command with
+                    | Control_command.Set_automerge { enabled; _ } ->
+                        if
+                          Bool.equal agent.Patch_agent.automerge_enabled enabled
+                        then Some orch
+                        else
+                          Some
+                            (Orchestrator.set_automerge_enabled orch patch_id
+                               enabled)
+                    | Control_command.Bump _ ->
+                        if Patch_agent.needs_intervention agent then
+                          Some
+                            (Orchestrator.reset_intervention_state orch patch_id)
+                        else None
+                    | Control_command.Send_human_message { message; _ } ->
+                        if agent.Patch_agent.merged then None
+                        else
+                          Some
+                            (Orchestrator.send_human_message orch patch_id
+                               message)
+                  in
+                  match next with
+                  | None -> (snapshot, "not_applicable")
+                  | Some orchestrator ->
+                      ( {
+                          snapshot with
+                          orchestrator;
+                          applied_control_ids =
+                            id :: snapshot.applied_control_ids;
+                        },
+                        "applied" )))
       in
       let outcome =
         match outcome with
         | Ok outcome -> outcome
         | Error _ -> "persistence_failed"
       in
-      if String.equal outcome "applied" then
-        Runtime_logging.log_event runtime ~patch_id
-          (if enabled then "Automerge enabled by control command"
-           else "Automerge disabled by control command");
+      (if String.equal outcome "applied" then
+         let patch_id, message =
+           match command with
+           | Control_command.Set_automerge { patch_id; enabled; _ } ->
+               ( patch_id,
+                 if enabled then "Automerge enabled by control command"
+                 else "Automerge disabled by control command" )
+           | Control_command.Bump { patch_id; _ } ->
+               ( patch_id,
+                 "Bumped — cleared intervention state by control command" )
+           | Control_command.Send_human_message { patch_id; _ } ->
+               (patch_id, "Human message accepted by control command")
+         in
+         Runtime_logging.log_event runtime ~patch_id message);
       outcome
 
 let handle runtime ~snapshot_path flow =

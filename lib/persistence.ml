@@ -791,6 +791,8 @@ let snapshot_to_yojson (snap : Runtime.snapshot) =
       ("activity_log", activity_log_to_yojson snap.activity_log);
       ("gameplan", Gameplan.yojson_of_t snap.gameplan);
       ("transcripts", transcripts_to_yojson snap.transcripts);
+      ( "applied_control_ids",
+        `List (List.map snap.applied_control_ids ~f:(fun id -> `String id)) );
     ]
 
 let snapshot_of_yojson json =
@@ -813,7 +815,18 @@ let snapshot_of_yojson json =
                     | `Null -> Hashtbl.create (module Patch_id)
                     | j -> transcripts_of_yojson j
                   in
-                  { Runtime.orchestrator; activity_log; gameplan; transcripts })))
+                  let applied_control_ids =
+                    match member "applied_control_ids" json with
+                    | `List ids -> List.filter_map ids ~f:Json.string
+                    | _ -> []
+                  in
+                  {
+                    Runtime.orchestrator;
+                    activity_log;
+                    gameplan;
+                    transcripts;
+                    applied_control_ids;
+                  })))
   with
   | Decode_error msg -> Error (Printf.sprintf "malformed snapshot: %s" msg)
   | Invalid_argument msg -> Error (Printf.sprintf "malformed snapshot: %s" msg)
@@ -939,6 +952,7 @@ let%test_module "session_id_sidecars" =
         activity_log = Activity_log.empty;
         gameplan;
         transcripts = Hashtbl.create (module Patch_id);
+        applied_control_ids = [];
       }
 
     let with_temp_snapshot_path f =

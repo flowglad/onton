@@ -8,6 +8,7 @@ type snapshot = {
   activity_log : Activity_log.t;
   gameplan : Gameplan.t;
   transcripts : (Patch_id.t, string) Base.Hashtbl.t;
+  applied_control_ids : string list;
 }
 
 type t = {
@@ -51,6 +52,7 @@ let create ~gameplan ~(main_branch : Branch.t)
             activity_log = Activity_log.empty;
             gameplan;
             transcripts = Base.Hashtbl.create (module Patch_id);
+            applied_control_ids = [];
           },
           [] )
   in

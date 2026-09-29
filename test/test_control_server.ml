@@ -53,7 +53,7 @@ let () =
           Onton.Control_server.run ~net ~runtime ~snapshot_path ~path;
           (fun () ->
             Eio.Time.sleep (Eio.Stdenv.clock env) 0.05;
-            let send enabled expected_status =
+            let send id enabled expected_status =
               Eio.Switch.run @@ fun sw ->
               let flow = Eio.Net.connect ~sw net (`Unix path) in
               let command =
@@ -61,7 +61,7 @@ let () =
                   (`Assoc
                      [
                        ("version", `Int 1);
-                       ("id", `String "test-1");
+                       ("id", `String id);
                        ("type", `String "set_automerge");
                        ( "payload",
                          `Assoc
@@ -79,13 +79,10 @@ let () =
               assert (
                 response
                 = `Assoc
-                    [
-                      ("id", `String "test-1");
-                      ("status", `String expected_status);
-                    ])
+                    [ ("id", `String id); ("status", `String expected_status) ])
             in
-            send true "applied";
-            send true "already_applied";
+            send "test-1" true "applied";
+            send "test-1" true "already_applied";
             (match Onton.Persistence.load ~path:snapshot_path with
             | Ok saved ->
                 assert
@@ -101,7 +98,63 @@ let () =
                          snapshot.Onton.Runtime.orchestrator))
                     patch_id))
                 .Patch_agent.automerge_enabled;
-            send false "applied";
+            send "test-2" false "applied";
+            Onton.Runtime.update_orchestrator runtime (fun orch ->
+                let rec cap n orch =
+                  if n = 0 then orch
+                  else
+                    cap (n - 1)
+                      (Onton.Orchestrator.increment_ci_failure_count orch
+                         patch_id)
+                in
+                cap Patch_agent.default_max_ci_failures orch);
+            let bump_command =
+              Control_command.Bump { id = "bump-1"; patch_id }
+            in
+            assert (
+              String.equal
+                (Onton.Control_server.execute runtime ~snapshot_path
+                   bump_command)
+                "applied");
+            assert (
+              String.equal
+                (Onton.Control_server.execute runtime ~snapshot_path
+                   bump_command)
+                "already_applied");
+            assert (
+              (Onton.Runtime.read runtime (fun snapshot ->
+                   Onton.Orchestrator.agent snapshot.Onton.Runtime.orchestrator
+                     patch_id))
+                .Patch_agent.ci_failure_count = 0);
+            let human_command =
+              Control_command.Send_human_message
+                {
+                  id = "message-1";
+                  patch_id;
+                  message = "Please investigate CI";
+                }
+            in
+            assert (
+              String.equal
+                (Onton.Control_server.execute runtime ~snapshot_path
+                   human_command)
+                "applied");
+            assert (
+              String.equal
+                (Onton.Control_server.execute runtime ~snapshot_path
+                   human_command)
+                "already_applied");
+            let agent =
+              Onton.Runtime.read runtime (fun snapshot ->
+                  Onton.Orchestrator.agent snapshot.Onton.Runtime.orchestrator
+                    patch_id)
+            in
+            assert (List.length agent.Patch_agent.human_messages = 1);
+            (match Onton.Persistence.load ~path:snapshot_path with
+            | Ok saved ->
+                assert (
+                  List.mem "message-1" saved.Onton.Runtime.applied_control_ids)
+            | Error msg -> failwith msg);
             let sidecar_path = Filename.concat directory "llm-session-ids" in
             Unix.mkdir sidecar_path 0o700;
             let blocker_path = Filename.concat sidecar_path "branch-24.txt" in
@@ -110,7 +163,7 @@ let () =
               Result.is_error
                 (Onton.Runtime.read runtime (fun snapshot ->
                      Onton.Persistence.save ~path:snapshot_path snapshot)));
-            send true "applied";
+            send "test-3" true "applied";
             (match
                Onton.Persistence.snapshot_of_yojson
                  (Yojson.Safe.from_file snapshot_path)
@@ -131,10 +184,10 @@ let () =
                 .Patch_agent.automerge_enabled;
             Unix.rmdir blocker_path;
             Unix.rmdir sidecar_path;
-            send false "applied";
+            send "test-4" false "applied";
             Sys.remove snapshot_path;
             Unix.mkdir snapshot_path 0o700;
-            send true "persistence_failed";
+            send "test-5" true "persistence_failed";
             assert (
               not
                 (Option.get

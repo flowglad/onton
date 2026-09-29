@@ -38,6 +38,8 @@ let roundtrip =
             command.id = id
             && Types.Patch_id.to_string command.patch_id = patch_id
             && command.enabled = enabled
+        | Ok (Control_command.Bump _ | Control_command.Send_human_message _) ->
+            false
         | Error _ -> false)
 
 let rejects_incomplete =

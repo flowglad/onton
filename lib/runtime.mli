@@ -14,6 +14,7 @@ type snapshot = {
   activity_log : Activity_log.t;
   gameplan : Gameplan.t;
   transcripts : (Patch_id.t, string) Base.Hashtbl.t;
+  applied_control_ids : string list;
 }
 
 type t

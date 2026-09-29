@@ -9,6 +9,12 @@ type t =
       patch_id : Types.Patch_id.t;
       enabled : bool;
     }
+  | Bump of { id : string; patch_id : Types.Patch_id.t }
+  | Send_human_message of {
+      id : string;
+      patch_id : Types.Patch_id.t;
+      message : string;
+    }
 
 let decode = function
   | `Assoc fields -> (
@@ -27,9 +33,34 @@ let decode = function
                 (Set_automerge
                    { id; patch_id = Types.Patch_id.of_string patch_id; enabled })
           | _ -> Error "invalid command")
+      | ( Some (`Int 1),
+          Some (`String id),
+          Some (`String "bump"),
+          Some (`Assoc payload) )
+        when id <> "" -> (
+          match List.assoc_opt "patch_id" payload with
+          | Some (`String patch_id) when patch_id <> "" ->
+              Ok (Bump { id; patch_id = Types.Patch_id.of_string patch_id })
+          | _ -> Error "invalid command")
+      | ( Some (`Int 1),
+          Some (`String id),
+          Some (`String "send_human_message"),
+          Some (`Assoc payload) )
+        when id <> "" -> (
+          match
+            (List.assoc_opt "patch_id" payload, List.assoc_opt "message" payload)
+          with
+          | Some (`String patch_id), Some (`String message)
+            when patch_id <> "" && String.trim message <> "" ->
+              Ok
+                (Send_human_message
+                   { id; patch_id = Types.Patch_id.of_string patch_id; message })
+          | _ -> Error "invalid command")
       | _ when find "version" <> Some (`Int 1) ->
           Error "unsupported command version"
       | _ -> Error "invalid command")
   | _ -> Error "invalid command"
 
-let id = function Set_automerge { id; _ } -> id
+let id = function
+  | Set_automerge { id; _ } | Bump { id; _ } | Send_human_message { id; _ } ->
+      id
