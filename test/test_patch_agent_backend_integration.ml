@@ -267,6 +267,8 @@ let write_and_first_read_share_deadline_test =
             ~prompt:(String.make (128 * 1024) 'x')
             ~script:
               {|#!/bin/sh
+# Start the delay after prompt writing begins, independent of process startup.
+dd bs=1 count=1 of=/dev/null 2>/dev/null || exit 1
 sleep 0.5
 IFS= read -r prompt || exit 1
 sleep 0.7
