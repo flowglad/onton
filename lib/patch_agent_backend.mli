@@ -35,7 +35,9 @@ open Base
     turn layer is delivered over the persistent patch-agent stdio RPC. Event
     framing is delegated to [Patch_agent_rpc], and event interpretation is
     delegated to [Patch_agent_event_mapper]. This module owns only process,
-    pipe, file, timeout, and lifecycle management.
+    pipe, file, timeout, and lifecycle management. The configured timeout is an
+    idle deadline for each prompt: every complete stdout event line renews it,
+    so an active turn has no overall duration limit.
 
     The [start] config's [worktree] must be a native absolute path, because it
     is passed both as the subprocess working directory and as patch-agent's

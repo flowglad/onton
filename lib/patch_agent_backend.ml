@@ -40,6 +40,23 @@ let exit_code_of_status = function
   | `Signaled signal -> 128 + signal
 
 let write_raw handle bytes = Eio.Flow.copy_string bytes handle.stdin_w
+
+let write_prompt ~clock handle bytes =
+  let rec loop remaining =
+    if Cstruct.length remaining > 0 then
+      match Eio.Flow.single_write handle.stdin_w [ remaining ] with
+      | written -> loop (Cstruct.shift remaining written)
+      | exception
+          Eio.Exn.Io
+            (Eio.Exn.X (Eio_unix.Unix_error ((EAGAIN | EWOULDBLOCK), _, _)), _)
+        ->
+          (* Linux pipe writes can report EAGAIN when the child has not yet
+             drained stdin. Retry only the bytes not accepted by the pipe. *)
+          Eio.Time.sleep clock 0.01;
+          loop remaining
+  in
+  loop (Cstruct.of_string bytes)
+
 let captured_stderr handle = Buffer.contents handle.stderr_capture
 
 let append_bounded buffer truncated ~limit text =
@@ -207,6 +224,15 @@ let prompt_session ~clock long_lived_handle ~prompt ~timeout ~on_event =
   if handle.shutdown_requested then
     emit_error on_event "patch-agent prompt requested after shutdown"
   else
+    let exception Idle_timeout in
+    let idle_deadline = ref (Eio.Time.now clock +. timeout) in
+    let with_idle_timeout f =
+      let remaining = !idle_deadline -. Eio.Time.now clock in
+      if Float.(remaining <= 0.0) then raise Idle_timeout;
+      match Eio.Time.with_timeout clock remaining (fun () -> Ok (f ())) with
+      | Ok value -> value
+      | Error `Timeout -> raise Idle_timeout
+    in
     let stdout_capture = Buffer.create 4096 in
     let stdout_truncated = ref false in
     let got_events = ref false in
@@ -229,61 +255,77 @@ let prompt_session ~clock long_lived_handle ~prompt ~timeout ~on_event =
     in
     let run () =
       let write_result =
-        try Ok (write_raw handle command) with
+        try
+          Ok (with_idle_timeout (fun () -> write_prompt ~clock handle command))
+        with
         | Eio.Exn.Io _ as ex -> Error ex
         | Invalid_argument _ as ex -> Error ex
       in
       match write_result with
       | Error ex ->
-          Ok
-            (write_error_result ~stdout:captured_stdout
-               ~stderr:(fun () ->
-                 Printf.sprintf "patch-agent prompt write failed: %s"
-                   (Exn.to_string ex))
-               ~got_events ~saw_final_result ~on_event
-               (Printf.sprintf "patch-agent prompt write failed: %s"
-                  (Exn.to_string ex)))
+          write_error_result ~stdout:captured_stdout
+            ~stderr:(fun () ->
+              Printf.sprintf "patch-agent prompt write failed: %s"
+                (Exn.to_string ex))
+            ~got_events ~saw_final_result ~on_event
+            (Printf.sprintf "patch-agent prompt write failed: %s"
+               (Exn.to_string ex))
       | Ok () ->
           let rec loop () =
-            match Eio.Buf_read.line handle.stdout_buf with
-            | line ->
-                capture_stdout line;
-                let event =
-                  match Patch_agent_rpc.parse_event line with
-                  | Ok rpc_event -> Patch_agent_event_mapper.map_event rpc_event
-                  | Error reason ->
-                      Types.Stream_event.Error
-                        (Printf.sprintf "patch-agent RPC parse error: %s" reason)
-                in
-                got_events := true;
-                if is_final event then saw_final_result := true;
-                on_event event;
-                if is_terminal event then () else loop ()
-            | exception End_of_file ->
-                let status = await_child handle in
-                let code = exit_code_of_status status in
-                exit_code := code;
-                if code <> 0 then (
-                  got_events := true;
-                  on_event
-                    (Types.Stream_event.Error
-                       (Printf.sprintf "patch-agent exited with code %d" code)));
-                ()
+            (* Only a complete stdout line renews the deadline. The same
+               deadline covers the initial write and first read, and event
+               dispatch remains bounded by the renewed deadline. *)
+            let outcome =
+              with_idle_timeout (fun () ->
+                  try `Line (Eio.Buf_read.line handle.stdout_buf)
+                  with End_of_file -> `Exited (await_child handle))
+            in
+            let continue =
+              match outcome with
+              | `Line line ->
+                  idle_deadline := Eio.Time.now clock +. timeout;
+                  with_idle_timeout (fun () ->
+                      capture_stdout line;
+                      let event =
+                        match Patch_agent_rpc.parse_event line with
+                        | Ok rpc_event ->
+                            Patch_agent_event_mapper.map_event rpc_event
+                        | Error reason ->
+                            Types.Stream_event.Error
+                              (Printf.sprintf "patch-agent RPC parse error: %s"
+                                 reason)
+                      in
+                      got_events := true;
+                      if is_final event then saw_final_result := true;
+                      on_event event;
+                      not (is_terminal event))
+              | `Exited status ->
+                  with_idle_timeout (fun () ->
+                      let code = exit_code_of_status status in
+                      exit_code := code;
+                      if code <> 0 then (
+                        got_events := true;
+                        on_event
+                          (Types.Stream_event.Error
+                             (Printf.sprintf "patch-agent exited with code %d"
+                                code)));
+                      false)
+            in
+            if continue then loop ()
           in
           loop ();
-          Ok
-            {
-              Llm_backend.exit_code = !exit_code;
-              stdout = captured_stdout ();
-              stderr = captured_stderr_for_result handle;
-              got_events = !got_events;
-              saw_final_result = !saw_final_result;
-              timed_out = false;
-            }
+          {
+            Llm_backend.exit_code = !exit_code;
+            stdout = captured_stdout ();
+            stderr = captured_stderr_for_result handle;
+            got_events = !got_events;
+            saw_final_result = !saw_final_result;
+            timed_out = false;
+          }
     in
-    match Eio.Time.with_timeout clock timeout run with
-    | Ok result -> result
-    | Error `Timeout ->
+    match run () with
+    | result -> result
+    | exception Idle_timeout ->
         handle.shutdown_requested <- true;
         signal_process handle Stdlib.Sys.sigkill;
         Eio.Fiber.yield ();
