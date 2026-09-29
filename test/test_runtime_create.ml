@@ -34,6 +34,7 @@ let () =
       activity_log = Onton_core.Activity_log.empty;
       gameplan;
       transcripts = Base.Hashtbl.create (module Onton_core.Types.Patch_id);
+      applied_control_ids = [];
     }
   in
   let _rt = Onton.Runtime.create ~gameplan ~main_branch ~snapshot () in
@@ -71,6 +72,7 @@ let () =
       activity_log = Onton_core.Activity_log.empty;
       gameplan;
       transcripts = Base.Hashtbl.create (module Onton_core.Types.Patch_id);
+      applied_control_ids = [];
     }
   in
   let rt =
@@ -164,6 +166,7 @@ let () =
       activity_log;
       gameplan;
       transcripts = Base.Hashtbl.create (module Patch_id);
+      applied_control_ids = [];
     }
   in
   let persisted_gameplan =

@@ -83,13 +83,14 @@ let snapshots_equal (a : Onton.Runtime.snapshot) (b : Onton.Runtime.snapshot) =
   let gameplan_eq = Gameplan.equal a.gameplan b.gameplan in
   let log_eq = Onton_core.Activity_log.equal a.activity_log b.activity_log in
   agents_eq && main_eq && graph_pids_eq && gameplan_eq && log_eq
+  && List.equal String.equal a.applied_control_ids b.applied_control_ids
 
 (* ---------- Snapshot generators ---------- *)
 
 let gen_snapshot =
   QCheck2.Gen.(
-    map3
-      (fun gameplan main_branch activity_log ->
+    map2
+      (fun (gameplan, main_branch, activity_log) applied_control_ids ->
         let orchestrator =
           Onton.Orchestrator.create ~patches:gameplan.Gameplan.patches
             ~main_branch
@@ -99,8 +100,11 @@ let gen_snapshot =
           activity_log;
           gameplan;
           transcripts = Base.Hashtbl.create (module Patch_id);
+          applied_control_ids;
         })
-      gen_gameplan gen_branch gen_activity_log)
+      (triple gen_gameplan gen_branch gen_activity_log)
+      (list_size (int_range 0 5)
+         (map (fun n -> "control-" ^ Int.to_string n) int)))
 
 (* ========== Round-trip property tests ========== *)
 
@@ -113,6 +117,58 @@ let () =
           match Onton.Persistence.snapshot_of_yojson json with
           | Ok snap' -> snapshots_equal snap snap'
           | Error _msg -> false
+        with _ -> false)
+  in
+  let applied_control_ids_decode =
+    QCheck2.Test.make
+      ~name:"snapshot rejects malformed control IDs and defaults missing IDs"
+      ~count:50 gen_snapshot (fun snap ->
+        try
+          match Onton.Persistence.snapshot_to_yojson snap with
+          | `Assoc fields ->
+              let fields =
+                List.filter fields ~f:(fun (key, _) ->
+                    not (String.equal key "applied_control_ids"))
+              in
+              let decode value =
+                Onton.Persistence.snapshot_of_yojson
+                  (`Assoc (("applied_control_ids", value) :: fields))
+              in
+              (match Onton.Persistence.snapshot_of_yojson (`Assoc fields) with
+                | Ok restored -> List.is_empty restored.applied_control_ids
+                | Error _ -> false)
+              && Result.is_error (decode `Null)
+              && Result.is_error (decode (`String "id"))
+              && Result.is_error
+                   (decode (`List [ `String "committed"; `Int 42 ]))
+          | _ -> false
+        with _ -> false)
+  in
+  let applied_control_ids_restore_window =
+    QCheck2.Test.make ~name:"snapshot restores only recent control IDs" ~count:1
+      gen_snapshot (fun snap ->
+        try
+          let limit = Onton_core.Control_command.max_retained_ids in
+          match Onton.Persistence.snapshot_to_yojson snap with
+          | `Assoc fields -> (
+              let fields =
+                List.filter fields ~f:(fun (key, _) ->
+                    not (String.equal key "applied_control_ids"))
+              in
+              let ids =
+                List.init (limit + 2) ~f:(fun n -> `String (Int.to_string n))
+              in
+              match
+                Onton.Persistence.snapshot_of_yojson
+                  (`Assoc (("applied_control_ids", `List ids) :: fields))
+              with
+              | Ok restored ->
+                  List.length restored.applied_control_ids = limit
+                  && Option.equal String.equal
+                       (List.last restored.applied_control_ids)
+                       (Some (Int.to_string (limit - 1)))
+              | Error _ -> false)
+          | _ -> false
         with _ -> false)
   in
   let activity_log_roundtrip =
@@ -148,6 +204,7 @@ let () =
               activity_log = log;
               gameplan;
               transcripts = Base.Hashtbl.create (module Patch_id);
+              applied_control_ids = [];
             }
           in
           let json = Onton.Persistence.snapshot_to_yojson snap in
@@ -483,6 +540,7 @@ let () =
               activity_log = Onton_core.Activity_log.empty;
               gameplan;
               transcripts = Base.Hashtbl.create (module Patch_id);
+              applied_control_ids = [];
             }
           in
           let json = Onton.Persistence.snapshot_to_yojson snap in
@@ -549,6 +607,7 @@ let () =
               activity_log = Onton_core.Activity_log.empty;
               gameplan;
               transcripts = Base.Hashtbl.create (module Patch_id);
+              applied_control_ids = [];
             }
           in
           let json = Onton.Persistence.snapshot_to_yojson snap in
@@ -566,6 +625,8 @@ let () =
     QCheck_base_runner.run_tests
       [
         snapshot_roundtrip;
+        applied_control_ids_decode;
+        applied_control_ids_restore_window;
         activity_log_roundtrip;
         snapshot_json_structure;
         file_roundtrip;

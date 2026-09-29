@@ -751,13 +751,18 @@ When `ONTON_CONTROL_SOCKET` names a Unix socket path, headless Onton listens
 there for one JSON command per connection and replies with one JSON line. The
 path must be absolute and its parent directory must be owned by the current
 user with no group or other access; Onton creates that directory with mode
-`0700` if needed. The supervisor retries a command
-until it receives `applied` or `already_applied`. The current command is
-`{"version":1,"id":"delivery-id","type":"set_automerge","payload":{"patch_id":"1","enabled":true}}`;
-the response contains the same `id` and a `status` (`applied`,
-`already_applied`, `unknown_patch`, `invalid_command`, or
-`persistence_failed`). The set operation
-is safe to retry after an interrupted connection.
+`0700` if needed. The supervisor retries commands after transport or
+persistence failures. The original command is
+`{"version":1,"id":"delivery-id","type":"set_automerge","payload":{"patch_id":"1","enabled":true}}`.
+The socket also accepts `{"version":1,"id":"command-id","type":"bump","payload":{"patch_id":"1"}}`
+to clear a patch's current intervention state, and
+`{"version":1,"id":"command-id","type":"send_human_message","payload":{"patch_id":"1","message":"Please inspect CI"}}`
+to enqueue a human message for that patch. The 1024 most recent applied command
+IDs are saved in the snapshot to deduplicate retries. The response contains the
+same `id` and a `status` (`applied`, `already_applied`, `unknown_patch`,
+`not_applicable`, `invalid_command`, `unauthorized`, or `persistence_failed`).
+`bump` returns `not_applicable` unless the patch currently needs intervention;
+`send_human_message` returns it when the patch is already merged.
 
 ## Formal spec
 
