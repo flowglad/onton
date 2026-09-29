@@ -10,6 +10,16 @@ let response ~id ~status =
     (`Assoc [ ("id", `String id); ("status", `String status) ])
   ^ "\n"
 
+external peer_uid : Unix.file_descr -> int = "caml_onton_control_peer_uid"
+
+let authorized_peer flow =
+  match Eio_unix.Resource.fd_opt flow with
+  | None -> false
+  | Some fd ->
+      Eio_unix.Fd.use fd
+        ~if_closed:(fun () -> false)
+        (fun unix_fd -> Int.equal (peer_uid unix_fd) (Unix.geteuid ()))
+
 let execute runtime ~snapshot_path = function
   | command ->
       let id = Control_command.id command in
@@ -87,20 +97,23 @@ let execute runtime ~snapshot_path = function
 
 let handle runtime ~snapshot_path flow =
   let reply =
-    try
-      let reader = Eio.Buf_read.of_flow ~max_size:4096 flow in
-      let line = Eio.Buf_read.line reader in
-      match Yojson.Safe.from_string line with
-      | json -> (
-          match Control_command.decode json with
-          | Error _ -> response ~id:"" ~status:"invalid_command"
-          | Ok command ->
-              response
-                ~id:(Control_command.id command)
-                ~status:(execute runtime ~snapshot_path command))
-    with
-    | End_of_file | Eio.Buf_read.Buffer_limit_exceeded | Yojson.Json_error _ ->
-      response ~id:"" ~status:"invalid_command"
+    if not (authorized_peer flow) then response ~id:"" ~status:"unauthorized"
+    else
+      try
+        let reader = Eio.Buf_read.of_flow ~max_size:4096 flow in
+        let line = Eio.Buf_read.line reader in
+        match Yojson.Safe.from_string line with
+        | json -> (
+            match Control_command.decode json with
+            | Error _ -> response ~id:"" ~status:"invalid_command"
+            | Ok command ->
+                response
+                  ~id:(Control_command.id command)
+                  ~status:(execute runtime ~snapshot_path command))
+      with
+      | End_of_file | Eio.Buf_read.Buffer_limit_exceeded | Yojson.Json_error _
+      ->
+        response ~id:"" ~status:"invalid_command"
   in
   Eio.Flow.copy_string reply flow
 

@@ -5,7 +5,7 @@
  (flags (:standard -open Onton_core))
  (foreign_stubs
   (language c)
-  (names rlimit_stubs))
+  (names rlimit_stubs control_peer_stubs))
  (inline_tests)
  (ocamlopt_flags (:standard -w -40-42))
  (ocamlc_flags (:standard -w -40-42))
