@@ -215,11 +215,15 @@ let idle_timeout_test =
               {|#!/bin/sh
 IFS= read -r prompt || exit 1
 printf '%s\n' '{"type":"turn_started","turn_index":0}'
-sleep 0.4
+sleep 0.3
 printf '%s\n' '{"type":"text_delta","delta":"one"}'
-sleep 0.4
+sleep 0.3
 printf '%s\n' '{"type":"text_delta","delta":"two"}'
-sleep 0.4
+sleep 0.3
+printf '%s\n' '{"type":"text_delta","delta":"three"}'
+sleep 0.3
+printf '%s\n' '{"type":"text_delta","delta":"four"}'
+sleep 0.3
 printf '%s\n' '{"type":"done","stop_reason":"stop","final_text":"done"}'
 |}
             ()
