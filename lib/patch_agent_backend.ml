@@ -208,8 +208,11 @@ let prompt_session ~clock long_lived_handle ~prompt ~timeout ~on_event =
     emit_error on_event "patch-agent prompt requested after shutdown"
   else
     let exception Idle_timeout in
+    let idle_deadline = ref (Eio.Time.now clock +. timeout) in
     let with_idle_timeout f =
-      match Eio.Time.with_timeout clock timeout (fun () -> Ok (f ())) with
+      let remaining = !idle_deadline -. Eio.Time.now clock in
+      if Float.(remaining <= 0.0) then raise Idle_timeout;
+      match Eio.Time.with_timeout clock remaining (fun () -> Ok (f ())) with
       | Ok value -> value
       | Error `Timeout -> raise Idle_timeout
     in
@@ -250,15 +253,19 @@ let prompt_session ~clock long_lived_handle ~prompt ~timeout ~on_event =
                (Exn.to_string ex))
       | Ok () ->
           let rec loop () =
-            (* Keep the idle window active through event dispatch. EOF also
-               waits for the child within that window. *)
-            let continue =
+            (* Only a complete stdout line renews the deadline. The same
+               deadline covers the initial write and first read, and event
+               dispatch remains bounded by the renewed deadline. *)
+            let outcome =
               with_idle_timeout (fun () ->
-                  match
-                    try `Line (Eio.Buf_read.line handle.stdout_buf)
-                    with End_of_file -> `Exited (await_child handle)
-                  with
-                  | `Line line ->
+                  try `Line (Eio.Buf_read.line handle.stdout_buf)
+                  with End_of_file -> `Exited (await_child handle))
+            in
+            let continue =
+              match outcome with
+              | `Line line ->
+                  idle_deadline := Eio.Time.now clock +. timeout;
+                  with_idle_timeout (fun () ->
                       capture_stdout line;
                       let event =
                         match Patch_agent_rpc.parse_event line with
@@ -272,8 +279,9 @@ let prompt_session ~clock long_lived_handle ~prompt ~timeout ~on_event =
                       got_events := true;
                       if is_final event then saw_final_result := true;
                       on_event event;
-                      not (is_terminal event)
-                  | `Exited status ->
+                      not (is_terminal event))
+              | `Exited status ->
+                  with_idle_timeout (fun () ->
                       let code = exit_code_of_status status in
                       exit_code := code;
                       if code <> 0 then (
