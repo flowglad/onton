@@ -114,20 +114,26 @@ let rejects_invalid_new_commands =
 
 let retained_ids_window =
   QCheck2.Test.make ~name:"control id retention keeps the newest 1024 IDs"
-    ~count:1 QCheck2.Gen.unit (fun () ->
+    ~count:200
+    QCheck2.Gen.(list_size (int_range 0 1100) (int_range 0 99999))
+    (fun generated_ids ->
       let limit = Control_command.max_retained_ids in
-      let rec apply next ids =
-        if next = limit + 20 then ids
-        else
-          apply (next + 1) (Control_command.record_id (string_of_int next) ids)
+      let ids = List.map string_of_int generated_ids in
+      let recent = Control_command.recent_ids ids in
+      let recorded = Control_command.record_id "new" ids in
+      let rec is_prefix prefix whole =
+        match (prefix, whole) with
+        | [], _ -> true
+        | x :: xs, y :: ys -> x = y && is_prefix xs ys
+        | _ :: _, [] -> false
       in
-      let ids = apply 0 [] in
-      List.length ids = limit
-      && (match ids with
-        | head :: _ -> head = string_of_int (limit + 19)
-        | [] -> false)
-      && List.nth_opt ids (limit - 1) = Some "20"
-      && not (List.mem "19" ids))
+      List.length recent = min limit (List.length ids)
+      && is_prefix recent ids
+      && List.length recorded = min limit (List.length ids + 1)
+      &&
+      match recorded with
+      | "new" :: prior -> is_prefix prior ids
+      | _ -> false)
 
 let rejects_incomplete =
   QCheck2.Test.make ~name:"commands require every field" ~count:1
