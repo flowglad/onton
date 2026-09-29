@@ -277,12 +277,26 @@ sleep 5
 |}
             ()
         in
-        result.Llm_backend.timed_out
-        && (not result.Llm_backend.got_events)
-        && Float.(elapsed < 4.0)
+        let passed =
+          result.Llm_backend.timed_out
+          && (not result.Llm_backend.got_events)
+          && Float.(elapsed < 4.0)
+        in
+        if not passed then
+          Stdlib.prerr_endline
+            (Printf.sprintf
+               "shared deadline: timed_out=%b got_events=%b elapsed=%.3f \
+                exit_code=%d stdout=%S stderr=%S"
+               result.Llm_backend.timed_out result.Llm_backend.got_events
+               elapsed result.Llm_backend.exit_code result.Llm_backend.stdout
+               result.Llm_backend.stderr);
+        passed
       with
       | Eio.Cancel.Cancelled _ as exn -> raise exn
-      | _ -> false)
+      | exn ->
+          Stdlib.prerr_endline
+            (Printf.sprintf "shared deadline raised: %s" (Exn.to_string exn));
+          false)
 
 let closed_stdout_timeout_test =
   QCheck2.Test.make
