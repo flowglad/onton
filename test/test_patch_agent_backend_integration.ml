@@ -268,7 +268,10 @@ let write_and_first_read_share_deadline_test =
             ~script:
               {|#!/bin/sh
 sleep 0.5
-exec python3 -u -c 'import sys, time; sys.stdin.readline(); time.sleep(0.7); print("{\"type\":\"turn_started\",\"turn_index\":0}", flush=True); time.sleep(5)'
+IFS= read -r prompt || exit 1
+sleep 0.7
+printf '%s\n' '{"type":"turn_started","turn_index":0}'
+sleep 5
 |}
             ()
         in
