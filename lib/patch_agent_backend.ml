@@ -40,6 +40,23 @@ let exit_code_of_status = function
   | `Signaled signal -> 128 + signal
 
 let write_raw handle bytes = Eio.Flow.copy_string bytes handle.stdin_w
+
+let write_prompt ~clock handle bytes =
+  let rec loop remaining =
+    if Cstruct.length remaining > 0 then
+      match Eio.Flow.single_write handle.stdin_w [ remaining ] with
+      | written -> loop (Cstruct.shift remaining written)
+      | exception
+          Eio.Exn.Io
+            (Eio.Exn.X (Eio_unix.Unix_error ((EAGAIN | EWOULDBLOCK), _, _)), _)
+        ->
+          (* Linux pipe writes can report EAGAIN when the child has not yet
+             drained stdin. Retry only the bytes not accepted by the pipe. *)
+          Eio.Time.sleep clock 0.01;
+          loop remaining
+  in
+  loop (Cstruct.of_string bytes)
+
 let captured_stderr handle = Buffer.contents handle.stderr_capture
 
 let append_bounded buffer truncated ~limit text =
@@ -238,7 +255,9 @@ let prompt_session ~clock long_lived_handle ~prompt ~timeout ~on_event =
     in
     let run () =
       let write_result =
-        try Ok (with_idle_timeout (fun () -> write_raw handle command)) with
+        try
+          Ok (with_idle_timeout (fun () -> write_prompt ~clock handle command))
+        with
         | Eio.Exn.Io _ as ex -> Error ex
         | Invalid_argument _ as ex -> Error ex
       in
