@@ -64,15 +64,19 @@ let execute runtime ~snapshot_path = function
                                message)
                   in
                   match next with
-                  | None ->
-                      let status =
-                        match command with
-                        | Control_command.Set_automerge _ -> "already_applied"
-                        | Control_command.Bump _
-                        | Control_command.Send_human_message _ ->
-                            "not_applicable"
-                      in
-                      (snapshot, status)
+                  | None -> (
+                      match command with
+                      | Control_command.Set_automerge _ ->
+                          ( {
+                              snapshot with
+                              applied_control_ids =
+                                Control_command.record_id id
+                                  snapshot.applied_control_ids;
+                            },
+                            "already_applied" )
+                      | Control_command.Bump _
+                      | Control_command.Send_human_message _ ->
+                          (snapshot, "not_applicable"))
                   | Some orchestrator ->
                       ( {
                           snapshot with

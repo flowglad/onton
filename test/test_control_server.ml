@@ -95,9 +95,7 @@ let () =
                         saved.Onton.Runtime.orchestrator patch_id))
                     .Patch_agent.automerge_enabled;
                 assert (
-                  not
-                    (List.mem "test-noop"
-                       saved.Onton.Runtime.applied_control_ids))
+                  List.mem "test-noop" saved.Onton.Runtime.applied_control_ids)
             | Error msg -> failwith msg);
             assert
               (Option.get
@@ -107,6 +105,13 @@ let () =
                     patch_id))
                 .Patch_agent.automerge_enabled;
             send_automerge "test-2" false "applied";
+            send_automerge "test-noop" true "already_applied";
+            assert (
+              not
+                (Onton.Runtime.read runtime (fun snapshot ->
+                     Onton.Orchestrator.agent
+                       snapshot.Onton.Runtime.orchestrator patch_id))
+                  .Patch_agent.automerge_enabled);
             send (envelope "bump-fresh" "bump" []) "bump-fresh" "not_applicable";
             send
               (envelope ~version:2 "bump-version" "bump" [])
