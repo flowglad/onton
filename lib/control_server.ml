@@ -70,7 +70,8 @@ let execute runtime ~snapshot_path = function
                           snapshot with
                           orchestrator;
                           applied_control_ids =
-                            id :: snapshot.applied_control_ids;
+                            Control_command.record_id id
+                              snapshot.applied_control_ids;
                         },
                         "applied" )))
       in

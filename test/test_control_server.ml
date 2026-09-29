@@ -99,6 +99,13 @@ let () =
                     patch_id))
                 .Patch_agent.automerge_enabled;
             send "test-2" false "applied";
+            let fresh_bump =
+              Control_command.Bump { id = "bump-fresh"; patch_id }
+            in
+            assert (
+              String.equal
+                (Onton.Control_server.execute runtime ~snapshot_path fresh_bump)
+                "not_applicable");
             Onton.Runtime.update_orchestrator runtime (fun orch ->
                 let rec cap n orch =
                   if n = 0 then orch
@@ -153,7 +160,11 @@ let () =
             (match Onton.Persistence.load ~path:snapshot_path with
             | Ok saved ->
                 assert (
-                  List.mem "message-1" saved.Onton.Runtime.applied_control_ids)
+                  List.mem "message-1" saved.Onton.Runtime.applied_control_ids);
+                assert (
+                  not
+                    (List.mem "bump-fresh"
+                       saved.Onton.Runtime.applied_control_ids))
             | Error msg -> failwith msg);
             let sidecar_path = Filename.concat directory "llm-session-ids" in
             Unix.mkdir sidecar_path 0o700;
@@ -196,7 +207,29 @@ let () =
                            snapshot.Onton.Runtime.orchestrator))
                       patch_id))
                   .Patch_agent.automerge_enabled);
-            Unix.rmdir snapshot_path);
+            Unix.rmdir snapshot_path;
+            Onton.Runtime.update_orchestrator runtime (fun orch ->
+                Onton.Orchestrator.mark_merged orch patch_id);
+            let merged_message =
+              Control_command.Send_human_message
+                { id = "message-merged"; patch_id; message = "too late" }
+            in
+            assert (
+              String.equal
+                (Onton.Control_server.execute runtime ~snapshot_path
+                   merged_message)
+                "not_applicable");
+            let snapshot = Onton.Runtime.read runtime Fun.id in
+            assert (
+              List.length
+                (Onton.Orchestrator.agent snapshot.Onton.Runtime.orchestrator
+                   patch_id)
+                  .Patch_agent.human_messages
+              = 1);
+            assert (
+              not
+                (List.mem "message-merged"
+                   snapshot.Onton.Runtime.applied_control_ids)));
         ];
       assert (not (Sys.file_exists path));
       Unix.chmod directory 0o755;

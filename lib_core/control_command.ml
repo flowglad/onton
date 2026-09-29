@@ -64,3 +64,7 @@ let decode = function
 let id = function
   | Set_automerge { id; _ } | Bump { id; _ } | Send_human_message { id; _ } ->
       id
+
+let max_retained_ids = 1024
+let recent_ids ids = List.filteri (fun index _ -> index < max_retained_ids) ids
+let record_id id ids = recent_ids (id :: ids)

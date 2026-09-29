@@ -16,3 +16,6 @@ type t =
 
 val decode : Yojson.Safe.t -> (t, string) result
 val id : t -> string
+val max_retained_ids : int
+val recent_ids : string list -> string list
+val record_id : string -> string list -> string list

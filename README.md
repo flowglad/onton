@@ -757,10 +757,12 @@ persistence failures. The original command is
 The socket also accepts `{"version":1,"id":"command-id","type":"bump","payload":{"patch_id":"1"}}`
 to clear a patch's current intervention state, and
 `{"version":1,"id":"command-id","type":"send_human_message","payload":{"patch_id":"1","message":"Please inspect CI"}}`
-to enqueue a human message for that patch. Applied command IDs are saved in the
-snapshot so a retried message is delivered once. The response contains the
+to enqueue a human message for that patch. The 1024 most recent applied command
+IDs are saved in the snapshot to deduplicate retries. The response contains the
 same `id` and a `status` (`applied`, `already_applied`, `unknown_patch`,
-`not_applicable`, `invalid_command`, or `persistence_failed`).
+`not_applicable`, `invalid_command`, `unauthorized`, or `persistence_failed`).
+`bump` returns `not_applicable` unless the patch currently needs intervention;
+`send_human_message` returns it when the patch is already merged.
 
 ## Formal spec
 

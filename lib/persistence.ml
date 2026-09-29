@@ -816,9 +816,28 @@ let snapshot_of_yojson json =
                     | j -> transcripts_of_yojson j
                   in
                   let applied_control_ids =
-                    match member "applied_control_ids" json with
-                    | `List ids -> List.filter_map ids ~f:Json.string
-                    | _ -> []
+                    let field =
+                      match json with
+                      | `Assoc fields ->
+                          List.Assoc.find fields ~equal:String.equal
+                            "applied_control_ids"
+                      | _ -> None
+                    in
+                    match field with
+                    | None -> []
+                    | Some (`List ids) ->
+                        let ids =
+                          List.map ids ~f:(function
+                            | `String id -> id
+                            | _ ->
+                                raise
+                                  (Decode_error
+                                     "applied_control_ids: expected string IDs"))
+                        in
+                        Control_command.recent_ids ids
+                    | Some _ ->
+                        raise
+                          (Decode_error "applied_control_ids: expected a list")
                   in
                   {
                     Runtime.orchestrator;
