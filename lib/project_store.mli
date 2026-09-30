@@ -188,3 +188,7 @@ val project_exists : string -> bool
 
 val list_projects : unit -> string list
 (** List all project slugs in the data directory. *)
+
+val wontdo_artifact_path :
+  project_name:string -> patch_id:Types.Patch_id.t -> string
+(** Pre-commit opt-out message at [artifacts/<patch_id>/WONTDO.md]. *)

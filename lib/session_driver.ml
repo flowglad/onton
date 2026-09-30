@@ -211,6 +211,43 @@ module Make (W : Worktree.S) (Env : ENV) = struct
               W.read_branch_sha ~path:worktree_path
                 ~ref_name:("refs/heads/" ^ branch_str)
             in
+            let base =
+              Option.value agent.Patch_agent.base_branch
+                ~default:
+                  (Runtime.read runtime (fun snap ->
+                       Orchestrator.main_branch snap.Runtime.orchestrator))
+            in
+            let initial_base_sha =
+              let base_name = Types.Branch.to_string base in
+              match
+                W.read_branch_sha ~path:worktree_path
+                  ~ref_name:("refs/remotes/origin/" ^ base_name)
+              with
+              | Some _ as sha -> sha
+              | None ->
+                  W.read_branch_sha ~path:worktree_path
+                    ~ref_name:("refs/heads/" ^ base_name)
+            in
+            let wontdo_path =
+              Project_store.wontdo_artifact_path ~project_name ~patch_id
+            in
+            Project_store.ensure_dir (Stdlib.Filename.dirname wontdo_path);
+            (* Each turn owns its signal; manual intervention must not replay an
+               earlier opt-out file. Keep the previous message in the event log. *)
+            (try Unix.unlink wontdo_path
+             with Unix.Unix_error (Unix.ENOENT, _, _) -> ());
+            let prompt =
+              prompt
+              ^ Printf.sprintf
+                  "\n\n\
+                   Before making your first commit, you may opt out of this \
+                   patch. If you decide the work should not proceed, write \
+                   your reason to `%s` and end your turn without committing. \
+                   The supervisor will surface that message and stop this \
+                   patch without pushing or opening a PR. This option is \
+                   unavailable after any patch commit or PR exists."
+                  wontdo_path
+            in
             (* Read once at session start so the per-event callback below can
              persist the session id to the crash-recovery sidecar without
              repeated env lookups.  When unset, the sidecar write is a no-op:
@@ -733,88 +770,122 @@ module Make (W : Worktree.S) (Env : ENV) = struct
                 | Some exn ->
                     ignore (apply_result_and_emit_complete session_result);
                     raise exn);
-                (* Supervisor-owned push: agent commits locally; we push every
+                let wontdo_content =
+                  try
+                    let ic = Stdlib.open_in_bin wontdo_path in
+                    Stdlib.Fun.protect
+                      ~finally:(fun () -> Stdlib.close_in_noerr ic)
+                      (fun () -> Some (Stdlib.In_channel.input_all ic))
+                  with Sys_error _ -> None
+                in
+                let final_head =
+                  W.read_branch_sha ~path:worktree_path
+                    ~ref_name:
+                      ("refs/heads/" ^ Types.Branch.to_string agent.branch)
+                in
+                match
+                  Patch_decision.wontdo_message
+                    ~initial_head:pre_session_branch_sha ~final_head
+                    ~base_sha:initial_base_sha
+                    ~has_pr:(Patch_agent.has_pr agent) ~content:wontdo_content
+                with
+                | Some message ->
+                    log_event runtime ~patch_id ("Patch opted out — " ^ message);
+                    ignore
+                      (apply_result_and_emit_complete
+                         Orchestrator.Session_give_up);
+                    make_run_result ~turn_accepted:!backend_accepted_turn
+                      `Failed (List.rev !tool_failures)
+                | None ->
+                    (* Supervisor-owned push: agent commits locally; we push every
              local commit to the remote at session end. force_push_with_lease
              is idempotent (Push_up_to_date when nothing new), and lease-safe
              against concurrent remote updates. Runs regardless of the LLM's
              session result so commits made before a partial failure still
              reach the remote. *)
-                let branch = agent.Patch_agent.branch in
-                let base =
-                  match agent.Patch_agent.base_branch with
-                  | Some b -> b
-                  | None ->
-                      (* Invariant: a running session always has a base_branch set
+                    let branch = agent.Patch_agent.branch in
+                    let base =
+                      match agent.Patch_agent.base_branch with
+                      | Some b -> b
+                      | None ->
+                          (* Invariant: a running session always has a base_branch set
                    by start/respond/rebase. Fall back to main just in case. *)
+                          Runtime.read runtime (fun snap ->
+                              Orchestrator.main_branch snap.Runtime.orchestrator)
+                    in
+                    let branch_str = Types.Branch.to_string branch in
+                    let base_str = Types.Branch.to_string base in
+                    let push_local_sha =
+                      W.read_branch_sha ~path:worktree_path
+                        ~ref_name:("refs/heads/" ^ branch_str)
+                    in
+                    let push_remote_tracking_sha =
+                      W.read_branch_sha ~path:worktree_path
+                        ~ref_name:("refs/remotes/origin/" ^ branch_str)
+                    in
+                    let push_base_sha =
+                      W.read_branch_sha ~path:worktree_path
+                        ~ref_name:("refs/heads/" ^ base_str)
+                    in
+                    let push_agent_before =
                       Runtime.read runtime (fun snap ->
-                          Orchestrator.main_branch snap.Runtime.orchestrator)
-                in
-                let branch_str = Types.Branch.to_string branch in
-                let base_str = Types.Branch.to_string base in
-                let push_local_sha =
-                  W.read_branch_sha ~path:worktree_path
-                    ~ref_name:("refs/heads/" ^ branch_str)
-                in
-                let push_remote_tracking_sha =
-                  W.read_branch_sha ~path:worktree_path
-                    ~ref_name:("refs/remotes/origin/" ^ branch_str)
-                in
-                let push_base_sha =
-                  W.read_branch_sha ~path:worktree_path
-                    ~ref_name:("refs/heads/" ^ base_str)
-                in
-                let push_agent_before =
-                  Runtime.read runtime (fun snap ->
-                      Orchestrator.agent snap.Runtime.orchestrator patch_id)
-                in
-                let push_outcome =
-                  Push_publication.with_pending_push
-                    ~update:(Runtime.update_orchestrator runtime)
-                    ~patch_id ~local_sha:push_local_sha (fun () ->
-                      W.force_push_with_lease ~path:worktree_path ~branch ~base)
-                in
-                let branch_changed =
-                  match (pre_session_branch_sha, push_local_sha) with
-                  | Some before, Some after -> not (String.equal before after)
-                  | None, _ | _, None -> true
-                in
-                (match push_outcome with
-                | Worktree.Push_ok ->
-                    log_event runtime ~patch_id "runner: pushed after session"
-                | Worktree.Push_up_to_date ->
-                    log_event runtime ~patch_id
-                      "runner: push up-to-date after session (no new commits)"
-                | Worktree.Push_no_commits ->
-                    log_event runtime ~patch_id
-                      "runner: session ended with no commits on branch — push \
-                       skipped, PR creation deferred"
-                | Worktree.Push_rejected reason -> (
-                    log_event runtime ~patch_id
-                      (Printf.sprintf "runner: push rejected after session — %s"
-                         (Push_reject_classify.short_label reason));
-                    match Push_reject_classify.detail_excerpt reason with
-                    | Some msg ->
+                          Orchestrator.agent snap.Runtime.orchestrator patch_id)
+                    in
+                    let push_outcome =
+                      Push_publication.with_pending_push
+                        ~update:(Runtime.update_orchestrator runtime)
+                        ~patch_id ~local_sha:push_local_sha (fun () ->
+                          W.force_push_with_lease ~path:worktree_path ~branch
+                            ~base)
+                    in
+                    let branch_changed =
+                      match (pre_session_branch_sha, push_local_sha) with
+                      | Some before, Some after ->
+                          not (String.equal before after)
+                      | None, _ | _, None -> true
+                    in
+                    (match push_outcome with
+                    | Worktree.Push_ok ->
                         log_event runtime ~patch_id
-                          (Printf.sprintf "runner: push rejected detail: %s" msg)
-                    | None -> ())
-                | Worktree.Push_worktree_missing ->
-                    log_event runtime ~patch_id
-                      (Printf.sprintf
-                         "runner: worktree disappeared mid-session (%s) — \
-                          local commits are lost; will reconstruct on next \
-                          attempt"
-                         worktree_path)
-                | Worktree.Push_error msg ->
-                    log_event runtime ~patch_id
-                      (Printf.sprintf "runner: push error after session: %s" msg));
-                if
-                  (not branch_changed)
-                  && Orchestrator.equal_session_result session_result
-                       Orchestrator.Session_ok
-                then
-                  log_event runtime ~patch_id
-                    "runner: session made no new commit";
-                (* Combine LLM session outcome with push outcome into a single
+                          "runner: pushed after session"
+                    | Worktree.Push_up_to_date ->
+                        log_event runtime ~patch_id
+                          "runner: push up-to-date after session (no new \
+                           commits)"
+                    | Worktree.Push_no_commits ->
+                        log_event runtime ~patch_id
+                          "runner: session ended with no commits on branch — \
+                           push skipped, PR creation deferred"
+                    | Worktree.Push_rejected reason -> (
+                        log_event runtime ~patch_id
+                          (Printf.sprintf
+                             "runner: push rejected after session — %s"
+                             (Push_reject_classify.short_label reason));
+                        match Push_reject_classify.detail_excerpt reason with
+                        | Some msg ->
+                            log_event runtime ~patch_id
+                              (Printf.sprintf "runner: push rejected detail: %s"
+                                 msg)
+                        | None -> ())
+                    | Worktree.Push_worktree_missing ->
+                        log_event runtime ~patch_id
+                          (Printf.sprintf
+                             "runner: worktree disappeared mid-session (%s) — \
+                              local commits are lost; will reconstruct on next \
+                              attempt"
+                             worktree_path)
+                    | Worktree.Push_error msg ->
+                        log_event runtime ~patch_id
+                          (Printf.sprintf "runner: push error after session: %s"
+                             msg));
+                    if
+                      (not branch_changed)
+                      && Orchestrator.equal_session_result session_result
+                           Orchestrator.Session_ok
+                    then
+                      log_event runtime ~patch_id
+                        "runner: session made no new commit";
+                    (* Combine LLM session outcome with push outcome into a single
              session_result via the pure decision in
              [Orchestrator.combine_session_and_push]. user_result mirrors:
              same Ok/Failed disposition unless the combination promoted us
@@ -838,55 +909,58 @@ module Make (W : Worktree.S) (Env : ENV) = struct
              Keeping them out of this override preserves the
              Session_no_commits telemetry and keeps the noop gate armed
              for the truly-idle case where the verdict does not rescue. *)
-                let no_commits_is_ok =
-                  Patch_decision.session_no_commits_is_ok ~agent ~delivery_mode
-                    ~kind
-                in
-                let final_session_result =
-                  let combined =
-                    Orchestrator.combine_session_and_push ~branch_changed
-                      ~session:session_result ~push:push_outcome
-                  in
-                  match combined with
-                  | Orchestrator.Session_no_commits when no_commits_is_ok ->
-                      Orchestrator.Session_ok
-                  | Orchestrator.Session_ok | Orchestrator.Session_no_commits
-                  | Orchestrator.Session_process_error _
-                  | Orchestrator.Session_no_resume
-                  | Orchestrator.Session_failed _ | Orchestrator.Session_give_up
-                  | Orchestrator.Session_worktree_missing
-                  | Orchestrator.Session_push_failed _
-                  | Orchestrator.Session_context_exhausted ->
-                      combined
-                in
-                let final_user_result =
-                  match final_session_result with
-                  | Orchestrator.Session_ok -> user_result
-                  | Orchestrator.Session_push_failed _ ->
-                      (* LLM session ran fine but commits didn't ship because
+                    let no_commits_is_ok =
+                      Patch_decision.session_no_commits_is_ok ~agent
+                        ~delivery_mode ~kind
+                    in
+                    let final_session_result =
+                      let combined =
+                        Orchestrator.combine_session_and_push ~branch_changed
+                          ~session:session_result ~push:push_outcome
+                      in
+                      match combined with
+                      | Orchestrator.Session_no_commits when no_commits_is_ok ->
+                          Orchestrator.Session_ok
+                      | Orchestrator.Session_ok
+                      | Orchestrator.Session_no_commits
+                      | Orchestrator.Session_process_error _
+                      | Orchestrator.Session_no_resume
+                      | Orchestrator.Session_failed _
+                      | Orchestrator.Session_give_up
+                      | Orchestrator.Session_worktree_missing
+                      | Orchestrator.Session_push_failed _
+                      | Orchestrator.Session_context_exhausted ->
+                          combined
+                    in
+                    let final_user_result =
+                      match final_session_result with
+                      | Orchestrator.Session_ok -> user_result
+                      | Orchestrator.Session_push_failed _ ->
+                          (* LLM session ran fine but commits didn't ship because
                          push failed — signal retry so the Respond path uses
                          Respond_retry_push (clean complete) and the reconciler
                          re-enqueues the operation naturally. *)
-                      `Retry_push
-                  | Orchestrator.Session_no_commits -> `No_commits
-                  | Orchestrator.Session_process_error _
-                  | Orchestrator.Session_no_resume
-                  | Orchestrator.Session_failed _ | Orchestrator.Session_give_up
-                  | Orchestrator.Session_worktree_missing
-                  | Orchestrator.Session_context_exhausted ->
-                      `Failed
-                in
-                let _, push_agent_after =
-                  apply_result_and_emit_complete final_session_result
-                in
-                Event_log.log_push Env.event_log ~patch_id
-                  ~kind:Event_log.Session_end_push ~result:push_outcome
-                  ~local_sha:push_local_sha
-                  ~remote_tracking_sha:push_remote_tracking_sha
-                  ~base_sha:push_base_sha ~agent_before:push_agent_before
-                  ~agent_after:push_agent_after;
-                make_run_result ~turn_accepted:!backend_accepted_turn
-                  final_user_result (List.rev !tool_failures)))
+                          `Retry_push
+                      | Orchestrator.Session_no_commits -> `No_commits
+                      | Orchestrator.Session_process_error _
+                      | Orchestrator.Session_no_resume
+                      | Orchestrator.Session_failed _
+                      | Orchestrator.Session_give_up
+                      | Orchestrator.Session_worktree_missing
+                      | Orchestrator.Session_context_exhausted ->
+                          `Failed
+                    in
+                    let _, push_agent_after =
+                      apply_result_and_emit_complete final_session_result
+                    in
+                    Event_log.log_push Env.event_log ~patch_id
+                      ~kind:Event_log.Session_end_push ~result:push_outcome
+                      ~local_sha:push_local_sha
+                      ~remote_tracking_sha:push_remote_tracking_sha
+                      ~base_sha:push_base_sha ~agent_before:push_agent_before
+                      ~agent_after:push_agent_after;
+                    make_run_result ~turn_accepted:!backend_accepted_turn
+                      final_user_result (List.rev !tool_failures)))
 
   let run ~(kind : Types.Operation_kind.t option)
       ~(delivery_mode : Patch_decision.delivery_mode) ~patch_id ~prompt
