@@ -1152,6 +1152,14 @@ let () =
              | None -> false)
            && Patch_controller.should_dequeue_merge_queue stuck_agent
                 ~main_branch:main ~entry_id:stuck_entry.Pr_state.id
+           && List.mem
+                (Patch_controller.dequeue_merge_queue_reasons stuck_agent
+                   ~main_branch:main ~entry_id:stuck_entry.Pr_state.id)
+                "GitHub queue entry UNMERGEABLE (position 0)"
+                ~equal:String.equal
+           && List.is_empty
+                (Patch_controller.dequeue_merge_queue_reasons stuck_agent
+                   ~main_branch:main ~entry_id:"different-entry")
            && not
                 (Patch_controller.should_dequeue_merge_queue stuck_agent
                    ~main_branch:main ~entry_id:"different-entry")
