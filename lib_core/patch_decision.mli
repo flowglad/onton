@@ -59,12 +59,19 @@ type conflict_decision =
 val on_merge_conflict : Patch_agent.t -> conflict_decision
 (** Decide whether to enqueue merge conflict resolution. *)
 
-val defer_remote_head :
-  Patch_agent.t -> has_conflict:bool -> string option -> bool
-(** Retain the publication marker for a known pre-push head, or an unidentified
-    conflict. This does not suppress non-conflict PR state. An unidentified
-    non-conflict observation, expected head, or distinct head settles the
-    marker. *)
+val should_reset_conflict_noop :
+  Patch_agent.t ->
+  merge_state:Pr_state.merge_state ->
+  observed_head:string option ->
+  bool
+(** A mergeable observation of the expected or a distinct known PR head ends the
+    current conflict episode. Preserve the no-op budget for the stale pre-push
+    head, an unidentified observation, or queued/running conflict resolution. *)
+
+val defer_remote_head : Patch_agent.t -> string option -> bool
+(** Retain the publication marker for a known pre-push head or an unidentified
+    observation. This does not suppress non-conflict PR state. The expected head
+    or a distinct known head settles the marker. *)
 
 type checks_passing_decision =
   | Reset_ci_failure_count

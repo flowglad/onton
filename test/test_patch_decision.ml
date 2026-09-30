@@ -5,6 +5,7 @@ open Base
 open Onton_core.Types
 open Onton_core.Patch_agent
 open Onton_core.Patch_decision
+module Pr_state = Onton_core.Pr_state
 
 (* -- Generators -- *)
 
@@ -65,7 +66,6 @@ let () =
         ~name:"pending publication defers only old or unidentified heads"
         Gen.(pair (option string) (option string))
         (fun (old, expected) ->
-          let defer_remote_head = defer_remote_head ~has_conflict:true in
           let a =
             create ~branch:(Branch.of_string "b") (Patch_id.of_string "p")
           in
@@ -82,8 +82,7 @@ let () =
               && not
                    (defer_remote_head a
                       (Some (head ^ Option.value old ~default:"" ^ "x"))));
-      Test.make
-        ~name:"unidentified non-conflict observations settle publication"
+      Test.make ~name:"unidentified observations retain pending publication"
         Gen.(pair (option string) (option string))
         (fun (old, expected) ->
           let a =
@@ -91,7 +90,46 @@ let () =
           in
           let a = set_head_oid a old in
           let a = set_expected_remote_head_oid a expected in
-          not (defer_remote_head a ~has_conflict:false None));
+          Bool.equal (defer_remote_head a None) (Option.is_some expected));
+      Test.make ~name:"mergeable published head resets conflict no-op budget"
+        Gen.string (fun old_head ->
+          let new_head = old_head ^ "new" in
+          let a =
+            with_pr (Patch_id.of_string "p") (Branch.of_string "b")
+            |> increment_conflict_noop_count
+          in
+          let a = set_head_oid a (Some old_head) in
+          let a = set_expected_remote_head_oid a (Some new_head) in
+          should_reset_conflict_noop a ~merge_state:Pr_state.Mergeable
+            ~observed_head:(Some new_head)
+          && (not
+                (should_reset_conflict_noop a ~merge_state:Pr_state.Mergeable
+                   ~observed_head:(Some old_head)))
+          && (not
+                (should_reset_conflict_noop a ~merge_state:Pr_state.Mergeable
+                   ~observed_head:None))
+          && (not
+                (should_reset_conflict_noop a ~merge_state:Pr_state.Conflicting
+                   ~observed_head:(Some new_head)))
+          && not
+               (should_reset_conflict_noop
+                  (enqueue a Operation_kind.Merge_conflict)
+                  ~merge_state:Pr_state.Mergeable ~observed_head:(Some new_head)));
+      Test.make ~name:"mergeable known head resets without pending publication"
+        Gen.(pair string string)
+        (fun (settled_head, other_head) ->
+          let a =
+            with_pr (Patch_id.of_string "p") (Branch.of_string "b")
+            |> increment_conflict_noop_count
+            |> fun a -> set_head_oid a (Some settled_head)
+          in
+          should_reset_conflict_noop a ~merge_state:Pr_state.Mergeable
+            ~observed_head:(Some settled_head)
+          && should_reset_conflict_noop a ~merge_state:Pr_state.Mergeable
+               ~observed_head:(Some other_head)
+          && not
+               (should_reset_conflict_noop a ~merge_state:Pr_state.Mergeable
+                  ~observed_head:None));
       (* ---- disposition: merged always Skip ---- *)
       Test.make ~name:"disposition: merged -> Skip"
         Gen.(pair gen_pid gen_branch)

@@ -121,7 +121,6 @@ let apply_poll_result ?(merge_queue_ejection_confirmed = false) t patch_id
   let deferred_head =
     Patch_decision.defer_remote_head
       (Orchestrator.agent t patch_id)
-      ~has_conflict:(Poller.has_conflict poll_result)
       poll_result.Poller.head_oid
   in
   let poll_result =
@@ -202,6 +201,16 @@ let apply_poll_result ?(merge_queue_ejection_confirmed = false) t patch_id
           log "Conflict flag retained — resolution in flight";
           t)
       else t
+  in
+  let t =
+    if
+      Patch_decision.should_reset_conflict_noop
+        (Orchestrator.agent t patch_id)
+        ~merge_state:poll_result.merge_state ~observed_head:poll_result.head_oid
+    then (
+      log "Mergeability confirmed — reset conflict no-op count";
+      Orchestrator.reset_conflict_noop_count t patch_id)
+    else t
   in
   let t = Orchestrator.set_ci_checks t patch_id poll_result.ci_checks in
   let agent_before = Orchestrator.agent t patch_id in
@@ -1628,6 +1637,100 @@ let%test "no merge-conflict re-enqueue after noop" =
     Orchestrator.Conflict_resolved
   && not (Orchestrator.agent t pid).Patch_agent.busy
 
+let%test "mergeable published head separates conflict no-op episodes" =
+  let _patch, t = make_orchestrator ~patch_id:pid ~main_branch:main in
+  let t = Orchestrator.fire t (Orchestrator.Start (pid, main)) in
+  let t = Orchestrator.set_pr_number t pid (Pr_number.of_int 42) in
+  let t = Orchestrator.complete t pid in
+  let t = Orchestrator.set_head_oid t pid (Some "old-head") in
+  let t, _, _ =
+    Orchestrator.apply_conflict_rebase_result t pid Worktree.Noop main
+  in
+  let t =
+    Orchestrator.set_expected_remote_head_oid t pid (Some "rebased-head")
+  in
+  let mergeable =
+    Poller.
+      {
+        queue = [];
+        merged = false;
+        closed = false;
+        is_draft = false;
+        merge_state = Pr_state.Mergeable;
+        merge_ready = true;
+        head_oid = Some "rebased-head";
+        review_decision = None;
+        unresolved_comment_count = 0;
+        merge_queue_required = false;
+        merge_queue_entry = None;
+        checks_passing = true;
+        ci_checks = [];
+        merge_commit_sha = None;
+      }
+  in
+  let t, _, _ =
+    apply_poll_result t pid
+      {
+        poll_result = mergeable;
+        base_branch = Some main;
+        native_stack = false;
+        branch_in_root = false;
+        worktree_path = None;
+      }
+  in
+  let after_mergeable = Orchestrator.agent t pid in
+  let t, _, _ =
+    Orchestrator.apply_conflict_rebase_result t pid Worktree.Noop main
+  in
+  after_mergeable.Patch_agent.conflict_noop_count = 0
+  && (Orchestrator.agent t pid).Patch_agent.conflict_noop_count = 1
+  && not (Patch_agent.needs_intervention (Orchestrator.agent t pid))
+
+let%test "conflicting poll preserves conflict no-op limit" =
+  let _patch, t = make_orchestrator ~patch_id:pid ~main_branch:main in
+  let t = Orchestrator.fire t (Orchestrator.Start (pid, main)) in
+  let t = Orchestrator.set_pr_number t pid (Pr_number.of_int 42) in
+  let t = Orchestrator.complete t pid in
+  let t, _, _ =
+    Orchestrator.apply_conflict_rebase_result t pid Worktree.Noop main
+  in
+  let conflicting =
+    Poller.
+      {
+        queue = [ Operation_kind.Merge_conflict ];
+        merged = false;
+        closed = false;
+        is_draft = false;
+        merge_state = Pr_state.Conflicting;
+        merge_ready = false;
+        head_oid = Some "conflicting-head";
+        review_decision = None;
+        unresolved_comment_count = 0;
+        merge_queue_required = false;
+        merge_queue_entry = None;
+        checks_passing = true;
+        ci_checks = [];
+        merge_commit_sha = None;
+      }
+  in
+  let t, _, _ =
+    apply_poll_result t pid
+      {
+        poll_result = conflicting;
+        base_branch = Some main;
+        native_stack = false;
+        branch_in_root = false;
+        worktree_path = None;
+      }
+  in
+  let after_conflicting = Orchestrator.agent t pid in
+  let t, _, _ =
+    Orchestrator.apply_conflict_rebase_result t pid Worktree.Noop main
+  in
+  after_conflicting.Patch_agent.conflict_noop_count = 1
+  && (Orchestrator.agent t pid).Patch_agent.conflict_noop_count = 2
+  && Patch_agent.needs_intervention (Orchestrator.agent t pid)
+
 let%test
     "pending push survives old and unidentified polls and accepts distinct \
      heads" =
@@ -1638,6 +1741,9 @@ let%test
   let pushed_head = "new-rebased-head" in
   let t = Orchestrator.set_head_oid t pid (Some "old-pre-push-head") in
   let t = Orchestrator.set_expected_remote_head_oid t pid (Some pushed_head) in
+  let t, _, _ =
+    Orchestrator.apply_conflict_rebase_result t pid Worktree.Noop main
+  in
   let poll_result =
     Poller.
       {
@@ -1699,9 +1805,11 @@ let%test
   assert agent.Patch_agent.merge_ready;
   assert (not agent.mergeability_unknown);
   assert (Option.equal String.equal agent.review_decision (Some "APPROVED"));
-  assert (Option.is_none agent.head_oid);
-  assert (Option.is_none agent.expected_remote_head_oid);
-  let t = apply t { poll_result with head_oid = None } in
+  assert (Option.equal String.equal agent.head_oid (Some "old-pre-push-head"));
+  assert (
+    Option.equal String.equal agent.expected_remote_head_oid (Some pushed_head));
+  assert (agent.conflict_noop_count = 1);
+  let t = apply unidentified { poll_result with head_oid = None } in
   let t = apply t poll_result in
   let agent = Orchestrator.agent t pid in
   assert (not agent.Patch_agent.has_conflict);
@@ -1713,6 +1821,7 @@ let%test
   assert (Option.equal String.equal agent.head_oid (Some "old-pre-push-head"));
   assert (
     Option.equal String.equal agent.expected_remote_head_oid (Some pushed_head));
+  assert (agent.conflict_noop_count = 1);
   List.for_all [ pushed_head; "newer-remote-head" ] ~f:(fun head ->
       let t = apply t { poll_result with head_oid = Some head } in
       let agent = Orchestrator.agent t pid in

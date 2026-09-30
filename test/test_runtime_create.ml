@@ -157,9 +157,7 @@ let () =
       (Some "push-interrupted-before-publication")
   in
   let before_restart = Onton.Orchestrator.agent orchestrator added_id in
-  assert (
-    Patch_decision.defer_remote_head before_restart ~has_conflict:true
-      (Some "old-head"));
+  assert (Patch_decision.defer_remote_head before_restart (Some "old-head"));
   let make_snapshot ~gameplan ~activity_log =
     {
       Onton.Runtime.orchestrator;
@@ -192,10 +190,7 @@ let () =
   assert (
     Base.Option.equal String.equal after_restart.Patch_agent.head_oid
       (Some "old-head"));
-  assert (
-    not
-      (Patch_decision.defer_remote_head after_restart ~has_conflict:true
-         (Some "old-head")));
+  assert (not (Patch_decision.defer_remote_head after_restart (Some "old-head")));
   assert (Base.Option.equal Patch.equal intact_patch (Some added_patch));
   assert (
     Base.List.count

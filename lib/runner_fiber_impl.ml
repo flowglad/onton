@@ -45,7 +45,7 @@ let%test_unit "pending push covers publication, noop, errors and cancellation" =
         with_pending_push ~update ~patch_id ~local_sha:(Some "new") (fun () ->
             assert (marker () = Some "new");
             assert (
-              Onton_core.Patch_decision.defer_remote_head ~has_conflict:true
+              Onton_core.Patch_decision.defer_remote_head
                 (Orchestrator.agent !orch patch_id)
                 (Some "old"));
             push ())
