@@ -58,7 +58,7 @@ type t = {
       (** Top-level [automerge_timeout] in seconds. Must be finite and greater
           than zero. Resolution uses a CLI override, then a persisted project
           value, then this repository value; [None] falls through to the
-          built-in 300-second default. *)
+          built-in 120-second default. *)
   review_team : string option;
       (** Top-level [review_team] slug from the config file. [None] keeps the
           review-request feature disabled for this repo. *)
@@ -117,7 +117,7 @@ val load :
           "features": { "fast_mode": true },
           "service_tier": "fast"
         },
-        "automerge_timeout": 300,
+        "automerge_timeout": 120,
         "routing": {
           "1": { "backend": "claude", "model": "haiku", "effort": "default" },
           "2": { "backend": "codex",  "model": "gpt-6-sol", "effort": "low" },

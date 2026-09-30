@@ -125,7 +125,7 @@ val apply_github_effect_success :
 (** Apply the durable state changes that follow a successful GitHub effect. *)
 
 val default_automerge_timeout : float
-(** Built-in automerge idle window in seconds (300). *)
+(** Built-in automerge idle window in seconds (120). *)
 
 val automerge_idle_timeout : float
 (** Compatibility alias for {!default_automerge_timeout}. *)
