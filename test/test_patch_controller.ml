@@ -1966,6 +1966,14 @@ let () =
             && Pr_number.equal merge_pr_number pr_number
             && Patch_controller.equal_merge_action action
                  (Patch_controller.Dequeue entry.Pr_state.id)
+            && (match
+                  Patch_controller.dequeue_merge_queue_reasons agent
+                    ~main_branch:main ~entry_id:entry.id
+                with
+              | [ reason ] ->
+                  String.is_substring reason ~substring:"approval lost"
+                  && String.is_substring reason ~substring:"merge_ready=false"
+              | _ -> false)
             && (Orchestrator.agent orch pid).Patch_agent.automerge_inflight
         | _ -> false)
   in
@@ -2055,6 +2063,10 @@ let () =
             && Pr_number.equal merge_pr_number pr_number
             && Patch_controller.equal_merge_action action
                  (Patch_controller.Dequeue entry.Pr_state.id)
+            && List.equal String.equal
+                 (Patch_controller.dequeue_merge_queue_reasons agent
+                    ~main_branch:main ~entry_id:entry.id)
+                 [ "GitHub queue entry UNMERGEABLE (position 1)" ]
             && (Orchestrator.agent orch pid).Patch_agent.automerge_inflight
         | _ -> false)
   in
@@ -2099,6 +2111,15 @@ let () =
             && Pr_number.equal merge_pr_number pr_number
             && Patch_controller.equal_merge_action action
                  (Patch_controller.Dequeue entry.Pr_state.id)
+            && (match
+                  Patch_controller.dequeue_merge_queue_reasons agent
+                    ~main_branch:main ~entry_id:entry.id
+                with
+              | [ check; approval ] ->
+                  String.equal check "CI check ci (failure)"
+                  && String.is_substring approval
+                       ~substring:"checks_passing=false"
+              | _ -> false)
             && (Orchestrator.agent orch pid).Patch_agent.automerge_inflight
         | _ -> false)
   in
@@ -2133,6 +2154,10 @@ let () =
             && Pr_number.equal merge_pr_number pr_number
             && Patch_controller.equal_merge_action action
                  (Patch_controller.Dequeue entry.Pr_state.id)
+            && List.equal String.equal
+                 (Patch_controller.dequeue_merge_queue_reasons agent
+                    ~main_branch:main ~entry_id:entry.id)
+                 [ "merge conflict" ]
             && (Orchestrator.agent orch pid).Patch_agent.automerge_inflight
         | _ -> false)
   in

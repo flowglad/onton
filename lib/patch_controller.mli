@@ -192,6 +192,11 @@ val should_dequeue_merge_queue :
     state, or visible failing checks) and lost approval. The runner uses the
     same predicate as [reconcile_automerge] for its pre-flight recheck. *)
 
+val dequeue_merge_queue_reasons :
+  Patch_agent.t -> main_branch:Branch.t -> entry_id:string -> string list
+(** Observable causes used by [should_dequeue_merge_queue]. An empty list means
+    the entry should stay queued (or no longer matches the observed entry). *)
+
 val reconcile_automerge :
   ?automerge_timeout:float ->
   Orchestrator.t ->
