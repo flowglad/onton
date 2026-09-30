@@ -990,10 +990,9 @@ let reconcile_automerge ?(automerge_timeout = default_automerge_timeout) t ~now
           when agent.Patch_agent.automerge_enabled
                && agent.Patch_agent.automerge_failure_count
                   < automerge_max_failures -> (
-            (* Dequeue queue-alarmed PRs immediately on first observation. If a
-               previous dequeue call failed, [runner_fiber_impl] increments the
-               automerge failure count; honor the same cap used for merge and
-               enqueue failures. *)
+            (* Dequeue queue-alarmed PRs immediately on first observation.
+               Dequeue API errors preserve the failure count and push the
+               deadline out one idle window before retrying. *)
             match agent.Patch_agent.automerge_deadline with
             | Some deadline when Float.(now < deadline) -> (t, decisions)
             | None | Some _ -> emit_automerge_decision t action)

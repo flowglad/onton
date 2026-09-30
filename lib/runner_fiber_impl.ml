@@ -402,7 +402,11 @@ module Make (Forge : Forge.S) (W : Worktree.S) (Env : Runner_env.S) = struct
                              entry_id
                              (String.concat "; " dequeue_reasons))
                     | Error err ->
-                        apply_failure ();
+                        (* A dequeue API error does not establish a merge
+                           failure or confirm that the queue entry is gone.
+                           Preserve both until the poller observes GitHub, and
+                           wait one idle window before retrying. *)
+                        push_deadline_and_clear_inflight ();
                         log_event runtime ~patch_id
                           (Printf.sprintf
                              "Automerge dequeue failed for PR #%d (entry %s, \
