@@ -783,11 +783,15 @@ module Make (W : Worktree.S) (Env : ENV) = struct
                     ~ref_name:
                       ("refs/heads/" ^ Types.Branch.to_string agent.branch)
                 in
+                let has_pr =
+                  Runtime.read runtime (fun snap ->
+                      Patch_agent.has_pr
+                        (Orchestrator.agent snap.Runtime.orchestrator patch_id))
+                in
                 match
                   Patch_decision.wontdo_message
                     ~initial_head:pre_session_branch_sha ~final_head
-                    ~base_sha:initial_base_sha
-                    ~has_pr:(Patch_agent.has_pr agent) ~content:wontdo_content
+                    ~base_sha:initial_base_sha ~has_pr ~content:wontdo_content
                 with
                 | Some message ->
                     log_event runtime ~patch_id ("Patch opted out — " ^ message);

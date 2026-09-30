@@ -47,7 +47,7 @@ module Fake_worktree : Worktree.S = struct
   let rebase_in_progress ~path:_ = assert false
 end
 
-let run_case env ~content ~commit ~expect_opt_out =
+let run_case ?(detect_pr = false) env ~content ~commit ~expect_opt_out =
   head := "base";
   pushes := 0;
   let root = Stdlib.Filename.temp_dir "onton-wontdo-" "" in
@@ -136,7 +136,7 @@ let run_case env ~content ~commit ~expect_opt_out =
                 ~resume_session:_
                 ~session_uuid:_
                 ~complexity:_
-                ~on_event:_
+                ~on_event
               ->
                 assert (String.is_substring prompt ~substring:path);
                 assert (
@@ -144,6 +144,10 @@ let run_case env ~content ~commit ~expect_opt_out =
                 let oc = Stdlib.open_out_bin path in
                 Stdlib.output_string oc content;
                 Stdlib.close_out oc;
+                if detect_pr then
+                  on_event
+                    (Stream_event.Text_delta
+                       "https://github.com/test/test/pull/123\n");
                 if commit then head := "commit";
                 {
                   exit_code = 0;
@@ -170,11 +174,16 @@ let run_case env ~content ~commit ~expect_opt_out =
           (fun () ->
             SD.run ~kind:None ~delivery_mode:Onton_core.Patch_decision.Start
               ~patch_id ~prompt:"Implement the patch" ~agent
-              ~on_pr_detected:(fun _ -> ())
+              ~on_pr_detected:(fun pr_number ->
+                Runtime.update_orchestrator runtime (fun orch ->
+                    Orchestrator.set_pr_number orch patch_id pr_number))
               ~backend ~complexity:None)
       in
       let snapshot = Runtime.read runtime Fn.id in
       let after = Orchestrator.agent snapshot.orchestrator patch_id in
+      if detect_pr then (
+        assert (Onton_core.Patch_agent.has_pr after);
+        assert (not (Onton_core.Patch_agent.needs_intervention after)));
       if expect_opt_out then (
         assert (Poly.equal result.disposition `Failed);
         assert (!pushes = 0);
@@ -201,4 +210,6 @@ let () =
         ~expect_opt_out:true;
       run_case env ~content:" \n\t " ~commit:false ~expect_opt_out:false;
       run_case env ~content:"Too late to opt out" ~commit:true
-        ~expect_opt_out:false)
+        ~expect_opt_out:false;
+      run_case env ~detect_pr:true ~content:"A PR was detected during this turn"
+        ~commit:false ~expect_opt_out:false)
