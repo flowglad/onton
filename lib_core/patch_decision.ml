@@ -5,13 +5,14 @@ open Base
 open Types
 
 (* While propagation is pending, head_oid remains the pre-push observation.
-   Missing identity defers only conflicts; other observations remain actionable. *)
-let defer_remote_head (agent : Patch_agent.t) ~has_conflict observed =
+   Missing identity retains the marker; only conflicting observations have
+   their mergeability deferred by the controller. *)
+let defer_remote_head (agent : Patch_agent.t) ~has_conflict:_ observed =
   match agent.expected_remote_head_oid with
   | None -> false
   | Some expected -> (
       match observed with
-      | None -> has_conflict
+      | None -> true
       | Some head ->
           (not (String.equal head expected))
           && Option.equal String.equal observed agent.head_oid)
