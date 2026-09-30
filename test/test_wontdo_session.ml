@@ -47,7 +47,8 @@ module Fake_worktree : Worktree.S = struct
 
   let force_push_with_lease ~path:_ ~branch:_ ~base:_ =
     Int.incr pushes;
-    Worktree.Push_no_commits
+    if String.equal !head "base" then Worktree.Push_no_commits
+    else Worktree.Push_ok
 
   let rebase_in_progress ~path:_ = assert false
 end
@@ -209,7 +210,15 @@ let run_case ?(detect_pr = false) ?(advance_base = false) env ~content ~commit
         assert (
           Onton_core.Patch_agent.needs_intervention
             (Orchestrator.agent orch patch_id)))
-      else assert (!pushes = 1))
+      else (
+        assert (!pushes = 1);
+        if commit then (
+          assert (Poly.equal result.disposition `Ok);
+          assert (after.no_commits_push_count = 0);
+          assert (not (Onton_core.Patch_agent.needs_intervention after));
+          assert (
+            Option.equal String.equal after.expected_remote_head_oid
+              (Some "commit")))))
 
 let () =
   Eio_main.run (fun env ->
