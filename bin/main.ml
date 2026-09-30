@@ -1750,7 +1750,7 @@ let automerge_timeout_arg =
         ~doc:
           "Idle time after a PR becomes eligible before automerge fires. Must \
            be greater than zero (default: stored project value, then the \
-           repository config's automerge_timeout, then 300 seconds). The \
+           repository config's automerge_timeout, then 120 seconds). The \
            resolved value is persisted for flag-less resumes."
         ~env:(Cmd.Env.info "ONTON_AUTOMERGE_TIMEOUT"))
 

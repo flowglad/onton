@@ -726,7 +726,7 @@ let apply_github_effect_success t = function
   | Set_pr_base { patch_id; base; _ } ->
       Orchestrator.set_base_branch t patch_id base
 
-let default_automerge_timeout = 300.0
+let default_automerge_timeout = 120.0
 let automerge_idle_timeout = default_automerge_timeout
 let automerge_max_failures = 3
 
