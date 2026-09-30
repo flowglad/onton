@@ -121,7 +121,6 @@ let apply_poll_result ?(merge_queue_ejection_confirmed = false) t patch_id
   let deferred_head =
     Patch_decision.defer_remote_head
       (Orchestrator.agent t patch_id)
-      ~has_conflict:(Poller.has_conflict poll_result)
       poll_result.Poller.head_oid
   in
   let poll_result =

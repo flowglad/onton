@@ -66,7 +66,6 @@ let () =
         ~name:"pending publication defers only old or unidentified heads"
         Gen.(pair (option string) (option string))
         (fun (old, expected) ->
-          let defer_remote_head = defer_remote_head ~has_conflict:true in
           let a =
             create ~branch:(Branch.of_string "b") (Patch_id.of_string "p")
           in
@@ -91,9 +90,7 @@ let () =
           in
           let a = set_head_oid a old in
           let a = set_expected_remote_head_oid a expected in
-          Bool.equal
-            (defer_remote_head a ~has_conflict:false None)
-            (Option.is_some expected));
+          Bool.equal (defer_remote_head a None) (Option.is_some expected));
       Test.make ~name:"mergeable published head resets conflict no-op budget"
         Gen.string (fun old_head ->
           let new_head = old_head ^ "new" in

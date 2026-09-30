@@ -68,8 +68,7 @@ val should_reset_conflict_noop :
     current conflict episode. Preserve the no-op budget for the stale pre-push
     head, an unidentified observation, or queued/running conflict resolution. *)
 
-val defer_remote_head :
-  Patch_agent.t -> has_conflict:bool -> string option -> bool
+val defer_remote_head : Patch_agent.t -> string option -> bool
 (** Retain the publication marker for a known pre-push head or an unidentified
     observation. This does not suppress non-conflict PR state. The expected head
     or a distinct known head settles the marker. *)

@@ -7,7 +7,7 @@ open Types
 (* While propagation is pending, head_oid remains the pre-push observation.
    Missing identity retains the marker; only conflicting observations have
    their mergeability deferred by the controller. *)
-let defer_remote_head (agent : Patch_agent.t) ~has_conflict:_ observed =
+let defer_remote_head (agent : Patch_agent.t) observed =
   match agent.expected_remote_head_oid with
   | None -> false
   | Some expected -> (
@@ -103,7 +103,7 @@ let should_reset_conflict_noop (a : Patch_agent.t) ~merge_state ~observed_head =
   a.conflict_noop_count > 0
   && Pr_state.equal_merge_state merge_state Pr_state.Mergeable
   && Option.is_some observed_head
-  && (not (defer_remote_head a ~has_conflict:false observed_head))
+  && (not (defer_remote_head a observed_head))
   && should_clear_conflict a
 
 (** {2 Start delivery — pre-session decision for the runner} *)
