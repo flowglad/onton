@@ -39,11 +39,12 @@ type t = private {
   notified_base_branch : Types.Branch.t option;
   ci_failure_count : int;
   max_ci_failures : int;
-      (** Per-project cap on consecutive CI-failure responses: at
-          [ci_failure_count >= max_ci_failures] the agent stops enqueueing [Ci]
-          feedback ({!Patch_decision.Cap_reached}) and contributes to
-          [needs_intervention]. Configuration, not state — stamped at
-          construction (and re-stamped on snapshot restore via
+      (** Per-project cap on repair responses for delivered CI failures. A
+          failing check with a net-new stable run ID resets the counter in
+          [set_ci_checks]. At [ci_failure_count >= max_ci_failures] the agent
+          stops enqueueing [Ci] feedback ({!Patch_decision.Cap_reached}) and
+          contributes to [needs_intervention]. Configuration, not state —
+          stamped at construction (and re-stamped on snapshot restore via
           {!Orchestrator.set_max_ci_failures}) from the [--max-ci-failures] flag
           / stored project config; defaults to {!default_max_ci_failures}. *)
   session_fallback : session_fallback;
@@ -588,7 +589,10 @@ val clear_branch_blocked : t -> t
 (** Clear the branch-blocked flag (branch is no longer in repo root). *)
 
 val set_ci_checks : t -> Types.Ci_check.t list -> t
-(** Replace the stored CI check details. *)
+(** Replace the stored CI check details. Reset [ci_failure_count] when a failing
+    check has a stable ID absent from [delivered_ci_run_ids]. Repeated
+    observations of delivered failures and id-less statuses retain the budget.
+    Other intervention counters and session fallback state are preserved. *)
 
 val record_delivered_ci_run_ids : t -> int list -> t
 (** Mark the given CheckRun [databaseId]s as delivered so the CI feedback path

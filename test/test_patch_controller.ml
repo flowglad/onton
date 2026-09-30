@@ -2328,8 +2328,84 @@ let () =
         List.is_empty decisions && not agent.Patch_agent.review_request_inflight)
   in
 
+  let new_ci_run_resets_capped_patch_after_restore =
+    Test.make ~name:"new failing CI run makes restored capped patch runnable"
+      ~count:200
+      Gen.(int_range 1 100000)
+      (fun id ->
+        let pid = Patch_id.of_string "ci-budget" in
+        let branch = Branch.of_string "ci-budget/patch-1" in
+        let patch = make_patch pid branch in
+        let check id =
+          Ci_check.
+            {
+              name = "build";
+              conclusion = "failure";
+              details_url = None;
+              description = None;
+              started_at = None;
+              id = Some id;
+            }
+        in
+        let agent =
+          Patch_agent.create ~branch pid |> fun a ->
+          Patch_agent.start a ~base_branch:main |> fun a ->
+          Patch_agent.set_pr_number a (Pr_number.of_int 1)
+          |> Patch_agent.complete
+          |> fun a ->
+          Patch_agent.set_ci_checks a [ check id ] |> fun a ->
+          Patch_agent.record_delivered_ci_run_ids a [ id ]
+          |> Patch_agent.increment_ci_failure_count
+          |> Patch_agent.increment_ci_failure_count
+          |> Patch_agent.increment_ci_failure_count
+        in
+        match
+          Persistence.patch_agent_of_yojson ~gameplan:(make_gameplan patch)
+            (Persistence.patch_agent_to_yojson agent)
+        with
+        | Error _ -> false
+        | Ok restored ->
+            let orch = make_orch patch restored in
+            let poll checks =
+              Poller.
+                {
+                  queue = [ Operation_kind.Ci ];
+                  merged = false;
+                  closed = false;
+                  is_draft = false;
+                  merge_state = Pr_state.Mergeable;
+                  merge_ready = false;
+                  head_oid = None;
+                  review_decision = None;
+                  unresolved_comment_count = 0;
+                  merge_queue_required = false;
+                  merge_queue_entry = None;
+                  checks_passing = false;
+                  ci_checks = checks;
+                  merge_commit_sha = None;
+                }
+            in
+            let same, _, _ =
+              Patch_controller.apply_poll_result orch pid
+                (make_poll_observation (poll [ check id ]))
+            in
+            let fresh, logs, _ =
+              Patch_controller.apply_poll_result same pid
+                (make_poll_observation (poll [ check id; check (id + 1) ]))
+            in
+            let a = Orchestrator.agent fresh pid in
+            Patch_agent.needs_intervention (Orchestrator.agent same pid)
+            && a.Patch_agent.ci_failure_count = 0
+            && List.mem a.queue Operation_kind.Ci ~equal:Operation_kind.equal
+            && (not (Patch_agent.needs_intervention a))
+            && List.exists logs ~f:(fun entry ->
+                String.equal entry.Patch_controller.message
+                  "New failing CI run — reset CI failure count"))
+  in
+
   let suite =
     [
+      new_ci_run_resets_capped_patch_after_restore;
       review_request_claims_ready_required_pr;
       review_request_inflight_is_not_reclaimed;
       review_request_current_head_is_not_reclaimed;

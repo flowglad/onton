@@ -773,7 +773,7 @@ properties:
 - Sessions are never lost (`has_session p -> has_session' p`)
 - Merged is absorbing (terminal state)
 - Queue isolation (responding to `k` only removes `k`)
-- CI failure cap (3 failures triggers intervention)
+- CI repair cap (3 responses for already-delivered failures triggers intervention; a net-new failing check-run ID resets the counter)
 - Liveness (all fireable actions fire)
 - `approved?` is derived: `has_pr && merge_ready && not busy && not
   needs_intervention && base_branch = main` (where `merge_ready` reflects
