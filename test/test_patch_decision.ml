@@ -5,6 +5,7 @@ open Base
 open Onton_core.Types
 open Onton_core.Patch_agent
 open Onton_core.Patch_decision
+module Pr_state = Onton_core.Pr_state
 
 (* -- Generators -- *)
 
@@ -92,6 +93,30 @@ let () =
           let a = set_head_oid a old in
           let a = set_expected_remote_head_oid a expected in
           not (defer_remote_head a ~has_conflict:false None));
+      Test.make ~name:"mergeable published head resets conflict no-op budget"
+        Gen.string (fun old_head ->
+          let new_head = old_head ^ "new" in
+          let a =
+            with_pr (Patch_id.of_string "p") (Branch.of_string "b")
+            |> increment_conflict_noop_count
+          in
+          let a = set_head_oid a (Some old_head) in
+          let a = set_expected_remote_head_oid a (Some new_head) in
+          should_reset_conflict_noop a ~merge_state:Pr_state.Mergeable
+            ~observed_head:(Some new_head)
+          && (not
+                (should_reset_conflict_noop a ~merge_state:Pr_state.Mergeable
+                   ~observed_head:(Some old_head)))
+          && (not
+                (should_reset_conflict_noop a ~merge_state:Pr_state.Mergeable
+                   ~observed_head:None))
+          && (not
+                (should_reset_conflict_noop a ~merge_state:Pr_state.Conflicting
+                   ~observed_head:(Some new_head)))
+          && not
+               (should_reset_conflict_noop
+                  (enqueue a Operation_kind.Merge_conflict)
+                  ~merge_state:Pr_state.Mergeable ~observed_head:(Some new_head)));
       (* ---- disposition: merged always Skip ---- *)
       Test.make ~name:"disposition: merged -> Skip"
         Gen.(pair gen_pid gen_branch)

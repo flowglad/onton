@@ -98,6 +98,13 @@ let should_clear_conflict (a : Patch_agent.t) : bool =
     || Option.equal Operation_kind.equal a.current_op
          (Some Operation_kind.Merge_conflict))
 
+let should_reset_conflict_noop (a : Patch_agent.t) ~merge_state ~observed_head =
+  a.conflict_noop_count > 0
+  && Pr_state.equal_merge_state merge_state Pr_state.Mergeable
+  && Option.is_some observed_head
+  && (not (defer_remote_head a ~has_conflict:false observed_head))
+  && should_clear_conflict a
+
 (** {2 Start delivery — pre-session decision for the runner} *)
 
 type start_delivery =

@@ -59,6 +59,15 @@ type conflict_decision =
 val on_merge_conflict : Patch_agent.t -> conflict_decision
 (** Decide whether to enqueue merge conflict resolution. *)
 
+val should_reset_conflict_noop :
+  Patch_agent.t ->
+  merge_state:Pr_state.merge_state ->
+  observed_head:string option ->
+  bool
+(** A mergeable observation for the published PR head ends the current conflict
+    episode. Preserve the no-op budget while publication is pending or conflict
+    resolution is still queued/running. *)
+
 val defer_remote_head :
   Patch_agent.t -> has_conflict:bool -> string option -> bool
 (** Retain the publication marker for a known pre-push head, or an unidentified
