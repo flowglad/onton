@@ -322,13 +322,13 @@ module Make (Forge : Forge.S) (W : Worktree.S) (Env : Runner_env.S) = struct
              because we ourselves set the inflight flag when claiming this
              decision — the default [ignore_inflight:false] would see our own
              flag and short-circuit every merge. *)
-            let still_candidate =
+            let still_candidate, dequeue_reasons =
               Runtime.read runtime (fun snap ->
                   match
                     Orchestrator.find_agent snap.Runtime.orchestrator patch_id
                   with
-                  | None -> false
-                  | Some agent -> (
+                  | None -> (false, [])
+                  | Some agent ->
                       let main_branch =
                         Orchestrator.main_branch snap.Runtime.orchestrator
                       in
@@ -344,24 +344,30 @@ module Make (Forge : Forge.S) (W : Worktree.S) (Env : Runner_env.S) = struct
                         | Some current -> Pr_number.equal current pr_number
                         | None -> false
                       in
-                      same_pr
-                      &&
-                      match action with
-                      | Patch_controller.Direct_merge ->
-                          Patch_controller.is_automerge_candidate
-                            ~ignore_inflight:true agent ~main_branch
-                      | Patch_controller.Enqueue ->
-                          agent.Patch_agent.merge_queue_required
-                          && (not agent.Patch_agent.merged)
-                          && agent.Patch_agent.automerge_enabled
-                          && Patch_agent.is_approved agent ~main_branch
-                          && agent.Patch_agent.checks_passing
-                          && List.is_empty agent.Patch_agent.queue
-                          && agent.Patch_agent.automerge_failure_count
-                             < Patch_controller.automerge_max_failures
-                      | Patch_controller.Dequeue entry_id ->
-                          Patch_controller.should_dequeue_merge_queue agent
-                            ~main_branch ~entry_id))
+                      let eligible, reasons =
+                        match action with
+                        | Patch_controller.Direct_merge ->
+                            ( Patch_controller.is_automerge_candidate
+                                ~ignore_inflight:true agent ~main_branch,
+                              [] )
+                        | Patch_controller.Enqueue ->
+                            ( agent.Patch_agent.merge_queue_required
+                              && (not agent.Patch_agent.merged)
+                              && agent.Patch_agent.automerge_enabled
+                              && Patch_agent.is_approved agent ~main_branch
+                              && agent.Patch_agent.checks_passing
+                              && List.is_empty agent.Patch_agent.queue
+                              && agent.Patch_agent.automerge_failure_count
+                                 < Patch_controller.automerge_max_failures,
+                              [] )
+                        | Patch_controller.Dequeue entry_id ->
+                            let reasons =
+                              Patch_controller.dequeue_merge_queue_reasons agent
+                                ~main_branch ~entry_id
+                            in
+                            (not (List.is_empty reasons), reasons)
+                      in
+                      (same_pr && eligible, reasons))
             in
             if not still_candidate then (
               log_event runtime ~patch_id
@@ -380,7 +386,7 @@ module Make (Forge : Forge.S) (W : Worktree.S) (Env : Runner_env.S) = struct
                 match action with
                 | Patch_controller.Enqueue ->
                     handle_enqueue_result (Forge.enqueue_pr ~pr_number)
-                | Patch_controller.Dequeue _ -> (
+                | Patch_controller.Dequeue entry_id -> (
                     match Forge.dequeue_pr ~pr_number with
                     | Ok () ->
                         inflight_cleared := true;
@@ -391,15 +397,23 @@ module Make (Forge : Forge.S) (W : Worktree.S) (Env : Runner_env.S) = struct
                         log_event runtime ~patch_id
                           (Printf.sprintf
                              "Automerge dequeued PR #%d from GitHub merge \
-                              queue after approval was lost or GitHub reported \
-                              a queue alarm"
-                             (Pr_number.to_int pr_number))
+                              queue (entry %s): %s"
+                             (Pr_number.to_int pr_number)
+                             entry_id
+                             (String.concat "; " dequeue_reasons))
                     | Error err ->
-                        apply_failure ();
+                        (* A dequeue API error does not establish a merge
+                           failure or confirm that the queue entry is gone.
+                           Preserve both until the poller observes GitHub, and
+                           wait one idle window before retrying. *)
+                        push_deadline_and_clear_inflight ();
                         log_event runtime ~patch_id
                           (Printf.sprintf
-                             "Automerge dequeue failed for PR #%d — %s"
+                             "Automerge dequeue failed for PR #%d (entry %s, \
+                              reasons: %s) — %s"
                              (Pr_number.to_int pr_number)
+                             entry_id
+                             (String.concat "; " dequeue_reasons)
                              (Forge.show_error err)))
                 | Patch_controller.Direct_merge -> (
                     match Forge.merge_pr ~pr_number with

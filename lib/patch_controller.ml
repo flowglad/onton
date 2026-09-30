@@ -835,25 +835,56 @@ type review_request_decision = {
 let merge_queue_entry_unmergeable (entry : Pr_state.merge_queue_entry) =
   Pr_state.equal_merge_queue_entry_state entry.state Pr_state.Mq_unmergeable
 
-let merge_queue_alarm (agent : Patch_agent.t) =
-  agent.Patch_agent.has_conflict
-  || List.exists agent.Patch_agent.ci_checks ~f:Ci_check.is_failure
-  || Option.exists agent.Patch_agent.merge_queue_entry
-       ~f:merge_queue_entry_unmergeable
-
 let merge_queue_transient_unknown_hold (agent : Patch_agent.t) ~main_branch =
   agent.Patch_agent.mergeability_unknown
   && Patch_agent.is_approved_modulo_merge_ready agent ~main_branch
   && agent.Patch_agent.checks_passing
   && List.is_empty agent.Patch_agent.queue
 
-let should_dequeue_merge_queue agent ~main_branch ~entry_id =
+let dequeue_merge_queue_reasons agent ~main_branch ~entry_id =
   match agent.Patch_agent.merge_queue_entry with
   | Some entry when String.equal entry.Pr_state.id entry_id ->
-      merge_queue_alarm agent
-      || (not (Patch_agent.is_approved agent ~main_branch))
-         && not (merge_queue_transient_unknown_hold agent ~main_branch)
-  | Some _ | None -> false
+      let failing_checks =
+        List.filter agent.Patch_agent.ci_checks ~f:Ci_check.is_failure
+      in
+      let approval_lost =
+        (not (Patch_agent.is_approved agent ~main_branch))
+        && not (merge_queue_transient_unknown_hold agent ~main_branch)
+      in
+      let approval_reason =
+        if not approval_lost then []
+        else
+          [
+            Printf.sprintf
+              "approval lost (PR present=%b, merge_ready=%b, busy=%b, \
+               needs_intervention=%b, draft=%b, branch_blocked=%b, \
+               base_matches=%b, checks_passing=%b, mergeability_unknown=%b, \
+               review_decision=%s)"
+              (Patch_agent.is_pr_present agent)
+              agent.Patch_agent.merge_ready agent.Patch_agent.busy
+              (Patch_agent.needs_intervention agent)
+              agent.Patch_agent.is_draft agent.Patch_agent.branch_blocked
+              (Option.equal Branch.equal agent.Patch_agent.base_branch
+                 (Some main_branch))
+              agent.Patch_agent.checks_passing
+              agent.Patch_agent.mergeability_unknown
+              (Option.value agent.Patch_agent.review_decision ~default:"none");
+          ]
+      in
+      (if merge_queue_entry_unmergeable entry then
+         [
+           Printf.sprintf "GitHub queue entry UNMERGEABLE (position %d)"
+             entry.position;
+         ]
+       else [])
+      @ (if agent.Patch_agent.has_conflict then [ "merge conflict" ] else [])
+      @ List.map failing_checks ~f:(fun check ->
+          Printf.sprintf "CI check %s (%s)" check.Ci_check.name check.conclusion)
+      @ approval_reason
+  | Some _ | None -> []
+
+let should_dequeue_merge_queue agent ~main_branch ~entry_id =
+  not (List.is_empty (dequeue_merge_queue_reasons agent ~main_branch ~entry_id))
 
 let automerge_action (agent : Patch_agent.t) ~main_branch =
   let approved = Patch_agent.is_approved agent ~main_branch in
@@ -959,10 +990,9 @@ let reconcile_automerge ?(automerge_timeout = default_automerge_timeout) t ~now
           when agent.Patch_agent.automerge_enabled
                && agent.Patch_agent.automerge_failure_count
                   < automerge_max_failures -> (
-            (* Dequeue queue-alarmed PRs immediately on first observation. If a
-               previous dequeue call failed, [runner_fiber_impl] increments the
-               automerge failure count; honor the same cap used for merge and
-               enqueue failures. *)
+            (* Dequeue queue-alarmed PRs immediately on first observation.
+               Dequeue API errors preserve the failure count and push the
+               deadline out one idle window before retrying. *)
             match agent.Patch_agent.automerge_deadline with
             | Some deadline when Float.(now < deadline) -> (t, decisions)
             | None | Some _ -> emit_automerge_decision t action)
