@@ -788,10 +788,19 @@ module Make (W : Worktree.S) (Env : ENV) = struct
                       Patch_agent.has_pr
                         (Orchestrator.agent snap.Runtime.orchestrator patch_id))
                 in
+                let initial_head_in_base =
+                  match (pre_session_branch_sha, initial_base_sha) with
+                  | Some initial, Some base ->
+                      String.equal initial base
+                      || W.is_ancestor ~path:worktree_path ~ancestor:initial
+                           ~descendant:base
+                  | _ -> false
+                in
                 match
                   Patch_decision.wontdo_message
                     ~initial_head:pre_session_branch_sha ~final_head
-                    ~base_sha:initial_base_sha ~has_pr ~content:wontdo_content
+                    ~base_sha:initial_base_sha ~initial_head_in_base ~has_pr
+                    ~content:wontdo_content
                 with
                 | Some message ->
                     log_event runtime ~patch_id ("Patch opted out — " ^ message);

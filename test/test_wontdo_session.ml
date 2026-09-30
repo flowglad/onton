@@ -6,6 +6,7 @@ open Onton_core.Types
 
 let head = ref "base"
 let pushes = ref 0
+let base_head = ref "base"
 
 module Fake_worktree : Worktree.S = struct
   let resolve_main_root () = assert false
@@ -33,8 +34,12 @@ module Fake_worktree : Worktree.S = struct
       () =
     assert false
 
-  let read_branch_sha ~path:_ ~ref_name:_ = Some !head
-  let is_ancestor ~path:_ ~ancestor:_ ~descendant:_ = false
+  let read_branch_sha ~path:_ ~ref_name =
+    if String.is_suffix ref_name ~suffix:"/main" then Some !base_head
+    else Some !head
+
+  let is_ancestor ~path:_ ~ancestor ~descendant =
+    String.equal ancestor "base" && String.equal descendant "advanced-base"
 
   let read_in_progress_conflict_info ~path:_ ~target:_ ~project_name:_
       ~ancestor_ids:_ =
@@ -47,8 +52,10 @@ module Fake_worktree : Worktree.S = struct
   let rebase_in_progress ~path:_ = assert false
 end
 
-let run_case ?(detect_pr = false) env ~content ~commit ~expect_opt_out =
+let run_case ?(detect_pr = false) ?(advance_base = false) env ~content ~commit
+    ~expect_opt_out =
   head := "base";
+  base_head := if advance_base then "advanced-base" else "base";
   pushes := 0;
   let root = Stdlib.Filename.temp_dir "onton-wontdo-" "" in
   let old = Stdlib.Sys.getenv_opt "ONTON_DATA_DIR" in
@@ -212,4 +219,6 @@ let () =
       run_case env ~content:"Too late to opt out" ~commit:true
         ~expect_opt_out:false;
       run_case env ~detect_pr:true ~content:"A PR was detected during this turn"
-        ~commit:false ~expect_opt_out:false)
+        ~commit:false ~expect_opt_out:false;
+      run_case env ~advance_base:true ~content:"Opt out after base advancement"
+        ~commit:false ~expect_opt_out:true)

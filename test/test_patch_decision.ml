@@ -1461,7 +1461,21 @@ let () =
 
 let () =
   let open QCheck2 in
-  let decide = wontdo_message in
+  let decide ~initial_head ~final_head ~base_sha ~has_pr ~content =
+    let initial_head_in_base =
+      Option.equal String.equal initial_head base_sha
+    in
+    wontdo_message ~initial_head ~final_head ~base_sha ~initial_head_in_base
+      ~has_pr ~content
+  in
+  Test.check_exn
+    (Test.make ~name:"wontdo: accepts unchanged head behind an advanced base"
+       Gen.string (fun sha ->
+         Option.equal String.equal
+           (wontdo_message ~initial_head:(Some sha) ~final_head:(Some sha)
+              ~base_sha:(Some (sha ^ "x"))
+              ~initial_head_in_base:true ~has_pr:false ~content:(Some "Opt out"))
+           (Some "Opt out")));
   Test.check_exn
     (Test.make ~name:"wontdo: total over arbitrary observations" ~count:500
        Gen.(

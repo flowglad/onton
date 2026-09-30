@@ -421,11 +421,11 @@ let classify_artifact_sync_outcome ~(plan : artifact_sync_plan)
   | Sync_attempt_pr_body, Some (`Missing | `Empty) -> Sync_no_op
   | Sync_attempt_pr_body, None -> Sync_no_op
 
-let wontdo_message ~initial_head ~final_head ~base_sha ~has_pr ~content =
+let wontdo_message ~initial_head ~final_head ~base_sha ~initial_head_in_base
+    ~has_pr ~content =
   match (initial_head, final_head, base_sha, content) with
-  | Some initial, Some final, Some base, Some message
-    when (not has_pr) && String.equal initial base && String.equal final initial
-    ->
+  | Some initial, Some final, Some _, Some message
+    when (not has_pr) && initial_head_in_base && String.equal final initial ->
       let message = String.strip message in
       if String.is_empty message then None else Some message
   | _ -> None
