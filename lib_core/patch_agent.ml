@@ -562,7 +562,24 @@ let reset_ci_failure_count t = { t with ci_failure_count = 0 }
    [generation], so restoring a snapshot under a different --max-ci-failures
    does not invalidate in-flight outbox messages. *)
 let set_max_ci_failures t ~max_ci_failures = { t with max_ci_failures }
-let set_ci_checks t checks = { t with ci_checks = checks }
+
+let set_ci_checks t checks =
+  (* Completed repair attempts consume the budget for delivered failures.
+     A failing CheckRun not yet delivered is new work, even when an older
+     run exhausted its budget. Id-less statuses cannot establish new work. *)
+  let has_new_failure =
+    List.exists checks ~f:(fun (check : Ci_check.t) ->
+        Ci_check.is_failure check
+        &&
+        match check.id with
+        | None -> false
+        | Some id -> not (List.mem t.delivered_ci_run_ids id ~equal:Int.equal))
+  in
+  {
+    t with
+    ci_checks = checks;
+    ci_failure_count = (if has_new_failure then 0 else t.ci_failure_count);
+  }
 
 let record_delivered_ci_run_ids t ids =
   (* Maintain sorted + deduplicated list. Small enough (tens of entries per

@@ -112,7 +112,7 @@
 (test
  (name test_patch_agent)
  (modules test_patch_agent)
- (libraries onton onton_core qcheck-core))
+ (libraries onton_core qcheck-core))
 
 (test
  (name test_patch_agent_rpc)

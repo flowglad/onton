@@ -845,6 +845,91 @@ let () =
           in
           let a = set_ci_checks a [ check ] in
           List.length a.ci_checks = 1);
+      Test.make
+        ~name:
+          "CI budget resets for new failing run IDs and caps repeated attempts"
+        Gen.(pair (int_range 1 20) (int_range 1 100000))
+        (fun (cap, id) ->
+          let check id conclusion =
+            Ci_check.
+              {
+                name = "build";
+                conclusion;
+                details_url = None;
+                description = None;
+                started_at = None;
+                id;
+              }
+          in
+          let rec exhaust n a =
+            if n = 0 then a else exhaust (n - 1) (increment_ci_failure_count a)
+          in
+          let old = check (Some id) "failure" in
+          let a =
+            create ~branch:br0 ~max_ci_failures:cap pid0 |> fun a ->
+            start_with_pr a ~base_branch:br0 |> complete |> fun a ->
+            set_ci_checks a [ old ] |> fun a ->
+            record_delivered_ci_run_ids a [ id ] |> exhaust cap
+          in
+          let same = set_ci_checks a [ old ] in
+          let fresh =
+            set_ci_checks same [ old; check (Some (id + 1)) "failure" ]
+          in
+          let delivered =
+            record_delivered_ci_run_ids fresh [ id + 1 ] |> exhaust cap
+            |> fun a -> set_ci_checks a [ old; check (Some (id + 1)) "failure" ]
+          in
+          needs_intervention same
+          && same.ci_failure_count = cap
+          && fresh.ci_failure_count = 0
+          && (not (needs_intervention fresh))
+          && equal fresh
+               (set_ci_checks fresh [ old; check (Some (id + 1)) "failure" ])
+          && delivered.ci_failure_count = cap
+          && needs_intervention delivered
+          && (set_ci_checks delivered [ check (Some (id + 2)) "failure" ])
+               .ci_failure_count = 0);
+      Test.make ~name:"Only stable new failing runs reset CI budget"
+        Gen.(
+          pair (int_range 1 20)
+            (oneof_list
+               [
+                 "failure";
+                 "error";
+                 "action_required";
+                 "timed_out";
+                 "startup_failure";
+               ]))
+        (fun (count, failure) ->
+          let check id conclusion =
+            Ci_check.
+              {
+                name = "build";
+                conclusion;
+                details_url = None;
+                description = None;
+                started_at = None;
+                id;
+              }
+          in
+          let rec exhaust n a =
+            if n = 0 then a else exhaust (n - 1) (increment_ci_failure_count a)
+          in
+          let a =
+            create ~branch:br0 pid0 |> exhaust count |> set_tried_fresh
+            |> set_tried_fresh |> increment_push_failure_count
+          in
+          let fresh = set_ci_checks a [ check (Some 12) failure ] in
+          fresh.ci_failure_count = 0
+          && equal_session_fallback fresh.session_fallback Given_up
+          && fresh.push_failure_count = a.push_failure_count
+          && List.for_all
+               [ "success"; "pending"; "cancelled"; "skipped"; "neutral" ]
+               ~f:(fun conclusion ->
+                 (set_ci_checks a [ check (Some 12) conclusion ])
+                   .ci_failure_count = count)
+          && (set_ci_checks a [ check None failure ]).ci_failure_count = count
+          && (set_ci_checks a []).ci_failure_count = count);
       (* -- set_tried_fresh from Fresh_available -> Tried_fresh -- *)
       Test.make ~name:"set_tried_fresh from Fresh_available" gen_pid (fun pid ->
           let a = create ~branch:br0 pid in

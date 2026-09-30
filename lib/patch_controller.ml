@@ -212,8 +212,15 @@ let apply_poll_result ?(merge_queue_ejection_confirmed = false) t patch_id
       Orchestrator.reset_conflict_noop_count t patch_id)
     else t
   in
+  let previous_ci_failure_count =
+    (Orchestrator.agent t patch_id).Patch_agent.ci_failure_count
+  in
   let t = Orchestrator.set_ci_checks t patch_id poll_result.ci_checks in
   let agent_before = Orchestrator.agent t patch_id in
+  if
+    previous_ci_failure_count > 0
+    && agent_before.Patch_agent.ci_failure_count = 0
+  then log "New failing CI run — reset CI failure count";
   let t =
     List.fold poll_result.queue ~init:t ~f:(fun acc kind ->
         let current_agent = Orchestrator.agent acc patch_id in

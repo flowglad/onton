@@ -1725,11 +1725,12 @@ let max_ci_failures_arg =
     & opt (some int) None
     & info [ "max-ci-failures" ] ~docv:"N"
         ~doc:
-          "Consecutive CI-failure responses per patch before onton stops \
-           enqueueing CI feedback and flags the patch for intervention \
-           (default: 3). Persisted to the project config on first run; on \
-           resume the stored value applies unless this flag is passed, in \
-           which case the flag wins and is persisted."
+          "CI repair responses for already-delivered failing check runs before \
+           onton flags the patch for intervention (default: 3). A failing \
+           check with a net-new run ID resets the counter. Persisted to the \
+           project config on first run; on resume the stored value applies \
+           unless this flag is passed, in which case the flag wins and is \
+           persisted."
         ~env:(Cmd.Env.info "ONTON_MAX_CI_FAILURES"))
 
 let positive_float_arg =
