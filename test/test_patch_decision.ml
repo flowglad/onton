@@ -1458,3 +1458,62 @@ let () =
        QCheck2.Gen.unit (fun () ->
          ignore respond_delivery;
          true))
+
+let () =
+  let open QCheck2 in
+  let decide ~initial_head ~final_head ~base_sha ~has_pr ~content =
+    let initial_head_in_base =
+      Option.equal String.equal initial_head base_sha
+    in
+    wontdo_message ~initial_head ~final_head ~base_sha ~initial_head_in_base
+      ~has_pr ~content
+  in
+  Test.check_exn
+    (Test.make ~name:"wontdo: accepts unchanged head behind an advanced base"
+       Gen.string (fun sha ->
+         Option.equal String.equal
+           (wontdo_message ~initial_head:(Some sha) ~final_head:(Some sha)
+              ~base_sha:(Some (sha ^ "x"))
+              ~initial_head_in_base:true ~has_pr:false ~content:(Some "Opt out"))
+           (Some "Opt out")));
+  Test.check_exn
+    (Test.make ~name:"wontdo: total over arbitrary observations" ~count:500
+       Gen.(
+         pair
+           (pair (option string) (option string))
+           (pair (option string) (pair bool (option string))))
+       (fun ((initial_head, final_head), (base_sha, (has_pr, content))) ->
+         try
+           ignore (decide ~initial_head ~final_head ~base_sha ~has_pr ~content);
+           true
+         with _ -> false));
+  Test.check_exn
+    (Test.make ~name:"wontdo: accepts and trims pre-commit reasons" ~count:300
+       Gen.(pair string string)
+       (fun (sha, message) ->
+         let expected = String.strip message in
+         Option.equal String.equal
+           (decide ~initial_head:(Some sha) ~final_head:(Some sha)
+              ~base_sha:(Some sha) ~has_pr:false ~content:(Some message))
+           (if String.is_empty expected then None else Some expected)));
+  Test.check_exn
+    (Test.make ~name:"wontdo: commits, PRs, missing refs prevent opt-out"
+       ~count:300 Gen.string (fun sha ->
+         let check initial_head final_head base_sha has_pr =
+           Option.is_none
+             (decide ~initial_head ~final_head ~base_sha ~has_pr
+                ~content:(Some "Cannot implement this patch"))
+         in
+         check (Some sha) (Some (sha ^ "x")) (Some sha) false
+         && check (Some (sha ^ "x")) (Some (sha ^ "x")) (Some sha) false
+         && check (Some sha) (Some sha) (Some sha) true
+         && check None (Some sha) (Some sha) false
+         && check (Some sha) None (Some sha) false
+         && check (Some sha) (Some sha) None false));
+  Test.check_exn
+    (Test.make ~name:"wontdo: absent and whitespace artifacts do not opt out"
+       Gen.string (fun sha ->
+         List.for_all [ None; Some ""; Some " \n\t\r " ] ~f:(fun content ->
+             Option.is_none
+               (decide ~initial_head:(Some sha) ~final_head:(Some sha)
+                  ~base_sha:(Some sha) ~has_pr:false ~content))))

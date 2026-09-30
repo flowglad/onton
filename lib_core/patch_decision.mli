@@ -297,3 +297,16 @@ val classify_artifact_sync_outcome :
       is deleted between the post-snapshot and the [apply_pr_body_artifact]
       call. [None] is reachable when the caller skips the PATCH despite the plan
       (e.g. an ad-hoc patch with no gameplan entry). *)
+
+val wontdo_message :
+  initial_head:string option ->
+  final_head:string option ->
+  base_sha:string option ->
+  initial_head_in_base:bool ->
+  has_pr:bool ->
+  content:string option ->
+  string option
+(** Accept a nonblank opt-out only when the branch has no commits outside the
+    base and no PR exists, and its head stayed unchanged during the turn.
+    [initial_head_in_base] must establish that the initial head is reachable
+    from [base_sha]. Missing Git observations fail closed. *)

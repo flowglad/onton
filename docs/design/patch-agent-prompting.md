@@ -28,6 +28,17 @@ Three goals, in priority order:
    Every redundant token in the prompt multiplies across the session and
    across retries.
 
+## Pre-commit opt-out
+
+Every patch turn includes an absolute path to
+`artifacts/<patch_id>/WONTDO.md`. Before making any patch commits, a worker
+may write a nonblank reason there and end its turn. The supervisor displays
+that reason in the activity log, completes the running operation, and puts
+the patch into intervention without pushing, creating a PR, or retrying.
+A PR or any patch commits make opt-out unavailable. Empty or whitespace-only
+files do not signal opt-out. Each new turn clears the previous file so an
+explicit manual retry cannot accidentally repeat an earlier refusal.
+
 ## Principles
 
 ### Independence

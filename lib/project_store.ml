@@ -61,6 +61,9 @@ let artifact_dir ~project_name ~patch_id =
 let gameplan_artifact_path project_name =
   Stdlib.Filename.concat (artifacts_root project_name) "gameplan.json"
 
+let wontdo_artifact_path ~project_name ~patch_id =
+  Stdlib.Filename.concat (artifact_dir ~project_name ~patch_id) "WONTDO.md"
+
 let pr_body_artifact_path ~project_name ~patch_id =
   Stdlib.Filename.concat (artifact_dir ~project_name ~patch_id) "pr-body.md"
 
