@@ -73,13 +73,19 @@ let tests =
              (Execution_mode.open_deps mode graph (id 4) ~has_merged:(fun _ ->
                   false))
              [ id 3 ]);
-    property "root readiness requires completed descendants" G.bool
-      (fun pending ->
-        let root = Patch_agent.create ~branch:(branch 1) (id 1) in
-        not
+    property "root readiness requires completed descendants and no integration"
+      (G.pair G.bool G.bool) (fun (descendants_merged, pending) ->
+        let root =
+          Patch_agent.create ~branch:(branch 1) (id 1) |> fun a ->
+          Patch_agent.set_head_oid a (Some "checked-head") |> fun a ->
+          Patch_agent.set_checks_passing a true |> fun a ->
+          Patch_agent.set_pr_body_delivered a true
+        in
+        Bool.equal
           (Execution_mode.root_ready mode graph
-             ~has_merged:(fun _ -> false)
-             ~pending_integrations:pending root));
+             ~has_merged:(fun _ -> descendants_merged)
+             ~pending_integrations:pending root)
+          (descendants_merged && not pending));
     property "feature publication defers only old or absent heads"
       (G.option G.string) (fun observed ->
         let a =

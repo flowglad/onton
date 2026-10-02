@@ -38,6 +38,15 @@ let () =
   let published = Patch_agent.mark_branch_published a in
   assert published.Patch_agent.branch_published;
   assert (not (Patch_agent.needs_intervention published));
+  let unpublished_with_failures =
+    apply 2 Patch_agent.increment_start_attempts_without_pr a
+  in
+  let published_with_failures =
+    apply 2 Patch_agent.increment_start_attempts_without_pr published
+  in
+  assert (Patch_agent.needs_intervention unpublished_with_failures);
+  assert (published_with_failures.Patch_agent.start_attempts_without_pr = 2);
+  assert (not (Patch_agent.needs_intervention published_with_failures));
   assert (not (Patch_agent.in_merge_queue a));
   assert (Option.is_none (Tui.human_intervention_reason a));
   let queued =
