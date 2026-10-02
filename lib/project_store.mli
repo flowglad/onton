@@ -128,7 +128,8 @@ val publish_gameplan_artifact : project_name:string -> unit
     {!gameplan_artifact_path} for patch agents to read. No-op when no stored
     YAML or JSON gameplan exists (ad-hoc sessions). Called once at startup,
     after {!save_gameplan_source} / resume validation, so the copy matches the
-    gameplan the run was parsed from. *)
+    gameplan the run was parsed from. Publication is atomic. Decode or I/O
+    failures log a warning and leave the previous artifact intact. *)
 
 val pr_body_artifact_path :
   project_name:string -> patch_id:Types.Patch_id.t -> string

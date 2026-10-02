@@ -743,3 +743,8 @@
  (name test_gameplan_scalar_properties)
  (modules test_gameplan_scalar_properties)
  (libraries onton_core qcheck-core qcheck-core.runner yojson))
+
+(test
+ (name test_json_properties)
+ (modules test_json_properties)
+ (libraries onton_core qcheck-core qcheck-core.runner yojson))

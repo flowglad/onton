@@ -20,7 +20,7 @@ workstream:
 
 problemStatement: >-
   Decision logic for patch lifecycle (should we deliver an operation? skip it? queue
-  it?) is tangled with I/O in main.ml's 1500-line runner_fiber. This makes it impossible
+  it?) is tangled with I/O in main.ml's 231-line runner_fiber. This makes it impossible
   to property-test the decision rules that the formal spec defines. The decision logic
   should be extracted into a pure module.
 

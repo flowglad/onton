@@ -70,7 +70,17 @@ let with_parser input f =
             match getf !@event T.Event._type with
             | `Stream_start -> Stream_start
             | `Stream_end -> Stream_end
-            | `Document_start -> Document_start
+            | `Document_start ->
+                let doc = getf data T.Event.Data.document_start in
+                let tags = getf doc T.Event.Document_start.tag_directives in
+                if
+                  ptr_compare
+                    (getf tags T.Event.Document_start.Tag_directives.start)
+                    (getf tags T.Event.Document_start.Tag_directives._end)
+                  <> 0
+                then
+                  raise (Decode_error "YAML tag directives are not supported");
+                Document_start
             | `Document_end -> Document_end
             | `Sequence_end -> Sequence_end
             | `Mapping_end -> Mapping_end

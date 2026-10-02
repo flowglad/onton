@@ -404,19 +404,27 @@ def main(argv: list[str]) -> int:
 
     errors: list[str] = []
     validate_schema(inst, errors)
-    if errors:
-        for error in errors:
-            print(f"ERROR: {error}", file=sys.stderr)
-        return 1
     validate_formatting(gp_path, args.width, errors)
-    patches_by_id = validate_patch_numbers(inst, errors)
-    validate_routing(inst, patches_by_id, errors)
-    validate_functional_changes(inst, patches_by_id, errors)
-    validate_dependency_graph(inst, patches_by_id, errors)
-    validate_test_map(inst, patches_by_id, errors)
-    validate_reachability_traces(inst, patches_by_id, errors)
-    validate_path_safety(inst, errors)
-    validate_specs(inst, errors)
+    # Schema errors need not prevent independent checks, but malformed shapes
+    # must become diagnostics even when optional jsonschema is unavailable.
+    try:
+        patches_by_id = validate_patch_numbers(inst, errors)
+    except (KeyError, TypeError, AttributeError) as exc:
+        errors.append(f"patch numbers: cannot check malformed structure ({exc})")
+        patches_by_id = {}
+    for check, arguments in [
+        (validate_routing, (inst, patches_by_id, errors)),
+        (validate_functional_changes, (inst, patches_by_id, errors)),
+        (validate_dependency_graph, (inst, patches_by_id, errors)),
+        (validate_test_map, (inst, patches_by_id, errors)),
+        (validate_reachability_traces, (inst, patches_by_id, errors)),
+        (validate_path_safety, (inst, errors)),
+        (validate_specs, (inst, errors)),
+    ]:
+        try:
+            check(*arguments)
+        except (KeyError, TypeError, AttributeError) as exc:
+            errors.append(f"{check.__name__}: cannot check malformed structure ({exc})")
 
     if errors:
         for e in errors:

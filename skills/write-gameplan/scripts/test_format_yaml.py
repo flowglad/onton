@@ -23,6 +23,14 @@ class FormatYaml(unittest.TestCase):
         self.assertTrue(all(len(line) <= 60 for line in formatted.splitlines()))
         self.assertEqual(format_yaml(formatted, width=60), formatted)
 
+    def test_minimum_width_includes_indentation(self):
+        prose = ' '.join(['several short words'] * 10)
+        source = 'text: ' + prose + '\nnested:\n  text: ' + prose + '\n'
+        formatted = format_yaml(source, width=20)
+        self.assertEqual(parse_yaml(formatted), parse_yaml(source))
+        self.assertTrue(all(len(line) <= 20 for line in formatted.splitlines()))
+        self.assertEqual(format_yaml(formatted, width=20), formatted)
+
     def test_comments_specs_and_types_survive(self):
         source = '''# A plan
 projectName: demo # identity

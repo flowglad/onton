@@ -289,35 +289,7 @@ let save_gameplan_source ~project_name ~source_path =
     ]
     ~f:(fun stale ->
       if (not (String.equal stale dest)) && Stdlib.Sys.file_exists stale then
-        Stdlib.Sys.remove stale)
-
-let publish_gameplan_artifact ~project_name =
-  let source = stored_gameplan_path project_name in
-  if
-    Stdlib.Sys.file_exists source
-    && not (String.equal source (gameplan_path project_name))
-  then (
-    let ic = Stdlib.open_in_bin source in
-    let content =
-      Stdlib.Fun.protect
-        ~finally:(fun () -> Stdlib.close_in_noerr ic)
-        (fun () -> Stdlib.In_channel.input_all ic)
-    in
-    let content =
-      if String.equal source (gameplan_yaml_path project_name) then
-        match Gameplan_document.of_string content with
-        | Ok json -> Yojson.Safe.to_string json
-        | Error msg -> failwith msg
-      else content
-    in
-    let dest = gameplan_artifact_path project_name in
-    ensure_dir (Stdlib.Filename.dirname dest);
-    let oc = Stdlib.open_out_bin dest in
-    Stdlib.Fun.protect
-      ~finally:(fun () -> Stdlib.close_out_noerr oc)
-      (fun () ->
-        Stdlib.output_string oc content;
-        Stdlib.flush oc))
+        try Stdlib.Sys.remove stale with Sys_error _ -> ())
 
 (* Cannot use Persistence.write_file_atomically here: Persistence depends on
    Project_store.ensure_dir, so calling it from Project_store creates a module
@@ -338,6 +310,42 @@ let write_file_atomically ~path ~content =
   with exn ->
     (try Stdlib.Sys.remove tmp_path with _ -> ());
     Error (Stdlib.Printexc.to_string exn)
+
+let publish_gameplan_artifact ~project_name =
+  let source = stored_gameplan_path project_name in
+  let warn msg =
+    Stdlib.Printf.eprintf
+      "onton: cannot publish gameplan artifact from %s: %s; keeping the \
+       previous artifact\n\
+       %!"
+      source msg
+  in
+  try
+    if
+      Stdlib.Sys.file_exists source
+      && not (String.equal source (gameplan_path project_name))
+    then
+      let ic = Stdlib.open_in_bin source in
+      let content =
+        Stdlib.Fun.protect
+          ~finally:(fun () -> Stdlib.close_in_noerr ic)
+          (fun () -> Stdlib.In_channel.input_all ic)
+      in
+      let normalized =
+        if String.equal source (gameplan_yaml_path project_name) then
+          Result.map (Gameplan_document.of_string content) ~f:(fun json ->
+              Yojson.Safe.to_string json)
+        else Ok content
+      in
+      match normalized with
+      | Error msg -> warn msg
+      | Ok content -> (
+          let dest = gameplan_artifact_path project_name in
+          ensure_dir (Stdlib.Filename.dirname dest);
+          match write_file_atomically ~path:dest ~content with
+          | Ok () -> ()
+          | Error msg -> warn msg)
+  with exn -> warn (Stdlib.Printexc.to_string exn)
 
 let remove_if_exists path =
   try

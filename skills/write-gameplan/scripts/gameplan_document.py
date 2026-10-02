@@ -13,7 +13,25 @@ NUMBER = re.compile(r"-?(0|[1-9][0-9]*)(\.[0-9]+)?([eE][+-]?[0-9]+)?\Z")
 def load_document(path: Path) -> Any:
     text = path.read_text()
     if path.suffix == ".json":
-        return json.loads(text)
+        def unique_object(pairs):
+            result = {}
+            for key, value in pairs:
+                if key in result:
+                    raise ValueError(f"Duplicate JSON key: {key}")
+                result[key] = value
+            return result
+
+        def finite_float(value):
+            number = float(value)
+            if not math.isfinite(number):
+                raise ValueError("JSON numbers must be finite")
+            return number
+
+        def reject_constant(value):
+            raise ValueError(f"Non-standard JSON number: {value}")
+
+        return json.loads(text, object_pairs_hook=unique_object,
+                          parse_float=finite_float, parse_constant=reject_constant)
     return parse_yaml(text)
 
 
@@ -25,6 +43,8 @@ def parse_yaml(text: str) -> Any:
 
     # Inspect events before composing so aliases cannot expand into a graph.
     for event in yaml.parse(text, Loader=yaml.BaseLoader):
+        if isinstance(event, yaml.events.DocumentStartEvent) and event.tags:
+            raise ValueError("YAML tag directives are not supported")
         if isinstance(event, yaml.events.AliasEvent):
             raise ValueError("YAML aliases are not supported")
         if getattr(event, "anchor", None) or getattr(event, "tag", None):

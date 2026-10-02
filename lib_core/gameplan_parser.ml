@@ -360,10 +360,9 @@ let json_precedents json =
   | _ -> []
 
 let parse_json_string input =
-  match Yojson.Safe.from_string input with
-  | exception Yojson.Json_error msg ->
-      Error (Printf.sprintf "JSON parse error: %s" msg)
-  | json -> (
+  match Json.of_string input with
+  | Error msg -> Error (Printf.sprintf "JSON parse error: %s" msg)
+  | Ok json -> (
       try
         let project_name = member "projectName" json |> to_string in
         let optional_string key =

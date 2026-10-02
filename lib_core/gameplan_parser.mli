@@ -16,4 +16,5 @@ val parse_string : string -> (t, string) Result.t
 
 val parse_file : string -> (t, string) Result.t
 (** [parse_file path] parses a YAML or JSON gameplan file. [.json] files use
-    strict JSON parsing; other filenames accept either format. *)
+    JSON parsing with unique keys and finite numbers; other filenames accept
+    either format with the same key-uniqueness and number constraints. *)

@@ -13,7 +13,7 @@
     "unlocks": "Testable decision logic decoupled from I/O; property tests for all patch lifecycle transitions"
   },
 
-  "problemStatement": "Decision logic for patch lifecycle (should we deliver an operation? skip it? queue it?) is tangled with I/O in main.ml's 1500-line runner_fiber. This makes it impossible to property-test the decision rules that the formal spec defines. The decision logic should be extracted into a pure module.",
+  "problemStatement": "Decision logic for patch lifecycle (should we deliver an operation? skip it? queue it?) is tangled with I/O in main.ml's 231-line runner_fiber. This makes it impossible to property-test the decision rules that the formal spec defines. The decision logic should be extracted into a pure module.",
 
   "solutionSummary": "Extract a pure Patch_decision module with functions like `disposition` (algebraic return) and `needs_intervention` (predicate). Each mirrors how the spec models its invariant: actions as domains, cap conditions as predicates. Wire main.ml to call these functions instead of inlining the logic. Add QCheck2 property tests derived from the formal spec's preconditions and postconditions.",
 

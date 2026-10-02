@@ -80,7 +80,7 @@ def format_yaml(text: str, width: int = 88) -> str:
                 offset = 0
                 for line in value.split("\n"):
                     parts = textwrap.wrap(
-                        line, width=max(20, width - indent),
+                        line, width=max(1, width - indent),
                         break_long_words=False, break_on_hyphens=False,
                         replace_whitespace=False, drop_whitespace=False,
                     )

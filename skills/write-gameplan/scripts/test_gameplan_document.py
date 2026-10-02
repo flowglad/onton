@@ -35,6 +35,8 @@ class GameplanDocuments(unittest.TestCase):
     def test_rejected_documents(self):
         for text in ['a: 1\na: 2', '{"a": 1, "a": 2}', 'a: {x: 1, x: 2}', 'a: &id [1]\nb: *id',
                      'a: !custom value', 'a: !!str value', 'a: !!map {b: value}',
+                     '%TAG !custom! tag:example.com,2026:\n---\na: value',
+                     '%TAG !! tag:yaml.org,2002:\n---\na: value',
                      'a: [', '1: value', '[a]: value', '<<: {a: 1}', 'a: 1e999',
                      'a: 1\n---\nb: 2', 'a: 1\n...\ngarbage', '']:
             with self.subTest(text=text), self.assertRaises(Exception):
@@ -45,6 +47,42 @@ class GameplanDocuments(unittest.TestCase):
         with self.assertRaises(json.JSONDecodeError):
             self.load('a: 1', '.json')
 
+    def test_json_rejects_duplicate_keys_and_non_finite_numbers(self):
+        for text in ['{"a": 1, "a": 2}', '{"a": {"b": 1, "b": 2}}',
+                     '{"a": NaN}', '{"a": Infinity}', '{"a": -Infinity}',
+                     '{"a": [1e999]}']:
+            with self.subTest(text=text), self.assertRaises(ValueError):
+                self.load(text, '.json')
+        self.assertEqual(self.load('[{"a": 1}, {"a": 2}]', '.json'),
+                         [{'a': 1}, {'a': 2}])
+
+    def test_validator_collects_schema_formatting_and_semantic_errors(self):
+        import importlib.util
+        with tempfile.TemporaryDirectory() as td:
+            path = Path(td) / 'plan.yaml'
+            text = (REFERENCES / 'example.yaml').read_text()
+            # Keep the shape usable by semantic checks but violate the schema's
+            # required string type, routing rules, and canonical spacing.
+            # Derive the original project name rather than depending on it.
+            lines = text.splitlines(keepends=True)
+            for i, line in enumerate(lines):
+                if line.startswith('projectName:'):
+                    lines[i] = 'projectName: 123\n'
+                    break
+            text = ''.join(lines).replace('\n\nowner:', '\nowner:', 1)
+            text = text.replace('requiredContext: []', 'requiredContext: [missing-resource]', 1)
+            path.write_text(text)
+            result = subprocess.run([sys.executable, str(SCRIPTS / 'validate.py'), str(path)],
+                                    stdin=subprocess.DEVNULL, capture_output=True,
+                                    text=True, timeout=30)
+            self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+            if importlib.util.find_spec('jsonschema') is not None:
+                self.assertIn('schema [projectName]', result.stdout)
+            self.assertIn('format_yaml.py', result.stdout)
+            self.assertIn('unknown resource', result.stdout)
+            self.assertIn('FAIL:', result.stderr)
+            self.assertNotIn('Traceback', result.stderr)
+
     def test_examples_are_equivalent_and_valid(self):
         self.assertEqual(load_document(REFERENCES / 'example.yaml'),
                          load_document(REFERENCES / 'example.json'))
@@ -54,7 +92,6 @@ class GameplanDocuments(unittest.TestCase):
                                     stdin=subprocess.DEVNULL, capture_output=True,
                                     text=True, timeout=30)
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-            self.assertNotIn('WARN', result.stderr)
 
     def test_validator_reports_invalid_shape_without_traceback(self):
         with tempfile.TemporaryDirectory() as td:

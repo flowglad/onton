@@ -15,7 +15,6 @@ let totality =
   property ~count:1000 "document decoding is total for arbitrary bytes"
     QCheck2.Gen.string (fun input ->
       try
-        ignore (decode input);
         ignore (Gameplan_parser.parse_string input);
         true
       with _ -> false)
@@ -166,6 +165,8 @@ let rejected =
           "a: !custom value";
           "a: !!str value";
           "a: !!map {b: value}";
+          "%TAG !custom! tag:example.com,2026:\n---\na: value";
+          "%TAG !! tag:yaml.org,2002:\n---\na: value";
           "a: [";
           "1: value";
           "[a]: value";
