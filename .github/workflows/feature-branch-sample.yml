@@ -1,0 +1,31 @@
+name: Feature branch sample
+
+on:
+  push:
+    branches: ["feature-branch-sample-20261002/patch-*"]
+  pull_request:
+    branches: [main]
+    paths:
+      - "docs/design/feature-branch-*.md"
+      - ".github/workflows/feature-branch-sample.yml"
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  checks:
+    name: Feature branch sample checks
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          fetch-depth: 2
+      - name: Check whitespace and guide presence
+        run: |
+          git diff --check HEAD^ HEAD
+          test -s docs/design/feature-branch-sample.md
