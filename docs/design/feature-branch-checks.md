@@ -17,13 +17,15 @@ descendant branch HEAD, not from a PR.
   commit do not count, so a new push restarts the wait.
 - At least one check is required. A HEAD with no checks is not ready; it is
   never treated as vacuously passing.
-- Every check must pass. Pending checks mean keep waiting; any failure blocks
+- Every check must have a passing conclusion; neutral and skipped checks count
+  as passing. Pending checks mean keep waiting; any failure blocks
   integration.
 
 ## Push-triggered workflows are required
 
-Without a PR, only workflows triggered by `push` can attach checks to a
-descendant HEAD. `pull_request` workflows never run for these branches. The
+Without a PR, `pull_request` workflows do not run for these branches, so this
+sample relies on workflows triggered by `push` to attach checks to a
+descendant HEAD. The
 base `main` CI is push-limited to `main`, so this sample adds
 `.github/workflows/feature-branch-sample.yml`, which runs on pushes to
 `feature-branch-sample-20261002/patch-*`.
