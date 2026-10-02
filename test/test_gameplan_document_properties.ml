@@ -1,5 +1,5 @@
 (* @archlint.module test
-   @archlint.domain json *)
+   @archlint.domain gameplan-document *)
 
 open Onton_core
 

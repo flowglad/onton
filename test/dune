@@ -738,3 +738,8 @@
  (action
   (run %{test} %{dep:../skills/write-gameplan/references/example.yaml}
        %{dep:../skills/write-gameplan/references/example.json})))
+
+(test
+ (name test_gameplan_scalar_properties)
+ (modules test_gameplan_scalar_properties)
+ (libraries onton_core qcheck-core qcheck-core.runner yojson))

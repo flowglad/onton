@@ -1,28 +1,21 @@
 (* @archlint.module shell
-   @archlint.domain json *)
+   @archlint.domain gameplan-document *)
 
 open Base
 
 exception Decode_error of string
 
-let number =
-  Re.Perl.compile_pat {|\A-?(0|[1-9][0-9]*)(\.[0-9]+)?([eE][+-]?[0-9]+)?\z|}
-
-let scalar style value : Yojson.Safe.t =
-  match style with
-  | `Single_quoted | `Double_quoted | `Literal | `Folded -> `String value
-  | `Any | `Plain -> (
-      match value with
-      | "" | "~" | "null" -> `Null
-      | "true" -> `Bool true
-      | "false" -> `Bool false
-      | value when Re.execp number value -> (
-          match Yojson.Safe.from_string value with
-          | `Float f when not (Float.is_finite f) ->
-              raise (Decode_error "YAML numbers must be finite")
-          | json -> json)
-      | value -> `String value)
-  | `E _ -> raise (Decode_error "Unknown YAML scalar style")
+let scalar style value =
+  let style =
+    match style with
+    | `Single_quoted | `Double_quoted | `Literal | `Folded ->
+        Gameplan_scalar.Quoted
+    | `Any | `Plain -> Gameplan_scalar.Plain
+    | `E _ -> raise (Decode_error "Unknown YAML scalar style")
+  in
+  match Gameplan_scalar.decode style value with
+  | Ok json -> json
+  | Error msg -> raise (Decode_error msg)
 
 (* [Yaml.Stream] in yaml 3.2 reads scalars as C strings (truncating escaped
    NULs) and never deletes native events or parsers. Drive its libyaml bindings

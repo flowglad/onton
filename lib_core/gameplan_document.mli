@@ -1,5 +1,5 @@
 (* @archlint.module interface
-   @archlint.domain json *)
+   @archlint.domain gameplan-document *)
 
 val of_string : string -> (Yojson.Safe.t, string) result
 (** Decode JSON or one YAML document into the shared gameplan data model. YAML
