@@ -2106,7 +2106,8 @@ let () =
                       (Apply_poll { patch_idx = 0; poll_kind }))
               in
               let timed_out_result =
-                Orchestrator.combine_session_and_push ~branch_changed:true
+                Orchestrator.combine_session_and_push
+                  ~delivery_mode:Patch_decision.Respond ~branch_changed:true
                   ~session:Orchestrator.Session_ok
                   ~push:(Worktree.Push_error "git push timed out")
               in
