@@ -7,6 +7,7 @@ import tempfile
 import unittest
 
 from gameplan_document import load_document
+from format_yaml import format_yaml
 
 SCRIPTS = Path(__file__).resolve().parent
 REFERENCES = SCRIPTS.parent / "references"
@@ -69,8 +70,14 @@ class GameplanDocuments(unittest.TestCase):
                 if line.startswith('projectName:'):
                     lines[i] = 'projectName: 123\n'
                     break
-            text = ''.join(lines).replace('\n\nowner:', '\nowner:', 1)
-            text = text.replace('requiredContext: []', 'requiredContext: [missing-resource]', 1)
+            text = ''.join(lines).replace('requiredContext: []',
+                                         'requiredContext: [missing-resource]', 1)
+            # Canonicalize the schema/routing defects first, then introduce
+            # only the missing top-level blank line as a formatting defect.
+            canonical = format_yaml(text)
+            text = canonical.replace('\n\nowner:', '\nowner:', 1)
+            self.assertNotEqual(text, canonical)
+            self.assertEqual(format_yaml(text), canonical)
             path.write_text(text)
             result = subprocess.run([sys.executable, str(SCRIPTS / 'validate.py'), str(path)],
                                     stdin=subprocess.DEVNULL, capture_output=True,

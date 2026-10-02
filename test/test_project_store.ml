@@ -39,7 +39,9 @@ let () =
   let read_file path = In_channel.with_open_bin path In_channel.input_all in
   Fun.protect
     ~finally:(fun () ->
-      Unix.putenv "ONTON_DATA_DIR" (Option.value old_data_dir ~default:"");
+      (match old_data_dir with
+      | Some value -> Unix.putenv "ONTON_DATA_DIR" value
+      | None -> Unix.unsetenv "ONTON_DATA_DIR");
       if Sys.file_exists artifacts then Unix.chmod artifacts 0o755;
       let rec remove path =
         if Sys.is_directory path then (
@@ -83,4 +85,5 @@ let () =
       assert (read_file artifact = valid);
       assert (Array.to_list (Sys.readdir artifacts) = [ "gameplan.json" ]);
       assert (Sys.is_directory dir));
+  assert (Sys.getenv_opt "ONTON_DATA_DIR" = old_data_dir);
   print_endline "gameplan publication and best-effort cleanup: OK"
