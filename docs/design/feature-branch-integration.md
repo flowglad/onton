@@ -44,3 +44,25 @@ after:   main <- 1 <- 4          (patch 4 base: patch 1)
 Until patch 3 integrates, patch 4 is based on patch 3. When patch 3 is merged
 into patch 1, patch 4 is rebased and its base becomes patch 1. Its base is
 never `main`, because the root is the terminal boundary.
+
+## Recovery and review
+
+Integration is designed to be retried safely. See the
+[root guide](feature-branch-sample.md) for the topology and
+[Branch HEAD checks](feature-branch-checks.md) for readiness.
+
+- **Dirty or diverged root checkout:** the supervisor refuses to integrate
+  while the root checkout has uncommitted changes or has diverged from its
+  remote, rather than overwriting work. Clean or reconcile it, and the next
+  attempt proceeds.
+- **Already-contained heads:** if the root already contains the descendant's
+  HEAD, integration is a no-op success. Repeating it is idempotent.
+- **Conflicts:** a merge conflict is routed back to the descendant, whose agent
+  resolves it on its own branch. The root is never left half-merged.
+- **Retry backoff and cap:** transient failures are retried with increasing
+  delay, up to a fixed cap, after which the patch needs intervention.
+- **Readiness invalidation:** every update to the root invalidates root
+  readiness, so earlier check results never carry over.
+- **Root promotion:** the root is promoted for review only after all
+  descendants have integrated and fresh checks pass on its current HEAD. The
+  root PR is the only one, and it stops there for human review.
