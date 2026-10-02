@@ -406,10 +406,12 @@ val force_push_with_lease :
     current operation and retry instead of remaining busy indefinitely. Thin
     effectful orchestrator: runs [git rev-list --count base..HEAD], applies
     [push_gate_from_count] to decide whether to push, and classifies the push
-    output via [classify_push_result]. By default this force-pushes with lease;
-    [preserve_history = true] uses a normal push and reports a non-fast-forward
-    rejection rather than replacing remote history. See [push_gate_from_count]
-    and [classify_push_result] for the pure decision logic. *)
+    output via [classify_push_result]. Initial publication uses a normal push.
+    Updates with an existing remote-tracking ref force-push with lease by
+    default; [preserve_history = true] uses a normal push and reports a
+    non-fast-forward rejection rather than replacing remote history. See
+    [push_gate_from_count] and [classify_push_result] for the pure decision
+    logic. *)
 
 val rebase_in_progress : process_mgr:_ Eio.Process.mgr -> path:string -> bool
 (** Returns [true] if there is a rebase currently in progress in the worktree at
