@@ -32,6 +32,9 @@ type patch_agent_message = {
 [@@deriving sexp_of, show, eq]
 
 type t = {
+  execution_mode : Execution_mode.t;
+  promotion_claimed : bool;
+  promotion_inflight : bool;
   graph : Graph.t;
   agents : Patch_agent.t Map.M(Patch_id).t;
   outbox : patch_agent_message Map.M(Message_id).t;
@@ -60,6 +63,9 @@ let create ~patches ~main_branch =
                  (Patch_id.to_string p.Patch.id)))
   in
   {
+    execution_mode = Execution_mode.mainline;
+    promotion_claimed = false;
+    promotion_inflight = false;
     graph;
     agents;
     outbox = Map.empty (module Message_id);
@@ -100,30 +106,74 @@ let fire t action =
 
 (** {2 External event application} *)
 
+let execution_mode t = t.execution_mode
+let is_integration_root t id = Execution_mode.is_root t.execution_mode id
+
+let is_feature_descendant t id =
+  Execution_mode.is_descendant t.execution_mode id
+
+let terminal_branch t id =
+  Execution_mode.terminal t.execution_mode id
+    ~branch_of:(fun p -> (agent t p).Patch_agent.branch)
+    ~main:t.main_branch
+
+let open_deps t id =
+  Execution_mode.open_deps t.execution_mode t.graph id ~has_merged:(fun p ->
+      (agent t p).Patch_agent.merged)
+
+let expected_base t id =
+  Execution_mode.base t.execution_mode t.graph id
+    ~has_merged:(fun p -> (agent t p).Patch_agent.merged)
+    ~branch_of:(fun p -> (agent t p).Patch_agent.branch)
+    ~main:t.main_branch
+
+let construction_open t =
+  (not t.promotion_claimed)
+  &&
+  match Execution_mode.root t.execution_mode with
+  | None -> true
+  | Some id -> (
+      match find_agent t id with
+      | Some a -> (not a.merged) && (a.is_draft || not (Patch_agent.has_pr a))
+      | None -> true)
+
+let promotion_claimed t = t.promotion_claimed
+
+let claim_promotion t =
+  { t with promotion_claimed = true; promotion_inflight = true }
+
+let release_promotion t =
+  { t with promotion_claimed = false; promotion_inflight = false }
+
+let settle_restored_promotion t =
+  if t.promotion_inflight then t else release_promotion t
+
+let additions_allowed t ~dependencies =
+  Execution_mode.additions_allowed t.execution_mode t.graph
+    ~construction_open:(construction_open t) ~dependencies
+
+let invalidate_root_readiness t =
+  match Execution_mode.root t.execution_mode with
+  | None -> t
+  | Some id ->
+      update_agent t id ~f:(fun a ->
+          a |> fun a ->
+          Patch_agent.set_checks_passing a false |> fun a ->
+          Patch_agent.set_merge_ready a false |> fun a ->
+          Patch_agent.set_mergeability_unknown a true)
+
+let set_execution_mode t mode =
+  let t = { t with execution_mode = mode } in
+  invalidate_root_readiness t
+
 let refresh_base_branch t patch_id =
   match find_agent t patch_id with
   | None -> t
-  | Some _ ->
-      let has_merged pid =
-        match find_agent t pid with
-        | Some a -> a.Patch_agent.merged
-        | None -> false
-      in
-      let open_deps = Graph.open_pr_deps t.graph patch_id ~has_merged in
-      (* When more than 1 dep is still open, we cannot determine a unique
-         base branch yet — skip the refresh until enough deps merge. *)
-      if List.length open_deps > 1 then t
-      else
-        let branch_of pid =
-          match find_agent t pid with
-          | Some a -> a.Patch_agent.branch
-          | None -> t.main_branch
-        in
-        let fresh =
-          Graph.initial_base t.graph patch_id ~has_merged ~branch_of
-            ~main:t.main_branch
-        in
-        (* Intentionally do NOT touch branch_rebased_onto here, even when
+  | Some _ -> (
+      match expected_base t patch_id with
+      | None -> t
+      | Some fresh ->
+          (* Intentionally do NOT touch branch_rebased_onto here, even when
            [fresh] differs from the current base. branch_rebased_onto
            tracks where the local branch was LAST REBASED — clearing it
            would hide the drift the detector exists to surface. The
@@ -132,8 +182,8 @@ let refresh_base_branch t patch_id =
            recorded anchor is still safe for the new base; orchestrator-
            level invalidation would be redundant and would also break
            drift detection (PI-16). *)
-        update_agent t patch_id ~f:(fun a ->
-            Patch_agent.set_base_branch a fresh)
+          update_agent t patch_id ~f:(fun a ->
+              Patch_agent.set_base_branch a fresh))
 
 let complete t patch_id =
   (* Refresh base_branch before transitioning to idle — a dependency may
@@ -194,7 +244,9 @@ let mark_merged t patch_id =
           | Some dep_agent ->
               if
                 dep_agent.Patch_agent.merged
-                || (not (Patch_agent.has_pr dep_agent))
+                || (not
+                      (Patch_agent.has_pr dep_agent
+                      || dep_agent.branch_published))
                 || Patch_agent.in_merge_queue dep_agent
                 || List.mem dep_agent.Patch_agent.queue Operation_kind.Rebase
                      ~equal:Operation_kind.equal
@@ -241,7 +293,7 @@ let enqueue_rebase_for_stranded_dependents t patch_id =
           | Some d ->
               if
                 d.Patch_agent.merged
-                || (not (Patch_agent.has_pr d))
+                || (not (Patch_agent.has_pr d || d.branch_published))
                 || Patch_agent.in_merge_queue d
                 || List.mem d.Patch_agent.queue Operation_kind.Rebase
                      ~equal:Operation_kind.equal
@@ -331,14 +383,6 @@ let find_patch_by_branch t branch =
 let start_eligibility t ~base_contains_merged_siblings base =
   let base_is_main = Branch.equal base t.main_branch in
   let base_branch = Branch.to_string base in
-  let has_merged pid =
-    match find_agent t pid with Some a -> a.Patch_agent.merged | None -> false
-  in
-  let branch_of pid =
-    match find_agent t pid with
-    | Some a -> a.Patch_agent.branch
-    | None -> t.main_branch
-  in
   let ( base_patch_merged,
         base_patch_busy_rebasing,
         base_patch_has_conflict,
@@ -381,12 +425,10 @@ let start_eligibility t ~base_contains_merged_siblings base =
                — [busy_rebasing] above gates only an imminent rebase, and a
                completed rebase drains the queue (SBI-3), so [runnable_rebase]
                cannot latch on a fresh base. *)
-            let open_deps = Graph.open_pr_deps t.graph bpid ~has_merged in
             let structurally_fresh =
-              match (open_deps, a.Patch_agent.branch_rebased_onto) with
-              | [], Some b -> Branch.equal b t.main_branch
-              | [ d ], Some b -> Branch.equal b (branch_of d)
-              | _ -> false
+              Option.equal Branch.equal (expected_base t bpid)
+                a.Patch_agent.branch_rebased_onto
+              && Option.is_some (expected_base t bpid)
             in
             (* [has_conflict] extends the busy-rebase defer across the
                conflicted-rebase window: a [Rebase] that conflicts completes as
@@ -712,13 +754,17 @@ let apply_automerge_failure_state t patch_id ~retry_deadline ~max_failures =
 let all_agents t = Map.data t.agents
 let graph t = t.graph
 
-let restore ~graph ~agents ~outbox ~main_branch () =
+let restore ?(promotion_claimed = false) ~graph ~agents ~outbox ~main_branch ()
+    =
   let outbox = Map.filter outbox ~f:(fun msg -> Map.mem agents msg.patch_id) in
   (* The snapshot's per-agent [max_ci_failures] values are trusted here for
      round-trip identity; [Runtime.create] restamps the whole orchestrator
      with the resolved config value right after restore, so the running cap
      always comes from config, not from stale persisted state. *)
   {
+    execution_mode = Execution_mode.mainline;
+    promotion_claimed;
+    promotion_inflight = false;
     graph;
     agents;
     outbox;
@@ -764,8 +810,13 @@ let add_agent ?(complexity = None) t ~patch_id ~branch ~base_branch ~pr_number =
       Patch_agent.create_adhoc ~patch_id ~branch ~pr_number
         ~max_ci_failures:t.max_ci_failures ~complexity
     in
-    let graph = Graph.add_patch_with_deps t.graph patch_id ~deps in
-    { t with graph; agents = Map.set t.agents ~key:patch_id ~data:agent }
+    if
+      Option.is_some (Execution_mode.root t.execution_mode)
+      || not (additions_allowed t ~dependencies:deps)
+    then t
+    else
+      let graph = Graph.add_patch_with_deps t.graph patch_id ~deps in
+      { t with graph; agents = Map.set t.agents ~key:patch_id ~data:agent }
 
 let add_planned_patch t (patch : Patch.t) ~deps =
   if Map.mem t.agents patch.Patch.id then t
@@ -779,8 +830,19 @@ let add_planned_patch t (patch : Patch.t) ~deps =
       Patch_agent.create ~branch:patch.Patch.branch
         ~max_ci_failures:t.max_ci_failures patch.Patch.id
     in
-    let graph = Graph.add_patch_with_deps t.graph patch.Patch.id ~deps in
-    { t with graph; agents = Map.set t.agents ~key:patch.Patch.id ~data:agent }
+    let agent =
+      if is_feature_descendant t patch.Patch.id then
+        Patch_agent.set_automerge_enabled agent true
+      else agent
+    in
+    if not (additions_allowed t ~dependencies:deps) then t
+    else
+      let graph = Graph.add_patch_with_deps t.graph patch.Patch.id ~deps in
+      {
+        t with
+        graph;
+        agents = Map.set t.agents ~key:patch.Patch.id ~data:agent;
+      }
 
 type rebase_effect = Push_branch [@@deriving show, eq, sexp_of]
 
@@ -1349,3 +1411,6 @@ let apply_respond_outcome t patch_id kind outcome =
         else t
       in
       retry_rebase_after_cleanup t
+
+let mark_branch_published t id =
+  update_agent t id ~f:Patch_agent.mark_branch_published

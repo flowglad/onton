@@ -552,6 +552,7 @@ val apply_conflict_push_result :
     - [Conflict_give_up]: unrecoverable rebase error. *)
 
 val restore :
+  ?promotion_claimed:bool ->
   graph:Graph.t ->
   agents:Patch_agent.t Map.M(Patch_id).t ->
   outbox:patch_agent_message Map.M(Message_id).t ->
@@ -580,3 +581,20 @@ val start_eligibility :
     contains the launching patch's merged siblings. Otherwise returns
     [Defer reason]. Freshness is dependency-scoped: an unrelated advance of
     [origin/main] never defers a [Start]. See {!Start_eligibility}. *)
+
+val execution_mode : t -> Execution_mode.t
+val set_execution_mode : t -> Execution_mode.t -> t
+val is_integration_root : t -> Patch_id.t -> bool
+val is_feature_descendant : t -> Patch_id.t -> bool
+val terminal_branch : t -> Patch_id.t -> Branch.t
+val open_deps : t -> Patch_id.t -> Patch_id.t list
+val expected_base : t -> Patch_id.t -> Branch.t option
+val construction_open : t -> bool
+val claim_promotion : t -> t
+val release_promotion : t -> t
+val additions_allowed : t -> dependencies:Patch_id.t list -> bool
+val invalidate_root_readiness : t -> t
+val mark_branch_published : t -> Patch_id.t -> t
+val refresh_base_branch : t -> Patch_id.t -> t
+val promotion_claimed : t -> bool
+val settle_restored_promotion : t -> t

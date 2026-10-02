@@ -325,6 +325,7 @@ onton --repo ../my-repo [OPTIONS]        # Ad-hoc mode (no gameplan)
 | `--main-branch` | (auto-detected) | Main branch name (inferred from remote HEAD if omitted) |
 | `--poll-interval` | `30.0` | Forge polling interval in seconds |
 | `--max-concurrency` | `5` / `$ONTON_MAX_CONCURRENCY` | Maximum concurrent Claude processes |
+| `--feature-branch` | off | For a new GitHub gameplan, construct beneath its sole dependency root; descendants publish branches without PRs |
 | `--auto-merge` | off | Enable automerge for every patch when starting a fresh `--gameplan` project; ignored on resume so per-patch TUI toggles persist |
 | `--headless` | off | Run without TUI (structured JSONL activity output to stdout) |
 | `--headless-transcript` | off | With `--headless`, include live patch-agent transcript chunks on stdout |
@@ -333,6 +334,58 @@ Project config and state are persisted to `~/.local/share/onton/<project>/`.
 Resuming a project reloads the saved snapshot (including agent transcripts) and
 reconciles against GitHub. The snapshot includes the durable patch-agent
 message ledger, so accepted but incomplete work can resume after restart.
+
+### Feature branch mode
+
+```sh
+onton --gameplan GAMEPLAN --feature-branch
+onton PROJECT                            # Resume the persisted mode and root
+```
+
+The gameplan must be nonempty and have exactly one dependency root. That patch
+is the integration branch and owns the project's only PR. Its PR stays draft
+while descendants are constructed. Existing projects cannot change modes;
+configs without a stored feature root retain ordinary mainline behavior. This
+mode requires GitHub and the `git` worktree backend.
+
+Descendants publish branches without opening PRs. Onton polls checks attached
+to each branch's exact HEAD SHA, including paginated check runs and commit
+statuses. At least one check must exist and all checks must pass. CI must run
+on branch pushes; a workflow that runs only on `pull_request` will leave these
+branches waiting for checks. Descendants can start once their parent has passed
+its CI, conflict, and freshness gates. An open intermediate parent remains the
+direct base; after it integrates, the base moves toward the root and never
+past it to main.
+
+Eligible descendants integrate **immediately**, without the automerge idle
+window or required-review approval. Their per-patch automerge toggle defaults
+to enabled and can pause integration. Queued feedback, active work, unresolved
+conflicts, unsettled rebases, and unpublished heads block integration. Failures
+use the configured automerge timeout for retry backoff and the existing failure
+cap. Native GitHub stacks cannot use this path.
+
+Integrations and root operations share one write lock. Each integration fetches
+refs, verifies the checked descendant head, builds a normal `--no-ff` merge in a
+temporary worktree, pushes without force, and fast-forwards the managed root
+checkout. Dirty or diverged root checkouts are refused while preserving local
+changes. Retries recognize a descendant head already contained in the remote
+root, including a crash after publication. Root updates from main use merges,
+and root publication uses normal pushes; descendant branches retain rebasing.
+
+Every root update invalidates readiness. Once all descendants have integrated,
+the root needs fresh passing checks for its current published head and no
+outstanding work before promotion for review. Its subsequent review and optional
+automerge behavior are unchanged. Runtime patches may be added beneath the
+persisted root during construction. Promotion claims freeze additions; a failed
+claim reopens construction, and a successful promotion closes it permanently.
+
+The earlier draft-PR experiment is retained as historical evidence:
+[PR #461](https://github.com/flowglad/onton/pull/461) was indirectly merged into
+`experiment/draft-indirect-merge-20261002-200951-base` at
+`2026-10-02T20:10:13Z`, with head
+`5d6ead529e5341c699048c2d98fc380de6b19e2b` and merge commit
+`7d7a03a796f99cc4e5c8bc7a54d9ee72bb9696a7`. Feature mode now uses branch-only
+descendants; its automated integration tests use local repositories.
 
 ### User configuration
 

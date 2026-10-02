@@ -42,6 +42,8 @@ let has_pr fields =
       | Some "absent" | Some _ | None -> false)
   | _ -> Option.is_some (int_member fields "pr_number")
 
+let has_change fields = has_pr fields || bool_member fields "branch_published"
+
 let is_pr_missing fields =
   match member fields "pr_status" with
   | Some (`Assoc pr_fields) -> (
@@ -63,7 +65,7 @@ let needs_intervention fields =
   in
   Patch_agent.needs_intervention_of_fields
     ~merged:(bool_member fields "merged")
-    ~has_pr:(has_pr fields) ~is_pr_missing:(is_pr_missing fields)
+    ~has_pr:(has_change fields) ~is_pr_missing:(is_pr_missing fields)
     ~session_given_up:(session_given_up fields) ~human_pending
     ~ci_failure_count:
       (Option.value (int_member fields "ci_failure_count") ~default:0)
@@ -111,7 +113,7 @@ let display_status_of_agent_json ~main_branch json =
     |> State.Patch_ctx.set_approved ~patch_id
          ~value:(bool_member fields "satisfies")
     |> State.Patch_ctx.set_busy ~patch_id ~value:(bool_member fields "busy")
-    |> State.Patch_ctx.set_has_pr ~patch_id ~value:(has_pr fields)
+    |> State.Patch_ctx.set_has_pr ~patch_id ~value:(has_change fields)
   in
   let ctx =
     match string_member fields "base_branch" with

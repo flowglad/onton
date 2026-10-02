@@ -121,9 +121,10 @@ val human_acceptance_delivers_messages :
   kind:Types.Operation_kind.t option ->
   bool
 (** Whether backend acceptance is sufficient to consume inflight Human guidance.
-    True only when the initiating delivery mode is [Respond] for a PR-backed
-    Human operation. A Human-carrying [Start] remains recoverable until its
-    successful explicit completion, even if it associates a PR mid-session. *)
+    True only when the initiating delivery mode is [Respond] for a PR-backed or
+    published-branch Human operation. A Human-carrying [Start] remains
+    recoverable until its successful explicit completion, even if it associates
+    a PR mid-session. *)
 
 val session_no_commits_is_ok :
   agent:Patch_agent.t ->
@@ -132,9 +133,10 @@ val session_no_commits_is_ok :
   bool
 (** Whether a no-commit session is an accepted no-op. This exemption is limited
     to [Respond] deliveries for Human, Findings, and Uncommitted_changes
-    operations on an existing PR. Cleanup may correctly discard changes rather
-    than create a commit. A Human-carrying [Start] retains Start's ordinary
-    no-commit behavior even if it associates a PR mid-session. *)
+    operations on an existing PR or published branch. Cleanup may correctly
+    discard changes rather than create a commit. A Human-carrying [Start]
+    retains Start's ordinary no-commit behavior even if it associates a PR
+    mid-session. *)
 
 (** {2 Respond delivery — pre-session decisions for the runner} *)
 

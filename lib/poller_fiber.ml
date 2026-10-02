@@ -3,6 +3,7 @@
 
 open Base
 open Types
+module Forge_types = Forge
 
 module Poller_env = struct
   module type S = sig
@@ -212,7 +213,89 @@ module Make (Forge : Forge.S) (W : Worktree.S) (Env : Poller_env.S) = struct
             Eio.Mutex.use_rw ~protect:true divergence_logged_mutex (fun () ->
                 Stdlib.Hashtbl.replace divergence_logged patch_id key))
     in
+    let branch_cache :
+        ( Patch_id.t,
+          Branch.t
+          * Forge_types.branch_state option
+          * Branch_poll_decision.cached )
+        Stdlib.Hashtbl.t =
+      Stdlib.Hashtbl.create 16
+    in
     let rec loop () =
+      let branch_intents =
+        Runtime.read runtime (fun snap ->
+            Orchestrator.all_agents snap.Runtime.orchestrator
+            |> List.filter ~f:(fun a ->
+                Orchestrator.is_feature_descendant snap.orchestrator
+                  a.Patch_agent.patch_id
+                && a.branch_published && not a.merged))
+      in
+      Eio.Fiber.List.iter ~max_fibers:16
+        (fun (a : Patch_agent.t) ->
+          let now = Eio.Time.now clock in
+          let previous =
+            match Stdlib.Hashtbl.find_opt branch_cache a.patch_id with
+            | Some (branch, state, cached) when Branch.equal branch a.branch ->
+                Some (state, cached)
+            | None | Some _ -> None
+          in
+          let expected_head = a.Patch_agent.expected_remote_head_oid in
+          let schedule = Option.map previous ~f:snd in
+          match Branch_poll_decision.plan ~now ~expected_head schedule with
+          | Skip -> ()
+          | Probe { reuse_checks } -> (
+              let known_state =
+                if reuse_checks then Option.bind previous ~f:fst else None
+              in
+              let result =
+                Forge.branch_state ?known_state a.Patch_agent.branch
+              in
+              let next_probe_at = now +. Branch_poll_decision.head_interval in
+              match result with
+              | Error e ->
+                  let state, checked_at =
+                    match previous with
+                    | None -> (None, None)
+                    | Some (state, cached) -> (state, cached.checks_observed_at)
+                  in
+                  Stdlib.Hashtbl.replace branch_cache a.patch_id
+                    ( a.branch,
+                      state,
+                      {
+                        next_probe_at;
+                        checks_observed_at = checked_at;
+                        observed_head =
+                          Option.map state ~f:(fun s -> s.Forge_types.head_sha);
+                        expected_head;
+                      } );
+                  Runtime.update_orchestrator runtime (fun orch ->
+                      Orchestrator.set_checks_passing orch a.patch_id false);
+                  Runtime_logging.log_event runtime ~patch_id:a.patch_id
+                    ("Branch checks unavailable — " ^ Forge.show_error e)
+              | Ok observed ->
+                  let checks_reused =
+                    Option.value_map known_state ~default:false ~f:(fun s ->
+                        String.equal s.Forge_types.head_sha observed.head_sha)
+                  in
+                  let checks_observed_at =
+                    if checks_reused then
+                      Option.bind previous ~f:(fun (_, cached) ->
+                          cached.checks_observed_at)
+                    else Some now
+                  in
+                  Stdlib.Hashtbl.replace branch_cache a.patch_id
+                    ( a.branch,
+                      Some observed,
+                      {
+                        next_probe_at;
+                        checks_observed_at;
+                        observed_head = Some observed.head_sha;
+                        expected_head;
+                      } );
+                  Runtime.update_orchestrator runtime (fun orch ->
+                      Patch_controller.apply_branch_observation orch a.patch_id
+                        ~head_sha:observed.head_sha ~checks:observed.checks)))
+        branch_intents;
       let intents =
         Runtime.read runtime (fun snap ->
             let agents = Orchestrator.all_agents snap.Runtime.orchestrator in
@@ -586,9 +669,10 @@ module Make (Forge : Forge.S) (W : Worktree.S) (Env : Poller_env.S) = struct
               List.fold (Orchestrator.all_agents orch) ~init:orch
                 ~f:(fun orch (a : Patch_agent.t) ->
                   let contains =
-                    Base_containment.contains_merged_siblings ~graph
-                      ~patch_id:a.Patch_agent.patch_id ~has_merged ~merge_sha
-                      ~branch_of ~main ~ancestor_oracle
+                    Base_containment.contains_merged_siblings_with_mode
+                      ~mode:(Orchestrator.execution_mode orch)
+                      ~graph ~patch_id:a.Patch_agent.patch_id ~has_merged
+                      ~merge_sha ~branch_of ~main ~ancestor_oracle
                   in
                   Orchestrator.set_base_contains_merged_siblings orch
                     a.Patch_agent.patch_id contains)
@@ -604,14 +688,15 @@ module Make (Forge : Forge.S) (W : Worktree.S) (Env : Poller_env.S) = struct
                   let sibling_rebase_target =
                     if a.Patch_agent.base_contains_merged_siblings then None
                     else
-                      Base_containment.stale_chain_rebase_target ~graph
-                        ~patch_id:a.Patch_agent.patch_id ~has_merged ~merge_sha
-                        ~branch_of ~main ~ancestor_oracle
+                      Base_containment.stale_chain_rebase_target_with_mode
+                        ~mode:(Orchestrator.execution_mode orch)
+                        ~graph ~patch_id:a.Patch_agent.patch_id ~has_merged
+                        ~merge_sha ~branch_of ~main ~ancestor_oracle
                   in
                   Reconciler.
                     {
                       id = a.Patch_agent.patch_id;
-                      has_pr = Patch_agent.has_pr a;
+                      has_pr = Patch_agent.has_pr a || a.branch_published;
                       merged = a.Patch_agent.merged;
                       busy = a.Patch_agent.busy;
                       needs_intervention = Patch_agent.needs_intervention a;
@@ -632,7 +717,9 @@ module Make (Forge : Forge.S) (W : Worktree.S) (Env : Poller_env.S) = struct
                   else None)
             in
             let actions =
-              Reconciler.reconcile ~graph:(Orchestrator.graph orch) ~main
+              Reconciler.reconcile_with_mode
+                ~mode:(Orchestrator.execution_mode orch)
+                ~graph:(Orchestrator.graph orch) ~main
                 ~merged_pr_patches:merged_patches ~branch_of patch_views
             in
             let rec_logs = ref [] in

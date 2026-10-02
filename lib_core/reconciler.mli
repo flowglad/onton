@@ -167,3 +167,12 @@ val reconcile :
     [detect_sibling_stale_bases]), and [plan_operations] into a single pass.
     Rebase actions are deduplicated by patch id across the detectors. Returns
     actions in priority order: merges first, then rebases, then operations. *)
+
+val reconcile_with_mode :
+  mode:Execution_mode.t ->
+  graph:Graph.t ->
+  main:Types.Branch.t ->
+  merged_pr_patches:Types.Patch_id.t list ->
+  branch_of:(Types.Patch_id.t -> Types.Branch.t) ->
+  patch_view list ->
+  action list

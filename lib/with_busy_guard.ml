@@ -42,7 +42,7 @@ module Make (Env : ENV) = struct
                  "Forced complete (%s) — runner fiber exited with busy=true"
                  (Orchestrator.show_force_complete_reason reason))))
       (fun () ->
-        try f () with
+        try Runtime.with_patch_write Env.runtime ~patch_id f with
         | Eio.Cancel.Cancelled _ as exn ->
             cancelled := true;
             raise exn

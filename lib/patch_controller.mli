@@ -140,11 +140,17 @@ val automerge_max_failures : int
 type merge_action = Direct_merge | Enqueue | Dequeue of string
 [@@deriving show, eq, sexp_of]
 
-type automerge_decision = {
-  merge_patch_id : Patch_id.t;
-  merge_pr_number : Pr_number.t;
-  action : merge_action;
-}
+type automerge_decision =
+  | Github_merge of {
+      merge_patch_id : Patch_id.t;
+      merge_pr_number : Pr_number.t;
+      action : merge_action;
+    }
+  | Git_integrate of {
+      merge_patch_id : Patch_id.t;
+      root : Patch_id.t;
+      head_sha : string;
+    }
 [@@deriving show, eq, sexp_of]
 
 type review_request_decision = {
@@ -206,7 +212,8 @@ val reconcile_automerge :
     merge. For each agent:
     - merged → clear any stale deadline/inflight flag (no decision).
     - [automerge_inflight] → no-op; the executor owns the deadline and inflight
-      transitions via [apply_automerge_success] / [apply_automerge_failure].
+      transitions. A Git integration conflict clears the claim and queues
+      conflict repair without calling either automerge result function.
     - candidate + no deadline → set deadline at [now +. automerge_timeout].
     - not candidate + deadline, but [automerge_transient_hold] → preserve the
       deadline unchanged and emit no decision (GitHub is recomputing
@@ -215,11 +222,12 @@ val reconcile_automerge :
       (feedback arrived, CI flipped, automerge disabled, or failure cap hit).
     - candidate + deadline elapsed → atomically mark the agent
       [automerge_inflight = true] and include in decisions list. The caller MUST
-      clear the inflight flag on every exit path, and call either
-      [apply_automerge_success] (success) or [apply_automerge_failure]
-      (failure). A persistent-failure PR retries once per idle window until the
-      failure counter reaches [automerge_max_failures], after which
-      reconciliation stops issuing merge calls until the user disables and
+      clear the inflight flag on every exit path. The executor calls
+      [apply_automerge_success] on success or [apply_automerge_failure] on
+      failure, except that a Git integration conflict queues conflict repair
+      after clearing the claim. A persistent-failure PR retries once per idle
+      window until the failure counter reaches [automerge_max_failures], after
+      which reconciliation stops issuing merge calls until the user disables and
       re-enables automerge. *)
 
 val reconcile_review_requests :
@@ -268,3 +276,19 @@ val apply_automerge_failure :
     deadline is NOT re-armed when either (a) the failure cap has now been
     reached (reconciliation will no longer issue merge calls for this patch), or
     (b) the user disabled automerge while the call was in flight. *)
+
+val is_integration_candidate :
+  ?ignore_inflight:bool -> Orchestrator.t -> Patch_id.t -> bool
+(** [ignore_inflight] defaults to [false]. Pass [true] only for the executor's
+    post-claim recheck while holding the patch and root write locks; elsewhere
+    it can admit a duplicate integration. *)
+
+val apply_branch_observation :
+  Orchestrator.t ->
+  Patch_id.t ->
+  head_sha:string ->
+  checks:Ci_check.t list ->
+  Orchestrator.t
+
+val ready_for_review : Orchestrator.t -> Patch_id.t -> bool
+val merge_patch_id : automerge_decision -> Patch_id.t

@@ -101,7 +101,7 @@ let deadline_of orch pid =
 
 let fired_for decisions pid =
   List.exists decisions ~f:(fun (d : Patch_controller.automerge_decision) ->
-      Patch_id.equal d.merge_patch_id pid)
+      Patch_id.equal (Patch_controller.merge_patch_id d) pid)
 
 (* -- Generators -- *)
 

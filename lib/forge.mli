@@ -9,6 +9,8 @@
     capabilities they need at construction time; for GitHub, {!Github.make} is
     the canonical constructor. *)
 
+type branch_state = { head_sha : string; checks : Types.Ci_check.t list }
+
 module type S = sig
   type error
 
@@ -43,6 +45,13 @@ module type S = sig
   type enqueue_result =
     | Enqueued of Pr_state.merge_queue_entry
     | Already_enqueued of Pr_state.merge_queue_entry
+
+  val branch_state :
+    ?known_state:branch_state ->
+    Types.Branch.t ->
+    (branch_state, error) Result.t
+  (** With [known_state], implementations may reuse its checks if the remote
+      branch HEAD still matches. Omit it for a fresh check observation. *)
 
   val pr_state : Types.Pr_number.t -> (Pr_state.t, error) Result.t
 

@@ -476,6 +476,20 @@ let prop_reconcile_no_action_on_merged =
       in
       not (List.exists actions ~f:is_start_operation))
 
+let prop_mainline_reconcile_matches_default =
+  QCheck2.Test.make ~name:"reconcile_with_mode: mainline matches default"
+    ~count:500 gen_reconcile_scenario
+    (fun (graph, main, branch_of, merged_prs, views) ->
+      try
+        List.equal Sexp.equal
+          (List.map ~f:Reconciler.sexp_of_action
+             (Reconciler.reconcile_with_mode ~mode:Execution_mode.mainline
+                ~graph ~main ~merged_pr_patches:merged_prs ~branch_of views))
+          (List.map ~f:Reconciler.sexp_of_action
+             (Reconciler.reconcile ~graph ~main ~merged_pr_patches:merged_prs
+                ~branch_of views))
+      with _ -> false)
+
 (* ========== detect_notified_base_drift properties ========== *)
 
 (* Tests specifically for the drift detector that catches the
@@ -1158,6 +1172,7 @@ let () =
       prop_reconcile_merges_subset;
       prop_reconcile_no_dup_action_types_per_patch;
       prop_reconcile_no_action_on_merged;
+      prop_mainline_reconcile_matches_default;
       prop_drift_fires_on_divergence;
       prop_drift_silent_on_match;
       prop_drift_silent_on_none;

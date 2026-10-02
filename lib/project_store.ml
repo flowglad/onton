@@ -148,6 +148,7 @@ type stored_config = {
   backend : string;
   model : string;
   main_branch : string;
+  feature_root : string option; [@yojson.default None]
   poll_interval : float;
   repo_root : string;
   max_concurrency : int;
@@ -183,6 +184,11 @@ let save_config ~project_name ?(forge = "github") ~github_owner ~github_repo
       github_repo;
       backend;
       model;
+      feature_root =
+        (try
+           let json = Yojson.Safe.from_file (config_path project_name) in
+           Json.string_field "feature_root" json
+         with _ -> None);
       main_branch;
       poll_interval;
       repo_root;
@@ -769,3 +775,27 @@ let%test "YAML plans survive save, resume, and agent artifact publication" =
                   String.equal (Types.Patch_id.to_string patch.id) "001"
               | _ -> false)
           | Error _, _ | Ok _, Error _ -> false))
+
+let save_execution_mode ~project_name mode =
+  let json = Yojson.Safe.from_file (config_path project_name) in
+  match json with
+  | `Assoc fields ->
+      let fields =
+        Base.List.Assoc.remove fields "feature_root" ~equal:String.equal
+      in
+      let value =
+        match Execution_mode.root mode with
+        | None -> `Null
+        | Some id -> `String (Types.Patch_id.to_string id)
+      in
+      let path = config_path project_name in
+      let tmp = path ^ ".tmp" in
+      let oc = Stdlib.open_out_bin tmp in
+      Stdlib.Fun.protect
+        ~finally:(fun () -> Stdlib.close_out oc)
+        (fun () ->
+          Stdlib.output_string oc
+            (Yojson.Safe.pretty_to_string
+               (`Assoc (("feature_root", value) :: fields))));
+      Unix.rename tmp path
+  | _ -> invalid_arg "Invalid stored project configuration"

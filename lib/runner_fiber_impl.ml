@@ -179,26 +179,61 @@ module Make (Forge : Forge.S) (W : Worktree.S) (Env : Runner_env.S) = struct
                 (Pr_number.to_int pr_number)
                 (Branch.to_string base)
         in
-        try
-          let result =
-            match github_effect with
-            | Patch_controller.Set_pr_draft { patch_id = _; pr_number; draft }
-              ->
-                Forge.set_draft ~pr_number ~draft
-            | Patch_controller.Set_pr_base { patch_id = _; pr_number; base } ->
-                Forge.update_pr_base ~pr_number ~base
-          in
-          match result with
-          | Ok () ->
-              Runtime.update_orchestrator runtime (fun orch ->
-                  Patch_controller.apply_github_effect_success orch
-                    github_effect)
-          | Error err ->
-              Printf.eprintf "%s failed: %s\n%!" label (Forge.show_error err)
-        with
-        | Eio.Cancel.Cancelled _ as exn -> raise exn
-        | exn ->
-            Printf.eprintf "%s crashed: %s\n%!" label (Printexc.to_string exn))
+        let root_promotion =
+          match github_effect with
+          | Patch_controller.Set_pr_draft { patch_id; draft = false; _ } ->
+              Runtime.read runtime (fun snap ->
+                  if
+                    Orchestrator.is_integration_root snap.Runtime.orchestrator
+                      patch_id
+                  then Some patch_id
+                  else None)
+          | Patch_controller.Set_pr_draft _ | Patch_controller.Set_pr_base _ ->
+              None
+        in
+        let applied = ref false in
+        Fun.protect
+          ~finally:(fun () ->
+            if not !applied then
+              Eio.Cancel.protect (fun () ->
+                  Base.Option.iter root_promotion ~f:(fun _ ->
+                      Runtime.update_orchestrator runtime
+                        Orchestrator.release_promotion)))
+          (fun () ->
+            let execute () =
+              let valid =
+                Base.Option.value_map root_promotion ~default:true ~f:(fun id ->
+                    Runtime.read runtime (fun snap ->
+                        Patch_controller.ready_for_review
+                          snap.Runtime.orchestrator id))
+              in
+              if valid then
+                try
+                  let result =
+                    match github_effect with
+                    | Patch_controller.Set_pr_draft { pr_number; draft; _ } ->
+                        Forge.set_draft ~pr_number ~draft
+                    | Patch_controller.Set_pr_base { pr_number; base; _ } ->
+                        Forge.update_pr_base ~pr_number ~base
+                  in
+                  match result with
+                  | Ok () ->
+                      Runtime.update_orchestrator runtime (fun orch ->
+                          Patch_controller.apply_github_effect_success orch
+                            github_effect);
+                      applied := true
+                  | Error err ->
+                      Printf.eprintf "%s failed: %s\n%!" label
+                        (Forge.show_error err)
+                with
+                | Eio.Cancel.Cancelled _ as exn -> raise exn
+                | exn ->
+                    Printf.eprintf "%s crashed: %s\n%!" label
+                      (Printexc.to_string exn)
+            in
+            if Base.Option.is_some root_promotion then
+              Runtime.with_root_write runtime execute
+            else execute ()))
 
   (** Pluralize a count for inline rendering: [pluralize 1 "comment"] →
       ["1 comment"], [pluralize 2 "comment"] → ["2 comments"]. Pass [~plural]
@@ -214,6 +249,128 @@ module Make (Forge : Forge.S) (W : Worktree.S) (Env : Runner_env.S) = struct
       fires. Retries continue until the consecutive failure cap is reached, at
       which point reconciliation stops issuing merge calls until the user
       toggles automerge off/on. *)
+  let execute_integration ~runtime ~patch_id ~root ~head_sha =
+    let claimed = ref true in
+    Fun.protect
+      ~finally:(fun () ->
+        Eio.Cancel.protect (fun () ->
+            if !claimed then
+              Runtime.update_orchestrator runtime (fun orch ->
+                  Orchestrator.set_automerge_inflight orch patch_id false)))
+      (fun () ->
+        try
+          Runtime.with_patch_write runtime ~patch_id (fun () ->
+              Runtime.with_root_write runtime (fun () ->
+                  let candidate =
+                    Runtime.read runtime (fun snap ->
+                        let orch = snap.Runtime.orchestrator in
+                        if
+                          Patch_controller.is_integration_candidate
+                            ~ignore_inflight:true orch patch_id
+                          && (not
+                                (Orchestrator.agent orch root).Patch_agent.busy)
+                          && Option.equal String.equal
+                               (Orchestrator.agent orch patch_id)
+                                 .Patch_agent.head_oid (Some head_sha)
+                        then
+                          Some
+                            ( Orchestrator.agent orch root,
+                              Orchestrator.agent orch patch_id )
+                        else None)
+                  in
+                  match candidate with
+                  | None -> ()
+                  | Some (root_agent, descendant) -> (
+                      let failure msg =
+                        claimed := false;
+                        Runtime.update_orchestrator runtime (fun orch ->
+                            Patch_controller.apply_automerge_failure orch
+                              ~automerge_timeout:Env.automerge_timeout
+                              ~now:(Unix.gettimeofday ()) patch_id);
+                        log_event runtime ~patch_id
+                          ("Git integration failed — " ^ msg)
+                      in
+                      match
+                        Forge.branch_state descendant.Patch_agent.branch
+                      with
+                      | Error e -> failure (Forge.show_error e)
+                      | Ok observed
+                        when (not (String.equal observed.head_sha head_sha))
+                             || not
+                                  (Pr_state.equal_check_status
+                                     (Pr_state.derive_check_status
+                                        observed.checks)
+                                     Pr_state.Passing) ->
+                          failure
+                            "Branch HEAD or its checks changed before \
+                             integration"
+                      | Ok _ -> (
+                          match root_agent.Patch_agent.worktree_path with
+                          | None ->
+                              failure "Integration root checkout is missing"
+                          | Some root_path -> (
+                              Eio.Mutex.lock Env.fetch_mutex;
+                              let result =
+                                Fun.protect
+                                  ~finally:(fun () ->
+                                    Eio.Mutex.unlock Env.fetch_mutex)
+                                  (fun () ->
+                                    W.integrate ~root_path
+                                      ~root_branch:root_agent.branch
+                                      ~descendant_branch:descendant.branch
+                                      ~head_sha)
+                              in
+                              match result with
+                              | Worktree.Integrated sha ->
+                                  claimed := false;
+                                  Runtime.update_orchestrator runtime
+                                    (fun orch ->
+                                      let orch =
+                                        Patch_controller.apply_automerge_success
+                                          orch patch_id
+                                      in
+                                      let orch =
+                                        Orchestrator.set_merge_commit_sha orch
+                                          patch_id (Some sha)
+                                      in
+                                      let orch =
+                                        Orchestrator.invalidate_root_readiness
+                                          orch
+                                      in
+                                      Orchestrator.set_expected_remote_head_oid
+                                        orch root (Some sha));
+                                  log_event runtime ~patch_id
+                                    ("Integrated into "
+                                    ^ Branch.to_string root_agent.branch
+                                    ^ " at " ^ sha)
+                              | Worktree.Integration_conflict files ->
+                                  claimed := false;
+                                  Runtime.update_orchestrator runtime
+                                    (fun orch ->
+                                      let orch =
+                                        Orchestrator.set_automerge_inflight orch
+                                          patch_id false
+                                      in
+                                      Orchestrator.set_has_conflict orch
+                                        patch_id
+                                      |> fun orch ->
+                                      Orchestrator.enqueue orch patch_id
+                                        Operation_kind.Merge_conflict);
+                                  log_event runtime ~patch_id
+                                    ("Git integration conflict — " ^ files)
+                              | Worktree.Integration_error e -> failure e)))))
+        with
+        | Eio.Cancel.Cancelled _ as exn -> raise exn
+        | exn ->
+            if !claimed then (
+              claimed := false;
+              Runtime.update_orchestrator runtime (fun orch ->
+                  Patch_controller.apply_automerge_failure orch
+                    ~automerge_timeout:Env.automerge_timeout
+                    ~now:(Unix.gettimeofday ()) patch_id));
+            log_event runtime ~patch_id
+              ("Git integration error — " ^ Printexc.to_string exn))
+
   let reconcile_and_execute_automerge ~runtime =
     let now = Unix.gettimeofday () in
     let decisions =
@@ -234,24 +391,28 @@ module Make (Forge : Forge.S) (W : Worktree.S) (Env : Runner_env.S) = struct
      1s cadence is not load-bearing either: deadlines fire on configured idle
      windows, and [automerge_inflight] already prevents double-claiming. *)
     Eio.Fiber.List.iter ~max_fibers:4
-      (fun Patch_controller.
-             { merge_patch_id = patch_id; merge_pr_number = pr_number; action }
-         ->
-        let label =
-          Printf.sprintf "automerge PR #%d" (Pr_number.to_int pr_number)
-        in
-        (* [reconcile_automerge] set [automerge_inflight = true] when it emitted
+      (function
+        | Patch_controller.Git_integrate
+            { merge_patch_id = patch_id; root; head_sha } ->
+            execute_integration ~runtime ~patch_id ~root ~head_sha
+        | Patch_controller.Github_merge
+            { merge_patch_id = patch_id; merge_pr_number = pr_number; action }
+          ->
+            let label =
+              Printf.sprintf "automerge PR #%d" (Pr_number.to_int pr_number)
+            in
+            (* [reconcile_automerge] set [automerge_inflight = true] when it emitted
          this decision. Every exit path below must either call
          [apply_automerge_success]/[apply_automerge_failure] (both of which
          clear the inflight flag) or run the [Fun.protect] finaliser. *)
-        let inflight_cleared = ref false in
-        let clear_inflight_if_needed () =
-          if not !inflight_cleared then (
-            inflight_cleared := true;
-            Runtime.update_orchestrator runtime (fun orch ->
-                Orchestrator.set_automerge_inflight orch patch_id false))
-        in
-        (* Push the deadline out by one idle window after a non-terminal response
+            let inflight_cleared = ref false in
+            let clear_inflight_if_needed () =
+              if not !inflight_cleared then (
+                inflight_cleared := true;
+                Runtime.update_orchestrator runtime (fun orch ->
+                    Orchestrator.set_automerge_inflight orch patch_id false))
+            in
+            (* Push the deadline out by one idle window after a non-terminal response
          (GitHub queued the merge or responded with an unrecognised shape) and
          clear [inflight] in the same orchestrator update. The deadline that
          fired this decision is already in the past, and merely clearing
@@ -261,59 +422,60 @@ module Make (Forge : Forge.S) (W : Worktree.S) (Env : Runner_env.S) = struct
          poller time to catch up. Doing both writes atomically avoids a brief
          window where a concurrent read sees the pushed-out deadline with
          [inflight = true]. *)
-        let push_deadline_and_clear_inflight () =
-          if not !inflight_cleared then (
-            inflight_cleared := true;
-            let now_ts = Unix.gettimeofday () in
-            Runtime.update_orchestrator runtime (fun orch ->
-                let orch =
-                  Orchestrator.set_automerge_inflight orch patch_id false
-                in
-                Orchestrator.set_automerge_deadline orch patch_id
-                  (now_ts +. Env.automerge_timeout)))
-        in
-        let apply_failure () =
-          inflight_cleared := true;
-          (* [apply_automerge_failure] delegates to the shared automerge-state
+            let push_deadline_and_clear_inflight () =
+              if not !inflight_cleared then (
+                inflight_cleared := true;
+                let now_ts = Unix.gettimeofday () in
+                Runtime.update_orchestrator runtime (fun orch ->
+                    let orch =
+                      Orchestrator.set_automerge_inflight orch patch_id false
+                    in
+                    Orchestrator.set_automerge_deadline orch patch_id
+                      (now_ts +. Env.automerge_timeout)))
+            in
+            let apply_failure () =
+              inflight_cleared := true;
+              (* [apply_automerge_failure] delegates to the shared automerge-state
              transition, which clears [automerge_inflight] before incrementing
              the failure count or applying the retry/cap deadline rules. *)
-          Runtime.update_orchestrator runtime (fun orch ->
-              Patch_controller.apply_automerge_failure orch
-                ~automerge_timeout:Env.automerge_timeout
-                ~now:(Unix.gettimeofday ()) patch_id)
-        in
-        let record_enqueued_and_clear_inflight entry =
-          if not !inflight_cleared then (
-            inflight_cleared := true;
-            Runtime.update_orchestrator runtime (fun orch ->
-                Patch_controller.apply_merge_queue_entered orch patch_id entry))
-        in
-        let handle_enqueue_result result =
-          match result with
-          | Ok (Forge.Enqueued entry) ->
-              record_enqueued_and_clear_inflight entry;
-              log_event runtime ~patch_id
-                (Printf.sprintf
-                   "Automerge enqueued PR #%d in GitHub merge queue (%s, \
-                    position %d)"
-                   (Pr_number.to_int pr_number)
-                   entry.Pr_state.id entry.Pr_state.position)
-          | Ok (Forge.Already_enqueued entry) ->
-              record_enqueued_and_clear_inflight entry;
-              log_event runtime ~patch_id
-                (Printf.sprintf
-                   "Automerge PR #%d already in GitHub merge queue (%s, \
-                    position %d)"
-                   (Pr_number.to_int pr_number)
-                   entry.Pr_state.id entry.Pr_state.position)
-          | Error err ->
-              apply_failure ();
-              log_event runtime ~patch_id
-                (Printf.sprintf "Automerge enqueue failed — %s"
-                   (Forge.show_error err))
-        in
-        Fun.protect ~finally:clear_inflight_if_needed (fun () ->
-            (* Re-read the patch just before hitting GitHub. The original
+              Runtime.update_orchestrator runtime (fun orch ->
+                  Patch_controller.apply_automerge_failure orch
+                    ~automerge_timeout:Env.automerge_timeout
+                    ~now:(Unix.gettimeofday ()) patch_id)
+            in
+            let record_enqueued_and_clear_inflight entry =
+              if not !inflight_cleared then (
+                inflight_cleared := true;
+                Runtime.update_orchestrator runtime (fun orch ->
+                    Patch_controller.apply_merge_queue_entered orch patch_id
+                      entry))
+            in
+            let handle_enqueue_result result =
+              match result with
+              | Ok (Forge.Enqueued entry) ->
+                  record_enqueued_and_clear_inflight entry;
+                  log_event runtime ~patch_id
+                    (Printf.sprintf
+                       "Automerge enqueued PR #%d in GitHub merge queue (%s, \
+                        position %d)"
+                       (Pr_number.to_int pr_number)
+                       entry.Pr_state.id entry.Pr_state.position)
+              | Ok (Forge.Already_enqueued entry) ->
+                  record_enqueued_and_clear_inflight entry;
+                  log_event runtime ~patch_id
+                    (Printf.sprintf
+                       "Automerge PR #%d already in GitHub merge queue (%s, \
+                        position %d)"
+                       (Pr_number.to_int pr_number)
+                       entry.Pr_state.id entry.Pr_state.position)
+              | Error err ->
+                  apply_failure ();
+                  log_event runtime ~patch_id
+                    (Printf.sprintf "Automerge enqueue failed — %s"
+                       (Forge.show_error err))
+            in
+            Fun.protect ~finally:clear_inflight_if_needed (fun () ->
+                (* Re-read the patch just before hitting GitHub. The original
              decision came from an earlier orchestrator snapshot; between then
              and now the patch may have been merged, lost [merge_ready], gone
              busy again, or had its failure cap hit (via a parallel tick). Any
@@ -322,57 +484,58 @@ module Make (Forge : Forge.S) (W : Worktree.S) (Env : Runner_env.S) = struct
              because we ourselves set the inflight flag when claiming this
              decision — the default [ignore_inflight:false] would see our own
              flag and short-circuit every merge. *)
-            let still_candidate, dequeue_reasons =
-              Runtime.read runtime (fun snap ->
-                  match
-                    Orchestrator.find_agent snap.Runtime.orchestrator patch_id
-                  with
-                  | None -> (false, [])
-                  | Some agent ->
-                      let main_branch =
-                        Orchestrator.main_branch snap.Runtime.orchestrator
-                      in
-                      (* Verify the agent's current PR still matches the one this
+                let still_candidate, dequeue_reasons =
+                  Runtime.read runtime (fun snap ->
+                      match
+                        Orchestrator.find_agent snap.Runtime.orchestrator
+                          patch_id
+                      with
+                      | None -> (false, [])
+                      | Some agent ->
+                          let main_branch =
+                            Orchestrator.main_branch snap.Runtime.orchestrator
+                          in
+                          (* Verify the agent's current PR still matches the one this
                        decision was emitted for. If the poller has remapped
                        the patch to a replacement PR between reconcile and
                        execute, hitting GitHub with the stale [pr_number]
                        would either merge the wrong PR (on the rare chance
                        the old PR is still open) or 405 and bump
                        [automerge_failure_count] for no reason. *)
-                      let same_pr =
-                        match Patch_agent.pr_number agent with
-                        | Some current -> Pr_number.equal current pr_number
-                        | None -> false
-                      in
-                      let eligible, reasons =
-                        match action with
-                        | Patch_controller.Direct_merge ->
-                            ( Patch_controller.is_automerge_candidate
-                                ~ignore_inflight:true agent ~main_branch,
-                              [] )
-                        | Patch_controller.Enqueue ->
-                            ( agent.Patch_agent.merge_queue_required
-                              && (not agent.Patch_agent.merged)
-                              && agent.Patch_agent.automerge_enabled
-                              && Patch_agent.is_approved agent ~main_branch
-                              && agent.Patch_agent.checks_passing
-                              && List.is_empty agent.Patch_agent.queue
-                              && agent.Patch_agent.automerge_failure_count
-                                 < Patch_controller.automerge_max_failures,
-                              [] )
-                        | Patch_controller.Dequeue entry_id ->
-                            let reasons =
-                              Patch_controller.dequeue_merge_queue_reasons agent
-                                ~main_branch ~entry_id
-                            in
-                            (not (List.is_empty reasons), reasons)
-                      in
-                      (same_pr && eligible, reasons))
-            in
-            if not still_candidate then (
-              log_event runtime ~patch_id
-                (Printf.sprintf "%s skipped — no longer a candidate" label);
-              (* Clear inflight here explicitly (rather than relying on the
+                          let same_pr =
+                            match Patch_agent.pr_number agent with
+                            | Some current -> Pr_number.equal current pr_number
+                            | None -> false
+                          in
+                          let eligible, reasons =
+                            match action with
+                            | Patch_controller.Direct_merge ->
+                                ( Patch_controller.is_automerge_candidate
+                                    ~ignore_inflight:true agent ~main_branch,
+                                  [] )
+                            | Patch_controller.Enqueue ->
+                                ( agent.Patch_agent.merge_queue_required
+                                  && (not agent.Patch_agent.merged)
+                                  && agent.Patch_agent.automerge_enabled
+                                  && Patch_agent.is_approved agent ~main_branch
+                                  && agent.Patch_agent.checks_passing
+                                  && List.is_empty agent.Patch_agent.queue
+                                  && agent.Patch_agent.automerge_failure_count
+                                     < Patch_controller.automerge_max_failures,
+                                  [] )
+                            | Patch_controller.Dequeue entry_id ->
+                                let reasons =
+                                  Patch_controller.dequeue_merge_queue_reasons
+                                    agent ~main_branch ~entry_id
+                                in
+                                (not (List.is_empty reasons), reasons)
+                          in
+                          (same_pr && eligible, reasons))
+                in
+                if not still_candidate then (
+                  log_event runtime ~patch_id
+                    (Printf.sprintf "%s skipped — no longer a candidate" label);
+                  (* Clear inflight here explicitly (rather than relying on the
                [Fun.protect] finaliser) and deliberately leave the deadline in
                place — the next [reconcile_automerge] tick will clear it via
                the [(false, Some _)] branch if candidacy is genuinely lost,
@@ -380,94 +543,97 @@ module Make (Forge : Forge.S) (W : Worktree.S) (Env : Runner_env.S) = struct
                deadline-clearing centralised in reconcile avoids a redundant
                write here and the divergence risk of two call sites managing
                the same invariant. *)
-              clear_inflight_if_needed ())
-            else
-              try
-                match action with
-                | Patch_controller.Enqueue ->
-                    handle_enqueue_result (Forge.enqueue_pr ~pr_number)
-                | Patch_controller.Dequeue entry_id -> (
-                    match Forge.dequeue_pr ~pr_number with
-                    | Ok () ->
-                        inflight_cleared := true;
-                        Runtime.update_orchestrator runtime (fun orch ->
-                            Patch_controller.apply_merge_queue_dequeued orch
-                              ~automerge_timeout:Env.automerge_timeout
-                              ~now:(Unix.gettimeofday ()) patch_id);
-                        log_event runtime ~patch_id
-                          (Printf.sprintf
-                             "Automerge dequeued PR #%d from GitHub merge \
-                              queue (entry %s): %s"
-                             (Pr_number.to_int pr_number)
-                             entry_id
-                             (String.concat "; " dequeue_reasons))
-                    | Error err ->
-                        (* A dequeue API error does not establish a merge
+                  clear_inflight_if_needed ())
+                else
+                  try
+                    match action with
+                    | Patch_controller.Enqueue ->
+                        handle_enqueue_result (Forge.enqueue_pr ~pr_number)
+                    | Patch_controller.Dequeue entry_id -> (
+                        match Forge.dequeue_pr ~pr_number with
+                        | Ok () ->
+                            inflight_cleared := true;
+                            Runtime.update_orchestrator runtime (fun orch ->
+                                Patch_controller.apply_merge_queue_dequeued orch
+                                  ~automerge_timeout:Env.automerge_timeout
+                                  ~now:(Unix.gettimeofday ()) patch_id);
+                            log_event runtime ~patch_id
+                              (Printf.sprintf
+                                 "Automerge dequeued PR #%d from GitHub merge \
+                                  queue (entry %s): %s"
+                                 (Pr_number.to_int pr_number)
+                                 entry_id
+                                 (String.concat "; " dequeue_reasons))
+                        | Error err ->
+                            (* A dequeue API error does not establish a merge
                            failure or confirm that the queue entry is gone.
                            Preserve both until the poller observes GitHub, and
                            wait one idle window before retrying. *)
-                        push_deadline_and_clear_inflight ();
-                        log_event runtime ~patch_id
-                          (Printf.sprintf
-                             "Automerge dequeue failed for PR #%d (entry %s, \
-                              reasons: %s) — %s"
-                             (Pr_number.to_int pr_number)
-                             entry_id
-                             (String.concat "; " dequeue_reasons)
-                             (Forge.show_error err)))
-                | Patch_controller.Direct_merge -> (
-                    match Forge.merge_pr ~pr_number with
-                    | Ok Forge.Merge_succeeded ->
-                        inflight_cleared := true;
-                        Runtime.update_orchestrator runtime (fun orch ->
-                            Patch_controller.apply_automerge_success orch
-                              patch_id);
-                        log_event runtime ~patch_id
-                          (Printf.sprintf "Automerge complete — PR #%d merged"
-                             (Pr_number.to_int pr_number))
-                    | Ok (Forge.Merge_queued msg) ->
-                        (* GitHub accepted the request into its native auto-merge
+                            push_deadline_and_clear_inflight ();
+                            log_event runtime ~patch_id
+                              (Printf.sprintf
+                                 "Automerge dequeue failed for PR #%d (entry \
+                                  %s, reasons: %s) — %s"
+                                 (Pr_number.to_int pr_number)
+                                 entry_id
+                                 (String.concat "; " dequeue_reasons)
+                                 (Forge.show_error err)))
+                    | Patch_controller.Direct_merge -> (
+                        match Forge.merge_pr ~pr_number with
+                        | Ok Forge.Merge_succeeded ->
+                            inflight_cleared := true;
+                            Runtime.update_orchestrator runtime (fun orch ->
+                                Patch_controller.apply_automerge_success orch
+                                  patch_id);
+                            log_event runtime ~patch_id
+                              (Printf.sprintf
+                                 "Automerge complete — PR #%d merged"
+                                 (Pr_number.to_int pr_number))
+                        | Ok (Forge.Merge_queued msg) ->
+                            (* GitHub accepted the request into its native auto-merge
                          queue. Not a failure — don't bump the counter. Push the
                          deadline forward (atomically with clearing [inflight]) so
                          we don't re-fire before the poller observes the eventual
                          merge. *)
-                        push_deadline_and_clear_inflight ();
-                        log_event runtime ~patch_id
-                          (Printf.sprintf
-                             "Automerge queued by GitHub — awaiting checks (%s)"
-                             msg)
-                    | Ok Forge.Merge_unconfirmed ->
-                        (* 2xx response with an unexpected shape. Not authoritative
+                            push_deadline_and_clear_inflight ();
+                            log_event runtime ~patch_id
+                              (Printf.sprintf
+                                 "Automerge queued by GitHub — awaiting checks \
+                                  (%s)"
+                                 msg)
+                        | Ok Forge.Merge_unconfirmed ->
+                            (* 2xx response with an unexpected shape. Not authoritative
                          either way — let the poller confirm via PR state rather
                          than guess. Don't count as failure, but push the
                          deadline forward (atomic with clearing [inflight]) so we
                          don't retry every tick. *)
-                        push_deadline_and_clear_inflight ();
-                        log_event runtime ~patch_id
-                          (Printf.sprintf
-                             "%s accepted but merge not confirmed — awaiting \
-                              poll"
-                             label)
-                    | Error err ->
-                        if Forge.is_merge_queue_required_error err then (
-                          log_event runtime ~patch_id
-                            (Printf.sprintf
-                               "Automerge direct merge rejected by GitHub \
-                                merge queue — enqueuing PR #%d"
-                               (Pr_number.to_int pr_number));
-                          handle_enqueue_result (Forge.enqueue_pr ~pr_number))
-                        else (
-                          apply_failure ();
-                          log_event runtime ~patch_id
-                            (Printf.sprintf "Automerge failed — %s"
-                               (Forge.show_error err))))
-              with
-              | Eio.Cancel.Cancelled _ as exn -> raise exn
-              | exn ->
-                  apply_failure ();
-                  log_event runtime ~patch_id
-                    (Printf.sprintf "%s crashed — %s" label
-                       (Printexc.to_string exn))))
+                            push_deadline_and_clear_inflight ();
+                            log_event runtime ~patch_id
+                              (Printf.sprintf
+                                 "%s accepted but merge not confirmed — \
+                                  awaiting poll"
+                                 label)
+                        | Error err ->
+                            if Forge.is_merge_queue_required_error err then (
+                              log_event runtime ~patch_id
+                                (Printf.sprintf
+                                   "Automerge direct merge rejected by GitHub \
+                                    merge queue — enqueuing PR #%d"
+                                   (Pr_number.to_int pr_number));
+                              handle_enqueue_result
+                                (Forge.enqueue_pr ~pr_number))
+                            else (
+                              apply_failure ();
+                              log_event runtime ~patch_id
+                                (Printf.sprintf "Automerge failed — %s"
+                                   (Forge.show_error err))))
+                  with
+                  | Eio.Cancel.Cancelled _ as exn -> raise exn
+                  | exn ->
+                      apply_failure ();
+                      log_event runtime ~patch_id
+                        (Printf.sprintf "%s crashed — %s" label
+                           (Printexc.to_string exn))))
       decisions
 
   let request_review_permanent_error = Forge.is_permanent_error
@@ -757,6 +923,24 @@ module Make (Forge : Forge.S) (W : Worktree.S) (Env : Runner_env.S) = struct
     in
     let run_llm_session ~sw ~gameplan_prompt ~patch_prompt ~kind ~delivery_mode
         ~patch_id ~prompt ~agent ~on_pr_detected ~complexity =
+      let mode_instructions =
+        Runtime.read runtime (fun snap ->
+            let orch = snap.Runtime.orchestrator in
+            if Orchestrator.is_feature_descendant orch patch_id then
+              "\n\
+               Feature branch construction: this patch publishes a branch \
+               only. Do not create or modify a pull request or PR body. Commit \
+               locally; the supervisor pushes and integrates after branch HEAD \
+               checks pass.\n"
+            else if Orchestrator.is_integration_root orch patch_id then
+              "\n\
+               Integration root: preserve all published history. Never rebase, \
+               reset, or force-push this branch. Incorporate upstream changes \
+               with git merge; the supervisor uses normal pushes.\n"
+            else "")
+      in
+      let prompt = prompt ^ mode_instructions in
+      let patch_prompt = patch_prompt ^ mode_instructions in
       let session_result =
         match pick_backend ~complexity with
         | Backend_registry.Ephemeral backend, _decision ->
@@ -1139,7 +1323,22 @@ module Make (Forge : Forge.S) (W : Worktree.S) (Env : Runner_env.S) = struct
                                          (Patch_id.to_string patch_id))
                                     ()
                             | Orchestrator.Start_ok ->
-                                (* Supervisor-owned PR creation: the agent
+                                if
+                                  Runtime.read runtime (fun snap ->
+                                      Orchestrator.is_feature_descendant
+                                        snap.Runtime.orchestrator patch_id)
+                                then (
+                                  Runtime.update_orchestrator runtime
+                                    (fun orch ->
+                                      Orchestrator.mark_branch_published orch
+                                        patch_id
+                                      |> fun orch ->
+                                      Orchestrator.complete orch patch_id);
+                                  log_event runtime ~patch_id
+                                    "Descendant branch published; waiting for \
+                                     HEAD checks")
+                                else
+                                  (* Supervisor-owned PR creation: the agent
                                  commits and the supervisor pushed at session
                                  end; now we open the draft PR with a
                                  gameplan-derived title and body.
@@ -1149,118 +1348,109 @@ module Make (Forge : Forge.S) (W : Worktree.S) (Env : Runner_env.S) = struct
                                  merged while the agent session was running,
                                  making the base captured at dispatch time
                                  stale. *)
-                                let fresh_base =
-                                  Runtime.read runtime (fun snap ->
-                                      let orch = snap.Runtime.orchestrator in
-                                      let has_merged pid =
-                                        (Orchestrator.agent orch pid)
-                                          .Patch_agent.merged
-                                      in
-                                      let branch_of pid =
-                                        match
-                                          Base.List.find
-                                            gameplan.Gameplan.patches
-                                            ~f:(fun (p : Patch.t) ->
-                                              Patch_id.equal p.Patch.id pid)
-                                        with
-                                        | Some p -> p.Patch.branch
-                                        | None -> Orchestrator.main_branch orch
-                                      in
-                                      Graph.initial_base
-                                        (Orchestrator.graph orch) patch_id
-                                        ~has_merged ~branch_of
-                                        ~main:(Orchestrator.main_branch orch))
-                                in
-                                let pr_title =
-                                  Printf.sprintf "[%s] Patch %s: %s"
-                                    project_name
-                                    (Patch_id.to_string patch.Patch.id)
-                                    patch.Patch.title
-                                in
-                                let pr_body =
-                                  Prompt.render_pr_description ~project_name
-                                    patch gameplan
-                                  ^ Prompt.render_spec_suffix patch gameplan
-                                in
-                                (match
-                                   Forge.create_pull_request ~title:pr_title
-                                     ~head:patch.Patch.branch ~base:fresh_base
-                                     ~body:pr_body ~draft:true
-                                 with
-                                | Ok pr_number ->
-                                    log_event runtime ~patch_id
-                                      (if Forge.supports_reviews then
-                                         Printf.sprintf "PR #%d created"
-                                           (Pr_number.to_int pr_number)
-                                       else
-                                         Printf.sprintf
-                                           "%s change for branch %s registered"
-                                           Forge.name
-                                           (Branch.to_string patch.Patch.branch));
-                                    Env.register_pr ~patch_id ~pr_number;
-                                    Runtime.update_orchestrator runtime
-                                      (fun orch ->
-                                        Orchestrator.set_pr_number orch patch_id
-                                          pr_number)
-                                | Error e ->
-                                    if Forge.is_duplicate_change_error e then (
-                                      (* PR already exists — discover it rather
+                                  let fresh_base =
+                                    Runtime.read runtime (fun snap ->
+                                        let orch = snap.Runtime.orchestrator in
+                                        Option.value
+                                          (Orchestrator.expected_base orch
+                                             patch_id)
+                                          ~default:
+                                            (Orchestrator.terminal_branch orch
+                                               patch_id))
+                                  in
+                                  let pr_title =
+                                    Printf.sprintf "[%s] Patch %s: %s"
+                                      project_name
+                                      (Patch_id.to_string patch.Patch.id)
+                                      patch.Patch.title
+                                  in
+                                  let pr_body =
+                                    Prompt.render_pr_description ~project_name
+                                      patch gameplan
+                                    ^ Prompt.render_spec_suffix patch gameplan
+                                  in
+                                  (match
+                                     Forge.create_pull_request ~title:pr_title
+                                       ~head:patch.Patch.branch ~base:fresh_base
+                                       ~body:pr_body ~draft:true
+                                   with
+                                  | Ok pr_number ->
+                                      log_event runtime ~patch_id
+                                        (if Forge.supports_reviews then
+                                           Printf.sprintf "PR #%d created"
+                                             (Pr_number.to_int pr_number)
+                                         else
+                                           Printf.sprintf
+                                             "%s change for branch %s \
+                                              registered"
+                                             Forge.name
+                                             (Branch.to_string
+                                                patch.Patch.branch));
+                                      Env.register_pr ~patch_id ~pr_number;
+                                      Runtime.update_orchestrator runtime
+                                        (fun orch ->
+                                          Orchestrator.set_pr_number orch
+                                            patch_id pr_number)
+                                  | Error e ->
+                                      if Forge.is_duplicate_change_error e then (
+                                        (* PR already exists — discover it rather
                                          than treating this as failure. We
                                          only fall back on this specific 422;
                                          other 422s (no commits, head missing,
                                          etc.) propagate with the original
                                          error message. *)
-                                      match
-                                        Forge.list_prs
-                                          ~branch:patch.Patch.branch
-                                          ~state:`Open ()
-                                      with
-                                      | Ok ((pr_number, _, _) :: _) ->
-                                          log_event runtime ~patch_id
-                                            (Printf.sprintf
-                                               "PR #%d already existed, \
-                                                associated"
-                                               (Pr_number.to_int pr_number));
-                                          Env.register_pr ~patch_id ~pr_number;
-                                          Runtime.update_orchestrator runtime
-                                            (fun orch ->
-                                              Orchestrator.set_pr_number orch
-                                                patch_id pr_number)
-                                      | Ok [] ->
-                                          log_event runtime ~patch_id
-                                            "PR creation failed (422 \
-                                             already-exists) and discovery \
-                                             found no open PRs";
-                                          Runtime.update_orchestrator runtime
-                                            (fun orch ->
-                                              Orchestrator
-                                              .on_pr_discovery_failure orch
-                                                patch_id)
-                                      | Error disc_err ->
-                                          log_event runtime ~patch_id
-                                            (Printf.sprintf
-                                               "PR creation failed (422 \
-                                                already-exists) and discovery \
-                                                also failed — %s"
-                                               (Forge.show_error disc_err));
-                                          Runtime.update_orchestrator runtime
-                                            (fun orch ->
-                                              Orchestrator
-                                              .on_pr_discovery_failure orch
-                                                patch_id))
-                                    else (
-                                      log_event runtime ~patch_id
-                                        (Printf.sprintf
-                                           "PR creation failed — %s"
-                                           (Forge.show_error e));
-                                      Runtime.update_orchestrator runtime
-                                        (fun orch ->
-                                          Orchestrator.on_pr_discovery_failure
-                                            orch patch_id)));
-                                Runtime.update_orchestrator runtime (fun orch ->
-                                    Orchestrator
-                                    .complete_start_after_pr_discovery orch
-                                      patch_id)
+                                        match
+                                          Forge.list_prs
+                                            ~branch:patch.Patch.branch
+                                            ~state:`Open ()
+                                        with
+                                        | Ok ((pr_number, _, _) :: _) ->
+                                            log_event runtime ~patch_id
+                                              (Printf.sprintf
+                                                 "PR #%d already existed, \
+                                                  associated"
+                                                 (Pr_number.to_int pr_number));
+                                            Env.register_pr ~patch_id ~pr_number;
+                                            Runtime.update_orchestrator runtime
+                                              (fun orch ->
+                                                Orchestrator.set_pr_number orch
+                                                  patch_id pr_number)
+                                        | Ok [] ->
+                                            log_event runtime ~patch_id
+                                              "PR creation failed (422 \
+                                               already-exists) and discovery \
+                                               found no open PRs";
+                                            Runtime.update_orchestrator runtime
+                                              (fun orch ->
+                                                Orchestrator
+                                                .on_pr_discovery_failure orch
+                                                  patch_id)
+                                        | Error disc_err ->
+                                            log_event runtime ~patch_id
+                                              (Printf.sprintf
+                                                 "PR creation failed (422 \
+                                                  already-exists) and \
+                                                  discovery also failed — %s"
+                                                 (Forge.show_error disc_err));
+                                            Runtime.update_orchestrator runtime
+                                              (fun orch ->
+                                                Orchestrator
+                                                .on_pr_discovery_failure orch
+                                                  patch_id))
+                                      else (
+                                        log_event runtime ~patch_id
+                                          (Printf.sprintf
+                                             "PR creation failed — %s"
+                                             (Forge.show_error e));
+                                        Runtime.update_orchestrator runtime
+                                          (fun orch ->
+                                            Orchestrator.on_pr_discovery_failure
+                                              orch patch_id)));
+                                  Runtime.update_orchestrator runtime
+                                    (fun orch ->
+                                      Orchestrator
+                                      .complete_start_after_pr_discovery orch
+                                        patch_id)
                             | Orchestrator.Start_stale -> ())))
             | Orchestrator.Rebase (patch_id, new_base) ->
                 Some
@@ -1489,6 +1679,24 @@ module Make (Forge : Forge.S) (W : Worktree.S) (Env : Runner_env.S) = struct
                             None)
                       else None
                     in
+                    let fresh_branch_state =
+                      if
+                        is_ci
+                        && Runtime.read runtime (fun snap ->
+                            Orchestrator.is_feature_descendant
+                              snap.Runtime.orchestrator patch_id)
+                      then
+                        let branch =
+                          Runtime.read runtime (fun snap ->
+                              (Orchestrator.agent snap.Runtime.orchestrator
+                                 patch_id)
+                                .Patch_agent.branch)
+                        in
+                        match Forge.branch_state branch with
+                        | Ok state -> Some state
+                        | Error _ -> None
+                      else None
+                    in
                     let prefetched_comments =
                       if is_review then
                         match fresh_pr_state with
@@ -1520,7 +1728,15 @@ module Make (Forge : Forge.S) (W : Worktree.S) (Env : Runner_env.S) = struct
                     let ci_skip_reason =
                       if is_ci then
                         match (pr_number, fresh_pr_state) with
-                        | None, _ -> Some "no PR number"
+                        | None, _ -> (
+                            match fresh_branch_state with
+                            | None -> Some "branch HEAD fetch failed"
+                            | Some state ->
+                                if
+                                  Base.List.exists state.checks
+                                    ~f:Ci_check.is_failure
+                                then None
+                                else Some "no current failures")
                         | Some _, None -> Some "fetch failed"
                         | Some _, Some pr_state ->
                             let agent_has_merge_queue_failure =
@@ -1590,6 +1806,38 @@ module Make (Forge : Forge.S) (W : Worktree.S) (Env : Runner_env.S) = struct
                                     update_if_current (fun orch ->
                                         Orchestrator.mark_running orch patch_id)
                                   in
+                                  let branch_state_after_wait =
+                                    match fresh_branch_state with
+                                    | Some initial when is_ci && owns_after_wait
+                                      -> (
+                                        let branch =
+                                          Runtime.read runtime (fun snap ->
+                                              (Orchestrator.agent
+                                                 snap.Runtime.orchestrator
+                                                 patch_id)
+                                                .Patch_agent.branch)
+                                        in
+                                        match Forge.branch_state branch with
+                                        | Ok current
+                                          when String.equal current.head_sha
+                                                 initial.head_sha
+                                               && Base.List.exists
+                                                    current.checks
+                                                    ~f:Ci_check.is_failure ->
+                                            Some current
+                                        | Ok _ | Error _ ->
+                                            log_event runtime ~patch_id
+                                              "Skipped CI delivery — branch \
+                                               HEAD or checks changed during \
+                                               semaphore wait";
+                                            None)
+                                    | Some _ | None -> fresh_branch_state
+                                  in
+                                  let branch_ci_stale =
+                                    is_ci
+                                    && Option.is_some fresh_branch_state
+                                    && Option.is_none branch_state_after_wait
+                                  in
                                   let ci_merge_queue_removal_checks = ref [] in
                                   (* Write fresh ci_checks under the busy guard
                                    so the write can't race with the poller or
@@ -1598,7 +1846,9 @@ module Make (Forge : Forge.S) (W : Worktree.S) (Env : Runner_env.S) = struct
                                    [agent.ci_checks] reflects the fresh
                                    list. *)
                                   (match (is_ci, fresh_pr_state) with
-                                  | true, Some pr_state when owns_after_wait ->
+                                  | true, Some pr_state
+                                    when owns_after_wait && not branch_ci_stale
+                                    ->
                                       let synthetic_checks =
                                         Runtime.read runtime (fun snap ->
                                             Orchestrator.agent
@@ -1669,13 +1919,25 @@ module Make (Forge : Forge.S) (W : Worktree.S) (Env : Runner_env.S) = struct
                                                patch_id ci_checks)
                                           : bool)
                                   | _ -> ());
+                                  (match (is_ci, branch_state_after_wait) with
+                                  | true, Some state
+                                    when owns_after_wait && not branch_ci_stale
+                                    ->
+                                      ignore
+                                        (update_if_current (fun orch ->
+                                             Orchestrator.set_ci_checks orch
+                                               patch_id state.checks)
+                                          : bool)
+                                  | _ -> ());
                                   let agent =
                                     Runtime.read runtime (fun snap ->
                                         Orchestrator.agent
                                           snap.Runtime.orchestrator patch_id)
                                   in
                                   let delivery =
-                                    if
+                                    if branch_ci_stale then
+                                      Patch_decision.Skip_empty
+                                    else if
                                       owns_after_wait && owns_current_message ()
                                     then
                                       Patch_decision.respond_delivery ~agent

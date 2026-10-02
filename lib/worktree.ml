@@ -844,7 +844,8 @@ let gather_push_plan_inputs ~process_mgr ~path ~branch_str ~base_str =
     ancestry,
     commits_ahead_of_base )
 
-let force_push_with_lease_unbounded ~process_mgr ~path ~branch ~base =
+let force_push_with_lease_unbounded ~preserve_history ~process_mgr ~path ~branch
+    ~base =
   let branch_str = Types.Branch.to_string branch in
   let base_str = Types.Branch.to_string base in
   let ( worktree_path_exists,
@@ -875,6 +876,17 @@ let force_push_with_lease_unbounded ~process_mgr ~path ~branch ~base =
   | Push action ->
       let args =
         match action with
+        | Push_plan.Force_push_if_includes when preserve_history ->
+            [
+              "git";
+              "-C";
+              path;
+              "push";
+              "--porcelain";
+              "-u";
+              "origin";
+              branch_str;
+            ]
         | Push_plan.Force_push_if_includes ->
             [
               "git";
@@ -912,11 +924,14 @@ let force_push_with_lease_unbounded ~process_mgr ~path ~branch ~base =
 
 let default_push_timeout_seconds = 120.0
 
-let force_push_with_lease ?(timeout_seconds = default_push_timeout_seconds)
-    ~clock ~process_mgr ~path ~branch ~base () =
+let force_push_with_lease ?(preserve_history = false)
+    ?(timeout_seconds = default_push_timeout_seconds) ~clock ~process_mgr ~path
+    ~branch ~base () =
   match
     Eio.Time.with_timeout clock timeout_seconds (fun () ->
-        Ok (force_push_with_lease_unbounded ~process_mgr ~path ~branch ~base))
+        Ok
+          (force_push_with_lease_unbounded ~preserve_history ~process_mgr ~path
+             ~branch ~base))
   with
   | Ok result -> result
   | Error `Timeout ->
@@ -1019,6 +1034,186 @@ let patch_id t = t.patch_id
 let branch t = t.branch
 let newly_created t = t.newly_created
 
+type integration_result =
+  | Integrated of string
+  | Integration_conflict of string
+  | Integration_error of string
+
+(* Caller owns the root-write lock. No checked-out branch is reset or rewritten. *)
+let integrate ~process_mgr ~clock ~repo_root ~root_path ~root_branch
+    ~descendant_branch ~head_sha =
+  let git path args =
+    run_git_exit_code ~process_mgr ([ "git"; "-C"; path ] @ args)
+  in
+  let checked path args =
+    match git path args with
+    | 0, out, _ -> Result.Ok (String.strip out)
+    | _, _, err -> Result.Error err
+  in
+  let fail msg = Integration_error msg in
+  let root = Types.Branch.to_string root_branch in
+  let child = Types.Branch.to_string descendant_branch in
+  let remote_root = "refs/remotes/origin/" ^ root in
+  let remote_child = "refs/remotes/origin/" ^ child in
+  let run () =
+    match
+      checked repo_root
+        [
+          "fetch";
+          "origin";
+          root ^ ":" ^ remote_root;
+          child ^ ":" ^ remote_child;
+        ]
+    with
+    | Result.Error e -> fail e
+    | Result.Ok _ -> (
+        match
+          ( checked repo_root [ "rev-parse"; "--verify"; remote_child ],
+            checked repo_root [ "rev-parse"; "--verify"; remote_root ] )
+        with
+        | Result.Ok observed, Result.Ok tip when String.equal observed head_sha
+          -> (
+            let sync sha =
+              match
+                ( checked root_path [ "status"; "--porcelain" ],
+                  checked root_path [ "symbolic-ref"; "--short"; "HEAD" ],
+                  checked root_path [ "rev-parse"; "HEAD" ] )
+              with
+              | Result.Ok "", Result.Ok branch, Result.Ok local
+                when String.equal branch root -> (
+                  if
+                    not
+                      (is_ancestor ~process_mgr ~path:repo_root ~ancestor:local
+                         ~descendant:sha)
+                  then
+                    fail
+                      "Root checkout diverged; refusing to discard local \
+                       commits"
+                  else
+                    match checked root_path [ "merge"; "--ff-only"; sha ] with
+                    | Result.Ok _ -> Integrated sha
+                    | Result.Error e -> fail e)
+              | Result.Ok _, Result.Ok _, Result.Ok _ ->
+                  fail "Root checkout is dirty or on an unexpected branch"
+              | Result.Error e, _, _
+              | _, Result.Error e, _
+              | _, _, Result.Error e ->
+                  fail e
+            in
+            if
+              is_ancestor ~process_mgr ~path:repo_root ~ancestor:head_sha
+                ~descendant:tip
+            then sync tip
+            else
+              (* Check the managed checkout before publishing, including crash recovery. *)
+              match
+                ( checked root_path [ "status"; "--porcelain" ],
+                  checked root_path [ "symbolic-ref"; "--short"; "HEAD" ],
+                  checked root_path [ "rev-parse"; "HEAD" ] )
+              with
+              | Result.Ok "", Result.Ok branch, Result.Ok local
+                when String.equal branch root
+                     && is_ancestor ~process_mgr ~path:repo_root ~ancestor:local
+                          ~descendant:tip ->
+                  let tmp = Stdlib.Filename.temp_file "onton-integration-" "" in
+                  Unix.unlink tmp;
+                  Stdlib.Fun.protect
+                    ~finally:(fun () ->
+                      Eio.Cancel.protect (fun () ->
+                          let _ =
+                            git repo_root
+                              [ "worktree"; "remove"; "--force"; tmp ]
+                          in
+                          ()))
+                    (fun () ->
+                      match
+                        checked repo_root
+                          [ "worktree"; "add"; "--detach"; tmp; tip ]
+                      with
+                      | Result.Error e -> fail e
+                      | Result.Ok _ -> (
+                          match
+                            git tmp
+                              [ "merge"; "--no-ff"; "--no-edit"; head_sha ]
+                          with
+                          | 0, _, _ -> (
+                              match checked tmp [ "rev-parse"; "HEAD" ] with
+                              | Result.Error e -> fail e
+                              | Result.Ok sha -> (
+                                  match
+                                    checked tmp
+                                      [
+                                        "push";
+                                        "origin";
+                                        "HEAD:refs/heads/" ^ root;
+                                      ]
+                                  with
+                                  | Result.Error e -> fail e
+                                  | Result.Ok _ -> sync sha))
+                          | _, _, e -> (
+                              match
+                                checked tmp
+                                  [ "diff"; "--name-only"; "--diff-filter=U" ]
+                              with
+                              | Result.Ok files when not (String.is_empty files)
+                                ->
+                                  Integration_conflict files
+                              | Result.Ok _ | Result.Error _ -> fail e)))
+              | Result.Ok _, Result.Ok _, Result.Ok _ ->
+                  fail "Root checkout is dirty, switched, or diverged"
+              | Result.Error e, _, _
+              | _, Result.Error e, _
+              | _, _, Result.Error e ->
+                  fail e)
+        | Result.Ok _, Result.Ok _ ->
+            fail "Descendant head changed since its checks were observed"
+        | Result.Error e, _ | _, Result.Error e -> fail e)
+  in
+  match Eio.Time.with_timeout clock 120. (fun () -> Result.Ok (run ())) with
+  | Result.Ok r -> r
+  | Result.Error `Timeout -> fail "Git integration timed out"
+
+let merge_preserving ~process_mgr ~path ~target : rebase_result =
+  let pending = read_branch_sha ~process_mgr ~path ~ref_name:"MERGE_HEAD" in
+  if Option.is_some pending then
+    let code, _, err =
+      run_git_exit_code ~process_mgr [ "git"; "-C"; path; "merge"; "--abort" ]
+    in
+    if code = 0 then Error "Aborted unfinished root merge; retry the update"
+    else Error ("Could not abort unfinished root merge: " ^ err)
+  else
+    match has_uncommitted_changes ~process_mgr ~path with
+    | Result.Error e -> (Error e : rebase_result)
+    | Result.Ok true -> Uncommitted_changes "Root checkout has local changes"
+    | Result.Ok false ->
+        let head = read_branch_sha ~process_mgr ~path ~ref_name:"HEAD" in
+        let code, _, err =
+          run_git_exit_code ~process_mgr
+            [
+              "git";
+              "-C";
+              path;
+              "merge";
+              "--no-ff";
+              "--no-edit";
+              Types.Branch.to_string target;
+            ]
+        in
+        if code = 0 then
+          if
+            Option.equal String.equal head
+              (read_branch_sha ~process_mgr ~path ~ref_name:"HEAD")
+          then Noop
+          else Ok
+        else
+          let abort_code, _, abort_err =
+            run_git_exit_code ~process_mgr
+              [ "git"; "-C"; path; "merge"; "--abort" ]
+          in
+          if abort_code = 0 then
+            Error ("Root merge failed and was aborted: " ^ err)
+          else Error ("Root merge failed and abort also failed: " ^ abort_err)
+
 module type S = sig
   val resolve_main_root : unit -> string
   val is_checked_out_in_repo_root : Types.Branch.t -> bool
@@ -1088,12 +1283,20 @@ module type S = sig
   val force_push_with_lease :
     path:string -> branch:Types.Branch.t -> base:Types.Branch.t -> push_result
 
+  val integrate :
+    root_path:string ->
+    root_branch:Types.Branch.t ->
+    descendant_branch:Types.Branch.t ->
+    head_sha:string ->
+    integration_result
+
   val rebase_in_progress : path:string -> bool
 end
 
 type client = (module S)
 
-let make ~fs ~config ~clock ~process_mgr ~repo_root =
+let make_with_protection ~protected_branch ~fs ~config ~clock ~process_mgr
+    ~repo_root =
   let module B =
     (val Worktree_backend.make ~fs ~clock ~process_mgr ~repo_root ~config
            ~timeout_seconds:120.)
@@ -1175,8 +1378,13 @@ let make ~fs ~config ~clock ~process_mgr ~repo_root =
     let conflict_diff ~path = conflict_diff ~process_mgr ~path
 
     let rebase_onto ~path ~target ~upstream ~project_name ~ancestor_ids () =
-      rebase_onto ~upstream ~process_mgr ~path ~target ~project_name
-        ~ancestor_ids ()
+      if
+        Option.value_map protected_branch ~default:false ~f:(fun b ->
+            Types.Branch.equal b (detect_branch ~path))
+      then merge_preserving ~process_mgr ~path ~target
+      else
+        rebase_onto ~upstream ~process_mgr ~path ~target ~project_name
+          ~ancestor_ids ()
 
     let read_branch_sha ~path ~ref_name =
       read_branch_sha ~process_mgr ~path ~ref_name
@@ -1190,7 +1398,20 @@ let make ~fs ~config ~clock ~process_mgr ~repo_root =
         ~ancestor_ids
 
     let force_push_with_lease ~path ~branch ~base =
-      force_push_with_lease ~clock ~process_mgr ~path ~branch ~base ()
+      let preserve_history =
+        Option.value_map protected_branch ~default:false
+          ~f:(Types.Branch.equal branch)
+      in
+      force_push_with_lease ~preserve_history ~clock ~process_mgr ~path ~branch
+        ~base ()
+
+    let integrate ~root_path ~root_branch ~descendant_branch ~head_sha =
+      integrate ~process_mgr ~clock ~repo_root ~root_path ~root_branch
+        ~descendant_branch ~head_sha
 
     let rebase_in_progress ~path = rebase_in_progress ~process_mgr ~path
   end : S)
+
+let make ~fs ~config ~clock ~process_mgr ~repo_root =
+  make_with_protection ~protected_branch:None ~fs ~config ~clock ~process_mgr
+    ~repo_root

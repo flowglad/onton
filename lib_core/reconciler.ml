@@ -116,17 +116,21 @@ let detect_notified_base_drift views =
 (** Detect agents whose base_branch still points at a merged dependency's
     branch. This catches cases where the event-driven detect_rebases missed the
     rebase (e.g. agent had needs_intervention at the time). *)
-let detect_stale_bases graph views ~has_merged ~branch_of ~main =
+let detect_stale_bases_with_mode ~mode graph views ~has_merged ~branch_of ~main
+    =
   List.filter_map views ~f:(fun v ->
       if
         v.has_pr && (not v.merged) && (not v.in_merge_queue)
         && (not
               (List.mem v.queue Operation_kind.Rebase
                  ~equal:Operation_kind.equal))
-        && List.length (Graph.open_pr_deps graph v.id ~has_merged) <= 1
+        && List.length (Execution_mode.open_deps mode graph v.id ~has_merged)
+           <= 1
       then
         let correct_base =
-          Graph.initial_base graph v.id ~has_merged ~branch_of ~main
+          Option.value
+            (Execution_mode.base mode graph v.id ~has_merged ~branch_of ~main)
+            ~default:(Execution_mode.terminal mode v.id ~branch_of ~main)
         in
         if not (Branch.equal v.base_branch correct_base) then
           Some (Enqueue_rebase v.id)
@@ -174,7 +178,7 @@ let detect_stale_bases graph views ~has_merged ~branch_of ~main =
 
     The [open_pr_deps = 1] guard pins this to the "last-but-one dependency
     merged" edge, where healing [B]'s chain realizes containment for [P]. *)
-let detect_sibling_stale_bases graph views ~has_merged =
+let detect_sibling_stale_bases_with_mode ~mode graph views ~has_merged =
   let view_by_id =
     List.fold views
       ~init:(Map.empty (module Patch_id))
@@ -207,7 +211,8 @@ let detect_sibling_stale_bases graph views ~has_merged =
   List.filter_map views ~f:(fun v ->
       if
         (not v.merged)
-        && List.length (Graph.open_pr_deps graph v.id ~has_merged) = 1
+        && List.length (Execution_mode.open_deps mode graph v.id ~has_merged)
+           = 1
         && not v.base_contains_merged_siblings
       then
         match v.sibling_rebase_target with
@@ -215,7 +220,7 @@ let detect_sibling_stale_bases graph views ~has_merged =
         | Some _ | None -> None
       else None)
 
-let plan_operations views ~has_merged ~branch_of ~graph ~main =
+let plan_operations_with_mode ~mode views ~has_merged ~branch_of ~graph ~main =
   List.filter_map views ~f:(fun v ->
       if
         v.has_pr && (not v.merged) && (not v.busy) && (not v.needs_intervention)
@@ -226,10 +231,14 @@ let plan_operations views ~has_merged ~branch_of ~graph ~main =
             let new_base =
               match kind with
               | Operation_kind.Rebase ->
-                  if List.length (Graph.open_pr_deps graph v.id ~has_merged) > 1
+                  if
+                    List.length
+                      (Execution_mode.open_deps mode graph v.id ~has_merged)
+                    > 1
                   then None
                   else
-                    Some (merge_target graph v.id ~has_merged ~branch_of ~main)
+                    Execution_mode.base mode graph v.id ~has_merged ~branch_of
+                      ~main
               | Operation_kind.Uncommitted_changes | Operation_kind.Human
               | Operation_kind.Merge_conflict | Operation_kind.Ci
               | Operation_kind.Review_comments | Operation_kind.Findings
@@ -244,7 +253,7 @@ let plan_operations views ~has_merged ~branch_of ~graph ~main =
         | None -> None
       else None)
 
-let reconcile ~graph ~main ~merged_pr_patches ~branch_of views =
+let reconcile_with_mode ~mode ~graph ~main ~merged_pr_patches ~branch_of views =
   let merges = detect_merges views ~merged_pr_patches in
   let newly_merged =
     List.filter_map merges ~f:(function
@@ -257,10 +266,12 @@ let reconcile ~graph ~main ~merged_pr_patches ~branch_of views =
   in
   let event_rebases = detect_rebases graph views ~newly_merged in
   let stale_rebases =
-    detect_stale_bases graph views ~has_merged ~branch_of ~main
+    detect_stale_bases_with_mode ~mode graph views ~has_merged ~branch_of ~main
   in
   let drift_rebases = detect_notified_base_drift views in
-  let sibling_rebases = detect_sibling_stale_bases graph views ~has_merged in
+  let sibling_rebases =
+    detect_sibling_stale_bases_with_mode ~mode graph views ~has_merged
+  in
   (* Deduplicate across the four rebase detectors. Priority is arbitrary —
      they all emit the same [Enqueue_rebase] with the same patch_id — but we
      must not emit duplicates, since the orchestrator's [enqueue] is
@@ -300,6 +311,16 @@ let reconcile ~graph ~main ~merged_pr_patches ~branch_of views =
         })
   in
   let operations =
-    plan_operations effective_views ~has_merged ~branch_of ~graph ~main
+    plan_operations_with_mode ~mode effective_views ~has_merged ~branch_of
+      ~graph ~main
   in
   merges @ rebases @ operations
+
+let detect_stale_bases =
+  detect_stale_bases_with_mode ~mode:Execution_mode.mainline
+
+let detect_sibling_stale_bases =
+  detect_sibling_stale_bases_with_mode ~mode:Execution_mode.mainline
+
+let plan_operations = plan_operations_with_mode ~mode:Execution_mode.mainline
+let reconcile = reconcile_with_mode ~mode:Execution_mode.mainline

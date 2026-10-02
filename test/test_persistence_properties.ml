@@ -119,6 +119,63 @@ let () =
           | Error _msg -> false
         with _ -> false)
   in
+  let legacy_feature_fields_default_false =
+    QCheck2.Test.make
+      ~name:"legacy snapshots without feature fields resume with false"
+      ~count:100 gen_snapshot (fun snap ->
+        try
+          let json = Onton.Persistence.snapshot_to_yojson snap in
+          let json =
+            match json with
+            | `Assoc fields ->
+                `Assoc
+                  (List.map fields ~f:(fun (key, value) ->
+                       if not (String.equal key "orchestrator") then (key, value)
+                       else
+                         match value with
+                         | `Assoc orch_fields ->
+                             let orch_fields =
+                               List.filter_map orch_fields ~f:(fun (name, v) ->
+                                   if String.equal name "promotion_claimed" then
+                                     None
+                                   else if String.equal name "agents" then
+                                     let agents =
+                                       match v with
+                                       | `Assoc agents ->
+                                           `Assoc
+                                             (List.map agents
+                                                ~f:(fun (id, agent) ->
+                                                  match agent with
+                                                  | `Assoc fields ->
+                                                      ( id,
+                                                        `Assoc
+                                                          (List.filter fields
+                                                             ~f:(fun
+                                                                 (field, _) ->
+                                                               not
+                                                                 (String.equal
+                                                                    field
+                                                                    "branch_published")))
+                                                      )
+                                                  | other -> (id, other)))
+                                       | other -> other
+                                     in
+                                     Some (name, agents)
+                                   else Some (name, v))
+                             in
+                             (key, `Assoc orch_fields)
+                         | other -> (key, other)))
+            | other -> other
+          in
+          match Onton.Persistence.snapshot_of_yojson json with
+          | Ok restored ->
+              (not (Onton.Orchestrator.promotion_claimed restored.orchestrator))
+              && List.for_all
+                   (Onton.Orchestrator.all_agents restored.orchestrator)
+                   ~f:(fun a -> not a.Onton_core.Patch_agent.branch_published)
+          | Error _ -> false
+        with _ -> false)
+  in
   let applied_control_ids_decode =
     QCheck2.Test.make
       ~name:"snapshot rejects malformed control IDs and defaults missing IDs"
@@ -625,6 +682,7 @@ let () =
     QCheck_base_runner.run_tests
       [
         snapshot_roundtrip;
+        legacy_feature_fields_default_false;
         applied_control_ids_decode;
         applied_control_ids_restore_window;
         activity_log_roundtrip;

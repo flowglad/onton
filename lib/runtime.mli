@@ -87,3 +87,12 @@ val snapshot_unsync : t -> snapshot
 (** Read the snapshot without acquiring the mutex. Safe only when all fibers
     have terminated (e.g. in a [Fun.protect ~finally] cleanup block after
     [Fiber.all] has returned or raised). *)
+
+val with_root_write : t -> (unit -> 'a) -> 'a
+(** Serialize integration-branch writes. Releases the lock on error or
+    cancellation. *)
+
+val with_patch_write : t -> patch_id:Patch_id.t -> (unit -> 'a) -> 'a
+(** Serialize operations on a patch, also taking the root-write lock for the
+    integration root. Acquire patch ownership before root ownership; callbacks
+    must not reacquire either lock. Releases both on error or cancellation. *)

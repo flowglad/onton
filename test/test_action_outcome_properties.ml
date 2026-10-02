@@ -1167,3 +1167,74 @@ let () =
          | QCheck2.Test.Test_fail _ as exn -> raise exn
          | _ -> false));
   Stdlib.print_endline "AO-MQ passed"
+
+let () =
+  QCheck2.Test.check_exn
+    (QCheck2.Test.make ~name:"feature mode publication and promotion decisions"
+       ~count:100
+       QCheck2.Gen.(pair bool string)
+       (fun (claim, head_sha) ->
+         try
+           let patches = mk_patches 2 in
+           let graph = Graph.of_patches patches in
+           let root = pid_of_idx patches 0 in
+           let child = pid_of_idx patches 1 in
+           let mode =
+             match Execution_mode.infer graph with
+             | Ok mode -> mode
+             | Error error -> failwith error
+           in
+           let orch =
+             Orchestrator.create ~patches ~main_branch:main |> fun orch ->
+             Orchestrator.set_execution_mode orch mode
+           in
+           let root_branch =
+             (Orchestrator.agent orch root).Patch_agent.branch
+           in
+           assert (Execution_mode.equal (Orchestrator.execution_mode orch) mode);
+           assert (Orchestrator.is_integration_root orch root);
+           assert (Orchestrator.is_feature_descendant orch child);
+           assert (
+             Branch.equal (Orchestrator.terminal_branch orch child) root_branch);
+           assert (List.is_empty (Orchestrator.open_deps orch child));
+           assert (
+             Option.equal Branch.equal
+               (Orchestrator.expected_base orch child)
+               (Some root_branch));
+           assert (Orchestrator.construction_open orch);
+           assert (Orchestrator.additions_allowed orch ~dependencies:[ root ]);
+           let claimed = Orchestrator.claim_promotion orch in
+           assert (not (Orchestrator.construction_open claimed));
+           let orch =
+             if claim then claimed else Orchestrator.release_promotion claimed
+           in
+           assert (Bool.equal (Orchestrator.construction_open orch) (not claim));
+           let orch = Orchestrator.release_promotion orch in
+           let orch = Orchestrator.settle_restored_promotion orch in
+           assert (Orchestrator.construction_open orch);
+           let orch = Orchestrator.mark_branch_published orch child in
+           assert (Orchestrator.agent orch child).Patch_agent.branch_published;
+           let orch = Orchestrator.refresh_base_branch orch child in
+           let orch =
+             Patch_controller.apply_branch_observation orch child ~head_sha
+               ~checks:[]
+           in
+           assert (
+             Option.equal String.equal
+               (Orchestrator.agent orch child).Patch_agent.head_oid
+               (Some head_sha));
+           assert (not (Patch_controller.is_integration_candidate orch child));
+           assert (not (Patch_controller.ready_for_review orch child));
+           let orch = Orchestrator.invalidate_root_readiness orch in
+           assert
+             (Orchestrator.agent orch root).Patch_agent.mergeability_unknown;
+           match
+             Branch_poll_decision.plan ~now:0. ~expected_head:(Some head_sha)
+               None
+           with
+           | Branch_poll_decision.Probe { reuse_checks = false } -> true
+           | Branch_poll_decision.Probe { reuse_checks = true }
+           | Branch_poll_decision.Skip ->
+               false
+         with _ -> false));
+  Stdlib.print_endline "AO-feature-mode passed"
