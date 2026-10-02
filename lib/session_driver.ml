@@ -891,13 +891,6 @@ module Make (W : Worktree.S) (Env : ENV) = struct
                         log_event runtime ~patch_id
                           (Printf.sprintf "runner: push error after session: %s"
                              msg));
-                    if
-                      (not branch_changed)
-                      && Orchestrator.equal_session_result session_result
-                           Orchestrator.Session_ok
-                    then
-                      log_event runtime ~patch_id
-                        "runner: session made no new commit";
                     (* Combine LLM session outcome with push outcome into a single
              session_result via the pure decision in
              [Orchestrator.combine_session_and_push]. user_result mirrors:
@@ -928,8 +921,9 @@ module Make (W : Worktree.S) (Env : ENV) = struct
                     in
                     let final_session_result =
                       let combined =
-                        Orchestrator.combine_session_and_push ~branch_changed
-                          ~session:session_result ~push:push_outcome
+                        Orchestrator.combine_session_and_push ~delivery_mode
+                          ~branch_changed ~session:session_result
+                          ~push:push_outcome
                       in
                       match combined with
                       | Orchestrator.Session_no_commits when no_commits_is_ok ->
@@ -963,6 +957,20 @@ module Make (W : Worktree.S) (Env : ENV) = struct
                       | Orchestrator.Session_context_exhausted ->
                           `Failed
                     in
+                    if
+                      (not branch_changed)
+                      && Orchestrator.equal_session_result session_result
+                           Orchestrator.Session_ok
+                    then
+                      log_event runtime ~patch_id
+                        (if
+                           Patch_decision.equal_delivery_mode delivery_mode
+                             Start
+                           && Orchestrator.equal_session_result
+                                final_session_result Orchestrator.Session_ok
+                         then
+                           "runner: reusing published commits for PR creation"
+                         else "runner: session made no new commit");
                     let _, push_agent_after =
                       apply_result_and_emit_complete final_session_result
                     in

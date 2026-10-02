@@ -1156,7 +1156,8 @@ let () =
     Test.make ~name:"CP-1: Session_ok + Push_ok = Session_ok" (Gen.return ())
       (fun () ->
         Orchestrator.equal_session_result
-          (Orchestrator.combine_session_and_push ~branch_changed:true
+          (Orchestrator.combine_session_and_push
+             ~delivery_mode:Patch_decision.Respond ~branch_changed:true
              ~session:Session_ok ~push:Worktree.Push_ok)
           Session_ok)
   in
@@ -1164,7 +1165,8 @@ let () =
     Test.make ~name:"CP-2: Session_ok + Push_up_to_date = Session_ok"
       (Gen.return ()) (fun () ->
         Orchestrator.equal_session_result
-          (Orchestrator.combine_session_and_push ~branch_changed:true
+          (Orchestrator.combine_session_and_push
+             ~delivery_mode:Patch_decision.Respond ~branch_changed:true
              ~session:Session_ok ~push:Worktree.Push_up_to_date)
           Session_ok)
   in
@@ -1174,7 +1176,8 @@ let () =
         "CP-2b: Session_ok + Push_up_to_date + unchanged branch = \
          Session_no_commits" (Gen.return ()) (fun () ->
         Orchestrator.equal_session_result
-          (Orchestrator.combine_session_and_push ~branch_changed:false
+          (Orchestrator.combine_session_and_push
+             ~delivery_mode:Patch_decision.Respond ~branch_changed:false
              ~session:Session_ok ~push:Worktree.Push_up_to_date)
           Session_no_commits)
   in
@@ -1184,8 +1187,43 @@ let () =
         "CP-2c: Session_ok + Push_ok + unchanged branch = Session_no_commits"
       (Gen.return ()) (fun () ->
         Orchestrator.equal_session_result
-          (Orchestrator.combine_session_and_push ~branch_changed:false
+          (Orchestrator.combine_session_and_push
+             ~delivery_mode:Patch_decision.Respond ~branch_changed:false
              ~session:Session_ok ~push:Worktree.Push_ok)
+          Session_no_commits)
+  in
+  let prop_cp_start_published =
+    Test.make ~name:"Start publishes existing commits after a failed session"
+      Gen.bool (fun branch_changed ->
+        let orch, pid = mk_busy_orch () in
+        let failed =
+          Orchestrator.Session_failed
+            { is_fresh = false; detail = Some "timeout" }
+        in
+        let timeout =
+          Orchestrator.combine_session_and_push
+            ~delivery_mode:Patch_decision.Start ~branch_changed:true
+            ~session:failed ~push:Worktree.Push_ok
+        in
+        let orch = Orchestrator.apply_session_result orch pid timeout in
+        let completed =
+          Orchestrator.combine_session_and_push
+            ~delivery_mode:Patch_decision.Start ~branch_changed
+            ~session:Session_ok ~push:Worktree.Push_up_to_date
+        in
+        let orch = Orchestrator.apply_session_result orch pid completed in
+        Orchestrator.equal_session_result timeout failed
+        && Orchestrator.equal_session_result completed Session_ok
+        && (Orchestrator.agent orch pid).Patch_agent.no_commits_push_count = 0)
+  in
+  let prop_cp_start_empty =
+    Test.make
+      ~name:"Start cannot publish a branch with no commits ahead of base"
+      Gen.bool (fun branch_changed ->
+        Orchestrator.equal_session_result
+          (Orchestrator.combine_session_and_push
+             ~delivery_mode:Patch_decision.Start ~branch_changed
+             ~session:Session_ok ~push:Worktree.Push_no_commits)
           Session_no_commits)
   in
   let prop_cp3_ok_rejected =
@@ -1194,7 +1232,8 @@ let () =
         "CP-3: Session_ok + Push_rejected = Session_push_failed (Some reason)"
       (Gen.return ()) (fun () ->
         Orchestrator.equal_session_result
-          (Orchestrator.combine_session_and_push ~branch_changed:true
+          (Orchestrator.combine_session_and_push
+             ~delivery_mode:Patch_decision.Respond ~branch_changed:true
              ~session:Session_ok
              ~push:(Worktree.Push_rejected Push_reject_classify.Lease_violation))
           (Session_push_failed (Some Push_reject_classify.Lease_violation)))
@@ -1203,7 +1242,8 @@ let () =
     Test.make ~name:"CP-4: Session_ok + Push_error = Session_push_failed None"
       Gen.string_small (fun msg ->
         Orchestrator.equal_session_result
-          (Orchestrator.combine_session_and_push ~branch_changed:true
+          (Orchestrator.combine_session_and_push
+             ~delivery_mode:Patch_decision.Respond ~branch_changed:true
              ~session:Session_ok ~push:(Worktree.Push_error msg))
           (Session_push_failed None))
   in
@@ -1244,15 +1284,17 @@ let () =
          (Push_worktree_missing excluded — handled by CP-7)" ~count:300
       (Gen.pair gen_non_ok_session gen_push) (fun (session, push) ->
         Orchestrator.equal_session_result
-          (Orchestrator.combine_session_and_push ~branch_changed:false ~session
-             ~push)
+          (Orchestrator.combine_session_and_push
+             ~delivery_mode:Patch_decision.Respond ~branch_changed:false
+             ~session ~push)
           session)
   in
   let prop_cp6_ok_no_commits =
     Test.make ~name:"CP-6: Session_ok + Push_no_commits = Session_no_commits"
       (Gen.return ()) (fun () ->
         Orchestrator.equal_session_result
-          (Orchestrator.combine_session_and_push ~branch_changed:true
+          (Orchestrator.combine_session_and_push
+             ~delivery_mode:Patch_decision.Respond ~branch_changed:true
              ~session:Session_ok ~push:Worktree.Push_no_commits)
           Session_no_commits)
   in
@@ -1269,8 +1311,9 @@ let () =
         "CP-7: any session + Push_worktree_missing = Session_worktree_missing"
       gen_any_session (fun session ->
         Orchestrator.equal_session_result
-          (Orchestrator.combine_session_and_push ~branch_changed:false ~session
-             ~push:Worktree.Push_worktree_missing)
+          (Orchestrator.combine_session_and_push
+             ~delivery_mode:Patch_decision.Respond ~branch_changed:false
+             ~session ~push:Worktree.Push_worktree_missing)
           Session_worktree_missing)
   in
   (* Session_no_commits property tests (PNC-N) mirror PSF-N: clear fallback,
@@ -1606,6 +1649,8 @@ let () =
       prop_cp2_ok_uptodate;
       prop_cp2b_ok_uptodate_unchanged_branch;
       prop_cp2c_ok_pushok_unchanged_branch;
+      prop_cp_start_published;
+      prop_cp_start_empty;
       prop_cp3_ok_rejected;
       prop_cp4_ok_error;
       prop_cp5_failure_dominates;

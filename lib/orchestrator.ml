@@ -1206,8 +1206,9 @@ let apply_session_result t patch_id result =
       let t = update_agent t patch_id ~f:Patch_agent.on_context_exhausted in
       complete_failed t patch_id
 
-let combine_session_and_push ~branch_changed ~(session : session_result)
-    ~(push : Worktree.push_result) : session_result =
+let combine_session_and_push ~delivery_mode ~branch_changed
+    ~(session : session_result) ~(push : Worktree.push_result) : session_result
+    =
   (* Push_worktree_missing dominates every prior session outcome: even if the
      LLM session reported [Session_ok], the worktree (and thus the local
      commits) are gone, so the only safe action is to clear inflight state
@@ -1222,7 +1223,15 @@ let combine_session_and_push ~branch_changed ~(session : session_result)
       | Session_ok -> (
           match push with
           | Worktree.Push_ok | Worktree.Push_up_to_date ->
-              if branch_changed then Session_ok else Session_no_commits
+              (* Start admits PR publication from the whole branch. A prior
+                 failed turn may already have pushed the implementation;
+                 finishing it successfully need not manufacture another commit.
+                 Respond still measures progress in the current turn. *)
+              if
+                branch_changed
+                || Patch_decision.equal_delivery_mode delivery_mode Start
+              then Session_ok
+              else Session_no_commits
           | Worktree.Push_no_commits -> Session_no_commits
           | Worktree.Push_rejected reason -> Session_push_failed (Some reason)
           | Worktree.Push_error _ -> Session_push_failed None

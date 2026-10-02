@@ -305,6 +305,7 @@ val apply_session_result : t -> Patch_id.t -> session_result -> t
     [needs_intervention] fires via [push_failure_count >= 3] or [Given_up]. *)
 
 val combine_session_and_push :
+  delivery_mode:Patch_decision.delivery_mode ->
   branch_changed:bool ->
   session:session_result ->
   push:Worktree.push_result ->
@@ -316,7 +317,9 @@ val combine_session_and_push :
       [Session_push_failed _]) is preserved unchanged — the push outcome doesn't
       change anything.
     - [Session_ok] with [Push_ok] or [Push_up_to_date] stays [Session_ok] when
-      [branch_changed] is true. When [branch_changed] is false, it becomes
+      [branch_changed] is true or the delivery is [Start]. A successful Start
+      can publish a PR from commits pushed by an earlier failed session. For
+      [Respond], when [branch_changed] is false, it becomes
       [Session_no_commits]: the agent turn finished but did not create a new
       commit, even if the branch already had older commits ahead of base.
     - [Session_ok] with [Push_rejected reason] becomes
