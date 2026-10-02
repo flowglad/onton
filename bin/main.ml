@@ -1616,7 +1616,8 @@ let gameplan_path_arg =
   Arg.(
     value
     & opt (some string) None
-    & info [ "gameplan" ] ~docv:"GAMEPLAN" ~doc:"Path to the gameplan file.")
+    & info [ "gameplan" ] ~docv:"GAMEPLAN"
+        ~doc:"Path to a YAML or JSON gameplan file.")
 
 let forge_arg =
   let open Cmdliner in

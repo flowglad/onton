@@ -32,7 +32,7 @@
     "projectName": {
       "type": "string",
       "pattern": "^[a-z0-9]+(-[a-z0-9]+)*$",
-      "description": "Short kebab-case identifier. Used in branch names (zax--<projectName>), PR titles ([<projectName>] Patch N: <title>), and file paths (gameplans/<projectName>.json)."
+      "description": "Short kebab-case identifier. Used in branch names (zax--<projectName>), PR titles ([<projectName>] Patch N: <title>), and file paths (gameplans/<projectName>.yaml)."
     },
     "owner": {
       "type": "string",

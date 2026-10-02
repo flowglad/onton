@@ -1,0 +1,72 @@
+"""Behavior checks for YAML input and the validator's public CLI."""
+import json
+from pathlib import Path
+import subprocess
+import sys
+import tempfile
+import unittest
+
+from gameplan_document import load_document
+
+SCRIPTS = Path(__file__).resolve().parent
+REFERENCES = SCRIPTS.parent / "references"
+
+
+class GameplanDocuments(unittest.TestCase):
+    def load(self, text, suffix=".yaml"):
+        with tempfile.TemporaryDirectory() as td:
+            path = Path(td) / ("plan" + suffix)
+            path.write_text(text)
+            return load_document(path)
+
+    def test_scalar_types_and_blocks(self):
+        self.assertEqual(self.load('a: on\nb: off\nc: 2026-10-02\nd: "001"\n'
+                                   'e: true\nf: false\ng: null\nh: ~\ni:\n'
+                                   'j: []\nk: {}\nspec: |-\n  one\n  two\n'
+                                   'large: 9007199254740993\n'),
+                         dict(a="on", b="off", c="2026-10-02", d="001", e=True,
+                              f=False, g=None, h=None, i=None, j=[], k={},
+                              spec="one\ntwo", large=9007199254740993))
+
+    def test_unicode_and_nul(self):
+        self.assertEqual(self.load('value: "before\\u0000after café 🌿"'),
+                         {'value': 'before\0after café 🌿'})
+
+    def test_rejected_documents(self):
+        for text in ['a: 1\na: 2', '{"a": 1, "a": 2}', 'a: {x: 1, x: 2}', 'a: &id [1]\nb: *id',
+                     'a: !custom value', 'a: !!str value', 'a: !!map {b: value}',
+                     'a: [', '1: value', '[a]: value', '<<: {a: 1}', 'a: 1e999',
+                     'a: 1\n---\nb: 2', 'a: 1\n...\ngarbage', '']:
+            with self.subTest(text=text), self.assertRaises(Exception):
+                self.load(text)
+
+    def test_json_remains_strict(self):
+        self.assertEqual(self.load('{"a": 1}', '.json'), {'a': 1})
+        with self.assertRaises(json.JSONDecodeError):
+            self.load('a: 1', '.json')
+
+    def test_examples_are_equivalent_and_valid(self):
+        self.assertEqual(load_document(REFERENCES / 'example.yaml'),
+                         load_document(REFERENCES / 'example.json'))
+        for suffix in ['yaml', 'json']:
+            result = subprocess.run([sys.executable, str(SCRIPTS / 'validate.py'),
+                                     str(REFERENCES / ('example.' + suffix))],
+                                    stdin=subprocess.DEVNULL, capture_output=True,
+                                    text=True, timeout=30)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertNotIn('WARN', result.stderr)
+
+    def test_validator_reports_invalid_shape_without_traceback(self):
+        with tempfile.TemporaryDirectory() as td:
+            path = Path(td) / 'plan.yaml'
+            for text in ['[]', 'projectName: p\npatches: [broken]']:
+                path.write_text(text)
+                result = subprocess.run([sys.executable, str(SCRIPTS / 'validate.py'), str(path)],
+                                        stdin=subprocess.DEVNULL, capture_output=True,
+                                        text=True, timeout=30)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertNotIn('Traceback', result.stderr)
+
+
+if __name__ == '__main__':
+    unittest.main()

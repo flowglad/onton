@@ -1,11 +1,11 @@
 ---
 name: write-gameplan
-description: Create or update a structured JSON gameplan for a codebase change, including patch sequencing, dependency graph, acceptance criteria, and formal per-patch and final-state specs. Use when the user asks for a gameplan, implementation plan, milestone plan, or structured change plan.
+description: Create or update a structured YAML gameplan for a codebase change, including patch sequencing, dependency graph, acceptance criteria, and formal per-patch and final-state specs. Use when the user asks for a gameplan, implementation plan, milestone plan, or structured change plan.
 ---
 
 # Write Gameplan
 
-Create a structured, machine-readable gameplan for a complex codebase change. The gameplan is a JSON object with typed sections, and each patch includes a formal specification articulating the invariants that must hold after that patch is applied. A final-state spec describes what must be true when the entire gameplan is complete.
+Create a structured, machine-readable gameplan for a complex codebase change. The gameplan is a YAML mapping with typed sections, and each patch includes a formal specification articulating the invariants that must hold after that patch is applied. A final-state spec describes what must be true when the entire gameplan is complete.
 
 **Core principle**: It should be 5-10x easier to review a gameplan than the code it produces.
 
@@ -13,7 +13,7 @@ Create a structured, machine-readable gameplan for a complex codebase change. Th
 
 Start with the behavior the user actually requested and the constraints they supplied. Inspect the existing path for that behavior, then choose the smallest change that can deliver it. A workstream milestone, schema field, or operational checklist is context for that choice; it does not authorize additional product behavior or infrastructure.
 
-Before drafting patches or JSON, identify any missing decision whose answer would materially change the product surface, persistence model, authority boundary, or architecture. Ask the programmer then, with the concrete alternatives and their cost. For example, "view candidates and run tests" does not establish that the flow needs a web page rather than an existing CLI, or that test runs need a durable attempt ledger, recovery after interruption, or retry semantics. Those are separate requirements. If the codebase and supplied context settle a decision, record the evidence and proceed. If the answer changes the design substantially and cannot be inferred, wait for it before committing to a design; do not bury a preferred answer in `explicitOpinions` and ask only after writing the plan.
+Before drafting patches or YAML, identify any missing decision whose answer would materially change the product surface, persistence model, authority boundary, or architecture. Ask the programmer then, with the concrete alternatives and their cost. For example, "view candidates and run tests" does not establish that the flow needs a web page rather than an existing CLI, or that test runs need a durable attempt ledger, recovery after interruption, or retry semantics. Those are separate requirements. If the codebase and supplied context settle a decision, record the evidence and proceed. If the answer changes the design substantially and cannot be inferred, wait for it before committing to a design; do not bury a preferred answer in `explicitOpinions` and ask only after writing the plan.
 
 Keep an explicit boundary between requested outcomes, existing constraints, and optional ideas. Include an optional capability only when it is necessary to deliver the requested outcome or the programmer chooses it. Ordinary failure handling for a chosen path still belongs in the plan, but do not turn every conceivable failure mode into a new table, workflow, UI, or retry protocol. Use `openQuestions` for consequential decisions discovered later; resolve them before finalizing the affected patches.
 
@@ -79,9 +79,21 @@ A gameplan can be **standalone** or part of a **workstream** (a larger project s
 
 ## Output Format
 
-**MANDATORY FIRST STEP**: Before writing any JSON, read `references/gameplan-schema.json` (relative to this skill's directory). It is a formal [JSON Schema (draft 2020-12)](https://json-schema.org/draft/2020-12/schema) defining every required field, its type, constraints, and structure. Do NOT generate JSON from memory — the schema is the sole source of truth for the output shape.
+**MANDATORY FIRST STEP**: Before writing any YAML, read `references/gameplan-schema.json` (relative to this skill's directory). It is a formal [JSON Schema (draft 2020-12)](https://json-schema.org/draft/2020-12/schema) defining every required field, its type, constraints, and structure. Do NOT generate gameplans from memory — the schema is the sole source of truth for the output shape.
 
-The gameplan is a **JSON object** written to `gameplans/<project-name>.json`. Every section is a named attribute.
+The gameplan is a **YAML mapping** written to `gameplans/<project-name>.yaml`. Every section is a named attribute. The JSON Schema remains the sole shape contract: YAML is decoded to the same objects, arrays, strings, numbers, booleans, and nulls before validation. Existing `.json` gameplans remain supported; preserve the format when editing one unless the user requests conversion.
+
+Use two-space indentation and literal block scalars (`|` or `|-`) for the `spec` / `finalStateSpec` fields. Use folded scalars (`>` or `>-`) to word-wrap prose while preserving its string value. Use `[]` for empty arrays and `null` for absent values. Quote string IDs with leading zeroes or numeric-looking text. Plain `true`, `false`, and `null` have their JSON types; words such as `on`, `off`, and dates remain strings. Use JSON-style decimal numbers. Each file contains one document with unique string mapping keys; tags, anchors, aliases, and merge keys are unsupported.
+
+Format YAML before validation to add blank lines between top-level fields and wrap long prose (88 columns by default):
+
+```sh
+python3 scripts/format_yaml.py gameplans/<project-name>.yaml --in-place
+```
+
+Omit `--in-place` to preview on stdout, or pass `--width 100` to change the preferred width. The formatter preserves comments, field order, scalar types, and literal specs, and verifies that the decoded data is unchanged before writing. Unbreakable words and literal specs can exceed the preferred width. Install its dependencies from `scripts/requirements.txt`.
+
+See `references/example.yaml` for a complete schema-valid gameplan.
 
 ### Required Top-Level Fields
 
@@ -117,7 +129,7 @@ All of these fields are **required** and must be present in every gameplan:
 
 Each patch object must have: `number`, `classification` (INFRA\|GATED\|BEHAVIOR), `complexity` (1\|2\|3), `title`, `files` (array of `{ path, action, description }`), `changes` (string array), `requiredContext` (string array), `testStubsIntroduced` (string array or null), `testStubsImplemented` (string array or null), `spec` (string). Patches may also include an optional `precedents` array citing established libraries, algorithms, or patterns the patch should adopt — see [Leveraging Established Precedents](#leveraging-established-precedents).
 
-The inline `spec` and `finalStateSpec` string fields in the JSON are the **sole source of truth** for formal specifications. Do not maintain separate spec files alongside the gameplan. For verification, extract the strings and validate them with the spec language's toolchain (see [Specification Language](#specification-language) below). Do not persist the extracted files.
+The inline `spec` and `finalStateSpec` string fields in the gameplan are the **sole source of truth** for formal specifications. Do not maintain separate spec files alongside the gameplan. For verification, extract the strings and validate them with the spec language's toolchain (see [Specification Language](#specification-language) below). Do not persist the extracted files.
 
 ## Ground Every Reference in Real Code
 
@@ -420,7 +432,7 @@ When a gameplan introduces new behavior, there are **three** possible gating str
 
 - **Search the codebase for existing flag infrastructure and flags.** Find how this project gates behavior (a flag service, a database-backed flag table, environment variables, build constants) and enumerate the flags that already exist. A new feature frequently belongs under an existing flag that already gates the surrounding surface or an in-progress rollout.
 - **Decide whether gating is warranted at all.** If the change is a pure refactor with no observable behavior change, or is otherwise safe to ship unconditionally, option 3 is correct — record *why* no flag is needed.
-- **If the user has not specified a strategy and the codebase does not settle it, clarify before drafting when the choice changes scope or architecture.** Adding flag infrastructure, reusing a flag with a different rollout boundary, and shipping ungated can produce different patch designs. Follow [Set Scope Before Designing](#set-scope-before-designing): present the viable options and their tradeoffs, then wait for the programmer's choice before writing patches or JSON. If a flag question discovered later does not change the affected design, record it in `openQuestions` and resolve it before finalizing those patches. Only treat the strategy as settled when the user has chosen it or the codebase makes it unambiguous.
+- **If the user has not specified a strategy and the codebase does not settle it, clarify before drafting when the choice changes scope or architecture.** Adding flag infrastructure, reusing a flag with a different rollout boundary, and shipping ungated can produce different patch designs. Follow [Set Scope Before Designing](#set-scope-before-designing): present the viable options and their tradeoffs, then wait for the programmer's choice before writing patches or YAML. If a flag question discovered later does not change the affected design, record it in `openQuestions` and resolve it before finalizing those patches. Only treat the strategy as settled when the user has chosen it or the codebase makes it unambiguous.
 
 Once the strategy is decided, implement the mechanics:
 
@@ -524,16 +536,20 @@ feature and its entry points are gone, stop carrying its tombstone.
 Run the validator before finalising:
 
 ```
-python3 scripts/validate.py <path/to/gameplan.json>
+python3 scripts/validate.py <path/to/gameplan.yaml>
 ```
+
+YAML validation also checks canonical formatting without rewriting the file. Formatting failures include the command to fix them. If you formatted with a custom width, use the same `--width` when validating; JSON plans are exempt from YAML formatting checks.
 
 It exits 0 on PASS and 1 with explicit error lines on FAIL. Fix every reported error; do not ship a gameplan that has validator failures or WARNs.
 
-Soft dependencies — install both so nothing is skipped:
+Install the Python dependencies with `python3 -m pip install -r scripts/requirements.txt`, and install `pant` so nothing is skipped:
+- `PyYAML` — required to read YAML gameplans.
+- `ruamel.yaml` — required for YAML formatting and its validation check.
 - `jsonschema` (pip) — enables JSON Schema shape validation. Without it, only semantic checks run.
 - `pant` 0.22+ — enables Pantagruel spec parsing. Install: `brew tap subsetpark/pantagruel https://github.com/subsetpark/pantagruel && brew install pantagruel`.
 
-The validator covers everything mechanisable: schema shape, spec parsing, context-routing reciprocity, functional-change ID and ownership integrity, dependency-graph DAG correctness and classification consistency, testMap consistency, reachability-trace integrity (created-node vs creating-patch ordering, and the owning patch editing a node on the path), and repo-relative path safety. See `scripts/validate.py` for the exact set.
+The validator covers everything mechanisable: YAML formatting, schema shape, spec parsing, context-routing reciprocity, functional-change ID and ownership integrity, dependency-graph DAG correctness and classification consistency, testMap consistency, reachability-trace integrity (created-node vs creating-patch ordering, and the owning patch editing a node on the path), and repo-relative path safety. See `scripts/validate.py` for the exact set.
 
 The rest is human judgement. Walk these before setting the relevant `mergabilityChecklist` booleans to `true`:
 
@@ -585,7 +601,7 @@ The end state is a gameplan with `openQuestions: []` and an `explicitOpinions` a
 
 The handoff from [[write-workstream]] is one-directional by default: this skill *reads* the workstream's `Established Precedents` and the milestone's `Definition of Done`. But the gameplan brings the milestone sketch into executable detail — and per the workstream skill's "don't over-plan" principle, later milestones are deliberately left thin until they are unpacked. The knowledge that unpacking produces (resolved questions, discovered prior art, real scope) must flow back **up** to the workstream, or the downstream milestones that would benefit never see it.
 
-This matters because the two artifacts have different lifespans. **A workstream is always persisted** — locally, in Notion, or both — and outlives the whole project. **A gameplan often is not**: once its patches land, the JSON has served its purpose and may be discarded. So the write-back is not merely a convenience that mirrors knowledge into a second place; for anything learned while planning this milestone, the workstream is frequently the *only* lasting home. Capture the substance in the workstream prose itself — do not write a workstream entry that says "see the gameplan for details," because the gameplan may be gone.
+This matters because the two artifacts have different lifespans. **A workstream is always persisted** — locally, in Notion, or both — and outlives the whole project. **A gameplan often is not**: once its patches land, the gameplan has served its purpose and may be discarded. So the write-back is not merely a convenience that mirrors knowledge into a second place; for anything learned while planning this milestone, the workstream is frequently the *only* lasting home. Capture the substance in the workstream prose itself — do not write a workstream entry that says "see the gameplan for details," because the gameplan may be gone.
 
 **This step applies only when the gameplan is part of a workstream** (the `workstream` field is non-null). For a standalone gameplan, skip it entirely.
 
@@ -601,7 +617,7 @@ Propose write-backs for:
 
 3. **Scope and Definition-of-Done reconciliation.** The finalised gameplan rarely matches the milestone's original `Definition of Done` exactly — work gets deferred, pulled forward, or split out. Reconcile the milestone record so its `Definition of Done`, `Unlocks`, and (if the milestone ends GATED) `Operator Actions Before Next Milestone` describe what the gameplan actually commits to. Now that flag names and gated state are concrete, fill in placeholder operator actions with the real flag name and the actual signals to watch. **If planning revealed follow-on work that does not fit this milestone — a deferred cutover, a flag flip and old-code removal, a newly-discovered dependency — propose adding it as a new or later milestone** (with a Definition of Done and dependency edges), rather than letting it evaporate. This is the one write-back permitted to suggest structural changes to the workstream; flag it as such so the programmer can weigh it deliberately.
 
-4. **Status — this milestone and its predecessors.** Mark this milestone as planned so the workstream stays a live index of which milestones are unplanned, planned, or executed. You may add a link to the artifact (`gameplans/<project-name>.json`, or the Notion URL if it was synced) as a convenience, but treat it as potentially dangling — the gameplan may not survive once its patches land. The status itself, and the substance captured in the other write-backs (1–3 and 5), must stand on their own without the link resolving.
+4. **Status — this milestone and its predecessors.** Mark this milestone as planned so the workstream stays a live index of which milestones are unplanned, planned, or executed. You may add a link to the artifact (`gameplans/<project-name>.yaml`, or the Notion URL if it was synced) as a convenience, but treat it as potentially dangling — the gameplan may not survive once its patches land. The status itself, and the substance captured in the other write-backs (1–3 and 5), must stand on their own without the link resolving.
 
    Then update the **previous milestone(s)** from the landed-state grounding you did in [Workstream Context](#workstream-context-optional) step 3. Under the normal iterative cadence, planning milestone N is the *first* write-back opportunity since milestone N−1 landed — nothing else touches the workstream between milestones — so if you don't record it here, the workstream permanently shows N−1 as merely "planned." Mark it executed/landed, and record *how* it landed where reality diverged from the milestone sketch: descoped or deferred work, renamed artifacts or flags, operator actions completed (or still pending — a pending one is a blocker to surface, not a footnote). Capture the substance in the milestone's record itself, not as a pointer to the retired gameplan. This pairs with write-back 5's second pass, which conforms the acceptance-suite *assertions* to the same landed code — item 4 updates the milestone's status and narrative; item 5 updates its testable assertions.
 
@@ -609,7 +625,7 @@ Propose write-backs for:
 
    - **Current milestone — conform the assertions to the *planned* implementation.** For each assertion owned by this milestone, rewrite it to reference the concrete names this gameplan introduces — the actual feature, file/module, class/function, endpoint, table, flag, and command — replacing any placeholder or abstraction left in at workstream-authoring time. Confirm each assertion is genuinely observable via its `api` / `db` / `ux` / `cmd` method against what the gameplan builds, and that its `Traces to` points at a real artifact a patch in this gameplan creates. If the gameplan delivers an observable behavior the suite does not yet assert, add an assertion; if an owned assertion describes behavior this gameplan deliberately does *not* deliver, fix or re-own it (and surface the scope change, per write-back 3). Every owned assertion must map to at least one `acceptanceCriteria` / `finalStateSpec` clause.
 
-   - **Previous milestone — conform the assertions to the *landed* code.** The previous milestone's patches are merged, but its gameplan JSON may be gone — so verify its owned assertions against the **actual codebase**, not against the old gameplan. Start from the landed-state grounding you did in [Workstream Context](#workstream-context-optional) step 3 rather than re-deriving it. Open the files, run the queries/commands, hit the endpoints the assertions name. Where reality has drifted from what the assertion says — a renamed file or class, a changed endpoint or flag, a command that no longer exists — correct the assertion to match the landed code so it stays runnable and its `Traces to` resolves. If an assertion now *fails* against landed code (not just drifted naming, but actually-broken behavior), do not quietly rewrite it: flag it as a regression for the programmer.
+   - **Previous milestone — conform the assertions to the *landed* code.** The previous milestone's patches are merged, but its gameplan file may be gone — so verify its owned assertions against the **actual codebase**, not against the old gameplan. Start from the landed-state grounding you did in [Workstream Context](#workstream-context-optional) step 3 rather than re-deriving it. Open the files, run the queries/commands, hit the endpoints the assertions name. Where reality has drifted from what the assertion says — a renamed file or class, a changed endpoint or flag, a command that no longer exists — correct the assertion to match the landed code so it stays runnable and its `Traces to` resolves. If an assertion now *fails* against landed code (not just drifted naming, but actually-broken behavior), do not quietly rewrite it: flag it as a regression for the programmer.
 
    This keeps the acceptance suite a living, runnable contract: always conformant to landed code behind the frontier, and always conformant to the planned implementation at the frontier.
 
@@ -642,7 +658,7 @@ If your project uses a different specification language (TLA+, Alloy, Z, etc.), 
 
 ## Execution
 
-V2 JSON gameplans are consumed programmatically via the `patches` and `dependencyGraph` arrays. Orchestrators like onton can parse the dependency graph directly to identify parallelizable patches and execute them concurrently in isolated git worktrees.
+YAML and legacy JSON gameplans are consumed programmatically via the `patches` and `dependencyGraph` arrays. Orchestrators like onton can parse the dependency graph directly to identify parallelizable patches and execute them concurrently in isolated git worktrees.
 
 ## Guidelines
 
@@ -656,5 +672,6 @@ V2 JSON gameplans are consumed programmatically via the `patches` and `dependenc
 ## References
 
 - `references/gameplan-schema.json` — Formal JSON Schema (draft 2020-12)
-- `references/example.json` — Complete real-world example (uses Pantagruel for specs)
-- `scripts/validate.py` — End-to-end validator (schema + pant + routing + DAG + testMap + paths). Run `python3 scripts/validate.py <gameplan.json>` before finalising.
+- `references/example.yaml` — Complete real-world example (uses Pantagruel for specs)
+- `scripts/format_yaml.py` — YAML readability formatter; run before validation.
+- `scripts/validate.py` — End-to-end validator (schema + pant + routing + DAG + testMap + paths). Run `python3 scripts/validate.py <gameplan.yaml>` before finalising.

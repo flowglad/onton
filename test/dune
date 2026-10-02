@@ -723,3 +723,18 @@
  (libraries onton onton_core eio_main unix)
  (ocamlopt_flags (:standard -w -40-42))
  (ocamlc_flags (:standard -w -40-42)))
+
+(test
+ (name test_gameplan_document_properties)
+ (modules test_gameplan_document_properties)
+ (libraries onton_core qcheck-core qcheck-core.runner yojson base))
+
+(test
+ (name test_gameplan_files)
+ (modules test_gameplan_files)
+ (libraries onton_core base)
+ (deps ../skills/write-gameplan/references/example.yaml
+       ../skills/write-gameplan/references/example.json)
+ (action
+  (run %{test} %{dep:../skills/write-gameplan/references/example.yaml}
+       %{dep:../skills/write-gameplan/references/example.json})))

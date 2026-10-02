@@ -46,9 +46,15 @@ let gameplan_path project_name =
 let gameplan_json_path project_name =
   Stdlib.Filename.concat (project_dir project_name) "gameplan.json"
 
+let gameplan_yaml_path project_name =
+  Stdlib.Filename.concat (project_dir project_name) "gameplan.yaml"
+
 let stored_gameplan_path project_name =
+  let yaml = gameplan_yaml_path project_name in
   let md = gameplan_path project_name in
-  if Stdlib.Sys.file_exists md then md else gameplan_json_path project_name
+  if Stdlib.Sys.file_exists yaml then yaml
+  else if Stdlib.Sys.file_exists md then md
+  else gameplan_json_path project_name
 
 let artifacts_root project_name =
   Stdlib.Filename.concat (project_dir project_name) "artifacts"
@@ -254,10 +260,14 @@ let load_config ~project_name =
 let save_gameplan_source ~project_name ~source_path =
   let dir = project_dir project_name in
   ensure_dir dir;
-  let dest, stale =
+  let dest =
     if Stdlib.Filename.check_suffix source_path ".json" then
-      (gameplan_json_path project_name, gameplan_path project_name)
-    else (gameplan_path project_name, gameplan_json_path project_name)
+      gameplan_json_path project_name
+    else if
+      Stdlib.Filename.check_suffix source_path ".yaml"
+      || Stdlib.Filename.check_suffix source_path ".yml"
+    then gameplan_yaml_path project_name
+    else gameplan_path project_name
   in
   let ic = Stdlib.open_in source_path in
   let content =
@@ -271,17 +281,34 @@ let save_gameplan_source ~project_name ~source_path =
     (fun () ->
       Stdlib.output_string oc content;
       Stdlib.flush oc);
-  if Stdlib.Sys.file_exists stale then
-    try Stdlib.Sys.remove stale with Sys_error _ -> ()
+  List.iter
+    [
+      gameplan_path project_name;
+      gameplan_json_path project_name;
+      gameplan_yaml_path project_name;
+    ]
+    ~f:(fun stale ->
+      if (not (String.equal stale dest)) && Stdlib.Sys.file_exists stale then
+        Stdlib.Sys.remove stale)
 
 let publish_gameplan_artifact ~project_name =
-  let source = gameplan_json_path project_name in
-  if Stdlib.Sys.file_exists source then (
+  let source = stored_gameplan_path project_name in
+  if
+    Stdlib.Sys.file_exists source
+    && not (String.equal source (gameplan_path project_name))
+  then (
     let ic = Stdlib.open_in_bin source in
     let content =
       Stdlib.Fun.protect
         ~finally:(fun () -> Stdlib.close_in_noerr ic)
         (fun () -> Stdlib.In_channel.input_all ic)
+    in
+    let content =
+      if String.equal source (gameplan_yaml_path project_name) then
+        match Gameplan_document.of_string content with
+        | Ok json -> Yojson.Safe.to_string json
+        | Error msg -> failwith msg
+      else content
     in
     let dest = gameplan_artifact_path project_name in
     ensure_dir (Stdlib.Filename.dirname dest);
@@ -678,3 +705,59 @@ let%test "save/load config preserves the worktree backend and executable" =
               && Option.equal String.equal config.worktree_executable
                    (Some "/opt/simgit/sg")
           | Error _ -> false))
+
+let%test "YAML plans survive save, resume, and agent artifact publication" =
+  with_temp_data_dir (fun () ->
+      let project_name = "yaml-roundtrip" in
+      let source_dir =
+        Stdlib.Filename.concat (project_dir project_name) "inputs"
+      in
+      ensure_dir source_dir;
+      let content =
+        "projectName: yaml-roundtrip\n\
+         owner: flowglad\n\
+         repo: onton\n\
+         solutionSummary: |\n\
+        \  First line\n\
+        \  Second line\n\
+         patches:\n\
+        \  - number: \"001\"\n\
+        \    title: YAML patch\n\
+        \    changes: []\n\
+         dependencyGraph:\n\
+        \  - patch: \"001\"\n\
+        \    dependsOn: []\n\
+         openQuestions: []\n"
+      in
+      List.for_all [ ".yaml"; ".yml"; ".json"; ".yaml" ] ~f:(fun suffix ->
+          let content =
+            if String.equal suffix ".json" then
+              match Gameplan_document.of_string content with
+              | Ok json -> Yojson.Safe.to_string json
+              | Error _ -> ""
+            else content
+          in
+          let source = Stdlib.Filename.concat source_dir ("plan" ^ suffix) in
+          let oc = Stdlib.open_out_bin source in
+          Stdlib.output_string oc content;
+          Stdlib.close_out oc;
+          save_gameplan_source ~project_name ~source_path:source;
+          let stored = stored_gameplan_path project_name in
+          publish_gameplan_artifact ~project_name;
+          match
+            ( Gameplan_parser.parse_file stored,
+              Gameplan_parser.parse_json_file
+                (gameplan_artifact_path project_name) )
+          with
+          | Ok loaded, Ok artifact -> (
+              Types.Gameplan.equal loaded.Gameplan_parser.gameplan
+                artifact.Gameplan_parser.gameplan
+              && String.equal (read_file_for_test stored) content
+              && String.equal loaded.gameplan.solution_summary
+                   "First line\nSecond line\n"
+              &&
+              match loaded.gameplan.patches with
+              | [ patch ] ->
+                  String.equal (Types.Patch_id.to_string patch.id) "001"
+              | _ -> false)
+          | Error _, _ | Ok _, Error _ -> false))
