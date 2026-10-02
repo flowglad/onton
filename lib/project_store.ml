@@ -775,6 +775,7 @@ let%test "YAML plans survive save, resume, and agent artifact publication" =
                   String.equal (Types.Patch_id.to_string patch.id) "001"
               | _ -> false)
           | Error _, _ | Ok _, Error _ -> false))
+
 let save_execution_mode ~project_name mode =
   let json = Yojson.Safe.from_file (config_path project_name) in
   match json with

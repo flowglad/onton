@@ -755,6 +755,11 @@
  (libraries onton_core qcheck-core qcheck-core.runner))
 
 (test
+ (name test_branch_poll_decision_properties)
+ (modules test_branch_poll_decision_properties)
+ (libraries onton_core qcheck-core qcheck-core.runner))
+
+(test
  (name test_feature_branch_mode)
  (modules test_feature_branch_mode)
  (libraries onton onton_core eio_main))

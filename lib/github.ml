@@ -1477,7 +1477,7 @@ let fetch_all_contexts ~net ~clock ?timeout ?(require_complete = false) t ~oid :
   in
   loop ~after:None ~page:0 []
 
-let branch_state ~net ~clock t branch =
+let branch_state ~net ~clock ?known_state t branch =
   let body =
     Yojson.Safe.to_string
       (`Assoc
@@ -1515,11 +1515,16 @@ let branch_state ~net ~clock t branch =
                 |> Option.bind ~f:(Json.string_field "oid")
               in
               match head with
-              | Some head_sha when not (String.is_empty head_sha) ->
-                  Result.map
-                    (fetch_all_contexts ~net ~clock ~require_complete:true t
-                       ~oid:head_sha) ~f:(fun checks ->
-                      Forge.{ head_sha; checks })
+              | Some head_sha when not (String.is_empty head_sha) -> (
+                  match known_state with
+                  | Some state when String.equal state.Forge.head_sha head_sha
+                    ->
+                      Ok state
+                  | Some _ | None ->
+                      Result.map
+                        (fetch_all_contexts ~net ~clock ~require_complete:true t
+                           ~oid:head_sha) ~f:(fun checks ->
+                          Forge.{ head_sha; checks }))
               | None | Some _ ->
                   Error (Json_parse_error "Branch HEAD is absent")))
 
@@ -2575,7 +2580,9 @@ let make ~net ~clock ~token ~owner ~repo ~main_branch :
       | Enqueued of Pr_state.merge_queue_entry
       | Already_enqueued of Pr_state.merge_queue_entry
 
-    let branch_state branch = branch_state ~net ~clock client branch
+    let branch_state ?known_state branch =
+      branch_state ~net ~clock ?known_state client branch
+
     let pr_state pr_number = pr_state ~net ~clock client pr_number
 
     let merge_queue_removal_checks ~pr_number =

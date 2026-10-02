@@ -34,7 +34,11 @@ module type S = sig
     | Enqueued of Pr_state.merge_queue_entry
     | Already_enqueued of Pr_state.merge_queue_entry
 
-  val branch_state : Types.Branch.t -> (branch_state, error) Result.t
+  val branch_state :
+    ?known_state:branch_state ->
+    Types.Branch.t ->
+    (branch_state, error) Result.t
+
   val pr_state : Types.Pr_number.t -> (Pr_state.t, error) Result.t
 
   val merge_queue_removal_checks :

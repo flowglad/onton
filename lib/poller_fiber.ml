@@ -3,6 +3,7 @@
 
 open Base
 open Types
+module Forge_types = Forge
 
 module Poller_env = struct
   module type S = sig
@@ -212,6 +213,14 @@ module Make (Forge : Forge.S) (W : Worktree.S) (Env : Poller_env.S) = struct
             Eio.Mutex.use_rw ~protect:true divergence_logged_mutex (fun () ->
                 Stdlib.Hashtbl.replace divergence_logged patch_id key))
     in
+    let branch_cache :
+        ( Patch_id.t,
+          Branch.t
+          * Forge_types.branch_state option
+          * Branch_poll_decision.cached )
+        Stdlib.Hashtbl.t =
+      Stdlib.Hashtbl.create 16
+    in
     let rec loop () =
       let branch_intents =
         Runtime.read runtime (fun snap ->
@@ -222,17 +231,70 @@ module Make (Forge : Forge.S) (W : Worktree.S) (Env : Poller_env.S) = struct
                 && a.branch_published && not a.merged))
       in
       Eio.Fiber.List.iter ~max_fibers:16
-        (fun a ->
-          match Forge.branch_state a.Patch_agent.branch with
-          | Error e ->
-              Runtime.update_orchestrator runtime (fun orch ->
-                  Orchestrator.set_checks_passing orch a.patch_id false);
-              Runtime_logging.log_event runtime ~patch_id:a.patch_id
-                ("Branch checks unavailable — " ^ Forge.show_error e)
-          | Ok observed ->
-              Runtime.update_orchestrator runtime (fun orch ->
-                  Patch_controller.apply_branch_observation orch a.patch_id
-                    ~head_sha:observed.head_sha ~checks:observed.checks))
+        (fun (a : Patch_agent.t) ->
+          let now = Eio.Time.now clock in
+          let previous =
+            match Stdlib.Hashtbl.find_opt branch_cache a.patch_id with
+            | Some (branch, state, cached) when Branch.equal branch a.branch ->
+                Some (state, cached)
+            | None | Some _ -> None
+          in
+          let expected_head = a.Patch_agent.expected_remote_head_oid in
+          let schedule = Option.map previous ~f:snd in
+          match Branch_poll_decision.plan ~now ~expected_head schedule with
+          | Skip -> ()
+          | Probe { reuse_checks } -> (
+              let known_state =
+                if reuse_checks then Option.bind previous ~f:fst else None
+              in
+              let result =
+                Forge.branch_state ?known_state a.Patch_agent.branch
+              in
+              let next_probe_at = now +. Branch_poll_decision.head_interval in
+              match result with
+              | Error e ->
+                  let state, checked_at =
+                    match previous with
+                    | None -> (None, None)
+                    | Some (state, cached) -> (state, cached.checks_observed_at)
+                  in
+                  Stdlib.Hashtbl.replace branch_cache a.patch_id
+                    ( a.branch,
+                      state,
+                      {
+                        next_probe_at;
+                        checks_observed_at = checked_at;
+                        observed_head =
+                          Option.map state ~f:(fun s -> s.Forge_types.head_sha);
+                        expected_head;
+                      } );
+                  Runtime.update_orchestrator runtime (fun orch ->
+                      Orchestrator.set_checks_passing orch a.patch_id false);
+                  Runtime_logging.log_event runtime ~patch_id:a.patch_id
+                    ("Branch checks unavailable — " ^ Forge.show_error e)
+              | Ok observed ->
+                  let checks_reused =
+                    Option.value_map known_state ~default:false ~f:(fun s ->
+                        String.equal s.Forge_types.head_sha observed.head_sha)
+                  in
+                  let checks_observed_at =
+                    if checks_reused then
+                      Option.bind previous ~f:(fun (_, cached) ->
+                          cached.checks_observed_at)
+                    else Some now
+                  in
+                  Stdlib.Hashtbl.replace branch_cache a.patch_id
+                    ( a.branch,
+                      Some observed,
+                      {
+                        next_probe_at;
+                        checks_observed_at;
+                        observed_head = Some observed.head_sha;
+                        expected_head;
+                      } );
+                  Runtime.update_orchestrator runtime (fun orch ->
+                      Patch_controller.apply_branch_observation orch a.patch_id
+                        ~head_sha:observed.head_sha ~checks:observed.checks)))
         branch_intents;
       let intents =
         Runtime.read runtime (fun snap ->
