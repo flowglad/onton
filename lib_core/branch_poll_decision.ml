@@ -1,4 +1,4 @@
-(* @archlint.module value
+(* @archlint.module core
    @archlint.domain orchestrator *)
 
 open Base

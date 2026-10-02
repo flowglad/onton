@@ -57,6 +57,29 @@ let integration a =
 
 let tests =
   [
+    property "root and descendant classification" (G.int_range 1 4) (fun n ->
+        Bool.equal (Execution_mode.is_root mode (id n)) (Int.equal n 1)
+        && Bool.equal
+             (Execution_mode.is_descendant mode (id n))
+             (not (Int.equal n 1)));
+    property "terminal and open dependencies stop at root" G.unit (fun () ->
+        Branch.equal
+          (Execution_mode.terminal mode (id 2) ~branch_of ~main)
+          (branch 1)
+        && List.is_empty
+             (Execution_mode.open_deps mode graph (id 2) ~has_merged:(fun _ ->
+                  false))
+        && List.equal Patch_id.equal
+             (Execution_mode.open_deps mode graph (id 4) ~has_merged:(fun _ ->
+                  false))
+             [ id 3 ]);
+    property "root readiness requires completed descendants" G.bool
+      (fun pending ->
+        let root = Patch_agent.create ~branch:(branch 1) (id 1) in
+        not
+          (Execution_mode.root_ready mode graph
+             ~has_merged:(fun _ -> false)
+             ~pending_integrations:pending root));
     property "feature publication defers only old or absent heads"
       (G.option G.string) (fun observed ->
         let a =

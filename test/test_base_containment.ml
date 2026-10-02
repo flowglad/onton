@@ -302,6 +302,32 @@ let () =
   ignore
     (runner
        [
+         Test.make ~name:"BC: mainline mode preserves legacy containment"
+           ~count:200
+           Gen.(
+             pair
+               (list (oneof_list [ "d1"; "d2"; "d3" ]))
+               (list (oneof_list [ "sha-d1"; "sha-d2"; "sha-d3" ])))
+           (fun (merged, contained) ->
+             let merged = List.map merged ~f:pid in
+             let has_merged d = List.mem merged d ~equal:Types.Patch_id.equal in
+             let ancestor_oracle = oracle_of contained in
+             Bool.equal
+               (BC.contains_merged_siblings_with_mode
+                  ~mode:Execution_mode.mainline ~graph:fanin_graph
+                  ~patch_id:(pid "p") ~has_merged ~merge_sha ~branch_of ~main
+                  ~ancestor_oracle)
+               (BC.contains_merged_siblings ~graph:fanin_graph
+                  ~patch_id:(pid "p") ~has_merged ~merge_sha ~branch_of ~main
+                  ~ancestor_oracle)
+             && Option.equal Types.Patch_id.equal
+                  (BC.stale_chain_rebase_target_with_mode
+                     ~mode:Execution_mode.mainline ~graph:fanin_graph
+                     ~patch_id:(pid "p") ~has_merged ~merge_sha ~branch_of ~main
+                     ~ancestor_oracle)
+                  (BC.stale_chain_rebase_target ~graph:fanin_graph
+                     ~patch_id:(pid "p") ~has_merged ~merge_sha ~branch_of ~main
+                     ~ancestor_oracle));
          prop_open_d2_missing_d3;
          prop_open_d2_after_rebase;
          prop_open_d1;

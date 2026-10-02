@@ -35,6 +35,9 @@ let () =
   (* A healthy agent needs no intervention and has no banner reason. *)
   let a = agent () in
   assert (not (Patch_agent.needs_intervention a));
+  let published = Patch_agent.mark_branch_published a in
+  assert published.Patch_agent.branch_published;
+  assert (not (Patch_agent.needs_intervention published));
   assert (not (Patch_agent.in_merge_queue a));
   assert (Option.is_none (Tui.human_intervention_reason a));
   let queued =
@@ -270,6 +273,7 @@ let () =
          let transitions : (Patch_agent.t -> Patch_agent.t) list =
            [
              (fun a -> Patch_agent.set_automerge_enabled a flag);
+             (fun a -> Patch_agent.mark_branch_published a);
              (fun a -> Patch_agent.set_automerge_inflight a flag);
              (fun a -> Patch_agent.set_automerge_deadline a 1.0);
              (fun a -> Patch_agent.clear_automerge_deadline a);
