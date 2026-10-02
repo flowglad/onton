@@ -116,5 +116,10 @@ let observation_pending t (a : Patch_agent.t) observed =
   if is_root t a.patch_id || is_descendant t a.patch_id then
     match a.expected_remote_head_oid with
     | None -> false
-    | Some expected -> not (Option.equal String.equal (Some expected) observed)
+    | Some expected -> (
+        match observed with
+        | None -> true
+        | Some head ->
+            (not (String.equal head expected))
+            && Option.equal String.equal (Some head) a.head_oid)
   else Patch_decision.defer_remote_head a observed

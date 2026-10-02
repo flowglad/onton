@@ -130,9 +130,10 @@ let human_delivery_unaccepted ~(kind : Operation_kind.t option)
   (not turn_accepted)
   && Option.equal Operation_kind.equal kind (Some Operation_kind.Human)
 
-(** Backend acceptance completes delivery only for a PR-backed Human Respond.
-    The explicit delivery mode prevents a Human-carrying Start from being
-    reclassified if it associates a PR while its session is still running. *)
+(** Backend acceptance completes delivery only for a PR-backed or published
+    branch Human Respond. The explicit delivery mode prevents a Human-carrying
+    Start from being reclassified if it associates a PR while its session is
+    still running. *)
 let human_acceptance_delivers_messages ~(agent : Patch_agent.t)
     ~(delivery_mode : delivery_mode) ~(kind : Operation_kind.t option) : bool =
   (Patch_agent.is_pr_present agent || agent.branch_published)
@@ -140,10 +141,10 @@ let human_acceptance_delivers_messages ~(agent : Patch_agent.t)
   && Option.equal Operation_kind.equal kind (Some Operation_kind.Human)
 
 (** Human, Findings, and Uncommitted_changes turns may legitimately produce no
-    commit when they are responding to an existing PR. Cleanup can correctly
-    discard changes instead of committing them. A Human-carrying Start retains
-    the ordinary Start no-commit retry/intervention semantics even after PR
-    association. *)
+    commit when responding to an existing PR or published branch. Cleanup can
+    correctly discard changes instead of committing them. A Human-carrying Start
+    retains the ordinary Start no-commit retry/intervention semantics even after
+    PR association. *)
 let session_no_commits_is_ok ~(agent : Patch_agent.t)
     ~(delivery_mode : delivery_mode) ~(kind : Operation_kind.t option) : bool =
   (Patch_agent.is_pr_present agent || agent.branch_published)

@@ -400,7 +400,8 @@ let set_tried_fresh t =
 let clear_session_fallback t = { t with session_fallback = Fresh_available }
 
 (** Handle a Claude session failure. Pure decision logic:
-    - Start path (no PR) + fresh failure: reset to Fresh_available for retry
+    - Start path (no PR or published branch) + fresh failure: reset to
+      Fresh_available for retry
     - Resume failure: escalate to Tried_fresh (will try fresh next)
     - Fresh failure (respond path): escalate one step via set_tried_fresh *)
 let on_session_failure t ~is_fresh =

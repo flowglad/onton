@@ -348,7 +348,8 @@ let patch_agent_of_yojson ~gameplan json =
                  | None -> Patch_pr_status.Absent
                  | Some n -> Patch_pr_status.Present (Pr_number.of_int n))))
        ~complexity:(int_member_opt "complexity" json)
-       ~branch_published:(bool_member "branch_published" json)
+       ~branch_published:
+         (Option.value (bool_member_opt "branch_published" json) ~default:false)
        ~has_session ~busy:(bool_member "busy" json)
        ~merged:(bool_member "merged" json)
        ~queue
@@ -762,7 +763,10 @@ let orchestrator_of_yojson ~gameplan json =
           in
           Ok
             (Orchestrator.restore
-               ~promotion_claimed:(bool_member "promotion_claimed" json)
+               ~promotion_claimed:
+                 (Option.value
+                    (bool_member_opt "promotion_claimed" json)
+                    ~default:false)
                ~graph ~agents:agents_map ~outbox ~main_branch ()))
   with
   | Decode_error msg -> Error (Printf.sprintf "malformed orchestrator: %s" msg)

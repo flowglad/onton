@@ -876,6 +876,11 @@ let apply_branch_observation t patch_id ~head_sha ~checks =
       | Patch_decision.Ci_already_queued | Patch_decision.Ci_fix_in_progress
       | Patch_decision.Ci_already_delivered ->
           t
+    else if
+      Pr_state.equal_check_status
+        (Pr_state.derive_check_status checks)
+        Pr_state.Passing
+    then Orchestrator.reset_ci_failure_count t patch_id
     else t
 
 let is_integration_candidate ?(ignore_inflight = false) t patch_id =

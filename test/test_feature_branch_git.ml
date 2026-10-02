@@ -215,6 +215,25 @@ let () =
                 (Git.git_exit_code ~cwd:dir
                    [ "merge-base"; "--is-ancestor"; ancestor; root_tip ]
                 = 0));
+          let _ = commit dir "shared" "upstream conflict\n" in
+          Git.run_git ~cwd:dir [ "push"; "-q"; "origin"; "main" ];
+          check "fetch conflicting upstream"
+            (Result.is_ok (W.fetch_origin ~fetch_lock ~path:root_path));
+          check "root merge conflict aborts"
+            (match
+               W.rebase_onto ~path:root_path
+                 ~target:(Branch.of_string "origin/main")
+                 ~upstream:base ~project_name:"git-test" ~ancestor_ids:[] ()
+             with
+            | Worktree.Error _ -> true
+            | Worktree.Ok | Worktree.Noop | Worktree.Conflict _
+            | Worktree.Uncommitted_changes _ ->
+                false);
+          check "root checkout clean after failed merge"
+            (String.is_empty
+               (Git.git_capture ~cwd:root_path [ "status"; "--porcelain" ])
+            && Git.git_exit_code ~cwd:root_path [ "rev-parse"; "MERGE_HEAD" ]
+               <> 0);
           check "no temporary worktree remains"
             (not
                (String.is_substring

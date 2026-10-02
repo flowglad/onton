@@ -404,6 +404,7 @@ let human_intervention_reason (agent : Patch_agent.t) =
 let patch_view_of_agent (agent : Patch_agent.t)
     ~(patches_by_id : Patch.t Map.M(Patch_id).t) ~(graph : Graph.t)
     ~(main_branch : Branch.t) ~(agents_by_id : Patch_agent.t Map.M(Patch_id).t)
+    ~(terminal_branch_of : Patch_id.t -> Branch.t)
     ~(resolve_routing : complexity:int option -> Backend_routing.decision) =
   let patch_id = agent.patch_id in
   let patch_opt = Map.find patches_by_id patch_id in
@@ -455,6 +456,7 @@ let patch_view_of_agent (agent : Patch_agent.t)
         let dep_status =
           match Map.find agents_by_id dep_id with
           | Some dep_agent ->
+              let dep_main_branch = terminal_branch_of dep_id in
               let dep_op = dep_agent.Patch_agent.current_op in
               let dep_needs_intervention =
                 display_needs_intervention dep_agent
@@ -472,7 +474,9 @@ let patch_view_of_agent (agent : Patch_agent.t)
                        (Patch_agent.has_pr dep_agent
                        || dep_agent.branch_published)
                 |> State.Patch_ctx.set_approved ~patch_id:dep_id
-                     ~value:(Patch_agent.is_approved dep_agent ~main_branch)
+                     ~value:
+                       (Patch_agent.is_approved dep_agent
+                          ~main_branch:dep_main_branch)
                 |> State.Patch_ctx.set_enqueued ~patch_id:dep_id
                      ~value:(Option.is_some dep_agent.merge_queue_entry)
                 |> State.Patch_ctx.set_ci_failure_count ~patch_id:dep_id
@@ -489,7 +493,7 @@ let patch_view_of_agent (agent : Patch_agent.t)
                       ~value:true)
               in
               derive_display_status dep_ctx ~patch_id:dep_id ~current_op:dep_op
-                ~main_branch
+                ~main_branch:dep_main_branch
           | None -> Pending
         in
         (dep_id, dep_status))
@@ -1385,7 +1389,9 @@ let views_of_orchestrator ~(orchestrator : Orchestrator.t)
       in
       let pv =
         patch_view_of_agent agent ~patches_by_id ~graph ~main_branch
-          ~agents_by_id ~resolve_routing
+          ~agents_by_id
+          ~terminal_branch_of:(Orchestrator.terminal_branch orchestrator)
+          ~resolve_routing
       in
       let pv =
         if Patch_controller.is_integration_candidate orchestrator agent.patch_id

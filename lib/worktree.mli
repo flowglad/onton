@@ -400,14 +400,16 @@ val force_push_with_lease :
   base:Types.Branch.t ->
   unit ->
   push_result
-(** Force-push with lease the given branch from the worktree at [path], bounded
-    by [timeout_seconds] (120 seconds by default). A deadline expiry cancels the
+(** Push the given branch from the worktree at [path], bounded by
+    [timeout_seconds] (120 seconds by default). A deadline expiry cancels the
     git process and returns [Push_error], allowing the runner to complete the
     current operation and retry instead of remaining busy indefinitely. Thin
     effectful orchestrator: runs [git rev-list --count base..HEAD], applies
     [push_gate_from_count] to decide whether to push, and classifies the push
-    output via [classify_push_result]. See [push_gate_from_count] and
-    [classify_push_result] for the pure decision logic. *)
+    output via [classify_push_result]. By default this force-pushes with lease;
+    [preserve_history = true] uses a normal push and reports a non-fast-forward
+    rejection rather than replacing remote history. See [push_gate_from_count]
+    and [classify_push_result] for the pure decision logic. *)
 
 val rebase_in_progress : process_mgr:_ Eio.Process.mgr -> path:string -> bool
 (** Returns [true] if there is a rebase currently in progress in the worktree at
@@ -427,6 +429,8 @@ val integrate :
   descendant_branch:Types.Branch.t ->
   head_sha:string ->
   integration_result
+(** The caller must hold the root-write lock throughout this operation. It
+    reads, merges, and publishes the shared integration root. *)
 
 module type S = sig
   val resolve_main_root : unit -> string
@@ -509,6 +513,7 @@ module type S = sig
     descendant_branch:Types.Branch.t ->
     head_sha:string ->
     integration_result
+  (** The caller must hold the root-write lock throughout this operation. *)
 
   val rebase_in_progress : path:string -> bool
 end

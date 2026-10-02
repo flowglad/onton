@@ -1124,7 +1124,6 @@ let integrate ~process_mgr ~clock ~repo_root ~root_path ~root_branch
                             git repo_root
                               [ "worktree"; "remove"; "--force"; tmp ]
                           in
-                          let _ = git repo_root [ "worktree"; "prune" ] in
                           ()))
                     (fun () ->
                       match
@@ -1174,22 +1173,14 @@ let integrate ~process_mgr ~clock ~repo_root ~root_path ~root_branch
   | Result.Ok r -> r
   | Result.Error `Timeout -> fail "Git integration timed out"
 
-let merge_preserving ~process_mgr ~path ~target =
+let merge_preserving ~process_mgr ~path ~target : rebase_result =
   let pending = read_branch_sha ~process_mgr ~path ~ref_name:"MERGE_HEAD" in
   if Option.is_some pending then
-    let original =
-      Option.value
-        (read_branch_sha ~process_mgr ~path ~ref_name:"HEAD")
-        ~default:""
+    let code, _, err =
+      run_git_exit_code ~process_mgr [ "git"; "-C"; path; "merge"; "--abort" ]
     in
-    Conflict
-      {
-        target = Types.Branch.to_string target;
-        old_base = original;
-        unique_commits = [];
-        strategy = Plain;
-        orig_head = original;
-      }
+    if code = 0 then Error "Aborted unfinished root merge; retry the update"
+    else Error ("Could not abort unfinished root merge: " ^ err)
   else
     match has_uncommitted_changes ~process_mgr ~path with
     | Result.Error e -> (Error e : rebase_result)
@@ -1215,22 +1206,13 @@ let merge_preserving ~process_mgr ~path ~target =
           then Noop
           else Ok
         else
-          let conflict_code, files, _ =
+          let abort_code, _, abort_err =
             run_git_exit_code ~process_mgr
-              [ "git"; "-C"; path; "diff"; "--name-only"; "--diff-filter=U" ]
+              [ "git"; "-C"; path; "merge"; "--abort" ]
           in
-          if conflict_code = 0 && not (String.is_empty (String.strip files))
-          then
-            let original = Option.value head ~default:"" in
-            Conflict
-              {
-                target = Types.Branch.to_string target;
-                old_base = original;
-                unique_commits = [];
-                strategy = Plain;
-                orig_head = original;
-              }
-          else Error ("Root merge requires resolution: " ^ err)
+          if abort_code = 0 then
+            Error ("Root merge failed and was aborted: " ^ err)
+          else Error ("Root merge failed and abort also failed: " ^ abort_err)
 
 module type S = sig
   val resolve_main_root : unit -> string

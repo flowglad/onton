@@ -132,9 +132,10 @@ let construction_open t =
   &&
   match Execution_mode.root t.execution_mode with
   | None -> true
-  | Some id ->
-      let a = agent t id in
-      (not a.merged) && (a.is_draft || not (Patch_agent.has_pr a))
+  | Some id -> (
+      match find_agent t id with
+      | Some a -> (not a.merged) && (a.is_draft || not (Patch_agent.has_pr a))
+      | None -> true)
 
 let promotion_claimed t = t.promotion_claimed
 
@@ -809,7 +810,10 @@ let add_agent ?(complexity = None) t ~patch_id ~branch ~base_branch ~pr_number =
       Patch_agent.create_adhoc ~patch_id ~branch ~pr_number
         ~max_ci_failures:t.max_ci_failures ~complexity
     in
-    if not (additions_allowed t ~dependencies:deps) then t
+    if
+      Option.is_some (Execution_mode.root t.execution_mode)
+      || not (additions_allowed t ~dependencies:deps)
+    then t
     else
       let graph = Graph.add_patch_with_deps t.graph patch_id ~deps in
       { t with graph; agents = Map.set t.agents ~key:patch_id ~data:agent }

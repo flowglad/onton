@@ -1806,6 +1806,38 @@ module Make (Forge : Forge.S) (W : Worktree.S) (Env : Runner_env.S) = struct
                                     update_if_current (fun orch ->
                                         Orchestrator.mark_running orch patch_id)
                                   in
+                                  let branch_state_after_wait =
+                                    match fresh_branch_state with
+                                    | Some initial when is_ci && owns_after_wait
+                                      -> (
+                                        let branch =
+                                          Runtime.read runtime (fun snap ->
+                                              (Orchestrator.agent
+                                                 snap.Runtime.orchestrator
+                                                 patch_id)
+                                                .Patch_agent.branch)
+                                        in
+                                        match Forge.branch_state branch with
+                                        | Ok current
+                                          when String.equal current.head_sha
+                                                 initial.head_sha
+                                               && Base.List.exists
+                                                    current.checks
+                                                    ~f:Ci_check.is_failure ->
+                                            Some current
+                                        | Ok _ | Error _ ->
+                                            log_event runtime ~patch_id
+                                              "Skipped CI delivery — branch \
+                                               HEAD or checks changed during \
+                                               semaphore wait";
+                                            None)
+                                    | Some _ | None -> fresh_branch_state
+                                  in
+                                  let branch_ci_stale =
+                                    is_ci
+                                    && Option.is_some fresh_branch_state
+                                    && Option.is_none branch_state_after_wait
+                                  in
                                   let ci_merge_queue_removal_checks = ref [] in
                                   (* Write fresh ci_checks under the busy guard
                                    so the write can't race with the poller or
@@ -1814,7 +1846,9 @@ module Make (Forge : Forge.S) (W : Worktree.S) (Env : Runner_env.S) = struct
                                    [agent.ci_checks] reflects the fresh
                                    list. *)
                                   (match (is_ci, fresh_pr_state) with
-                                  | true, Some pr_state when owns_after_wait ->
+                                  | true, Some pr_state
+                                    when owns_after_wait && not branch_ci_stale
+                                    ->
                                       let synthetic_checks =
                                         Runtime.read runtime (fun snap ->
                                             Orchestrator.agent
@@ -1885,8 +1919,10 @@ module Make (Forge : Forge.S) (W : Worktree.S) (Env : Runner_env.S) = struct
                                                patch_id ci_checks)
                                           : bool)
                                   | _ -> ());
-                                  (match (is_ci, fresh_branch_state) with
-                                  | true, Some state when owns_after_wait ->
+                                  (match (is_ci, branch_state_after_wait) with
+                                  | true, Some state
+                                    when owns_after_wait && not branch_ci_stale
+                                    ->
                                       ignore
                                         (update_if_current (fun orch ->
                                              Orchestrator.set_ci_checks orch
@@ -1899,7 +1935,9 @@ module Make (Forge : Forge.S) (W : Worktree.S) (Env : Runner_env.S) = struct
                                           snap.Runtime.orchestrator patch_id)
                                   in
                                   let delivery =
-                                    if
+                                    if branch_ci_stale then
+                                      Patch_decision.Skip_empty
+                                    else if
                                       owns_after_wait && owns_current_message ()
                                     then
                                       Patch_decision.respond_delivery ~agent

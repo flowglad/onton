@@ -105,6 +105,37 @@ let () =
       let orch = ready_branch orch 2 in
       check "published descendant has no PR"
         (not (Patch_agent.has_pr (Orchestrator.agent orch (id 2))));
+      let counted =
+        Orchestrator.increment_ci_failure_count orch (id 2) |> fun o ->
+        Orchestrator.increment_ci_failure_count o (id 2)
+      in
+      let reset =
+        Patch_controller.apply_branch_observation counted (id 2)
+          ~head_sha:"head2"
+          ~checks:
+            [
+              Ci_check.
+                {
+                  name = "test";
+                  conclusion = "success";
+                  details_url = None;
+                  description = None;
+                  started_at = None;
+                  id = Some 2;
+                };
+            ]
+      in
+      check "passing branch checks reset CI failure count"
+        (Int.equal
+           (Orchestrator.agent reset (id 2)).Patch_agent.ci_failure_count 0);
+      check "feature mode rejects ad-hoc PRs"
+        (Option.is_none
+           (Orchestrator.find_agent
+              (Orchestrator.add_agent orch ~patch_id:(id 99) ~branch:(branch 99)
+                 ~base_branch:(branch 1) ~pr_number:(Pr_number.of_int 99))
+              (id 99)));
+      check "missing feature root keeps construction predicate total"
+        (Orchestrator.construction_open (Orchestrator.remove_agent orch (id 1)));
       let claimed, decisions =
         Patch_controller.reconcile_automerge orch ~now:0.
       in
@@ -189,15 +220,25 @@ let () =
           }
       in
       let stale, _, _ =
-        Patch_controller.apply_poll_result awaiting (id 1)
-          (observe "middle-head")
+        Patch_controller.apply_poll_result awaiting (id 1) (observe "root-head")
       in
-      check "intermediate root CI cannot promote"
+      check "pre-push root CI cannot promote"
         (not (Patch_controller.ready_for_review stale (id 1)));
-      check "intermediate observation retains publication marker"
+      check "pre-push observation retains publication marker"
         (Option.equal String.equal
            (Orchestrator.agent stale (id 1))
              .Patch_agent.expected_remote_head_oid (Some "final-head"));
+      let distinct, _, _ =
+        Patch_controller.apply_poll_result awaiting (id 1)
+          (observe "middle-head")
+      in
+      check "distinct known root head settles publication"
+        (Option.equal String.equal
+           (Orchestrator.agent distinct (id 1)).Patch_agent.head_oid
+           (Some "middle-head")
+        && Option.is_none
+             (Orchestrator.agent distinct (id 1))
+               .Patch_agent.expected_remote_head_oid);
       let publication_state = ref stale in
       let update f = publication_state := f !publication_state in
       ignore

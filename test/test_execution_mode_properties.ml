@@ -57,7 +57,7 @@ let integration a =
 
 let tests =
   [
-    property "only expected feature head settles publication"
+    property "feature publication defers only old or absent heads"
       (G.option G.string) (fun observed ->
         let a =
           ready_agent () |> fun a ->
@@ -67,7 +67,9 @@ let tests =
         in
         Bool.equal
           (Execution_mode.observation_pending mode a observed)
-          (not (Option.equal String.equal observed (Some "final-integration"))));
+          (Option.is_none observed
+          || Option.equal String.equal observed
+               (Some "before-first-integration")));
     property "integration branch cannot be main" G.unit (fun () ->
         Result.is_error
           (Execution_mode.validate_terminal mode
