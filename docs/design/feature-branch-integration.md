@@ -16,12 +16,14 @@ descendant does writes to `main`.
 Once a descendant's HEAD is ready, the supervisor integrates it with ordinary
 Git, not a hosting-provider merge:
 
-1. Create a temporary worktree on the root branch, so the user's checkout is
-   never touched.
+1. Create a temporary detached worktree at the root tip, so the user's checkout
+   is never touched and Git does not refuse a second checkout of the root
+   branch.
 2. Take the shared root-write lock, so only one integration writes the root at
    a time.
 3. Merge the descendant with a normal `--no-ff` merge commit.
-4. Push the root with a normal push (no force) and remove the worktree.
+4. Push the detached HEAD to the root branch with a normal push (no force),
+   which advances the root ref, and remove the worktree.
 
 The lock is shared by every integration into the same root, including those
 from different descendants.
