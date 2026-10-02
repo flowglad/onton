@@ -1,19 +1,21 @@
 #!/usr/bin/env python3
-"""Validate a gameplan JSON.
+"""Validate a YAML or JSON gameplan.
 
 Runs every check enumerated in SKILL.md's Verification section that can be
-mechanised: JSON Schema shape, Pantagruel spec parsing, context-routing
+mechanised: canonical YAML formatting, JSON Schema shape, Pantagruel spec parsing, context-routing
 reciprocity, functional-change ownership, dependency-graph integrity,
 testMap consistency, and reachability-trace integrity (created-node /
 creating-patch ordering and leaf-in-owning-patch-frame).
 
 Usage:
-    python3 scripts/validate.py path/to/gameplan.json
+    python3 scripts/validate.py path/to/gameplan.yaml
 
 Exit codes:
     0 — all checks pass
     1 — one or more checks failed
     2 — usage / I/O error
+
+Python dependencies: scripts/requirements.txt (PyYAML is required for YAML).
 
 Soft dependencies:
     jsonschema  — enables shape validation; without it, only semantic checks run
@@ -21,13 +23,17 @@ Soft dependencies:
 """
 from __future__ import annotations
 
+import argparse
 import json
+import shlex
 import shutil
 import subprocess
 import sys
 import tempfile
 from pathlib import Path
 from typing import Any
+
+from gameplan_document import load_document
 
 SCHEMA_PATH = Path(__file__).resolve().parent.parent / "references" / "gameplan-schema.json"
 
@@ -356,30 +362,69 @@ def validate_path_safety(inst: dict, errors: list[str]) -> None:
                 check(node.get("file", ""), f"reachabilityTraces[{i}].{seam}[file={node.get('file')!r}]")
 
 
+def validate_formatting(path: Path, width: int, errors: list[str]) -> None:
+    if path.suffix not in (".yaml", ".yml"):
+        return
+    try:
+        from format_yaml import format_yaml
+        text = path.read_text()
+        formatted = format_yaml(text, width)
+    except Exception as exc:
+        errors.append(f"formatting check failed: {exc}")
+        return
+    if text != formatted:
+        command = ["python3", str(Path(__file__).with_name("format_yaml.py")),
+                   str(path), "--in-place"]
+        if width != 88:
+            command += ["--width", str(width)]
+        errors.append(f"YAML formatting differs from the canonical output; run: {shlex.join(command)}")
+
+
 def main(argv: list[str]) -> int:
-    if len(argv) != 2:
-        print(f"usage: {Path(argv[0]).name} <gameplan.json>", file=sys.stderr)
-        return 2
-    gp_path = Path(argv[1])
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("path", type=Path, help="YAML or JSON gameplan")
+    parser.add_argument("--width", type=int, default=88,
+                        help="preferred YAML line width (default: 88)")
+    args = parser.parse_args(argv[1:])
+    if args.width < 20:
+        parser.error("width must be at least 20")
+    gp_path = args.path
     if not gp_path.exists():
         print(f"file not found: {gp_path}", file=sys.stderr)
         return 2
     try:
-        inst = json.loads(gp_path.read_text())
-    except json.JSONDecodeError as e:
-        print(f"invalid JSON: {e}", file=sys.stderr)
+        inst = load_document(gp_path)
+    except Exception as e:
+        print(f"invalid gameplan: {e}", file=sys.stderr)
+        return 2
+
+    if not isinstance(inst, dict):
+        print("invalid gameplan: expected a mapping", file=sys.stderr)
         return 2
 
     errors: list[str] = []
     validate_schema(inst, errors)
-    patches_by_id = validate_patch_numbers(inst, errors)
-    validate_routing(inst, patches_by_id, errors)
-    validate_functional_changes(inst, patches_by_id, errors)
-    validate_dependency_graph(inst, patches_by_id, errors)
-    validate_test_map(inst, patches_by_id, errors)
-    validate_reachability_traces(inst, patches_by_id, errors)
-    validate_path_safety(inst, errors)
-    validate_specs(inst, errors)
+    validate_formatting(gp_path, args.width, errors)
+    # Schema errors need not prevent independent checks, but malformed shapes
+    # must become diagnostics even when optional jsonschema is unavailable.
+    try:
+        patches_by_id = validate_patch_numbers(inst, errors)
+    except (KeyError, TypeError, AttributeError) as exc:
+        errors.append(f"patch numbers: cannot check malformed structure ({exc})")
+        patches_by_id = {}
+    for check, arguments in [
+        (validate_routing, (inst, patches_by_id, errors)),
+        (validate_functional_changes, (inst, patches_by_id, errors)),
+        (validate_dependency_graph, (inst, patches_by_id, errors)),
+        (validate_test_map, (inst, patches_by_id, errors)),
+        (validate_reachability_traces, (inst, patches_by_id, errors)),
+        (validate_path_safety, (inst, errors)),
+        (validate_specs, (inst, errors)),
+    ]:
+        try:
+            check(*arguments)
+        except (KeyError, TypeError, AttributeError) as exc:
+            errors.append(f"{check.__name__}: cannot check malformed structure ({exc})")
 
     if errors:
         for e in errors:

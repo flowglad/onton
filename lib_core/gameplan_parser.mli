@@ -11,5 +11,10 @@ type t = {
 val parse_json_string : string -> (t, string) Result.t
 val parse_json_file : string -> (t, string) Result.t
 
+val parse_string : string -> (t, string) Result.t
+(** Parse a YAML or JSON gameplan through the same semantic validation. *)
+
 val parse_file : string -> (t, string) Result.t
-(** [parse_file path] parses a JSON gameplan file. *)
+(** [parse_file path] parses a YAML or JSON gameplan file. [.json] files use
+    JSON parsing with unique keys and finite numbers; other filenames accept
+    either format with the same key-uniqueness and number constraints. *)

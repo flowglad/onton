@@ -360,10 +360,9 @@ let json_precedents json =
   | _ -> []
 
 let parse_json_string input =
-  match Yojson.Safe.from_string input with
-  | exception Yojson.Json_error msg ->
-      Error (Printf.sprintf "JSON parse error: %s" msg)
-  | json -> (
+  match Json.of_string input with
+  | Error msg -> Error (Printf.sprintf "JSON parse error: %s" msg)
+  | Ok json -> (
       try
         let project_name = member "projectName" json |> to_string in
         let optional_string key =
@@ -767,10 +766,18 @@ let parse_json_file path =
   | Error e -> Error e
   | Ok contents -> parse_json_string contents
 
+let parse_string input =
+  match Gameplan_document.of_string input with
+  | Error e -> Error e
+  | Ok json -> parse_json_string (Yojson.Safe.to_string json)
+
 let parse_file path =
   match read_file path with
   | Error e -> Error e
-  | Ok contents -> parse_json_string contents
+  | Ok contents ->
+      if Stdlib.Filename.check_suffix path ".json" then
+        parse_json_string contents
+      else parse_string contents
 
 (* ppx_inline_test v0.17 emits an unused local module binding under OCaml 5.5.
    Keep warning 60 disabled only for this generated structure item. *)

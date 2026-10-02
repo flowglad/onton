@@ -94,8 +94,9 @@ val load_config : project_name:string -> (stored_config, string) result
 (** Load a previously saved project config. *)
 
 val save_gameplan_source : project_name:string -> source_path:string -> unit
-(** Copy the gameplan file into the project data directory. Detects [.json] vs
-    markdown by file extension and stores to the appropriate filename. *)
+(** Copy the gameplan file into the project data directory. Detects [.yaml],
+    [.yml], [.json] and legacy markdown by file extension and stores to the
+    appropriate filename. *)
 
 val gameplan_path : string -> string
 (** Path to the stored gameplan markdown ([gameplan.md]). *)
@@ -103,9 +104,13 @@ val gameplan_path : string -> string
 val gameplan_json_path : string -> string
 (** Path to the stored gameplan JSON ([gameplan.json]). *)
 
+val gameplan_yaml_path : string -> string
+(** Path to the stored YAML gameplan ([gameplan.yaml]); [.yml] is stored here
+    too. *)
+
 val stored_gameplan_path : string -> string
-(** Returns the path to whichever stored gameplan file exists ([gameplan.md]
-    takes precedence; falls back to [gameplan.json]). *)
+(** Returns the path to whichever stored gameplan file exists ([gameplan.yaml]
+    takes precedence, then [gameplan.md], then [gameplan.json]). *)
 
 val sessions_dir : string -> string
 (** Path to the per-session artifact directory root ([sessions/]). *)
@@ -119,11 +124,12 @@ val gameplan_artifact_path : string -> string
     prompt layers embed it without touching the filesystem. *)
 
 val publish_gameplan_artifact : project_name:string -> unit
-(** Copy the stored JSON gameplan ({!gameplan_json_path}) to
+(** Publish the stored YAML or JSON gameplan as normalized JSON to
     {!gameplan_artifact_path} for patch agents to read. No-op when no stored
-    JSON gameplan exists (ad-hoc sessions). Called once at startup, after
-    {!save_gameplan_source} / resume validation, so the copy matches the
-    gameplan the run was parsed from. *)
+    YAML or JSON gameplan exists (ad-hoc sessions). Called once at startup,
+    after {!save_gameplan_source} / resume validation, so the copy matches the
+    gameplan the run was parsed from. Publication is atomic. Decode or I/O
+    failures log a warning and leave the previous artifact intact. *)
 
 val pr_body_artifact_path :
   project_name:string -> patch_id:Types.Patch_id.t -> string

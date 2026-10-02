@@ -32,7 +32,7 @@ The `skills/` directory contains Claude Code skills for the planning layers:
   (milestones), each a safe stopping point. Guided discovery process: vision,
   challenges, milestones, dependencies.
 
-- **write-gameplan** — Create a structured JSON gameplan with typed
+- **write-gameplan** — Create a structured YAML gameplan with typed
   sections, patch classifications (INFRA/GATED/BEHAVIOR), formal specs,
   test maps, and a dependency graph. Designed so it's 5-10x easier to review
   the gameplan than the code it produces.
@@ -314,7 +314,7 @@ onton --repo ../my-repo [OPTIONS]        # Ad-hoc mode (no gameplan)
 | Flag | Default | Description |
 |------|---------|-------------|
 | `PROJECT` | (derived from gameplan) | Project name (positional). Required to resume, optional with `--gameplan` |
-| `--gameplan` | — | Path to the gameplan markdown file |
+| `--gameplan` | — | Path to a YAML or JSON gameplan file |
 | `--repo` | `.` | Path to the git repository. Forge owner/repo are inferred from `git remote` |
 | `--forge` | `auto` | Forge: `github`, `sourcehut`, or local-origin auto-detection. Gameplan projects default to GitHub unless specified. |
 | `--token` | forge-specific | API token. Defaults to `$GITHUB_TOKEN` / `gh auth token` for GitHub or `$SRHT_TOKEN` for SourceHut. |
@@ -455,14 +455,14 @@ resume where they left off.
 dune build          # compile with strict warnings (most warnings are fatal)
 dune runtest        # inline tests + property tests (QCheck2)
 dune build @check   # type-check only (no linking), faster for quick feedback
-dune exec bin/main.exe -- --gameplan path/to/gameplan.md
+dune exec bin/main.exe -- --gameplan path/to/gameplan.yaml
 dune fmt            # auto-format via ocamlformat
 ```
 
 ## Architecture
 
 ```
-gameplan.md ──> Gameplan_parser ──> Graph + Patches
+gameplan.yaml ──> Gameplan_parser ──> Graph + Patches
                                          │
                   Patch_controller ──────┤
                     ├── poll ingestion + reconciliation
@@ -487,6 +487,13 @@ gameplan.md ──> Gameplan_parser ──> Graph + Patches
           │            Runtime (Eio.Mutex)              │
           └─────────────────────────────────────────────┘
 ```
+
+Gameplans use YAML (`.yaml` or `.yml`); existing JSON plans remain supported.
+The same schema and semantic checks apply to both. Use literal block scalars
+for specs and folded scalars for word-wrapped prose. YAML accepts one document with unique string
+keys and JSON scalar types; tags, anchors, aliases, and merge keys are unsupported.
+Install the authoring skill's Python dependencies from `skills/write-gameplan/scripts/requirements.txt`;
+the validator also checks canonical YAML formatting.
 
 ### Claude backend session management
 
@@ -532,7 +539,7 @@ waiting for running sessions to finish. Backpressure is provided by a
 | `types` | Core types: `Patch_id`, `Branch`, `Operation_kind`, `Patch`, `Comment`, `Gameplan` |
 | `priority` | Operation priority queue — single source of truth for ordering |
 | `graph` | Dependency graph: unblocked detection, base branch resolution |
-| `gameplan_parser` | Markdown gameplan to structured `Gameplan.t` |
+| `gameplan_parser` | YAML or JSON gameplan to structured `Gameplan.t` |
 | `patch_agent` | Per-patch state machine: start, respond, complete, rebase transitions (private type). Tracks `current_op`, current accepted message, and generation |
 | `patch_controller` | Pure evergreen controller: poll ingestion, lifecycle reconciliation, GitHub effects, and durable patch-agent message planning |
 | `patch_decision` | Pure decision logic: disposition, CI cap, review comment filtering, merge conflict handling. Extracted from main.ml for testability |

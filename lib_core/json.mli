@@ -11,6 +11,10 @@
 
 type t = Yojson.Safe.t
 
+val of_string : string -> (t, string) result
+(** Decode JSON, rejecting duplicate keys at every nesting level and non-finite
+    numbers. Never raises on malformed input. *)
+
 val field : string -> t -> t option
 (** [field key j] is the value at [key] when [j] is an object and the value is
     present and non-[`Null]; otherwise [None]. Never raises. *)
