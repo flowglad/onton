@@ -9,6 +9,9 @@ let pushes = ref 0
 let base_head = ref "base"
 
 module Fake_worktree : Worktree.S = struct
+  let integrate ~root_path:_ ~root_branch:_ ~descendant_branch:_ ~head_sha:_ =
+    Worktree.Integration_error "unsupported fake"
+
   let resolve_main_root () = assert false
   let is_checked_out_in_repo_root _ = assert false
   let remote_branch_exists _ = assert false

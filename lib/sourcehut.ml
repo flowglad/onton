@@ -371,6 +371,9 @@ let make ~net ~clock ~process_mgr ~token ~owner ~repo ~repo_root ~main_branch
       | Enqueued of Pr_state.merge_queue_entry
       | Already_enqueued of Pr_state.merge_queue_entry
 
+    let branch_state _ =
+      Error (Unsupported "Feature branch mode requires GitHub")
+
     let pr_state pr_number =
       match find_change pr_number with
       | Error _ as error -> error

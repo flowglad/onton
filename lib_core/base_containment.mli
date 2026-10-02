@@ -83,3 +83,25 @@ val stale_chain_rebase_target :
     fail-closed, re-derived on a later tick). Whether the returned target is
     actually rebasable (holds a PR, no [Rebase] already queued) is the caller's
     concern ([base_rebasable] in the detector). *)
+
+val contains_merged_siblings_with_mode :
+  mode:Execution_mode.t ->
+  graph:Graph.t ->
+  patch_id:Types.Patch_id.t ->
+  has_merged:(Types.Patch_id.t -> bool) ->
+  merge_sha:(Types.Patch_id.t -> string option) ->
+  branch_of:(Types.Patch_id.t -> Types.Branch.t) ->
+  main:Types.Branch.t ->
+  ancestor_oracle:(string -> descendant:string -> bool) ->
+  bool
+
+val stale_chain_rebase_target_with_mode :
+  mode:Execution_mode.t ->
+  graph:Graph.t ->
+  patch_id:Types.Patch_id.t ->
+  has_merged:(Types.Patch_id.t -> bool) ->
+  merge_sha:(Types.Patch_id.t -> string option) ->
+  branch_of:(Types.Patch_id.t -> Types.Branch.t) ->
+  main:Types.Branch.t ->
+  ancestor_oracle:(string -> descendant:string -> bool) ->
+  Types.Patch_id.t option

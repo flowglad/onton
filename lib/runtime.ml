@@ -13,6 +13,8 @@ type snapshot = {
 
 type t = {
   mutex : Eio.Mutex.t;
+  root_write_mutex : Eio.Mutex.t;
+  patch_write_mutexes : (Patch_id.t, Eio.Mutex.t) Base.Hashtbl.t;
   mutable snap : snapshot;
   resume_repairs : Resume_gameplan.repair list;
 }
@@ -66,7 +68,13 @@ let create ~gameplan ~(main_branch : Branch.t)
         Orchestrator.set_max_ci_failures snap.orchestrator ~max_ci_failures;
     }
   in
-  { mutex = Eio.Mutex.create (); snap; resume_repairs }
+  {
+    mutex = Eio.Mutex.create ();
+    root_write_mutex = Eio.Mutex.create ();
+    patch_write_mutexes = Base.Hashtbl.create (module Patch_id);
+    snap;
+    resume_repairs;
+  }
 
 let resume_repairs t = t.resume_repairs
 
@@ -125,20 +133,48 @@ let add_patch t ~title ~description ~dependencies =
      map (or vice versa). On validation failure the snapshot is left untouched. *)
   let result = ref (Error "add_patch: callback did not run") in
   update t (fun s ->
-      match Gameplan.add_patch s.gameplan ~title ~description ~dependencies with
-      | Error _ as e ->
-          result := e;
-          s
-      | Ok (gameplan, patch) ->
-          let orchestrator =
-            Orchestrator.add_planned_patch s.orchestrator patch
-              ~deps:patch.Patch.dependencies
-          in
-          result := Ok patch;
-          { s with gameplan; orchestrator });
+      if not (Orchestrator.additions_allowed s.orchestrator ~dependencies) then (
+        result :=
+          Error
+            "Feature branch additions require an open construction and \
+             dependencies beneath the integration root";
+        s)
+      else
+        match
+          Gameplan.add_patch s.gameplan ~title ~description ~dependencies
+        with
+        | Error _ as e ->
+            result := e;
+            s
+        | Ok (gameplan, patch) ->
+            let orchestrator =
+              Orchestrator.add_planned_patch s.orchestrator patch
+                ~deps:patch.Patch.dependencies
+            in
+            result := Ok patch;
+            { s with gameplan; orchestrator });
   !result
 
 let update_activity_log t f =
   update t (fun s -> { s with activity_log = f s.activity_log })
 
 let snapshot_unsync t = t.snap
+
+let with_root_write t f =
+  Eio.Mutex.lock t.root_write_mutex;
+  Fun.protect ~finally:(fun () -> Eio.Mutex.unlock t.root_write_mutex) f
+
+let with_patch_write t ~patch_id f =
+  let mutex =
+    Base.Hashtbl.find_or_add t.patch_write_mutexes patch_id
+      ~default:Eio.Mutex.create
+  in
+  Eio.Mutex.lock mutex;
+  Fun.protect
+    ~finally:(fun () -> Eio.Mutex.unlock mutex)
+    (fun () ->
+      if
+        read t (fun s ->
+            Orchestrator.is_integration_root s.orchestrator patch_id)
+      then with_root_write t f
+      else f ())

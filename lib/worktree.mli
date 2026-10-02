@@ -391,6 +391,7 @@ val classify_push_result :
     the branch has no commits ahead of base). *)
 
 val force_push_with_lease :
+  ?preserve_history:bool ->
   ?timeout_seconds:float ->
   clock:float Eio.Time.clock_ty Eio.Time.clock ->
   process_mgr:_ Eio.Process.mgr ->
@@ -411,6 +412,21 @@ val force_push_with_lease :
 val rebase_in_progress : process_mgr:_ Eio.Process.mgr -> path:string -> bool
 (** Returns [true] if there is a rebase currently in progress in the worktree at
     [path] (checks for [rebase-merge] or [rebase-apply] in the gitdir). *)
+
+type integration_result =
+  | Integrated of string
+  | Integration_conflict of string
+  | Integration_error of string
+
+val integrate :
+  process_mgr:_ Eio.Process.mgr ->
+  clock:float Eio.Time.clock_ty Eio.Time.clock ->
+  repo_root:string ->
+  root_path:string ->
+  root_branch:Types.Branch.t ->
+  descendant_branch:Types.Branch.t ->
+  head_sha:string ->
+  integration_result
 
 module type S = sig
   val resolve_main_root : unit -> string
@@ -487,12 +503,28 @@ module type S = sig
   val force_push_with_lease :
     path:string -> branch:Types.Branch.t -> base:Types.Branch.t -> push_result
 
+  val integrate :
+    root_path:string ->
+    root_branch:Types.Branch.t ->
+    descendant_branch:Types.Branch.t ->
+    head_sha:string ->
+    integration_result
+
   val rebase_in_progress : path:string -> bool
 end
 
 type client = (module S)
 
 val make :
+  fs:Eio.Fs.dir_ty Eio.Path.t ->
+  config:Worktree_lifecycle.config ->
+  clock:float Eio.Time.clock_ty Eio.Time.clock ->
+  process_mgr:_ Eio.Process.mgr ->
+  repo_root:string ->
+  client
+
+val make_with_protection :
+  protected_branch:Types.Branch.t option ->
   fs:Eio.Fs.dir_ty Eio.Path.t ->
   config:Worktree_lifecycle.config ->
   clock:float Eio.Time.clock_ty Eio.Time.clock ->

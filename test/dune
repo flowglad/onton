@@ -748,3 +748,24 @@
  (name test_json_properties)
  (modules test_json_properties)
  (libraries onton_core qcheck-core qcheck-core.runner yojson))
+
+(test
+ (name test_execution_mode_properties)
+ (modules test_execution_mode_properties)
+ (libraries onton_core qcheck-core qcheck-core.runner))
+
+(test
+ (name test_feature_branch_mode)
+ (modules test_feature_branch_mode)
+ (libraries onton onton_core eio_main))
+
+(test
+ (name test_feature_branch_git)
+ (modules test_feature_branch_git)
+ (libraries onton onton_core onton_test_support eio eio_main unix))
+
+(test
+ (name test_feature_branch_cli)
+ (modules test_feature_branch_cli)
+ (deps ../bin/main.exe)
+ (libraries onton onton_core onton_test_support eio eio_main unix yojson))

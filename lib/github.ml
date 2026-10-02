@@ -1442,7 +1442,7 @@ let max_context_pages = 25
    re-fetched here too, trading one extra request for not threading the first
    query's cursor through [Pr_state.t]. Any request/parse error aborts and is
    propagated so callers can fall back to their conservative behavior. *)
-let fetch_all_contexts ~net ~clock ?timeout t ~oid :
+let fetch_all_contexts ~net ~clock ?timeout ?(require_complete = false) t ~oid :
     (Types.Ci_check.t list, error) Result.t =
   let rec loop ~after ~page acc =
     if page >= max_context_pages then (
@@ -1450,7 +1450,9 @@ let fetch_all_contexts ~net ~clock ?timeout t ~oid :
         "onton: statusCheckRollup contexts exceeded %d pages for commit %s — \
          using partial list"
         max_context_pages oid;
-      Ok (List.concat (List.rev acc)))
+      if require_complete then
+        Error (Json_parse_error "Branch checks exceeded pagination limit")
+      else Ok (List.concat (List.rev acc)))
     else
       let body = build_contexts_request_body t ~oid ~after in
       match
@@ -1467,9 +1469,59 @@ let fetch_all_contexts ~net ~clock ?timeout t ~oid :
                   loop ~after:cursor ~page:(page + 1) acc
               (* hasNextPage with no cursor would loop forever — stop with what we
                  have rather than spin. *)
+              | true, None when require_complete ->
+                  Error
+                    (Json_parse_error
+                       "Branch check pagination cursor is missing")
               | true, None | false, _ -> Ok (List.concat (List.rev acc))))
   in
   loop ~after:None ~page:0 []
+
+let branch_state ~net ~clock t branch =
+  let body =
+    Yojson.Safe.to_string
+      (`Assoc
+         [
+           ( "query",
+             `String
+               "query($owner:String!, $repo:String!, $ref:String!) { \
+                repository(owner:$owner, name:$repo) { ref(qualifiedName:$ref) \
+                { target { ... on Commit { oid } } } } }" );
+           ( "variables",
+             `Assoc
+               [
+                 ("owner", `String t.owner);
+                 ("repo", `String t.repo);
+                 ("ref", `String ("refs/heads/" ^ Types.Branch.to_string branch));
+               ] );
+         ])
+  in
+  match request ~net ~clock t ~meth:`POST ~path:"/graphql" ~body () with
+  | Error _ as e -> e
+  | Ok response ->
+      let parsed =
+        try Ok (Yojson.Safe.from_string response)
+        with Yojson.Json_error e -> Error (Json_parse_error e)
+      in
+      Result.bind parsed ~f:(fun json ->
+          match graphql_errors json with
+          | Some e -> Error (Graphql_error e)
+          | None -> (
+              let head =
+                Json.field "data" json
+                |> Option.bind ~f:(Json.field "repository")
+                |> Option.bind ~f:(Json.field "ref")
+                |> Option.bind ~f:(Json.field "target")
+                |> Option.bind ~f:(Json.string_field "oid")
+              in
+              match head with
+              | Some head_sha when not (String.is_empty head_sha) ->
+                  Result.map
+                    (fetch_all_contexts ~net ~clock ~require_complete:true t
+                       ~oid:head_sha) ~f:(fun checks ->
+                      Forge.{ head_sha; checks })
+              | None | Some _ ->
+                  Error (Json_parse_error "Branch HEAD is absent")))
 
 let pr_state ~net ~clock ?timeout t pr =
   let body = build_request_body t pr in
@@ -2523,6 +2575,7 @@ let make ~net ~clock ~token ~owner ~repo ~main_branch :
       | Enqueued of Pr_state.merge_queue_entry
       | Already_enqueued of Pr_state.merge_queue_entry
 
+    let branch_state branch = branch_state ~net ~clock client branch
     let pr_state pr_number = pr_state ~net ~clock client pr_number
 
     let merge_queue_removal_checks ~pr_number =

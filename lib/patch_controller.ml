@@ -61,15 +61,7 @@ type poll_observation = {
   worktree_path : string option;
 }
 
-let expected_base_if_unique t patch_id =
-  let graph = Orchestrator.graph t in
-  let has_merged pid = (Orchestrator.agent t pid).Patch_agent.merged in
-  if List.length (Graph.open_pr_deps graph patch_id ~has_merged) > 1 then None
-  else
-    let branch_of pid = (Orchestrator.agent t pid).Patch_agent.branch in
-    Some
-      (Graph.initial_base graph patch_id ~has_merged ~branch_of
-         ~main:(Orchestrator.main_branch t))
+let expected_base_if_unique t patch_id = Orchestrator.expected_base t patch_id
 
 let native_stack_base_mismatch t patch_id =
   let agent = Orchestrator.agent t patch_id in
@@ -87,6 +79,7 @@ let discovery_intents orch =
       if
         agent.has_session
         && (not (Patch_agent.has_pr agent))
+        && (not (Orchestrator.is_feature_descendant orch agent.patch_id))
         && not agent.merged
       then Some (agent.patch_id, agent.branch)
       else None)
@@ -119,9 +112,23 @@ let apply_poll_result ?(merge_queue_ejection_confirmed = false) t patch_id
     (Orchestrator.agent t patch_id).Patch_agent.native_stack
   in
   let deferred_head =
-    Patch_decision.defer_remote_head
+    Execution_mode.observation_pending
+      (Orchestrator.execution_mode t)
       (Orchestrator.agent t patch_id)
       poll_result.Poller.head_oid
+  in
+  let poll_result =
+    if deferred_head && Orchestrator.is_integration_root t patch_id then
+      {
+        poll_result with
+        checks_passing = false;
+        merge_ready = false;
+        merge_state = Pr_state.Unknown;
+        queue =
+          List.filter poll_result.queue ~f:(fun k ->
+              not (Operation_kind.equal k Operation_kind.Ci));
+      }
+    else poll_result
   in
   let poll_result =
     if deferred_head && Poller.has_conflict poll_result then (
@@ -302,6 +309,11 @@ let apply_poll_result ?(merge_queue_ejection_confirmed = false) t patch_id
        automerge are unavailable until the stack is dissolved or merged on \
        GitHub";
   let t =
+    let t =
+      if Orchestrator.is_integration_root t patch_id then
+        Orchestrator.settle_restored_promotion t
+      else t
+    in
     let was_draft = (Orchestrator.agent t patch_id).Patch_agent.is_draft in
     let t = Orchestrator.set_is_draft t patch_id poll_result.is_draft in
     if (not was_draft) && poll_result.is_draft then log "Marked as draft"
@@ -391,19 +403,30 @@ let ready_for_review t patch_id =
   let agent = Orchestrator.agent t patch_id in
   let graph = Orchestrator.graph t in
   let has_merged pid = (Orchestrator.agent t pid).Patch_agent.merged in
-  List.length (Graph.open_pr_deps graph patch_id ~has_merged) <= 1
+  List.length (Orchestrator.open_deps t patch_id) <= 1
   &&
-  let branch_of pid = (Orchestrator.agent t pid).Patch_agent.branch in
   let expected_base =
-    Graph.initial_base graph patch_id ~has_merged ~branch_of
-      ~main:(Orchestrator.main_branch t)
+    Option.value
+      (Orchestrator.expected_base t patch_id)
+      ~default:(Orchestrator.terminal_branch t patch_id)
   in
   let rebase_pending =
     match agent.Patch_agent.branch_rebased_onto with
     | Some b -> not (Branch.equal b expected_base)
     | None -> true
   in
-  Branch.equal expected_base (Orchestrator.main_branch t)
+  (not (Orchestrator.is_feature_descendant t patch_id))
+  && ((not (Orchestrator.is_integration_root t patch_id))
+     || Option.equal Branch.equal agent.base_branch
+          (Some (Orchestrator.main_branch t))
+        && Execution_mode.root_ready
+             (Orchestrator.execution_mode t)
+             graph ~has_merged
+             ~pending_integrations:
+               (List.exists (Orchestrator.all_agents t) ~f:(fun a ->
+                    a.Patch_agent.automerge_inflight))
+             agent)
+  && Branch.equal expected_base (Orchestrator.main_branch t)
   && agent.Patch_agent.pr_body_delivered
   && (not agent.Patch_agent.has_conflict)
   && (not rebase_pending) && agent.Patch_agent.checks_passing
@@ -423,7 +446,7 @@ let ready_for_review t patch_id =
    parent that never delivered notes / went green cannot strand its child. *)
 let open_dep_review_ready t pid =
   let a = Orchestrator.agent t pid in
-  a.Patch_agent.pr_body_delivered
+  (a.Patch_agent.pr_body_delivered || Orchestrator.is_feature_descendant t pid)
   && (not a.Patch_agent.has_conflict)
   && a.Patch_agent.checks_passing
 
@@ -484,8 +507,21 @@ let reconcile_patch t ~project_name:_ ~gameplan:_ ~(patch : Patch.t) =
   let agent = Orchestrator.agent t patch_id in
   if agent.Patch_agent.merged then (t, [])
   else
-    let t = enqueue_pr_body_if_needed t patch_id agent in
-    (t, reconcile_pr_settings t patch_id ~allow_draft_flip:true)
+    let t =
+      if Orchestrator.is_feature_descendant t patch_id then t
+      else enqueue_pr_body_if_needed t patch_id agent
+    in
+    let effects = reconcile_pr_settings t patch_id ~allow_draft_flip:true in
+    let t =
+      if
+        Orchestrator.is_integration_root t patch_id
+        && List.exists effects ~f:(function
+          | Set_pr_draft { draft = false; _ } -> true
+          | Set_pr_draft _ | Set_pr_base _ -> false)
+      then Orchestrator.claim_promotion t
+      else t
+    in
+    (t, effects)
 
 let reconcile_all t ~project_name ~gameplan =
   let t, gameplan_effects =
@@ -527,18 +563,17 @@ let branch_map_of_patches patches =
                "Patch_controller.plan_actions: duplicate patch id %s"
                (Patch_id.to_string p.Patch.id)))
 
-let plan_action_for_patch t ~branch_map patch_id =
+let plan_action_for_patch t ~branch_map:_ patch_id =
   let agent = Orchestrator.agent t patch_id in
   let has_merged pid = (Orchestrator.agent t pid).Patch_agent.merged in
   let has_pr pid =
     (* Dependency satisfaction: a child cannot rebase onto a [Missing] parent
        — the parent's branch may not exist on the remote. Gate on
        is_pr_present rather than has_pr (which is true for [Missing] too). *)
-    Patch_agent.is_pr_present (Orchestrator.agent t pid)
+    let a = Orchestrator.agent t pid in
+    Patch_agent.is_pr_present a || a.branch_published
   in
-  let open_deps =
-    Graph.open_pr_deps (Orchestrator.graph t) patch_id ~has_merged
-  in
+  let open_deps = Orchestrator.open_deps t patch_id in
   let dependencies_allow_start =
     List.length open_deps <= 1
     &&
@@ -553,33 +588,29 @@ let plan_action_for_patch t ~branch_map patch_id =
            most one open dependency. *)
         true
     | Patch_agent.Unmaterialized ->
-        Graph.deps_satisfied (Orchestrator.graph t) patch_id ~has_merged ~has_pr
+        Execution_mode.deps_satisfied
+          (Orchestrator.execution_mode t)
+          (Orchestrator.graph t) patch_id ~has_merged ~has_pr
         (* A child may materialize its worktree only once its sole open-PR
            dependency is review-ready: PR body delivered, no conflict, CI
            green. Merged deps are exempt because [open_pr_deps] filters them
            out. *)
-        && List.for_all open_deps ~f:(fun dep -> open_dep_review_ready t dep)
+        && List.for_all
+             (Graph.open_pr_deps (Orchestrator.graph t) patch_id ~has_merged)
+             ~f:(fun dep -> open_dep_review_ready t dep)
   in
-  if native_stack_base_mismatch t patch_id then None
+  if agent.automerge_inflight || native_stack_base_mismatch t patch_id then None
   else if
-    (not (Patch_agent.has_pr agent))
+    (not (Patch_agent.has_pr agent || agent.branch_published))
     && (not agent.Patch_agent.busy)
     && (not agent.Patch_agent.merged)
     && (not (Patch_agent.needs_intervention agent))
     && dependencies_allow_start
   then
-    let branch_of pid =
-      match Map.find branch_map pid with
-      | Some b -> b
-      | None ->
-          invalid_arg
-            (Printf.sprintf
-               "Patch_controller.plan_actions: no branch for patch %s"
-               (Patch_id.to_string pid))
-    in
     let base =
-      Graph.initial_base (Orchestrator.graph t) patch_id ~has_merged ~branch_of
-        ~main:(Orchestrator.main_branch t)
+      Option.value
+        (Orchestrator.expected_base t patch_id)
+        ~default:(Orchestrator.terminal_branch t patch_id)
     in
     Some (Orchestrator.Start (patch_id, base))
   else if
@@ -592,7 +623,8 @@ let plan_action_for_patch t ~branch_map patch_id =
        patch blocked until an LLM session can run. Gate on [is_pr_present]
        (not [has_pr]) so a [Missing] PR is excluded — rebase pushes against
        a vanished PR would 404. *)
-    Patch_agent.is_pr_present agent
+    (Patch_agent.is_pr_present agent || agent.branch_published)
+    && Option.is_some (Orchestrator.expected_base t patch_id)
     && (not agent.Patch_agent.merged)
     && (not agent.Patch_agent.busy)
     && (not agent.Patch_agent.branch_blocked)
@@ -601,20 +633,14 @@ let plan_action_for_patch t ~branch_map patch_id =
          ~default:false
          ~f:(Operation_kind.equal Operation_kind.Rebase)
   then
-    let branch_of dep_pid =
-      match Map.find branch_map dep_pid with
-      | Some b -> b
-      | None ->
-          Option.value (Orchestrator.agent t dep_pid).Patch_agent.base_branch
-            ~default:(Orchestrator.main_branch t)
-    in
     let new_base =
-      Graph.initial_base (Orchestrator.graph t) patch_id ~has_merged ~branch_of
-        ~main:(Orchestrator.main_branch t)
+      Option.value
+        (Orchestrator.expected_base t patch_id)
+        ~default:(Orchestrator.terminal_branch t patch_id)
     in
     Some (Orchestrator.Rebase (patch_id, new_base))
   else if
-    Patch_agent.is_pr_present agent
+    (Patch_agent.is_pr_present agent || agent.branch_published)
     && (not agent.Patch_agent.merged)
     && (not agent.Patch_agent.busy)
     && (not (Patch_agent.needs_intervention agent))
@@ -823,14 +849,64 @@ let automerge_transient_hold (agent : Patch_agent.t) ~main_branch =
   && agent.Patch_agent.automerge_failure_count < automerge_max_failures
   && Option.is_none agent.Patch_agent.merge_queue_entry
 
+let apply_branch_observation t patch_id ~head_sha ~checks =
+  let a = Orchestrator.agent t patch_id in
+  if (not (Orchestrator.is_feature_descendant t patch_id)) || a.merged then t
+  else if
+    Execution_mode.observation_pending
+      (Orchestrator.execution_mode t)
+      a (Some head_sha)
+  then Orchestrator.set_checks_passing t patch_id false
+  else
+    let t =
+      Orchestrator.set_head_oid t patch_id (Some head_sha) |> fun t ->
+      Orchestrator.set_expected_remote_head_oid t patch_id None |> fun t ->
+      Orchestrator.set_ci_checks t patch_id checks |> fun t ->
+      Orchestrator.set_checks_passing t patch_id
+        (Pr_state.equal_check_status
+           (Pr_state.derive_check_status checks)
+           Pr_state.Passing)
+      |> fun t -> Orchestrator.refresh_base_branch t patch_id
+    in
+    if List.exists checks ~f:Ci_check.is_failure then
+      match Patch_decision.on_ci_failure (Orchestrator.agent t patch_id) with
+      | Patch_decision.Enqueue_ci ->
+          Orchestrator.enqueue t patch_id Operation_kind.Ci
+      | Patch_decision.Cap_reached -> t
+      | Patch_decision.Ci_already_queued | Patch_decision.Ci_fix_in_progress
+      | Patch_decision.Ci_already_delivered ->
+          t
+    else t
+
+let is_integration_candidate ?(ignore_inflight = false) t patch_id =
+  let root_native =
+    Option.value_map
+      (Execution_mode.root (Orchestrator.execution_mode t))
+      ~default:false
+      ~f:(fun r -> (Orchestrator.agent t r).Patch_agent.native_stack)
+  in
+  (not root_native)
+  && Execution_mode.integration_ready
+       (Orchestrator.execution_mode t)
+       ~construction_open:(Orchestrator.construction_open t)
+       ~ignore_inflight ~max_failures:automerge_max_failures
+       ~terminal:(Orchestrator.terminal_branch t patch_id)
+       (Orchestrator.agent t patch_id)
+
 type merge_action = Direct_merge | Enqueue | Dequeue of string
 [@@deriving show, eq, sexp_of]
 
-type automerge_decision = {
-  merge_patch_id : Patch_id.t;
-  merge_pr_number : Pr_number.t;
-  action : merge_action;
-}
+type automerge_decision =
+  | Github_merge of {
+      merge_patch_id : Patch_id.t;
+      merge_pr_number : Pr_number.t;
+      action : merge_action;
+    }
+  | Git_integrate of {
+      merge_patch_id : Patch_id.t;
+      root : Patch_id.t;
+      head_sha : string;
+    }
 [@@deriving show, eq, sexp_of]
 
 type review_request_decision = {
@@ -954,6 +1030,21 @@ let reconcile_automerge ?(automerge_timeout = default_automerge_timeout) t ~now
           else t
         in
         (t, decisions)
+      else if Orchestrator.is_feature_descendant t patch_id then
+        if
+          is_integration_candidate t patch_id
+          && Option.value_map agent.automerge_deadline ~default:true
+               ~f:(fun deadline -> Float.(now >= deadline))
+        then
+          match
+            (Execution_mode.root (Orchestrator.execution_mode t), agent.head_oid)
+          with
+          | Some root, Some head_sha ->
+              ( Orchestrator.set_automerge_inflight t patch_id true,
+                Git_integrate { merge_patch_id = patch_id; root; head_sha }
+                :: decisions )
+          | _ -> (t, decisions)
+        else (t, decisions)
       else if agent.Patch_agent.automerge_inflight then
         (* A merge is already in flight for this patch. Don't touch the
            deadline or issue a second decision — the caller clears the
@@ -980,11 +1071,12 @@ let reconcile_automerge ?(automerge_timeout = default_automerge_timeout) t ~now
           | Some pr_number when Patch_agent.is_pr_present agent ->
               let t = Orchestrator.set_automerge_inflight t patch_id true in
               ( t,
-                {
-                  merge_patch_id = patch_id;
-                  merge_pr_number = pr_number;
-                  action;
-                }
+                Github_merge
+                  {
+                    merge_patch_id = patch_id;
+                    merge_pr_number = pr_number;
+                    action;
+                  }
                 :: decisions )
           | Some _ | None ->
               (* Defensive clear so a future predicate change can't leave a
@@ -2205,3 +2297,7 @@ let%test "toggling automerge resets failure count and inflight" =
   a.Patch_agent.automerge_enabled
   && a.Patch_agent.automerge_failure_count = 0
   && not a.Patch_agent.automerge_inflight
+
+let merge_patch_id = function
+  | Github_merge d -> d.merge_patch_id
+  | Git_integrate d -> d.merge_patch_id

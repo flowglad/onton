@@ -140,11 +140,17 @@ val automerge_max_failures : int
 type merge_action = Direct_merge | Enqueue | Dequeue of string
 [@@deriving show, eq, sexp_of]
 
-type automerge_decision = {
-  merge_patch_id : Patch_id.t;
-  merge_pr_number : Pr_number.t;
-  action : merge_action;
-}
+type automerge_decision =
+  | Github_merge of {
+      merge_patch_id : Patch_id.t;
+      merge_pr_number : Pr_number.t;
+      action : merge_action;
+    }
+  | Git_integrate of {
+      merge_patch_id : Patch_id.t;
+      root : Patch_id.t;
+      head_sha : string;
+    }
 [@@deriving show, eq, sexp_of]
 
 type review_request_decision = {
@@ -268,3 +274,16 @@ val apply_automerge_failure :
     deadline is NOT re-armed when either (a) the failure cap has now been
     reached (reconciliation will no longer issue merge calls for this patch), or
     (b) the user disabled automerge while the call was in flight. *)
+
+val is_integration_candidate :
+  ?ignore_inflight:bool -> Orchestrator.t -> Patch_id.t -> bool
+
+val apply_branch_observation :
+  Orchestrator.t ->
+  Patch_id.t ->
+  head_sha:string ->
+  checks:Ci_check.t list ->
+  Orchestrator.t
+
+val ready_for_review : Orchestrator.t -> Patch_id.t -> bool
+val merge_patch_id : automerge_decision -> Patch_id.t

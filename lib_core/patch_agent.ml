@@ -20,6 +20,7 @@ type t = {
   pr_status : Patch_pr_status.t;
   complexity : int option;
   has_session : bool;
+  branch_published : bool;
   busy : bool;
   merged : bool;
   queue : Operation_kind.t list;
@@ -206,7 +207,8 @@ let intervention_reason t =
     List.mem t.queue Operation_kind.Human ~equal:Operation_kind.equal
     || not (List.is_empty t.inflight_human_messages)
   in
-  intervention_reason_of_fields ~merged:t.merged ~has_pr:(has_pr t)
+  intervention_reason_of_fields ~merged:t.merged
+    ~has_pr:(has_pr t || t.branch_published)
     ~is_pr_missing:(is_pr_missing t)
     ~session_given_up:(equal_session_fallback t.session_fallback Given_up)
     ~human_pending ~ci_failure_count:t.ci_failure_count
@@ -241,6 +243,7 @@ let create ~branch ?(max_ci_failures = default_max_ci_failures) patch_id =
     pr_status = Patch_pr_status.Absent;
     complexity = None;
     has_session = false;
+    branch_published = false;
     busy = false;
     merged = false;
     queue = [];
@@ -307,6 +310,7 @@ let create_adhoc ~complexity ~patch_id ~branch ~pr_number ~max_ci_failures =
     pr_status = Patch_pr_status.Present pr_number;
     complexity;
     has_session = false;
+    branch_published = false;
     busy = false;
     merged = false;
     queue = [];
@@ -400,7 +404,7 @@ let clear_session_fallback t = { t with session_fallback = Fresh_available }
     - Resume failure: escalate to Tried_fresh (will try fresh next)
     - Fresh failure (respond path): escalate one step via set_tried_fresh *)
 let on_session_failure t ~is_fresh =
-  if (not (has_pr t)) && is_fresh then
+  if (not (has_pr t || t.branch_published)) && is_fresh then
     (* Start path fresh failure: full reset for clean retry *)
     { t with session_fallback = Fresh_available; llm_session_id = None }
   else if is_fresh then set_tried_fresh t
@@ -663,9 +667,9 @@ let reset_intervention_state t =
 
 let reset_busy t = if not t.busy then t else { t with busy = false }
 
-let restore ~patch_id ~branch ~pr_status ?(complexity = None) ~has_session ~busy
-    ~merged ~queue ~satisfies ~changed ~has_conflict ~base_branch
-    ~notified_base_branch ~ci_failure_count
+let restore ?(branch_published = false) ~patch_id ~branch ~pr_status
+    ?(complexity = None) ~has_session ~busy ~merged ~queue ~satisfies ~changed
+    ~has_conflict ~base_branch ~notified_base_branch ~ci_failure_count
     ?(max_ci_failures = default_max_ci_failures) ~session_fallback
     ~human_messages ~inflight_human_messages ~ci_checks ~merge_ready
     ?(head_oid = None) ?(expected_remote_head_oid = None)
@@ -688,6 +692,7 @@ let restore ~patch_id ~branch ~pr_status ?(complexity = None) ~has_session ~busy
     pr_status;
     complexity;
     has_session;
+    branch_published;
     busy;
     merged;
     queue;
@@ -900,7 +905,7 @@ let record_anchor t anchor =
 let anchor_history t = t.anchor_history
 
 let rebase t ~base_branch =
-  if not (is_pr_present t) then
+  if not (is_pr_present t || t.branch_published) then
     invalid_arg "Patch_agent.rebase: patch has no PR (or PR is missing)";
   if t.merged then invalid_arg "Patch_agent.rebase: patch is merged";
 
@@ -933,7 +938,7 @@ let rebase t ~base_branch =
   }
 
 let respond t k =
-  if not (is_pr_present t) then
+  if not (is_pr_present t || t.branch_published) then
     invalid_arg "Patch_agent.respond: patch has no PR (or PR is missing)";
   if t.merged then invalid_arg "Patch_agent.respond: patch is merged";
 
@@ -1052,3 +1057,6 @@ let%test "on_pr_discovery_failure is no-op when agent has a PR" =
   let t = set_pr_number t (Pr_number.of_int 42) in
   let t = on_pr_discovery_failure t in
   t.start_attempts_without_pr = 0
+
+let mark_branch_published t =
+  { t with branch_published = true; start_attempts_without_pr = 0 }

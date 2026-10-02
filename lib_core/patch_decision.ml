@@ -38,7 +38,7 @@ let disposition (a : Patch_agent.t) : disposition =
   if a.merged then Skip
   else if Patch_agent.needs_intervention a then Blocked
   else if a.busy then Busy
-  else if not (Patch_agent.has_pr a) then Ready_start
+  else if not (Patch_agent.has_pr a || a.branch_published) then Ready_start
   else
     match Patch_agent.highest_priority a with
     | None -> Idle
@@ -135,7 +135,7 @@ let human_delivery_unaccepted ~(kind : Operation_kind.t option)
     reclassified if it associates a PR while its session is still running. *)
 let human_acceptance_delivers_messages ~(agent : Patch_agent.t)
     ~(delivery_mode : delivery_mode) ~(kind : Operation_kind.t option) : bool =
-  Patch_agent.is_pr_present agent
+  (Patch_agent.is_pr_present agent || agent.branch_published)
   && equal_delivery_mode delivery_mode Respond
   && Option.equal Operation_kind.equal kind (Some Operation_kind.Human)
 
@@ -146,7 +146,7 @@ let human_acceptance_delivers_messages ~(agent : Patch_agent.t)
     association. *)
 let session_no_commits_is_ok ~(agent : Patch_agent.t)
     ~(delivery_mode : delivery_mode) ~(kind : Operation_kind.t option) : bool =
-  Patch_agent.is_pr_present agent
+  (Patch_agent.is_pr_present agent || agent.branch_published)
   && equal_delivery_mode delivery_mode Respond
   &&
   match kind with

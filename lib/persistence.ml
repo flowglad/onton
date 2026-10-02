@@ -175,6 +175,7 @@ let patch_agent_to_yojson (a : Patch_agent.t) =
         | None -> `Null
         | Some n -> Pr_number.yojson_of_t n );
       ("has_session", `Bool a.has_session);
+      ("branch_published", `Bool a.branch_published);
       ("busy", `Bool a.busy);
       ("merged", `Bool a.merged);
       ("queue", `List (List.map a.queue ~f:Operation_kind.yojson_of_t));
@@ -347,6 +348,7 @@ let patch_agent_of_yojson ~gameplan json =
                  | None -> Patch_pr_status.Absent
                  | Some n -> Patch_pr_status.Present (Pr_number.of_int n))))
        ~complexity:(int_member_opt "complexity" json)
+       ~branch_published:(bool_member "branch_published" json)
        ~has_session ~busy:(bool_member "busy" json)
        ~merged:(bool_member "merged" json)
        ~queue
@@ -613,6 +615,7 @@ let orchestrator_to_yojson (o : Orchestrator.t) =
   `Assoc
     [
       ("main_branch", Branch.yojson_of_t (Orchestrator.main_branch o));
+      ("promotion_claimed", `Bool (Orchestrator.promotion_claimed o));
       ("agents", `Assoc agents);
       ("outbox", `Assoc outbox);
     ]
@@ -758,8 +761,9 @@ let orchestrator_of_yojson ~gameplan json =
                             | _ -> g))))
           in
           Ok
-            (Orchestrator.restore ~graph ~agents:agents_map ~outbox ~main_branch
-               ()))
+            (Orchestrator.restore
+               ~promotion_claimed:(bool_member "promotion_claimed" json)
+               ~graph ~agents:agents_map ~outbox ~main_branch ()))
   with
   | Decode_error msg -> Error (Printf.sprintf "malformed orchestrator: %s" msg)
   | Invalid_argument msg ->

@@ -1809,13 +1809,16 @@ let () =
           Patch_controller.reconcile_automerge orch ~now:1.0
         in
         match decisions with
-        | [ { Patch_controller.merge_patch_id; merge_pr_number; action } ] ->
+        | [
+         Patch_controller.Github_merge
+           { merge_patch_id; merge_pr_number; action };
+        ] ->
             Patch_id.equal merge_patch_id pid
             && Pr_number.equal merge_pr_number pr_number
             && Patch_controller.equal_merge_action action
                  Patch_controller.Enqueue
             && (Orchestrator.agent orch pid).Patch_agent.automerge_inflight
-        | _ -> false)
+        | [ Patch_controller.Git_integrate _ ] | [] | _ :: _ :: _ -> false)
   in
 
   let pending_patch_4_automerge_enqueued_idle =
@@ -1961,7 +1964,10 @@ let () =
           Patch_controller.reconcile_automerge orch ~now:1.0
         in
         match decisions with
-        | [ { Patch_controller.merge_patch_id; merge_pr_number; action } ] ->
+        | [
+         Patch_controller.Github_merge
+           { merge_patch_id; merge_pr_number; action };
+        ] ->
             Patch_id.equal merge_patch_id pid
             && Pr_number.equal merge_pr_number pr_number
             && Patch_controller.equal_merge_action action
@@ -1975,7 +1981,7 @@ let () =
                   && String.is_substring reason ~substring:"merge_ready=false"
               | _ -> false)
             && (Orchestrator.agent orch pid).Patch_agent.automerge_inflight
-        | _ -> false)
+        | [ Patch_controller.Git_integrate _ ] | [] | _ :: _ :: _ -> false)
   in
 
   let pending_patch_4_transient_unknown_does_not_dequeue =
@@ -2058,7 +2064,10 @@ let () =
           Patch_controller.reconcile_automerge orch ~now:1.0
         in
         match decisions with
-        | [ { Patch_controller.merge_patch_id; merge_pr_number; action } ] ->
+        | [
+         Patch_controller.Github_merge
+           { merge_patch_id; merge_pr_number; action };
+        ] ->
             Patch_id.equal merge_patch_id pid
             && Pr_number.equal merge_pr_number pr_number
             && Patch_controller.equal_merge_action action
@@ -2068,7 +2077,7 @@ let () =
                     ~main_branch:main ~entry_id:entry.id)
                  [ "GitHub queue entry UNMERGEABLE (position 1)" ]
             && (Orchestrator.agent orch pid).Patch_agent.automerge_inflight
-        | _ -> false)
+        | [ Patch_controller.Git_integrate _ ] | [] | _ :: _ :: _ -> false)
   in
 
   let pending_patch_4_visible_ci_failure_dequeues =
@@ -2106,7 +2115,10 @@ let () =
           Patch_controller.reconcile_automerge orch ~now:1.0
         in
         match decisions with
-        | [ { Patch_controller.merge_patch_id; merge_pr_number; action } ] ->
+        | [
+         Patch_controller.Github_merge
+           { merge_patch_id; merge_pr_number; action };
+        ] ->
             Patch_id.equal merge_patch_id pid
             && Pr_number.equal merge_pr_number pr_number
             && Patch_controller.equal_merge_action action
@@ -2121,7 +2133,7 @@ let () =
                        ~substring:"checks_passing=false"
               | _ -> false)
             && (Orchestrator.agent orch pid).Patch_agent.automerge_inflight
-        | _ -> false)
+        | [ Patch_controller.Git_integrate _ ] | [] | _ :: _ :: _ -> false)
   in
 
   let pending_patch_4_conflict_alarm_dequeues =
@@ -2149,7 +2161,10 @@ let () =
           Patch_controller.reconcile_automerge orch ~now:1.0
         in
         match decisions with
-        | [ { Patch_controller.merge_patch_id; merge_pr_number; action } ] ->
+        | [
+         Patch_controller.Github_merge
+           { merge_patch_id; merge_pr_number; action };
+        ] ->
             Patch_id.equal merge_patch_id pid
             && Pr_number.equal merge_pr_number pr_number
             && Patch_controller.equal_merge_action action
@@ -2159,7 +2174,7 @@ let () =
                     ~main_branch:main ~entry_id:entry.id)
                  [ "merge conflict" ]
             && (Orchestrator.agent orch pid).Patch_agent.automerge_inflight
-        | _ -> false)
+        | [ Patch_controller.Git_integrate _ ] | [] | _ :: _ :: _ -> false)
   in
 
   (* A direct-merge patch that is approval-ready in every respect but reads

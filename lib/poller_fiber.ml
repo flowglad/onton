@@ -213,6 +213,27 @@ module Make (Forge : Forge.S) (W : Worktree.S) (Env : Poller_env.S) = struct
                 Stdlib.Hashtbl.replace divergence_logged patch_id key))
     in
     let rec loop () =
+      let branch_intents =
+        Runtime.read runtime (fun snap ->
+            Orchestrator.all_agents snap.Runtime.orchestrator
+            |> List.filter ~f:(fun a ->
+                Orchestrator.is_feature_descendant snap.orchestrator
+                  a.Patch_agent.patch_id
+                && a.branch_published && not a.merged))
+      in
+      Eio.Fiber.List.iter ~max_fibers:16
+        (fun a ->
+          match Forge.branch_state a.Patch_agent.branch with
+          | Error e ->
+              Runtime.update_orchestrator runtime (fun orch ->
+                  Orchestrator.set_checks_passing orch a.patch_id false);
+              Runtime_logging.log_event runtime ~patch_id:a.patch_id
+                ("Branch checks unavailable — " ^ Forge.show_error e)
+          | Ok observed ->
+              Runtime.update_orchestrator runtime (fun orch ->
+                  Patch_controller.apply_branch_observation orch a.patch_id
+                    ~head_sha:observed.head_sha ~checks:observed.checks))
+        branch_intents;
       let intents =
         Runtime.read runtime (fun snap ->
             let agents = Orchestrator.all_agents snap.Runtime.orchestrator in
@@ -586,9 +607,10 @@ module Make (Forge : Forge.S) (W : Worktree.S) (Env : Poller_env.S) = struct
               List.fold (Orchestrator.all_agents orch) ~init:orch
                 ~f:(fun orch (a : Patch_agent.t) ->
                   let contains =
-                    Base_containment.contains_merged_siblings ~graph
-                      ~patch_id:a.Patch_agent.patch_id ~has_merged ~merge_sha
-                      ~branch_of ~main ~ancestor_oracle
+                    Base_containment.contains_merged_siblings_with_mode
+                      ~mode:(Orchestrator.execution_mode orch)
+                      ~graph ~patch_id:a.Patch_agent.patch_id ~has_merged
+                      ~merge_sha ~branch_of ~main ~ancestor_oracle
                   in
                   Orchestrator.set_base_contains_merged_siblings orch
                     a.Patch_agent.patch_id contains)
@@ -604,14 +626,15 @@ module Make (Forge : Forge.S) (W : Worktree.S) (Env : Poller_env.S) = struct
                   let sibling_rebase_target =
                     if a.Patch_agent.base_contains_merged_siblings then None
                     else
-                      Base_containment.stale_chain_rebase_target ~graph
-                        ~patch_id:a.Patch_agent.patch_id ~has_merged ~merge_sha
-                        ~branch_of ~main ~ancestor_oracle
+                      Base_containment.stale_chain_rebase_target_with_mode
+                        ~mode:(Orchestrator.execution_mode orch)
+                        ~graph ~patch_id:a.Patch_agent.patch_id ~has_merged
+                        ~merge_sha ~branch_of ~main ~ancestor_oracle
                   in
                   Reconciler.
                     {
                       id = a.Patch_agent.patch_id;
-                      has_pr = Patch_agent.has_pr a;
+                      has_pr = Patch_agent.has_pr a || a.branch_published;
                       merged = a.Patch_agent.merged;
                       busy = a.Patch_agent.busy;
                       needs_intervention = Patch_agent.needs_intervention a;
@@ -632,7 +655,9 @@ module Make (Forge : Forge.S) (W : Worktree.S) (Env : Poller_env.S) = struct
                   else None)
             in
             let actions =
-              Reconciler.reconcile ~graph:(Orchestrator.graph orch) ~main
+              Reconciler.reconcile_with_mode
+                ~mode:(Orchestrator.execution_mode orch)
+                ~graph:(Orchestrator.graph orch) ~main
                 ~merged_pr_patches:merged_patches ~branch_of patch_views
             in
             let rec_logs = ref [] in

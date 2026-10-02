@@ -1,0 +1,378 @@
+{
+  "projectName": "feature-branch-sample-20261002",
+  "owner": "flowglad",
+  "repo": "onton",
+  "specFile": null,
+  "workstream": null,
+  "problemStatement": "Feature-branch mode needs a small live run against the real repository to exercise branch-only descendants. A root, two siblings, and one nested descendant provide that topology without changing application behavior.",
+  "solutionSummary": "Create a concise three-page feature-branch field guide. The root adds a push check limited to this sample's branches, so descendants can publish without PRs. Two siblings write separate pages; a nested fourth patch extends the integration page. The local feature-branch supervisor integrates descendant branches and leaves the sole root PR for review.",
+  "currentStateAnalysis": "Target main is 4baa2e8a7b4b38cfd58e2681ad3479324c5d4ce7. docs/design contains focused Markdown design notes. .github/workflows/ci.yml runs push CI on main only, so the root must establish sample-scoped push checks before descendants publish. The new mode is implemented in the invoking checkout's binary and has passed local tests.",
+  "operationalConsiderations": {
+    "externalSystemAccess": "The existing authenticated GitHub/SSH transports publish sample branches and create the root PR. Patch 1 creates a GitHub Actions workflow scoped to feature-branch-sample-20261002/patch-*; no new secrets or external services are introduced.",
+    "crossRuntimeContracts": "The JSON is consumed by the local onton binary. GitHub Actions attaches the sample check to each pushed commit; the supervisor reads that exact SHA. No persisted application or API format is changed.",
+    "failureBehavior": "Missing, failed, or pending branch checks hold descendant integration. The documented Git conflict/retry/dirty-checkout behavior remains owned by the supervisor. The new workflow fails on whitespace errors or a missing root guide and has a three-minute timeout.",
+    "concurrencyAndIdempotency": "Patches 2 and 3 write disjoint Markdown files; patch 4 depends on patch 3 and is the only later writer of its file. The supervisor serializes root writes and recognizes already-contained heads. Workflow concurrency cancels older runs for the same ref.",
+    "rollbackStrategy": "The sample writes Markdown and a workflow only. Revert the root PR as one unit if it is later merged; no data migration or compensating application writes are needed. Root automerge is disabled for this run."
+  },
+  "mergabilityStrategy": {
+    "featureFlagStrategy": "No product flag: documentation and a workflow limited to an explicit sample branch prefix do not change application behavior. The execution mode is activated with --feature-branch.",
+    "featureFlags": [],
+    "patchOrderingStrategy": "All four patches are INFRA. Patch 1 is the sole root, patches 2 and 3 depend on 1, and patch 4 depends on 3. Parallel writers have exclusive files."
+  },
+  "requiredChanges": [
+    {
+      "file": "docs/design/feature-branch-sample.md",
+      "line": null,
+      "description": "Sample field guide and navigation",
+      "signature": null
+    },
+    {
+      "file": ".github/workflows/feature-branch-sample.yml",
+      "line": null,
+      "description": "Checks on this sample's exact branch heads",
+      "signature": null
+    },
+    {
+      "file": "docs/design/feature-branch-checks.md",
+      "line": null,
+      "description": "The checks guide states that descendants publish branches without PRs, checks are attached to the exact branch HEAD, at least one check is required and all must pass, push-triggered workflows are required, integration is immediate, and the per-patch automerge toggle can pause a descendant.",
+      "signature": null
+    },
+    {
+      "file": "docs/design/feature-branch-integration.md",
+      "line": null,
+      "description": "The integration guide explains direct intermediate bases, the root terminal boundary, normal no-ff Git integration, normal root pushes, temporary worktrees, the shared root-write lock, and descendant rebasing. It shows patch 4 based on patch 3 until patch 3 integrates and then based on patch 1, never main.",
+      "signature": null
+    },
+    {
+      "file": "docs/design/feature-branch-integration.md",
+      "line": null,
+      "description": "The integration guide gains a Recovery and review section explaining dirty/diverged root checkout refusal, idempotent already-contained heads, conflict routing to the descendant, retry backoff and cap, invalidation of root readiness after every update, and root promotion only after all descendants integrate and fresh current-head checks pass. It links to the root and checks guides with correct relative links.",
+      "signature": null
+    }
+  ],
+  "functionalChanges": [
+    {
+      "id": "FC-1",
+      "description": "The root guide defines root versus descendant, shows main <- 1 <- {2, 3 <- 4}, gives onton --gameplan gameplans/feature-branch-sample-20261002.json --feature-branch and onton feature-branch-sample-20261002 for resume, and states that only the root has a PR. It explains that the JSON belongs to the invoking checkout and need not already exist on target main.",
+      "ownedBy": 1
+    },
+    {
+      "id": "FC-2",
+      "description": "The checks guide states that descendants publish branches without PRs, checks are attached to the exact branch HEAD, at least one check is required and all must pass, push-triggered workflows are required, integration is immediate, and the per-patch automerge toggle can pause a descendant.",
+      "ownedBy": 2
+    },
+    {
+      "id": "FC-3",
+      "description": "The integration guide explains direct intermediate bases, the root terminal boundary, normal no-ff Git integration, normal root pushes, temporary worktrees, the shared root-write lock, and descendant rebasing. It shows patch 4 based on patch 3 until patch 3 integrates and then based on patch 1, never main.",
+      "ownedBy": 3
+    },
+    {
+      "id": "FC-4",
+      "description": "The integration guide gains a Recovery and review section explaining dirty/diverged root checkout refusal, idempotent already-contained heads, conflict routing to the descendant, retry backoff and cap, invalidation of root readiness after every update, and root promotion only after all descendants integrate and fresh current-head checks pass. It links to the root and checks guides with correct relative links.",
+      "ownedBy": 4
+    },
+    {
+      "id": "FC-5",
+      "description": "Every push to feature-branch-sample-20261002/patch-* receives the sample source-hygiene check, while unrelated branches keep their current workflow triggers.",
+      "ownedBy": 1
+    }
+  ],
+  "contextResources": [
+    {
+      "id": "repo-guidance",
+      "kind": "reference-doc",
+      "paths": [
+        "AGENTS.md",
+        "README.md"
+      ],
+      "why": "Existing build/test/format commands, CLI conventions, and documentation tone.",
+      "consumedBy": [
+        1,
+        2,
+        3,
+        4
+      ]
+    },
+    {
+      "id": "sample-contract",
+      "kind": "contract",
+      "paths": [
+        "lib_core/graph.mli",
+        "lib_core/rebase_decision.mli",
+        ".github/workflows/ci.yml"
+      ],
+      "why": "Existing dependency/base and rebase terminology; current push filtering explains why this sample owns a separate workflow. Feature-mode behavior is specified inline in each patch.",
+      "consumedBy": [
+        1,
+        2,
+        3,
+        4
+      ]
+    },
+    {
+      "id": "nested-guide",
+      "kind": "reference-doc",
+      "paths": [
+        "docs/design/feature-branch-integration.md"
+      ],
+      "why": "Patch 4 preserves and extends patch 3's guide after its dependency publishes.",
+      "consumedBy": [
+        4
+      ]
+    }
+  ],
+  "acceptanceCriteria": [
+    "The root guide defines root versus descendant, shows main <- 1 <- {2, 3 <- 4}, gives onton --gameplan gameplans/feature-branch-sample-20261002.json --feature-branch and onton feature-branch-sample-20261002 for resume, and states that only the root has a PR. It explains that the JSON belongs to the invoking checkout and need not already exist on target main.",
+    "The checks guide states that descendants publish branches without PRs, checks are attached to the exact branch HEAD, at least one check is required and all must pass, push-triggered workflows are required, integration is immediate, and the per-patch automerge toggle can pause a descendant.",
+    "The integration guide explains direct intermediate bases, the root terminal boundary, normal no-ff Git integration, normal root pushes, temporary worktrees, the shared root-write lock, and descendant rebasing. It shows patch 4 based on patch 3 until patch 3 integrates and then based on patch 1, never main.",
+    "The integration guide gains a Recovery and review section explaining dirty/diverged root checkout refusal, idempotent already-contained heads, conflict routing to the descendant, retry backoff and cap, invalidation of root readiness after every update, and root promotion only after all descendants integrate and fresh current-head checks pass. It links to the root and checks guides with correct relative links.",
+    "Every push to feature-branch-sample-20261002/patch-* receives the sample source-hygiene check, while unrelated branches keep their current workflow triggers."
+  ],
+  "reachabilityTraces": [
+    {
+      "observable": "The root guide defines root versus descendant, shows main <- 1 <- {2, 3 <- 4}, gives onton --gameplan gameplans/feature-branch-sample-20261002.json --feature-branch and onton feature-branch-sample-20261002 for resume, and states that only the root has a PR. It explains that the JSON belongs to the invoking checkout and need not already exist on target main.",
+      "tracesTo": "FC-1",
+      "ownedBy": 1,
+      "path": [
+        {
+          "file": "docs/design/feature-branch-sample.md",
+          "symbol": null,
+          "status": "created"
+        }
+      ],
+      "testPath": null,
+      "runtimeReachabilityNote": "Markdown is read directly in GitHub; navigation uses relative sibling links."
+    },
+    {
+      "observable": "The checks guide states that descendants publish branches without PRs, checks are attached to the exact branch HEAD, at least one check is required and all must pass, push-triggered workflows are required, integration is immediate, and the per-patch automerge toggle can pause a descendant.",
+      "tracesTo": "FC-2",
+      "ownedBy": 2,
+      "path": [
+        {
+          "file": "docs/design/feature-branch-checks.md",
+          "symbol": null,
+          "status": "created"
+        }
+      ],
+      "testPath": null,
+      "runtimeReachabilityNote": "Markdown is read directly in GitHub; navigation uses relative sibling links."
+    },
+    {
+      "observable": "The integration guide explains direct intermediate bases, the root terminal boundary, normal no-ff Git integration, normal root pushes, temporary worktrees, the shared root-write lock, and descendant rebasing. It shows patch 4 based on patch 3 until patch 3 integrates and then based on patch 1, never main.",
+      "tracesTo": "FC-3",
+      "ownedBy": 3,
+      "path": [
+        {
+          "file": "docs/design/feature-branch-integration.md",
+          "symbol": null,
+          "status": "created"
+        }
+      ],
+      "testPath": null,
+      "runtimeReachabilityNote": "Markdown is read directly in GitHub; navigation uses relative sibling links."
+    },
+    {
+      "observable": "The integration guide gains a Recovery and review section explaining dirty/diverged root checkout refusal, idempotent already-contained heads, conflict routing to the descendant, retry backoff and cap, invalidation of root readiness after every update, and root promotion only after all descendants integrate and fresh current-head checks pass. It links to the root and checks guides with correct relative links.",
+      "tracesTo": "FC-4",
+      "ownedBy": 4,
+      "path": [
+        {
+          "file": "docs/design/feature-branch-integration.md",
+          "symbol": null,
+          "status": "created"
+        }
+      ],
+      "testPath": null,
+      "runtimeReachabilityNote": "Markdown is read directly in GitHub; navigation uses relative sibling links."
+    },
+    {
+      "observable": "Every push to feature-branch-sample-20261002/patch-* receives the sample source-hygiene check, while unrelated branches keep their current workflow triggers.",
+      "tracesTo": "FC-5",
+      "ownedBy": 1,
+      "path": [
+        {
+          "file": ".github/workflows/feature-branch-sample.yml",
+          "symbol": null,
+          "status": "created"
+        }
+      ],
+      "testPath": null,
+      "runtimeReachabilityNote": "GitHub push/PR dispatches the new scoped workflow."
+    }
+  ],
+  "openQuestions": [],
+  "explicitOpinions": [
+    {
+      "opinion": "Use a small documentation sample instead of application changes.",
+      "rationale": "The purpose is to exercise live orchestration and integration with a reviewable low-impact result."
+    },
+    {
+      "opinion": "Only the sample root has a PR, and its automerge stays disabled.",
+      "rationale": "Descendant HEAD checks and direct Git merges exercise the new path; the final result stops for review."
+    },
+    {
+      "opinion": "Use a dedicated scoped source-hygiene workflow.",
+      "rationale": "Main-only push CI cannot supply checks for descendant branches; a scoped check provides live commit checks without expanding unrelated CI triggers."
+    }
+  ],
+  "patches": [
+    {
+      "number": 1,
+      "classification": "INFRA",
+      "complexity": 1,
+      "title": "Add sample root guide and scoped push checks",
+      "files": [
+        {
+          "path": "docs/design/feature-branch-sample.md",
+          "action": "create",
+          "description": "Sample field guide and navigation"
+        },
+        {
+          "path": ".github/workflows/feature-branch-sample.yml",
+          "action": "create",
+          "description": "Checks on this sample's exact branch heads"
+        }
+      ],
+      "changes": [
+        "This is a live feature-branch-mode smoke run, limited to documentation and a sample-scoped CI workflow. The supervisor is the locally built feature-branch binary; the target main branch does not need to contain that binary. Do not change application logic, existing CI, or files outside this patch's declared frame. Commit your completed patch; the supervisor owns publishing and PR creation. Do not enable root automerge or merge anything into main.",
+        "Create docs/design/feature-branch-sample.md as a concise field guide covering the contract in the spec; add relative links to feature-branch-checks.md and feature-branch-integration.md, which descendant patches will create.",
+        "Create .github/workflows/feature-branch-sample.yml with name \"Feature branch sample\", push branches [\"feature-branch-sample-20261002/patch-*\"], and pull_request targeting main filtered to docs/design/feature-branch-*.md and this workflow file. Use contents: read, ubuntu-latest, timeout-minutes: 3, and concurrency grouped by workflow/ref with cancel-in-progress: true. One job named \"Feature branch sample checks\" uses actions/checkout@11d5960a326750d5838078e36cf38b85af677262 with fetch-depth: 2 and runs git diff --check HEAD^ HEAD plus test -s docs/design/feature-branch-sample.md. This is a lightweight source-hygiene check; existing PR CI remains the repository correctness gate. Do not edit .github/workflows/ci.yml.",
+        "Validate workflow YAML and git diff --check, then run the repository build/test/format gate. Keep the root PR draft; the supervisor owns promotion."
+      ],
+      "requiredContext": [
+        "repo-guidance",
+        "sample-contract"
+      ],
+      "testStubsIntroduced": [],
+      "testStubsImplemented": [],
+      "spec": "module FEATURE_BRANCH_SAMPLE_PATCH_1.\n\n> The root guide defines root versus descendant, shows main <- 1 <- {2, 3 <- 4}, gives onton --gameplan gameplans/feature-branch-sample-20261002.json --feature-branch and onton feature-branch-sample-20261002 for resume, and states that only the root has a PR. It explains that the JSON belongs to the invoking checkout and need not already exist on target main.\nsample-guide-present? => Bool.\nsample-ci-present? => Bool.\nsample-push-pattern => String.\n---\nsample-guide-present?.\nsample-ci-present?.\nsample-push-pattern = \"feature-branch-sample-20261002/patch-*\".\n",
+      "precedents": []
+    },
+    {
+      "number": 2,
+      "classification": "INFRA",
+      "complexity": 1,
+      "title": "Document branch HEAD readiness",
+      "files": [
+        {
+          "path": "docs/design/feature-branch-checks.md",
+          "action": "create",
+          "description": "The checks guide states that descendants publish branches without PRs, checks are attached to the exact branch HEAD, at least one check is required and all must pass, push-triggered workflows are required, integration is immediate, and the per-patch automerge toggle can pause a descendant."
+        }
+      ],
+      "changes": [
+        "This is a live feature-branch-mode smoke run, limited to documentation and a sample-scoped CI workflow. The supervisor is the locally built feature-branch binary; the target main branch does not need to contain that binary. Do not change application logic, existing CI, or files outside this patch's declared frame. Commit your completed patch; the supervisor owns publishing and PR creation. Do not enable root automerge or merge anything into main.",
+        "Create docs/design/feature-branch-checks.md following the checks contract in the spec. Link back to feature-branch-sample.md and forward to feature-branch-integration.md. Explain waiting for branch checks without inventing PR approval requirements for descendants.",
+        "Keep the guide under 70 lines and run git diff --check plus the repository build/test/format gate."
+      ],
+      "requiredContext": [
+        "repo-guidance",
+        "sample-contract"
+      ],
+      "testStubsIntroduced": [],
+      "testStubsImplemented": [],
+      "spec": "module FEATURE_BRANCH_SAMPLE_PATCH_2.\n\n> The checks guide states that descendants publish branches without PRs, checks are attached to the exact branch HEAD, at least one check is required and all must pass, push-triggered workflows are required, integration is immediate, and the per-patch automerge toggle can pause a descendant.\nbranch-check-guide-present? => Bool.\n---\nbranch-check-guide-present?.\n",
+      "precedents": []
+    },
+    {
+      "number": 3,
+      "classification": "INFRA",
+      "complexity": 1,
+      "title": "Document Git integration and nested bases",
+      "files": [
+        {
+          "path": "docs/design/feature-branch-integration.md",
+          "action": "create",
+          "description": "The integration guide explains direct intermediate bases, the root terminal boundary, normal no-ff Git integration, normal root pushes, temporary worktrees, the shared root-write lock, and descendant rebasing. It shows patch 4 based on patch 3 until patch 3 integrates and then based on patch 1, never main."
+        }
+      ],
+      "changes": [
+        "This is a live feature-branch-mode smoke run, limited to documentation and a sample-scoped CI workflow. The supervisor is the locally built feature-branch binary; the target main branch does not need to contain that binary. Do not change application logic, existing CI, or files outside this patch's declared frame. Commit your completed patch; the supervisor owns publishing and PR creation. Do not enable root automerge or merge anything into main.",
+        "Create docs/design/feature-branch-integration.md following the integration contract in the spec. Include the nested-base example and link back to feature-branch-sample.md. Leave recovery and final-review details for patch 4; do not edit sibling files.",
+        "Keep the guide under 70 lines and run git diff --check plus the repository build/test/format gate."
+      ],
+      "requiredContext": [
+        "repo-guidance",
+        "sample-contract"
+      ],
+      "testStubsIntroduced": [],
+      "testStubsImplemented": [],
+      "spec": "module FEATURE_BRANCH_SAMPLE_PATCH_3.\n\n> The integration guide explains direct intermediate bases, the root terminal boundary, normal no-ff Git integration, normal root pushes, temporary worktrees, the shared root-write lock, and descendant rebasing. It shows patch 4 based on patch 3 until patch 3 integrates and then based on patch 1, never main.\nintegration-guide-present? => Bool.\n---\nintegration-guide-present?.\n",
+      "precedents": []
+    },
+    {
+      "number": 4,
+      "classification": "INFRA",
+      "complexity": 1,
+      "title": "Document recovery and final root review",
+      "files": [
+        {
+          "path": "docs/design/feature-branch-integration.md",
+          "action": "modify",
+          "description": "The integration guide gains a Recovery and review section explaining dirty/diverged root checkout refusal, idempotent already-contained heads, conflict routing to the descendant, retry backoff and cap, invalidation of root readiness after every update, and root promotion only after all descendants integrate and fresh current-head checks pass. It links to the root and checks guides with correct relative links."
+        }
+      ],
+      "changes": [
+        "This is a live feature-branch-mode smoke run, limited to documentation and a sample-scoped CI workflow. The supervisor is the locally built feature-branch binary; the target main branch does not need to contain that binary. Do not change application logic, existing CI, or files outside this patch's declared frame. Commit your completed patch; the supervisor owns publishing and PR creation. Do not enable root automerge or merge anything into main.",
+        "Extend docs/design/feature-branch-integration.md with the Recovery and review section defined in the spec. Preserve patch 3's explanation and nested-base example; do not rewrite or edit sibling guides.",
+        "Read the root and integration guides before adding relative links. The checks guide is delivered by sibling patch 2 and may still be in flight; use its path declared in this gameplan without waiting for it. Keep the completed guide under 100 lines and run git diff --check plus the repository build/test/format gate."
+      ],
+      "requiredContext": [
+        "repo-guidance",
+        "sample-contract",
+        "nested-guide"
+      ],
+      "testStubsIntroduced": [],
+      "testStubsImplemented": [],
+      "spec": "module FEATURE_BRANCH_SAMPLE_PATCH_4.\n\n> The integration guide gains a Recovery and review section explaining dirty/diverged root checkout refusal, idempotent already-contained heads, conflict routing to the descendant, retry backoff and cap, invalidation of root readiness after every update, and root promotion only after all descendants integrate and fresh current-head checks pass. It links to the root and checks guides with correct relative links.\nrecovery-guide-present? => Bool.\n---\nrecovery-guide-present?.\n",
+      "precedents": []
+    }
+  ],
+  "testMap": [],
+  "dependencyGraph": [
+    {
+      "patch": 1,
+      "classification": "INFRA",
+      "dependsOn": []
+    },
+    {
+      "patch": 2,
+      "classification": "INFRA",
+      "dependsOn": [
+        1
+      ]
+    },
+    {
+      "patch": 3,
+      "classification": "INFRA",
+      "dependsOn": [
+        1
+      ]
+    },
+    {
+      "patch": 4,
+      "classification": "INFRA",
+      "dependsOn": [
+        3
+      ]
+    }
+  ],
+  "mergabilityChecklist": {
+    "featureFlagStrategyDocumented": true,
+    "earlyPatchesNonFunctional": true,
+    "testStubsInInfraPatches": true,
+    "testImplsColocated": true,
+    "testMapComplete": true,
+    "testMapImplPatchMatchesCode": true,
+    "behaviorPatchesMinimal": true,
+    "dependencyGraphOrdered": true,
+    "behaviorPatchesJustified": true,
+    "functionalChangesOwnedByExactlyOnePatch": true,
+    "operationalConsiderationsSubstantive": true,
+    "observableReachabilityTraced": true,
+    "gameplanIsAtomicAndAutonomous": true
+  },
+  "mergabilityInsight": "4 of 4 patches are INFRA. There is no application change or new test obligation; the sample exercises 1 <- {2, 3 <- 4} and the existing repository gate validates each patch.",
+  "finalStateSpec": "module FEATURE_BRANCH_SAMPLE.\n\n> The root guide defines root versus descendant, shows main <- 1 <- {2, 3 <- 4}, gives onton --gameplan gameplans/feature-branch-sample-20261002.json --feature-branch and onton feature-branch-sample-20261002 for resume, and states that only the root has a PR. It explains that the JSON belongs to the invoking checkout and need not already exist on target main.\nsample-guide-present? => Bool.\n> The checks guide states that descendants publish branches without PRs, checks are attached to the exact branch HEAD, at least one check is required and all must pass, push-triggered workflows are required, integration is immediate, and the per-patch automerge toggle can pause a descendant.\nbranch-check-guide-present? => Bool.\n> The integration guide explains direct intermediate bases, the root terminal boundary, normal no-ff Git integration, normal root pushes, temporary worktrees, the shared root-write lock, and descendant rebasing. It shows patch 4 based on patch 3 until patch 3 integrates and then based on patch 1, never main.\nintegration-guide-present? => Bool.\n> The integration guide gains a Recovery and review section explaining dirty/diverged root checkout refusal, idempotent already-contained heads, conflict routing to the descendant, retry backoff and cap, invalidation of root readiness after every update, and root promotion only after all descendants integrate and fresh current-head checks pass. It links to the root and checks guides with correct relative links.\nrecovery-guide-present? => Bool.\nsample-ci-present? => Bool.\nsample-push-pattern => String.\n---\nsample-guide-present?.\nbranch-check-guide-present?.\nintegration-guide-present?.\nrecovery-guide-present?.\nsample-ci-present?.\nsample-push-pattern = \"feature-branch-sample-20261002/patch-*\".\n"
+}

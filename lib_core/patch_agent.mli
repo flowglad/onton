@@ -29,6 +29,7 @@ type t = private {
       (** Model-routing complexity for an adopted PR. Planned patches keep their
           complexity in the gameplan. *)
   has_session : bool;
+  branch_published : bool;
   busy : bool;
   merged : bool;
   queue : Types.Operation_kind.t list;
@@ -718,6 +719,7 @@ val mark_pr_missing : t -> t
     wrapper). *)
 
 val restore :
+  ?branch_published:bool ->
   patch_id:Types.Patch_id.t ->
   branch:Types.Branch.t ->
   pr_status:Patch_pr_status.t ->
@@ -781,3 +783,5 @@ val restore :
   t
 (** Reconstruct agent state from persisted field values. Bypasses precondition
     checks — use only for deserialization. *)
+
+val mark_branch_published : t -> t

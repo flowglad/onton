@@ -433,7 +433,8 @@ let patch_view_of_agent (agent : Patch_agent.t)
     |> State.Patch_ctx.set_needs_intervention ~patch_id
          ~value:needs_intervention
     |> State.Patch_ctx.set_busy ~patch_id ~value:agent.busy
-    |> State.Patch_ctx.set_has_pr ~patch_id ~value:(Patch_agent.has_pr agent)
+    |> State.Patch_ctx.set_has_pr ~patch_id
+         ~value:(Patch_agent.has_pr agent || agent.branch_published)
     |> State.Patch_ctx.set_approved ~patch_id
          ~value:(Patch_agent.is_approved agent ~main_branch)
     |> State.Patch_ctx.set_enqueued ~patch_id
@@ -467,7 +468,9 @@ let patch_view_of_agent (agent : Patch_agent.t)
                 |> State.Patch_ctx.set_busy ~patch_id:dep_id
                      ~value:dep_agent.busy
                 |> State.Patch_ctx.set_has_pr ~patch_id:dep_id
-                     ~value:(Patch_agent.has_pr dep_agent)
+                     ~value:
+                       (Patch_agent.has_pr dep_agent
+                       || dep_agent.branch_published)
                 |> State.Patch_ctx.set_approved ~patch_id:dep_id
                      ~value:(Patch_agent.is_approved dep_agent ~main_branch)
                 |> State.Patch_ctx.set_enqueued ~patch_id:dep_id
@@ -502,7 +505,7 @@ let patch_view_of_agent (agent : Patch_agent.t)
     ci_failures = agent.ci_failure_count;
     ci_failure_cap = agent.max_ci_failures;
     dep_ids;
-    has_pr = Patch_agent.has_pr agent;
+    has_pr = Patch_agent.has_pr agent || agent.branch_published;
     has_conflict = agent.has_conflict;
     needs_intervention;
     human_messages = List.length agent.human_messages;
@@ -1377,10 +1380,17 @@ let views_of_orchestrator ~(orchestrator : Orchestrator.t)
       ~f:(fun acc (a : Patch_agent.t) -> Map.set acc ~key:a.patch_id ~data:a)
   in
   List.map agents ~f:(fun agent ->
-      let main_branch = Orchestrator.main_branch orchestrator in
+      let main_branch =
+        Orchestrator.terminal_branch orchestrator agent.Patch_agent.patch_id
+      in
       let pv =
         patch_view_of_agent agent ~patches_by_id ~graph ~main_branch
           ~agents_by_id ~resolve_routing
+      in
+      let pv =
+        if Patch_controller.is_integration_candidate orchestrator agent.patch_id
+        then { pv with status = Approved_idle }
+        else pv
       in
       let pid_str = Patch_id.to_string agent.patch_id in
       let filtered =

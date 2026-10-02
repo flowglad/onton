@@ -918,10 +918,56 @@ let construct_capabilities ~net (setup : runtime_setup) =
   in
   let module Forge = (val forge) in
   let worktree_client =
-    Worktree.make ~fs:setup.fs ~config:config.Resolved_config.worktree
-      ~clock:setup.clock ~process_mgr:setup.process_mgr ~repo_root
+    Worktree.make_with_protection
+      ~protected_branch:
+        (Runtime.read setup.runtime (fun snap ->
+             Option.map
+               (fun id ->
+                 (Orchestrator.agent snap.orchestrator id).Patch_agent.branch)
+               (Execution_mode.root
+                  (Orchestrator.execution_mode snap.Runtime.orchestrator))))
+      ~fs:setup.fs ~config:config.Resolved_config.worktree ~clock:setup.clock
+      ~process_mgr:setup.process_mgr ~repo_root
   in
   let module WorktreeClient = (val worktree_client) in
+  (* Establish the published root head before the first forge observation. This
+     also recovers publication that completed after the last snapshot. *)
+  let root_agent =
+    Runtime.read setup.runtime (fun snap ->
+        Option.bind
+          (Execution_mode.root
+             (Orchestrator.execution_mode snap.Runtime.orchestrator))
+          (fun id ->
+            let a = Orchestrator.agent snap.orchestrator id in
+            if a.Patch_agent.merged then None else Some a))
+  in
+  (match root_agent with
+  | None -> ()
+  | Some a -> (
+      match
+        WorktreeClient.fetch_origin_branch ~fetch_lock:(Eio.Mutex.create ())
+          ~branch:(Branch.to_string a.Patch_agent.branch)
+      with
+      | Worktree.Fetch_branch_error e ->
+          Printf.eprintf "Error: cannot establish integration root head: %s\n%!"
+            e;
+          Stdlib.exit 1
+      | Worktree.Fetch_branch_no_remote_ref ->
+          if Patch_agent.has_pr a then (
+            Printf.eprintf
+              "Error: integration root branch is missing from origin.\n%!";
+            Stdlib.exit 1)
+      | Worktree.Fetch_branch_ok ->
+          let sha =
+            WorktreeClient.read_branch_sha ~path:repo_root
+              ~ref_name:("refs/remotes/origin/" ^ Branch.to_string a.branch)
+          in
+          if Option.is_none sha then (
+            Printf.eprintf "Error: integration root head could not be read.\n%!";
+            Stdlib.exit 1);
+          Runtime.update_orchestrator setup.runtime (fun orch ->
+              Orchestrator.set_expected_remote_head_oid orch a.patch_id sha)));
+
   (match Forge.check_repo_access () with
   | Ok () -> ()
   | Error err ->
@@ -1008,7 +1054,13 @@ let construct_capabilities ~net (setup : runtime_setup) =
   in
   let reconciliation_fiber () =
     let startup =
-      Reconciler.reconcile ~patches:setup.gameplan.Gameplan.patches
+      Reconciler.reconcile
+        ~patches:
+          (Runtime.read setup.runtime (fun snap ->
+               Base.List.filter setup.gameplan.Gameplan.patches ~f:(fun p ->
+                   not
+                     (Orchestrator.is_feature_descendant
+                        snap.Runtime.orchestrator p.Patch.id))))
         ~agents:pre_agents ~pre_recovered_worktrees:pre_worktrees ()
     in
     let errored_ids =
@@ -1483,6 +1535,32 @@ let run_with_config ~no_lock ~auto_merge ~pr_ops ~headless_transcript
   @@ fun () ->
   Eio_main.run @@ fun env ->
   let setup = setup_runtime env ~config:resolved ~gameplan ~existing_snapshot in
+  let mode =
+    match Project_store.load_config ~project_name with
+    | Error e ->
+        Printf.eprintf "Error: %s\n%!" e;
+        Stdlib.exit 1
+    | Ok stored -> (
+        match
+          Execution_mode.restore
+            (Graph.of_patches gameplan.Gameplan.patches)
+            (Option.map Patch_id.of_string stored.Project_store.feature_root)
+        with
+        | Ok m -> m
+        | Error e ->
+            Printf.eprintf "Error: %s\n%!" e;
+            Stdlib.exit 1)
+  in
+  Runtime.update_orchestrator setup.runtime (fun orch ->
+      let orch = Orchestrator.set_execution_mode orch mode in
+      if Option.is_none existing_snapshot then
+        Base.List.fold (Orchestrator.all_agents orch) ~init:orch
+          ~f:(fun acc a ->
+            if Orchestrator.is_feature_descendant acc a.Patch_agent.patch_id
+            then Orchestrator.set_automerge_enabled acc a.patch_id true
+            else acc)
+      else orch);
+
   let capabilities = construct_capabilities ~net:(Eio.Stdenv.net env) setup in
   apply_pr_ops ~setup ~cap:capabilities pr_ops;
   (* Apply the initial flag after ad-hoc additions so +PR can be enabled too.
@@ -1517,7 +1595,71 @@ let run ~project ~gameplan_path ~forge ~github_token ~backend ~model
     ~(main_branch : Branch.t option) ~poll_interval ~(repo_root : string option)
     ~max_concurrency ~max_ci_failures ~automerge_timeout ~worktree_backend
     ~worktree_executable ~headless ~headless_transcript ~no_lock ~auto_merge
-    ~clone_scheme ~pr_ops =
+    ~clone_scheme ~pr_ops ~feature_branch =
+  let prior_project =
+    match (project, gameplan_path) with
+    | Some p, _ -> Some p
+    | None, Some path -> (
+        match Gameplan_parser.parse_file path with
+        | Ok parsed ->
+            Some parsed.Gameplan_parser.gameplan.Gameplan.project_name
+        | Error _ -> None)
+    | None, None -> None
+  in
+  let prior =
+    Option.bind prior_project (fun p ->
+        match Project_store.load_config ~project_name:p with
+        | Ok c -> Some c
+        | Error e ->
+            if Project_store.project_exists p then (
+              Printf.eprintf "Error: %s\n%!" e;
+              Stdlib.exit 1)
+            else None)
+  in
+  if
+    feature_branch && Option.is_some prior
+    && Option.is_none
+         (Option.bind prior (fun c -> c.Project_store.feature_root))
+  then (
+    Printf.eprintf
+      "Error: existing projects cannot switch to feature branch mode.\n%!";
+    Stdlib.exit 1);
+  if
+    feature_branch
+    && (forge = "sourcehut"
+       || (Option.is_none gameplan_path && Option.is_none prior)
+       || not (Base.List.is_empty pr_ops))
+  then (
+    Printf.eprintf
+      "Error: --feature-branch requires a GitHub gameplan and no ad-hoc changes.\n\
+       %!";
+    Stdlib.exit 1);
+  (match gameplan_path with
+  | Some path
+    when feature_branch
+         || Option.is_some
+              (Option.bind prior (fun c -> c.Project_store.feature_root)) -> (
+      match Gameplan_parser.parse_file path with
+      | Error e ->
+          Printf.eprintf "Error: %s\n%!" e;
+          Stdlib.exit 1
+      | Ok parsed -> (
+          let graph =
+            Graph.of_patches parsed.Gameplan_parser.gameplan.Gameplan.patches
+          in
+          let validation =
+            match prior with
+            | None -> Execution_mode.infer graph
+            | Some c ->
+                Execution_mode.restore graph
+                  (Option.map Patch_id.of_string c.Project_store.feature_root)
+          in
+          match validation with
+          | Ok _ -> ()
+          | Error e ->
+              Printf.eprintf "Error: %s\n%!" e;
+              Stdlib.exit 1))
+  | Some _ | None -> ());
   match
     resolve_config ~project ~gameplan_path ~forge ~github_token ~backend ~model
       ~main_branch ~poll_interval ~repo_root ~max_concurrency ~max_ci_failures
@@ -1528,6 +1670,59 @@ let run ~project ~gameplan_path ~forge ~github_token ~backend ~model
       Base.List.iter errs ~f:(fun e -> Printf.eprintf "Error: %s\n" e);
       Stdlib.exit 1
   | Ok (config, gameplan, existing_snapshot) ->
+      let graph = Graph.of_patches gameplan.Gameplan.patches in
+      let mode =
+        (match prior with
+          | Some stored ->
+              Execution_mode.restore graph
+                (Option.map Patch_id.of_string stored.Project_store.feature_root)
+          | None ->
+              if feature_branch then Execution_mode.infer graph
+              else Ok Execution_mode.mainline)
+        |> function
+        | Ok m -> m
+        | Error e ->
+            Printf.eprintf "Error: %s\n%!" e;
+            Stdlib.exit 1
+      in
+      if
+        Option.is_some (Execution_mode.root mode)
+        && (config.forge <> "github"
+           || not
+                (Worktree_lifecycle.equal_backend config.worktree.backend
+                   Worktree_lifecycle.Git))
+      then (
+        Printf.eprintf
+          "Error: feature branch mode requires GitHub and the git worktree \
+           backend.\n\
+           %!";
+        Stdlib.exit 1);
+      if
+        Option.is_some (Execution_mode.root mode)
+        && not (Base.List.is_empty pr_ops)
+      then (
+        Printf.eprintf
+          "Error: ad-hoc CLI changes are incompatible with feature branch mode.\n\
+           %!";
+        Stdlib.exit 1);
+      (match
+         Execution_mode.validate_terminal mode ~main:config.main_branch
+           ~branch_of:(fun id ->
+             match
+               Base.List.find gameplan.Gameplan.patches ~f:(fun p ->
+                   Patch_id.equal p.Patch.id id)
+             with
+             | Some p -> p.Patch.branch
+             | None -> config.main_branch)
+       with
+      | Ok () -> ()
+      | Error e ->
+          Printf.eprintf "Error: %s\n%!" e;
+          Stdlib.exit 1);
+      Project_store.save_execution_mode
+        ~project_name:
+          (Option.value config.project ~default:gameplan.project_name)
+        mode;
       run_with_config ~no_lock ~auto_merge ~pr_ops ~headless_transcript config
         gameplan existing_snapshot
 
@@ -1556,12 +1751,13 @@ let cli_option_takes_value (s : string) : bool =
       (* Keep this in sync with Cmdliner [opt] arguments below:
          --gameplan, --token, --backend, --model, --repo, --main-branch,
          --poll-interval, --max-concurrency, --max-ci-failures, and
-         --automerge-timeout. *)
+         --automerge-timeout, --forge, --clone-scheme, --worktree-backend,
+         and --worktree-executable. *)
       match s with
       | "--gameplan" | "--token" | "--backend" | "--model" | "--repo"
       | "--main-branch" | "--poll-interval" | "--max-concurrency"
       | "--max-ci-failures" | "--automerge-timeout" | "--worktree-backend"
-      | "--worktree-executable" ->
+      | "--worktree-executable" | "--forge" | "--clone-scheme" ->
           true
       | _ -> false)
 
@@ -1841,12 +2037,23 @@ let worktree_executable_arg =
         "Simgit executable name or path (default: sg). Use an explicit path if \
          sg is another tool."
 
+let feature_branch_arg =
+  let open Cmdliner in
+  Arg.(
+    value & flag
+    & info [ "feature-branch" ]
+        ~doc:
+          "Construct a GitHub gameplan beneath its sole dependency root. \
+           Branch-only descendants integrate immediately; the root is promoted \
+           when construction completes.")
+
 let main_cmd ~pr_ops =
   let open Cmdliner in
   let run_cmd project gameplan_path forge github_token backend model main_branch
       poll_interval repo_root max_concurrency max_ci_failures automerge_timeout
       worktree_backend worktree_executable headless headless_transcript
-      upload_debug no_lock prune no_refresh auto_merge clone_scheme =
+      upload_debug no_lock prune no_refresh auto_merge clone_scheme
+      feature_branch =
     if prune then
       Stdlib.exit
         ( Eio_main.run @@ fun env ->
@@ -1895,7 +2102,7 @@ let main_cmd ~pr_ops =
         ~model:(Base.String.strip model) ~main_branch ~poll_interval ~repo_root
         ~max_concurrency ~max_ci_failures ~automerge_timeout ~worktree_backend
         ~worktree_executable ~headless ~headless_transcript ~no_lock ~auto_merge
-        ~clone_scheme ~pr_ops)
+        ~clone_scheme ~pr_ops ~feature_branch)
   in
   let term =
     Term.(
@@ -1904,7 +2111,8 @@ let main_cmd ~pr_ops =
       $ poll_interval_arg $ repo_arg $ max_concurrency_arg $ max_ci_failures_arg
       $ automerge_timeout_arg $ worktree_backend_arg $ worktree_executable_arg
       $ headless_arg $ headless_transcript_arg $ upload_debug_arg $ no_lock_arg
-      $ prune_arg $ no_refresh_arg $ auto_merge_arg $ clone_scheme_arg)
+      $ prune_arg $ no_refresh_arg $ auto_merge_arg $ clone_scheme_arg
+      $ feature_branch_arg)
   in
   let info =
     Cmd.info "onton" ~version:Version.s

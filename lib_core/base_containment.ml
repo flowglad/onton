@@ -3,21 +3,21 @@
 
 open Base
 
-let contains_merged_siblings ~graph ~patch_id ~has_merged ~merge_sha ~branch_of
-    ~main ~ancestor_oracle =
-  match Graph.open_pr_deps graph patch_id ~has_merged with
+let contains_merged_siblings_with_mode ~mode ~graph ~patch_id ~has_merged
+    ~merge_sha ~branch_of ~main ~ancestor_oracle =
+  match Execution_mode.open_deps mode graph patch_id ~has_merged with
   | _ :: _ :: _ ->
       (* Not at the last-but-one-merge edge; the patch is not startable and
          [initial_base] would raise. Report [false] (irrelevant — the patch
          defers on [deps_satisfied] anyway). *)
       false
   | [] | [ _ ] ->
-      (* [Graph.initial_base] is total for [<= 1] open dep: [[]] (all deps
-         merged, including a root patch with no deps) resolves to [main]; [[d]]
-         resolves to [d]'s branch. It only raises for [> 1] open deps, which the
-         arm above excludes — so this call never raises. *)
+      (* A sole open dependency is the direct base. With no open dependencies,
+         the mode chooses main or the integration boundary. *)
       let base =
-        Graph.initial_base graph patch_id ~has_merged ~branch_of ~main
+        Option.value
+          (Execution_mode.base mode graph patch_id ~has_merged ~branch_of ~main)
+          ~default:(Execution_mode.terminal mode patch_id ~branch_of ~main)
       in
       if Types.Branch.equal base main then true
       else
@@ -28,15 +28,11 @@ let contains_merged_siblings ~graph ~patch_id ~has_merged ~merge_sha ~branch_of
             | Some sha ->
                 ancestor_oracle sha ~descendant:(Types.Branch.to_string base))
 
-(* [main] is unused: a layer whose open deps are all merged resolves to main
-   structurally, which is detected via [open_pr_deps = []] — the branch name
-   itself is never compared. Kept in the signature for symmetry with
-   [contains_merged_siblings] (callers thread the same inputs to both). *)
-let stale_chain_rebase_target ~graph ~patch_id ~has_merged ~merge_sha ~branch_of
-    ~main:_ ~ancestor_oracle =
-  match Graph.open_pr_deps graph patch_id ~has_merged with
+let stale_chain_rebase_target_with_mode ~mode ~graph ~patch_id ~has_merged
+    ~merge_sha ~branch_of ~main ~ancestor_oracle =
+  match Execution_mode.open_deps mode graph patch_id ~has_merged with
   | [] | _ :: _ :: _ ->
-      (* No open dep (base is main — nothing to freshen) or not at the
+      (* No open dep (base is terminal — nothing to freshen) or not at the
          last-but-one-merge edge (the patch defers on dependency satisfaction;
          [sole_open_dep] is undefined). *)
       None
@@ -73,8 +69,18 @@ let stale_chain_rebase_target ~graph ~patch_id ~has_merged ~merge_sha ~branch_of
         let rec frontier c =
           if contains c then `Fresh
           else
-            match Graph.open_pr_deps graph c ~has_merged with
-            | [] -> `Target c (* base is main: the content source *)
+            match Execution_mode.open_deps mode graph c ~has_merged with
+            | [] ->
+                let terminal =
+                  Execution_mode.terminal mode c ~branch_of ~main
+                in
+                if
+                  Types.Branch.equal terminal main
+                  || List.for_all shas ~f:(fun sha ->
+                      ancestor_oracle sha
+                        ~descendant:(Types.Branch.to_string terminal))
+                then `Target c
+                else `Blocked
             | [ d ] -> (
                 match frontier d with
                 | `Target _ as deeper -> deeper
@@ -83,3 +89,9 @@ let stale_chain_rebase_target ~graph ~patch_id ~has_merged ~merge_sha ~branch_of
             | _ :: _ :: _ -> `Blocked
         in
         match frontier b with `Target c -> Some c | `Fresh | `Blocked -> None)
+
+let contains_merged_siblings =
+  contains_merged_siblings_with_mode ~mode:Execution_mode.mainline
+
+let stale_chain_rebase_target =
+  stale_chain_rebase_target_with_mode ~mode:Execution_mode.mainline

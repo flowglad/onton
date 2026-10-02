@@ -47,6 +47,7 @@ type stored_config = {
   backend : string;
   model : string;
   main_branch : string;
+  feature_root : string option;
   poll_interval : float;
   repo_root : string;
   max_concurrency : int;
@@ -198,3 +199,5 @@ val list_projects : unit -> string list
 val wontdo_artifact_path :
   project_name:string -> patch_id:Types.Patch_id.t -> string
 (** Pre-commit opt-out message at [artifacts/<patch_id>/WONTDO.md]. *)
+
+val save_execution_mode : project_name:string -> Execution_mode.t -> unit
