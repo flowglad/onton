@@ -215,6 +215,10 @@ let () =
                 (Git.git_exit_code ~cwd:dir
                    [ "merge-base"; "--is-ancestor"; ancestor; root_tip ]
                 = 0));
+          (* The normal runner publishes the protected-root merge before the
+             next integration. Keep the fixture in that same state so the
+             cancellation test reaches its sleeping push hook on fast hosts. *)
+          Git.run_git ~cwd:root_path [ "push"; "-q"; "origin"; "root" ];
           let _ = commit dir "shared" "upstream conflict\n" in
           Git.run_git ~cwd:dir [ "push"; "-q"; "origin"; "main" ];
           check "fetch conflicting upstream"
