@@ -738,6 +738,7 @@ let gen_session_result =
               { is_fresh = b; detail = None })
           bool;
         return Onton.Orchestrator.Session_no_resume;
+        return (Onton.Orchestrator.Session_timed_out { detail = None });
         map
           (fun b ->
             Onton.Orchestrator.Session_failed { is_fresh = b; detail = None })

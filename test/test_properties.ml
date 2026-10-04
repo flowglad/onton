@@ -739,10 +739,42 @@ let () =
                apply_respond_outcome, so agent stays busy here. *)
             a.Patch_agent.busy
         | Orchestrator.Session_process_error _ | Orchestrator.Session_no_resume
-        | Orchestrator.Session_failed _ | Orchestrator.Session_give_up
-        | Orchestrator.Session_worktree_missing
+        | Orchestrator.Session_timed_out _ | Orchestrator.Session_failed _
+        | Orchestrator.Session_give_up | Orchestrator.Session_worktree_missing
         | Orchestrator.Session_context_exhausted ->
             not a.Patch_agent.busy)
+  in
+  let prop_timeouts_preserve_session =
+    Test.make ~name:"session: repeated timeouts preserve id and retry budget"
+      ~count:300
+      (Gen.pair (Gen.option Gen.string) (Gen.int_range 1 12))
+      (fun (session_id, count) ->
+        try
+          let orch, pid = mk_busy_orch () in
+          let orch = Orchestrator.set_llm_session_id orch pid session_id in
+          let orch = Orchestrator.set_session_failed orch pid in
+          let rec loop orch remaining =
+            if remaining = 0 then true
+            else
+              let orch =
+                Orchestrator.apply_session_result orch pid
+                  (Orchestrator.Session_timed_out { detail = Some "deadline" })
+              in
+              let a = Orchestrator.agent orch pid in
+              Option.equal String.equal a.Patch_agent.llm_session_id session_id
+              && Patch_agent.equal_session_fallback a.session_fallback
+                   Fresh_available
+              && (not a.busy)
+              && a.no_commits_push_count = 0
+              && a.context_exhaustion_count = 0
+              && a.start_attempts_without_pr = 0
+              && loop
+                   (Orchestrator.fire orch
+                      (Orchestrator.Start (pid, Types.Branch.of_string "main")))
+                   (remaining - 1)
+          in
+          loop orch count
+        with _ -> false)
   in
   (* Property: Session_give_up sets needs_intervention *)
   let prop_give_up_intervention =
@@ -763,6 +795,7 @@ let () =
       prop_session_result_no_crash;
       prop_session_result_double_apply;
       prop_failure_results_complete;
+      prop_timeouts_preserve_session;
       prop_give_up_intervention;
     ];
   Stdlib.print_endline "session result: all properties passed"

@@ -789,3 +789,10 @@
  (name test_gameplan_publication)
  (modules test_gameplan_publication)
  (libraries onton onton_core onton_test_support eio_main unix))
+
+(test
+ (name test_session_timeout)
+ (modules test_session_timeout)
+ (libraries onton onton_core eio_main unix)
+ (ocamlopt_flags (:standard -w -40-42))
+ (ocamlc_flags (:standard -w -40-42)))
