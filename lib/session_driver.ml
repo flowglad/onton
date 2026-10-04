@@ -616,7 +616,13 @@ module Make (W : Worktree.S) (Env : ENV) = struct
                           backend_name
                       in
                       log_event runtime ~patch_id detail;
-                      ( Orchestrator.Session_timed_out { detail = Some detail },
+                      ( Orchestrator.Session_timed_out
+                          {
+                            session_id =
+                              Option.first_some !captured_session_id
+                                resume_session;
+                            detail = Some detail;
+                          },
                         `Failed )
                   | Context_exhausted { stream_errors } ->
                       (* The model's context window overflowed (e.g. Codex "ran

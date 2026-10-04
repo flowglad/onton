@@ -127,6 +127,12 @@ let run_case env ~capture_session ~respond =
       (* A fresh rescue attempt can time out too; its new thread must become
          resumable rather than leaving the agent stuck in Tried_fresh. *)
       Runtime.update_orchestrator runtime (fun orch ->
+          let orch =
+            Orchestrator.set_llm_session_id orch patch_id (Some "failed-thread")
+          in
+          let orch =
+            Orchestrator.apply_session_result orch patch_id Session_no_commits
+          in
           Orchestrator.set_session_failed orch patch_id);
       let module Env = struct
         let runtime = runtime
@@ -203,6 +209,8 @@ let run_case env ~capture_session ~respond =
         let snap = Runtime.read runtime Fn.id in
         let after = Orchestrator.agent snap.orchestrator patch_id in
         assert (not after.busy);
+        assert (agent.no_commits_push_count = 1);
+        assert (after.no_commits_push_count = agent.no_commits_push_count);
         assert (not (Onton_core.Patch_agent.needs_intervention after));
         assert (
           Onton_core.Patch_agent.equal_session_fallback after.session_fallback

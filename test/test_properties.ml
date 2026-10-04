@@ -758,7 +758,8 @@ let () =
             else
               let orch =
                 Orchestrator.apply_session_result orch pid
-                  (Orchestrator.Session_timed_out { detail = Some "deadline" })
+                  (Orchestrator.Session_timed_out
+                     { session_id; detail = Some "deadline" })
               in
               let a = Orchestrator.agent orch pid in
               Option.equal String.equal a.Patch_agent.llm_session_id session_id
