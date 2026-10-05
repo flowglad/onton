@@ -1,5 +1,5 @@
-(* @archlint.module shell
-   @archlint.domain worktree-parser *)
+(* @archlint.module interface
+   @archlint.domain process-tree *)
 
 val has_cancellation : exn -> bool
 val is_transient_spawn_failure : exn -> bool

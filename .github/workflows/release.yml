@@ -61,7 +61,9 @@ jobs:
           tag = os.environ['GITHUB_REF_NAME']
           if re.fullmatch(r'v[0-9].*', tag) is None:
               raise SystemExit('GITHUB_REF_NAME is not a v-prefixed version tag: ' + tag)
-          Path('bin/version.ml').write_text('let s = ' + json.dumps(tag, ensure_ascii=False) + '\n')
+          version = Path('bin/version.ml')
+          header, _, _ = version.read_text().partition('let s =')
+          version.write_text(header + 'let s = ' + json.dumps(tag, ensure_ascii=False) + '\n')
           PY
           opam exec -- dune build bin/main.exe bin/setsid_exec/main.exe
 

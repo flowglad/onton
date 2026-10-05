@@ -1,5 +1,8 @@
-(* @archlint.module shell
-   @archlint.domain worktree-parser *)
+(* @archlint.module exempt
+   @archlint.exempt-reason effect-boundary *)
+
+(* Owns Eio process resources and cancellation directly; application decisions
+   remain with callers rather than a worktree decision domain. *)
 
 open Base
 
