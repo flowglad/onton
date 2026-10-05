@@ -453,7 +453,8 @@ The directory is repository-specific; onton owns filename derivation, commit/PR
 creation, and dependency enforcement. This configuration is host-local. The
 resolved destination and source contents are persisted with the project and
 reused when resuming without the flag. A revised source requires a new project.
-The flag cannot be added after an existing project's patches have started.
+Publication must be enabled when starting a fresh project; it cannot be enabled
+on resume.
 Source plans that already use Patch 0 or its generated branch are rejected.
 Publication cannot be combined with feature-branch mode, whose integration root
 must remain open until its descendants finish.
