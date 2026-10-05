@@ -136,9 +136,27 @@ type rebase_result =
   | Ok
   | Noop
   | Conflict of conflict_info
+  | Merge_conflict of string
   | Uncommitted_changes of string
   | Error of string
 [@@deriving show, eq, sexp_of, compare]
+
+(* Git's unmerged index and MERGE_HEAD identify a content conflict; an exit
+   code or human-readable diagnostic alone also includes command/hook errors. *)
+let classify_merge_failure ~code ~stdout ~stderr ~merge_head ~unmerged_paths =
+  match merge_head with
+  | Some sha
+    when (not (String.is_empty (String.strip sha)))
+         && not (String.is_empty (String.strip unmerged_paths)) ->
+      `Conflict (String.strip sha)
+  | _ ->
+      let detail =
+        List.filter
+          [ String.strip stdout; String.strip stderr ]
+          ~f:(fun s -> not (String.is_empty s))
+        |> String.concat ~sep:"\n"
+      in
+      `Error (Printf.sprintf "Root merge failed (exit %d): %s" code detail)
 
 let classify_rebase_worktree_status ~code ~stdout ~stderr =
   if code <> 0 then

@@ -295,6 +295,9 @@ type rebase_result = Worktree_parser.rebase_result =
   | Ok
   | Noop
   | Conflict of conflict_info
+  | Merge_conflict of string
+      (** Pending history-preserving merge; payload is the MERGE_HEAD SHA. The
+          index and merge state remain available for agent repair. *)
   | Uncommitted_changes of string
   | Error of string
 [@@deriving show, eq, sexp_of, compare]

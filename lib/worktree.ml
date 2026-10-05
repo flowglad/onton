@@ -388,6 +388,7 @@ type rebase_result = Worktree_parser.rebase_result =
   | Ok
   | Noop
   | Conflict of conflict_info
+  | Merge_conflict of string
   | Uncommitted_changes of string
   | Error of string
 [@@deriving show, eq, sexp_of, compare]
@@ -1160,44 +1161,76 @@ let integrate ~process_mgr ~clock ~repo_root ~root_path ~root_branch
 
 let merge_preserving ~process_mgr ~path ~target : rebase_result =
   let pending = read_branch_sha ~process_mgr ~path ~ref_name:"MERGE_HEAD" in
-  if Option.is_some pending then
-    let code, _, err =
-      run_git_exit_code ~process_mgr [ "git"; "-C"; path; "merge"; "--abort" ]
-    in
-    if code = 0 then Error "Aborted unfinished root merge; retry the update"
-    else Error ("Could not abort unfinished root merge: " ^ err)
-  else
-    match has_uncommitted_changes ~process_mgr ~path with
-    | Result.Error e -> (Error e : rebase_result)
-    | Result.Ok true -> Uncommitted_changes "Root checkout has local changes"
-    | Result.Ok false ->
-        let head = read_branch_sha ~process_mgr ~path ~ref_name:"HEAD" in
-        let code, _, err =
-          run_git_exit_code ~process_mgr
-            [
-              "git";
-              "-C";
-              path;
-              "merge";
-              "--no-ff";
-              "--no-edit";
-              Types.Branch.to_string target;
-            ]
-        in
-        if code = 0 then
-          if
-            Option.equal String.equal head
-              (read_branch_sha ~process_mgr ~path ~ref_name:"HEAD")
-          then Noop
-          else Ok
-        else
-          let abort_code, _, abort_err =
+  match pending with
+  (* A retry may find partially staged repair work. Keep its original merge
+     target and hand the pending merge back to the agent without aborting it. *)
+  | Some sha -> Merge_conflict sha
+  | None -> (
+      match has_uncommitted_changes ~process_mgr ~path with
+      | Result.Error e -> (Error e : rebase_result)
+      | Result.Ok true -> Uncommitted_changes "Root checkout has local changes"
+      | Result.Ok false -> (
+          let head = read_branch_sha ~process_mgr ~path ~ref_name:"HEAD" in
+          let code, stdout, stderr =
             run_git_exit_code ~process_mgr
-              [ "git"; "-C"; path; "merge"; "--abort" ]
+              [
+                "git";
+                "-C";
+                path;
+                "merge";
+                "--no-ff";
+                "--no-edit";
+                Types.Branch.to_string target;
+              ]
           in
-          if abort_code = 0 then
-            Error ("Root merge failed and was aborted: " ^ err)
-          else Error ("Root merge failed and abort also failed: " ^ abort_err)
+          if code = 0 then
+            if
+              Option.equal String.equal head
+                (read_branch_sha ~process_mgr ~path ~ref_name:"HEAD")
+            then Noop
+            else Ok
+          else
+            let merge_head =
+              read_branch_sha ~process_mgr ~path ~ref_name:"MERGE_HEAD"
+            in
+            let diff_code, unmerged_paths, diff_stderr =
+              run_git_exit_code ~process_mgr
+                [ "git"; "-C"; path; "diff"; "--name-only"; "--diff-filter=U" ]
+            in
+            match
+              Worktree_parser.classify_merge_failure ~code ~stdout ~stderr
+                ~merge_head
+                ~unmerged_paths:(if diff_code = 0 then unmerged_paths else "")
+            with
+            | `Conflict sha -> Merge_conflict sha
+            | `Error message ->
+                (* A failed index probe cannot establish that aborting is safe.
+                   Preserve the pending merge for the next retry's entry check. *)
+                if diff_code <> 0 then
+                  let preserved_merge =
+                    match merge_head with
+                    | None -> ""
+                    | Some sha ->
+                        Printf.sprintf
+                          "\n\
+                           Pending root merge preserved (MERGE_HEAD %s); the \
+                           next retry will route to merge repair."
+                          sha
+                  in
+                  Error
+                    (Printf.sprintf
+                       "%s\nUnmerged-index probe failed (exit %d): %s%s" message
+                       diff_code (String.strip diff_stderr) preserved_merge)
+                else if Option.is_none merge_head then Error message
+                else
+                  let abort_code, _, abort_err =
+                    run_git_exit_code ~process_mgr
+                      [ "git"; "-C"; path; "merge"; "--abort" ]
+                  in
+                  if abort_code = 0 then Error message
+                  else
+                    Error (message ^ "\nRoot merge abort failed: " ^ abort_err))
+      )
 
 let commit_gameplan ~clock ~process_mgr ~path ~publication ~message :
     (unit, string) Result.t =

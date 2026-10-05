@@ -244,6 +244,25 @@ val render_uncommitted_changes_prompt :
   unit ->
   string
 
+val render_root_merge_conflict_prompt :
+  project_name:string ->
+  ?agents_md:string ->
+  ?pr_number:Types.Pr_number.t ->
+  ?patch:Patch.t ->
+  ?gameplan:Gameplan.t ->
+  base_branch:string ->
+  merge_head:string ->
+  git_status:string ->
+  git_diff:string ->
+  unit ->
+  string
+(** Repair a pending history-preserving root merge, including restart guidance
+    pinned to its original MERGE_HEAD rather than a moving upstream ref. The
+    turn layer can be overridden with [prompts/turn_root_merge_conflict.md]
+    using [project_name], [pr_number], [base_branch], [merge_head],
+    [git_status], and [git_diff] variables. Gameplan and patch layers remain
+    independent. *)
+
 val render_merge_conflict_prompt :
   project_name:string ->
   ?agents_md:string ->

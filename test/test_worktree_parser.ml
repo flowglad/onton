@@ -257,10 +257,67 @@ let () =
             String.is_substring msg ~substring:"not a repository"
         | Some
             ( Worktree_parser.Ok | Worktree_parser.Noop
-            | Worktree_parser.Conflict _ | Worktree_parser.Uncommitted_changes _
-              )
+            | Worktree_parser.Conflict _ | Worktree_parser.Merge_conflict _
+            | Worktree_parser.Uncommitted_changes _ )
         | None ->
             false)
+  in
+
+  let prop_merge_failure_total =
+    Test.make ~name:"merge failure classification is total" ~count:500
+      Gen.(pair (triple int string string) (pair (option string) string))
+      (fun ((code, stdout, stderr), (merge_head, unmerged_paths)) ->
+        match
+          Worktree_parser.classify_merge_failure ~code ~stdout ~stderr
+            ~merge_head ~unmerged_paths
+        with
+        | `Conflict sha -> not (String.is_empty sha)
+        | `Error detail -> not (String.is_empty detail))
+  in
+  let prop_merge_conflict_evidence =
+    Test.make ~name:"merge conflict requires MERGE_HEAD and unmerged index"
+      ~count:500
+      Gen.(pair (option string) string)
+      (fun (merge_head, unmerged_paths) ->
+        let expected =
+          Option.value_map merge_head ~default:false ~f:(fun sha ->
+              not (String.is_empty (String.strip sha)))
+          && not (String.is_empty (String.strip unmerged_paths))
+        in
+        match
+          Worktree_parser.classify_merge_failure ~code:1 ~stdout:"CONFLICT"
+            ~stderr:"" ~merge_head ~unmerged_paths
+        with
+        | `Conflict _ -> expected
+        | `Error _ -> not expected)
+  in
+  let prop_merge_error_diagnostics =
+    Test.make ~name:"merge errors retain exit code and both output streams"
+      ~count:200
+      Gen.(triple int string string)
+      (fun (code, stdout, stderr) ->
+        match
+          Worktree_parser.classify_merge_failure ~code ~stdout ~stderr
+            ~merge_head:None ~unmerged_paths:""
+        with
+        | `Error detail ->
+            String.is_substring detail ~substring:(Int.to_string code)
+            && String.is_substring detail ~substring:(String.strip stdout)
+            && String.is_substring detail ~substring:(String.strip stderr)
+        | `Conflict _ -> false)
+  in
+  let prop_merge_failure_boundaries =
+    Test.make ~name:"merge classification: blank evidence and hook failures"
+      ~count:1 Gen.unit (fun () ->
+        let classify merge_head unmerged_paths =
+          Worktree_parser.classify_merge_failure ~code:1 ~stdout:"hook failed"
+            ~stderr:"" ~merge_head ~unmerged_paths
+        in
+        let error = function `Error _ -> true | `Conflict _ -> false in
+        error (classify None "file")
+        && error (classify (Some " \n") "file")
+        && error (classify (Some "sha") " \n")
+        && Poly.equal (classify (Some " sha\n") "file") (`Conflict "sha"))
   in
 
   let suite =
@@ -279,6 +336,10 @@ let () =
       prop_collision_none;
       prop_collision_reverse;
       prop_collision_valid;
+      prop_merge_failure_total;
+      prop_merge_conflict_evidence;
+      prop_merge_error_diagnostics;
+      prop_merge_failure_boundaries;
       prop_rebase_status_total;
       prop_rebase_status_boundaries;
     ]

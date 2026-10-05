@@ -1681,6 +1681,10 @@ module Make (Forge : Forge.S) (W : Worktree.S) (Env : Runner_env.S) = struct
                         | Worktree.Conflict _ ->
                             log_event runtime ~patch_id
                               "Rebase conflict — enqueued merge-conflict"
+                        | Worktree.Merge_conflict _ ->
+                            log_event runtime ~patch_id
+                              "Root merge hit conflicts — enqueued \
+                               merge-conflict"
                         | Worktree.Uncommitted_changes _ ->
                             log_event runtime ~patch_id
                               "Rebase blocked by uncommitted changes — \
@@ -2216,7 +2220,7 @@ module Make (Forge : Forge.S) (W : Worktree.S) (Env : Runner_env.S) = struct
                                       in
                                       (* Helper: capture git context and deliver
                                    an enriched prompt to the agent. *)
-                                      let deliver_to_agent ?conflict_info () =
+                                      let deliver_to_agent ~conflict () =
                                         let pr_number =
                                           Patch_agent.pr_number agent
                                         in
@@ -2247,11 +2251,21 @@ module Make (Forge : Forge.S) (W : Worktree.S) (Env : Runner_env.S) = struct
                                         in
                                         let prompt =
                                           let raw =
-                                            Prompt.render_merge_conflict_prompt
-                                              ~project_name ?agents_md
-                                              ?pr_number ?patch ~gameplan
-                                              ~base_branch:base ~git_status
-                                              ~git_diff ?conflict_info ()
+                                            match conflict with
+                                            | `Rebase conflict_info ->
+                                                Prompt
+                                                .render_merge_conflict_prompt
+                                                  ~project_name ?agents_md
+                                                  ?pr_number ?patch ~gameplan
+                                                  ~base_branch:base ~git_status
+                                                  ~git_diff ?conflict_info ()
+                                            | `Merge merge_head ->
+                                                Prompt
+                                                .render_root_merge_conflict_prompt
+                                                  ~project_name ?agents_md
+                                                  ?pr_number ?patch ~gameplan
+                                                  ~base_branch:base ~merge_head
+                                                  ~git_status ~git_diff ()
                                           in
                                           if String.equal base_changed_prefix ""
                                           then raw
@@ -2317,7 +2331,8 @@ module Make (Forge : Forge.S) (W : Worktree.S) (Env : Runner_env.S) = struct
                                                  ("origin/" ^ base))
                                             ~project_name ~ancestor_ids
                                         in
-                                        deliver_to_agent ?conflict_info ())
+                                        deliver_to_agent
+                                          ~conflict:(`Rebase conflict_info) ())
                                       else
                                         (* Plan-driven: the planner guarantees
                                      Ensure_worktree precedes Fetch_origin
@@ -2373,13 +2388,16 @@ module Make (Forge : Forge.S) (W : Worktree.S) (Env : Runner_env.S) = struct
                                             ~ref_name:
                                               ("refs/remotes/origin/" ^ base)
                                         in
-                                        let conflict_info =
+                                        let conflict =
                                           match rebase_result with
-                                          | Worktree.Conflict ci -> Some ci
+                                          | Worktree.Conflict ci ->
+                                              `Rebase (Some ci)
+                                          | Worktree.Merge_conflict sha ->
+                                              `Merge sha
                                           | Worktree.Ok | Worktree.Noop
                                           | Worktree.Uncommitted_changes _
                                           | Worktree.Error _ ->
-                                              None
+                                              `Rebase None
                                         in
                                         (match rebase_result with
                                         | Worktree.Ok ->
@@ -2395,6 +2413,10 @@ module Make (Forge : Forge.S) (W : Worktree.S) (Env : Runner_env.S) = struct
                                         | Worktree.Conflict _ ->
                                             log_event runtime ~patch_id
                                               "Conflict rebase hit conflicts — \
+                                               delivering to agent"
+                                        | Worktree.Merge_conflict _ ->
+                                            log_event runtime ~patch_id
+                                              "Root merge hit conflicts — \
                                                delivering to agent"
                                         | Worktree.Uncommitted_changes _ ->
                                             log_event runtime ~patch_id
@@ -2561,13 +2583,7 @@ module Make (Forge : Forge.S) (W : Worktree.S) (Env : Runner_env.S) = struct
                                                after push failure";
                                             `Retry_push
                                         | Orchestrator.Conflict_needs_agent ->
-                                            (* [conflict_info] is [None] when
-                                             the rebase returned [Ok]/[Noop]
-                                             and only the push subsequently
-                                             failed; we degrade to a
-                                             no-recovery-section prompt
-                                             rather than blocking delivery. *)
-                                            deliver_to_agent ?conflict_info ()
+                                            deliver_to_agent ~conflict ()
                                         | Orchestrator.Conflict_cleanup_queued
                                           ->
                                             `Stale

@@ -244,4 +244,87 @@ let () =
     (render ~has_existing_changes:true ())
     ~substring:"This worktree already has uncommitted changes"
 
+let () =
+  let prompt =
+    Prompt.render_root_merge_conflict_prompt ~project_name:""
+      ~base_branch:"main" ~merge_head:"deadbeef"
+      ~git_status:"both modified: migration-journal.json"
+      ~git_diff:"<<<<<<< HEAD\nroot\n=======\nupstream\n>>>>>>> main" ()
+  in
+  assert_contains "root: merge continuation" prompt
+    ~substring:"git -c core.editor=true merge --continue";
+  assert_contains "root: restart pins original merge target" prompt
+    ~substring:"git merge --no-ff --no-edit deadbeef";
+  assert_contains "root: preserves history" prompt
+    ~substring:"Never rebase, reset, or force-push";
+  assert_contains "root: supervisor publishes normally" prompt
+    ~substring:"normal push";
+  assert_contains "root: includes status" prompt
+    ~substring:"both modified: migration-journal.json";
+  assert_contains "root: includes conflict markers" prompt
+    ~substring:"<<<<<<< HEAD";
+  assert_not_contains "root: does not instruct rebase continuation" prompt
+    ~substring:"git rebase --continue";
+  assert_not_contains "root: does not instruct reset" prompt
+    ~substring:"git reset --hard"
+
+let () =
+  let root = Stdlib.Filename.temp_file "onton-root-merge-prompt-" "" in
+  Stdlib.Sys.remove root;
+  let previous_data_dir = Stdlib.Sys.getenv_opt "ONTON_DATA_DIR" in
+  Unix.putenv "ONTON_DATA_DIR" root;
+  let project_name = "root-override" in
+  let project_dir = Project_store.project_dir project_name in
+  let prompts = Stdlib.Filename.concat project_dir "prompts" in
+  let root_override =
+    Stdlib.Filename.concat prompts "turn_root_merge_conflict.md"
+  in
+  let rebase_override =
+    Stdlib.Filename.concat prompts "turn_merge_conflict.md"
+  in
+  let write path text =
+    Stdlib.Out_channel.with_open_text path (fun oc ->
+        Stdlib.Out_channel.output_string oc text)
+  in
+  Project_store.ensure_dir prompts;
+  Stdlib.Fun.protect
+    ~finally:(fun () ->
+      (match previous_data_dir with
+      | Some value -> Unix.putenv "ONTON_DATA_DIR" value
+      | None -> Unix.unsetenv "ONTON_DATA_DIR");
+      List.iter [ root_override; rebase_override ] ~f:(fun path ->
+          if Stdlib.Sys.file_exists path then Stdlib.Sys.remove path);
+      List.iter [ prompts; project_dir; root ] ~f:Unix.rmdir)
+    (fun () ->
+      let render ?pr_number () =
+        Prompt.render_root_merge_conflict_prompt ~project_name
+          ~agents_md:"Project guidance." ?pr_number ~base_branch:"origin/main"
+          ~merge_head:"deadbeef" ~git_status:"UU shared"
+          ~git_diff:"<<<<<<< HEAD" ()
+      in
+      write rebase_override "Rebase-only guidance: git rebase --continue";
+      assert_contains "root: independent merge default" (render ())
+        ~substring:"git -c core.editor=true merge --continue";
+      write root_override
+        "Custom repair: {{project_name}} PR={{pr_number}} {{base_branch}} \
+         {{merge_head}}\n\
+         {{git_status}}\n\
+         {{git_diff}}";
+      let prompt =
+        render ~pr_number:(Onton_core.Types.Pr_number.of_int 474) ()
+      in
+      assert_contains "root override: keeps project prefix" prompt
+        ~substring:"## Project Conventions (AGENTS.md)\n\nProject guidance.\n\n";
+      assert_contains "root override: substitutes merge context" prompt
+        ~substring:
+          "Custom repair: root-override PR=474 origin/main deadbeef\n\
+           UU shared\n\
+           <<<<<<< HEAD";
+      assert_contains "root override: absent PR is empty" (render ())
+        ~substring:"PR= origin/main";
+      assert_contains "rebase override: remains independent"
+        (Prompt.render_merge_conflict_prompt ~project_name ~base_branch:"main"
+           ())
+        ~substring:"Rebase-only guidance: git rebase --continue")
+
 let () = Stdlib.print_endline "All prompt-recovery tests passed."
