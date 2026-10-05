@@ -477,7 +477,12 @@
 (test
  (name test_worktree_spawn_retry)
  (modules test_worktree_spawn_retry)
- (libraries onton onton_core eio eio_main eio.unix unix))
+ (libraries onton onton_core eio eio_main eio.unix unix)
+ (deps (package onton))
+ (action
+  (setenv ONTON_SETSID_EXEC
+   %{bin:onton-setsid-exec}
+   (run %{test}))))
 
 (test
  (name test_spawn_logic)

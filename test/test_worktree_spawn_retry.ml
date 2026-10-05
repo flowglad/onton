@@ -84,14 +84,111 @@ let test_persistent_transient_exhausts () =
   check "persistent transient exhausts attempts then raises"
     (raised && !attempts = 3)
 
+(* Exercise the real runner with faults at the public process-manager boundary,
+   so the tests verify supervisor creation rather than just the retry helper. *)
+let faulting_mgr (type tag) (mgr : tag Eio.Process.mgr_ty Eio.Resource.t)
+    on_spawn =
+  let (Eio.Resource.T (state, ops)) = mgr in
+  let module Original = (val Eio.Resource.get ops Eio.Process.Pi.Mgr) in
+  let module Faults = struct
+    include Original
+
+    let spawn t ~sw ?cwd ?stdin ?stdout ?stderr ?env ?executable args =
+      on_spawn ();
+      Original.spawn t ~sw ?cwd ?stdin ?stdout ?stderr ?env ?executable args
+  end in
+  Eio.Resource.T (state, Eio.Process.Pi.mgr (module Faults))
+
+let test_supervisor_retry env =
+  let attempts = ref 0 in
+  let mgr =
+    faulting_mgr (Eio.Stdenv.process_mgr env) (fun () ->
+        Int.incr attempts;
+        if !attempts < 3 then raise (Unix.Unix_error (Unix.EAGAIN, "spawn", "")))
+  in
+  let file = Stdlib.Filename.temp_file "onton-spawn-retry-" "" in
+  Stdlib.Fun.protect
+    ~finally:(fun () -> Unix.unlink file)
+    (fun () ->
+      let code, out, err =
+        Process_tree.run ~process_mgr:mgr ~clock:(Eio.Stdenv.clock env)
+          ~env:(Unix.environment ())
+          [
+            "sh";
+            "-c";
+            "printf started >> \"$1\"; printf captured; printf diagnostic >&2; \
+             exit 7";
+            "sh";
+            file;
+          ]
+      in
+      let executions =
+        Stdlib.In_channel.with_open_bin file Stdlib.In_channel.input_all
+      in
+      check "supervisor retries EAGAIN to successful spawn" (!attempts = 3);
+      check "started command with nonzero exit runs exactly once"
+        (code = 7 && String.equal executions "started");
+      check "retried supervisor preserves stdout and stderr"
+        (String.equal out "captured" && String.equal err "diagnostic"))
+
+let test_supervisor_spawn_failures env =
+  let run on_spawn =
+    Process_tree.run
+      ~process_mgr:(faulting_mgr (Eio.Stdenv.process_mgr env) on_spawn)
+      ~clock:(Eio.Stdenv.clock env) ~env:(Unix.environment ()) [ "true" ]
+  in
+  let attempts = ref 0 in
+  let exhausted =
+    try
+      ignore
+        (run (fun () ->
+             Int.incr attempts;
+             raise (Unix.Unix_error (Unix.EAGAIN, "spawn", ""))));
+      false
+    with Unix.Unix_error (Unix.EAGAIN, _, _) -> true
+  in
+  check "supervisor persistent EAGAIN exhausts four attempts"
+    (exhausted && !attempts = 4);
+  attempts := 0;
+  let permanent =
+    try
+      ignore
+        (run (fun () ->
+             Int.incr attempts;
+             raise
+               (Eio.Exn.create
+                  (Eio.Process.E (Eio.Process.Executable_not_found "shim")))));
+      false
+    with Eio.Io (Eio.Process.E (Eio.Process.Executable_not_found _), _) ->
+      true
+  in
+  check "supervisor permanent spawn error is not retried"
+    (permanent && !attempts = 1);
+  attempts := 0;
+  let cancelled =
+    Eio.Cancel.sub (fun caller ->
+        try
+          ignore
+            (run (fun () ->
+                 Int.incr attempts;
+                 Eio.Cancel.cancel caller (Failure "cancel during retry");
+                 raise (Unix.Unix_error (Unix.EAGAIN, "spawn", ""))));
+          false
+        with exn when Worktree.has_cancellation exn -> true)
+  in
+  check "cancellation between retries prevents another supervisor spawn"
+    (cancelled && !attempts = 1)
+
 let () =
   Stdlib.print_endline "Worktree spawn-retry:";
   (* [retry_transient_spawn] yields between attempts, so run inside a scheduler. *)
-  Eio_main.run (fun _env ->
+  Eio_main.run (fun env ->
       test_classification ();
       test_retry_then_success ();
       test_verdict_not_retried ();
-      test_persistent_transient_exhausts ());
+      test_persistent_transient_exhausts ();
+      test_supervisor_retry env;
+      test_supervisor_spawn_failures env);
   if !failures > 0 then (
     Stdlib.Printf.printf "%d/%d checks FAILED\n" !failures !total;
     Stdlib.exit 1)

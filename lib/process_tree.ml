@@ -3,6 +3,28 @@
 
 open Base
 
+let rec has_cancellation = function
+  | Eio.Cancel.Cancelled _ -> true
+  | Eio.Exn.Multiple exns ->
+      List.exists exns ~f:(fun (exn, _bt) -> has_cancellation exn)
+  | _ -> false
+
+(* Retain the worktree spawn policy: retry failures before a process verdict,
+   such as EAGAIN under process-table pressure, but never retry cancellation or
+   a process error (including executable discovery and child exit failures). *)
+let is_transient_spawn_failure = function
+  | Eio.Io (Eio.Process.E _, _) -> false
+  | e -> not (has_cancellation e)
+
+let rec retry_transient_spawn ?(attempts = 4) f =
+  match f () with
+  | x -> x
+  | exception e when attempts <= 1 || not (is_transient_spawn_failure e) ->
+      raise e
+  | exception _ ->
+      Eio.Fiber.yield ();
+      retry_transient_spawn ~attempts:(attempts - 1) f
+
 let run ~process_mgr ~clock ~env args =
   let supervisor =
     match Stdlib.Sys.getenv_opt "ONTON_SETSID_EXEC" with
@@ -32,11 +54,13 @@ let run ~process_mgr ~clock ~env args =
           Eio.Cancel.protect (fun () ->
               Eio.Switch.run (fun sw ->
                   let child =
-                    Eio.Process.spawn ~sw process_mgr ~env
-                      ~stdin:(Eio.Flow.string_source "")
-                      ~stdout:(Eio.Flow.buffer_sink stdout)
-                      ~stderr:(Eio.Flow.buffer_sink stderr)
-                      (supervisor :: "--supervise" :: args)
+                    retry_transient_spawn (fun () ->
+                        Eio.Cancel.check caller;
+                        Eio.Process.spawn ~sw process_mgr ~env
+                          ~stdin:(Eio.Flow.string_source "")
+                          ~stdout:(Eio.Flow.buffer_sink stdout)
+                          ~stderr:(Eio.Flow.buffer_sink stderr)
+                          (supervisor :: "--supervise" :: args))
                   in
                   let waited =
                     Eio.Fiber.fork_promise ~sw (fun () ->
