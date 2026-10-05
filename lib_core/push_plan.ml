@@ -13,32 +13,26 @@ type ancestry =
   | Unknown
 [@@deriving show, eq, sexp_of, compare]
 
-type action = Force_push_if_includes | Initial_push
+type action =
+  | Force_push_with_lease of { local_sha : sha; remote_sha : sha }
+  | Initial_push of { local_sha : sha }
 [@@deriving show, eq, sexp_of, compare]
 
-(** [Local_diverged_from_remote_commits] used to live here as a defense against
-    the PR #315 stale-lease wipe, but it also refused the legitimate post-
-    rebase divergence pattern (local is the rebased version, remote is the
-    pre-rebase original) and stranded the orchestrator on the
-    [conflict_noop_count >= 2] needs-intervention threshold. The git-level
-    [--force-if-includes] flag already refuses the actually-unsafe edge case
-    (remote has commits local doesn't reach via its reflog), so the planner can
-    safely permit divergent pushes. [Local_missing_remote_commits] —
-    strictly-behind, the actual PR #315 shape — is the layered defense that
-    remains. *)
 type refusal =
   | No_commits_ahead_of_base
   | Worktree_missing
   | Branch_ref_missing of { branch : string }
   | Branch_switched of { expected : string; got : string option }
   | Local_missing_remote_commits of { local_sha : sha; remote_sha : sha }
+  | Remote_not_integrated of { remote_sha : sha }
 [@@deriving show, eq, sexp_of, compare]
 
 type decision = Push of action | Refuse of refusal
 [@@deriving show, eq, sexp_of, compare]
 
 let plan ~expected_branch ~worktree_path_exists ~worktree_head_branch
-    ~branch_ref_sha ~remote_tracking_sha ~ancestry ~commits_ahead_of_base =
+    ~branch_ref_sha ~remote_tracking_sha ~ancestry ~remote_in_reflog
+    ~commits_ahead_of_base =
   if not worktree_path_exists then Refuse Worktree_missing
   else
     let head_matches =
@@ -61,27 +55,31 @@ let plan ~expected_branch ~worktree_path_exists ~worktree_head_branch
               | Local_missing_remote, Some remote_sha ->
                   Refuse
                     (Local_missing_remote_commits { local_sha; remote_sha })
-              | ( ( Local_missing_remote | Local_diverged_from_remote
-                  | Local_includes_remote | No_remote_yet | Unknown ),
-                  None ) ->
-                  Push Initial_push
-              | ( ( Local_diverged_from_remote | Local_includes_remote
-                  | No_remote_yet | Unknown ),
-                  Some _ ) ->
-                  Push Force_push_if_includes))
+              | _, None -> Push (Initial_push { local_sha })
+              | Local_includes_remote, Some remote_sha ->
+                  Push (Force_push_with_lease { local_sha; remote_sha })
+              | ( (Local_diverged_from_remote | No_remote_yet | Unknown),
+                  Some remote_sha )
+                when remote_in_reflog ->
+                  Push (Force_push_with_lease { local_sha; remote_sha })
+              | ( (Local_diverged_from_remote | No_remote_yet | Unknown),
+                  Some remote_sha ) ->
+                  Refuse (Remote_not_integrated { remote_sha })))
 
 let short_label = function
-  | Push Force_push_if_includes -> "force_push"
-  | Push Initial_push -> "initial_push"
+  | Push (Force_push_with_lease _) -> "force_push"
+  | Push (Initial_push _) -> "initial_push"
   | Refuse No_commits_ahead_of_base -> "refuse_no_commits"
   | Refuse Worktree_missing -> "refuse_wt_missing"
   | Refuse (Branch_ref_missing _) -> "refuse_ref_missing"
   | Refuse (Branch_switched _) -> "refuse_branch_switched"
   | Refuse (Local_missing_remote_commits _) -> "refuse_local_behind"
+  | Refuse (Remote_not_integrated _) -> "refuse_remote_unintegrated"
 
 let to_push_reject_classify_rejection (r : refusal) :
     Push_reject_classify.rejection option =
   match r with
+  | Remote_not_integrated _ -> Some Push_reject_classify.Lease_violation
   | No_commits_ahead_of_base | Worktree_missing -> None
   | Branch_ref_missing _ ->
       Some

@@ -796,12 +796,50 @@ let gather_push_plan_inputs ~process_mgr ~path ~branch_str ~base_str =
               | _ -> Push_plan.Unknown)
           | _ -> Push_plan.Unknown)
   in
+  (* A rewrite preserves incorporation in the local branch's history. Unlike
+     Git's implicit --force-if-includes check, this proof does not depend on a
+     remote-tracking reflog entry or its timestamp surviving a fresh clone. *)
+  let remote_in_reflog =
+    match remote_tracking_sha with
+    | None -> false
+    | Some remote ->
+        if Push_plan.equal_ancestry ancestry Push_plan.Local_includes_remote
+        then true
+        else
+          let code, stdout, _ =
+            run_git_exit_code ~process_mgr
+              [
+                "git";
+                "-C";
+                path;
+                "reflog";
+                "show";
+                "--format=%H";
+                "refs/heads/" ^ branch_str;
+              ]
+          in
+          code = 0
+          && List.exists (String.split_lines stdout) ~f:(fun local ->
+              let code, _, _ =
+                run_git_exit_code ~process_mgr
+                  [
+                    "git";
+                    "-C";
+                    path;
+                    "merge-base";
+                    "--is-ancestor";
+                    remote;
+                    local;
+                  ]
+              in
+              code = 0)
+  in
   let commits_ahead_of_base =
     if not worktree_path_exists then None
     else
-      (* Measure ahead-of-base on the NAMED BRANCH, not worktree HEAD —
-         otherwise an agent that [git switch]ed mid-session could trip the
-         gate with commits the push command would never upload. *)
+      (* Measure ahead-of-base on the captured commit, not worktree HEAD —
+         so a concurrent checkout or branch update cannot authorize a different
+         commit from the one this publication will upload. *)
       let code, stdout, _ =
         run_git_exit_code ~process_mgr
           [
@@ -810,7 +848,8 @@ let gather_push_plan_inputs ~process_mgr ~path ~branch_str ~base_str =
             path;
             "rev-list";
             "--count";
-            base_str ^ "..refs/heads/" ^ branch_str;
+            base_str ^ ".."
+            ^ Option.value branch_ref_sha ~default:("refs/heads/" ^ branch_str);
           ]
       in
       Worktree_parser.parse_commit_count ~code ~stdout
@@ -820,6 +859,7 @@ let gather_push_plan_inputs ~process_mgr ~path ~branch_str ~base_str =
     branch_ref_sha,
     remote_tracking_sha,
     ancestry,
+    remote_in_reflog,
     commits_ahead_of_base )
 
 let force_push_with_lease_unbounded ~preserve_history ~process_mgr ~path ~branch
@@ -831,20 +871,22 @@ let force_push_with_lease_unbounded ~preserve_history ~process_mgr ~path ~branch
         branch_ref_sha,
         remote_tracking_sha,
         ancestry,
+        remote_in_reflog,
         commits_ahead_of_base ) =
     gather_push_plan_inputs ~process_mgr ~path ~branch_str ~base_str
   in
   let decision =
     Push_plan.plan ~expected_branch:branch_str ~worktree_path_exists
       ~worktree_head_branch ~branch_ref_sha ~remote_tracking_sha ~ancestry
-      ~commits_ahead_of_base
+      ~remote_in_reflog ~commits_ahead_of_base
   in
   match decision with
   | Refuse Push_plan.Worktree_missing -> Push_worktree_missing
   | Refuse Push_plan.No_commits_ahead_of_base -> Push_no_commits
   | Refuse
       (( Push_plan.Branch_ref_missing _ | Push_plan.Branch_switched _
-       | Push_plan.Local_missing_remote_commits _ ) as r) -> (
+       | Push_plan.Local_missing_remote_commits _
+       | Push_plan.Remote_not_integrated _ ) as r) -> (
       match Push_plan.to_push_reject_classify_rejection r with
       | Some rej -> Push_rejected rej
       | None ->
@@ -854,47 +896,38 @@ let force_push_with_lease_unbounded ~preserve_history ~process_mgr ~path ~branch
   | Push action ->
       let args =
         match action with
-        | Push_plan.Force_push_if_includes when preserve_history ->
+        | Push_plan.Force_push_with_lease { local_sha; _ } when preserve_history
+          ->
             [
               "git";
               "-C";
               path;
               "push";
               "--porcelain";
-              "-u";
               "origin";
-              branch_str;
+              local_sha ^ ":refs/heads/" ^ branch_str;
             ]
-        | Push_plan.Force_push_if_includes ->
+        | Push_plan.Force_push_with_lease { local_sha; remote_sha } ->
             [
               "git";
               "-C";
               path;
               "push";
               "--porcelain";
-              "--force-with-lease";
-              (* --force-if-includes refuses to overwrite the remote when our
-                 local branch does not contain the remote tip's reflog entry.
-                 --force-with-lease alone only checks "is remote where I last
-                 saw it?" — once a background fetch updates the local tracking
-                 ref to match actual remote, the lease passes even when local
-                 is strictly behind, silently wiping remote commits. See
-                 incident notes for PR #315 (auto-closed by a force-push of an
-                 empty branch). Requires git ≥ 2.30. *)
-              "--force-if-includes";
+              "--force-with-lease=refs/heads/" ^ branch_str ^ ":" ^ remote_sha;
               "origin";
-              branch_str;
+              local_sha ^ ":refs/heads/" ^ branch_str;
             ]
-        | Push_plan.Initial_push ->
+        | Push_plan.Initial_push { local_sha } ->
             [
               "git";
               "-C";
               path;
               "push";
               "--porcelain";
-              "-u";
+              "--force-with-lease=refs/heads/" ^ branch_str ^ ":";
               "origin";
-              branch_str;
+              local_sha ^ ":refs/heads/" ^ branch_str;
             ]
       in
       let code, stdout, stderr = run_git_exit_code ~process_mgr args in
