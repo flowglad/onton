@@ -319,24 +319,18 @@ type context_node = {
 [@@deriving of_yojson] [@@yojson.allow_extra_fields]
 
 type page_info = {
-  has_next_page : bool; [@key "hasNextPage"] [@yojson.default false]
+  has_next_page : bool; [@key "hasNextPage"]
   end_cursor : string option; [@key "endCursor"] [@yojson.default None]
 }
 [@@deriving of_yojson] [@@yojson.allow_extra_fields]
 
 type contexts = {
-  page_info : page_info;
-      [@key "pageInfo"]
-      [@yojson.default { has_next_page = false; end_cursor = None }]
-  nodes : context_node list; [@yojson.default []]
+  page_info : page_info; [@key "pageInfo"]
+  nodes : context_node list;
 }
 [@@deriving of_yojson] [@@yojson.allow_extra_fields]
 
-type status_check_rollup = {
-  contexts : contexts;
-      [@yojson.default
-        { page_info = { has_next_page = false; end_cursor = None }; nodes = [] }]
-}
+type status_check_rollup = { contexts : contexts }
 [@@deriving of_yojson] [@@yojson.allow_extra_fields]
 
 type commit = {
@@ -576,10 +570,9 @@ type contexts_data = {
 type contexts_response = { data : contexts_data option [@yojson.default None] }
 [@@deriving of_yojson] [@@yojson.allow_extra_fields]
 
-(* Parse one page of the [contexts_by_oid_query] response into its mapped checks
-   plus the [(has_next_page, end_cursor)] needed to drive pagination. A missing
-   object/rollup is a non-error empty page (the commit may be gc'd or carry no
-   rollup) — the loop simply stops. Pure; total on malformed input. *)
+(* Parse one page of the OID-keyed check query. Missing commit, rollup, or
+   connection data cannot establish a complete check list. Propagate that
+   uncertainty instead of interpreting it as a terminal empty page. *)
 let parse_contexts_page_json json :
     (Types.Ci_check.t list * bool * string option, error) Result.t =
   match graphql_errors json with
@@ -587,7 +580,7 @@ let parse_contexts_page_json json :
   | None -> (
       match Json.try_of_yojson contexts_response_of_yojson json with
       | Error msg -> Error (Json_parse_error msg)
-      | Ok r ->
+      | Ok r -> (
           let contexts =
             r.data
             |> Option.bind ~f:(fun (d : contexts_data) -> d.repository)
@@ -597,17 +590,13 @@ let parse_contexts_page_json json :
             |> Option.map ~f:(fun (rollup : status_check_rollup) ->
                 rollup.contexts)
           in
-          let checks =
-            match contexts with
-            | None -> []
-            | Some ctx -> List.filter_map ctx.nodes ~f:ci_check_of_context
-          in
-          let has_next_page, end_cursor =
-            match contexts with
-            | None -> (false, None)
-            | Some ctx -> (ctx.page_info.has_next_page, ctx.page_info.end_cursor)
-          in
-          Ok (checks, has_next_page, end_cursor))
+          match contexts with
+          | None ->
+              Error (Json_parse_error "Commit check rollup is unavailable")
+          | Some ctx ->
+              let checks = List.filter_map ctx.nodes ~f:ci_check_of_context in
+              Ok (checks, ctx.page_info.has_next_page, ctx.page_info.end_cursor)
+          ))
 
 let parse_contexts_page body :
     (Types.Ci_check.t list * bool * string option, error) Result.t =
@@ -1457,29 +1446,21 @@ let check_repo_access_internal ~net ~clock ?timeout t =
    a non-terminating cursor. *)
 let max_context_pages = 25
 
-(* Fetch every page of a commit's [statusCheckRollup.contexts], following the
-   [endCursor] until exhausted, and return the complete mapped check list. Only
-   invoked on the rare truncated rollup (>100 contexts); the first page is
-   re-fetched here too, trading one extra request for not threading the first
-   query's cursor through [Pr_state.t]. Any request/parse error aborts and is
-   propagated so callers can fall back to their conservative behavior. *)
-let fetch_all_contexts ~net ~clock ?timeout ?(require_complete = false) t ~oid :
+(* Only an exhausted connection is a complete check observation. All callers
+   need the same guarantee: neither a missing cursor nor a request limit may
+   turn a partial passing page into merge approval. The transport callback
+   keeps the loop shared by PR, branch, and merge-group reads. *)
+let fetch_all_contexts ~fetch_page ~oid :
     (Types.Ci_check.t list, error) Result.t =
-  let rec loop ~after ~page acc =
+  let rec loop ~after ~page ~seen acc =
     if page >= max_context_pages then
-      if require_complete then
-        Error (Json_parse_error "Branch checks exceeded pagination limit")
-      else (
-        Eio.traceln
-          "onton: statusCheckRollup contexts exceeded %d pages for commit %s — \
-           using partial list"
-          max_context_pages oid;
-        Ok (Types.Ci_check.current_runs (List.concat (List.rev acc))))
+      Error
+        (Json_parse_error
+           (Printf.sprintf
+              "Commit %s checks exceeded pagination limit (%d pages)" oid
+              max_context_pages))
     else
-      let body = build_contexts_request_body t ~oid ~after in
-      match
-        request ~net ~clock ?timeout t ~meth:`POST ~path:"/graphql" ~body ()
-      with
+      match fetch_page ~after with
       | Error _ as e -> e
       | Ok resp_str -> (
           match parse_contexts_page resp_str with
@@ -1487,19 +1468,27 @@ let fetch_all_contexts ~net ~clock ?timeout ?(require_complete = false) t ~oid :
           | Ok (checks, has_next_page, end_cursor) -> (
               let acc = checks :: acc in
               match (has_next_page, end_cursor) with
-              | true, (Some _ as cursor) ->
-                  loop ~after:cursor ~page:(page + 1) acc
-              (* hasNextPage with no cursor would loop forever — stop with what we
-                 have rather than spin. *)
-              | true, None when require_complete ->
+              | false, _ ->
+                  Ok (Types.Ci_check.current_runs (List.concat (List.rev acc)))
+              | true, Some cursor
+                when (not (List.mem seen cursor ~equal:String.equal))
+                     && not (String.is_empty cursor) ->
+                  loop ~after:(Some cursor) ~page:(page + 1)
+                    ~seen:(cursor :: seen) acc
+              | true, Some _ | true, None ->
                   Error
                     (Json_parse_error
-                       "Branch check pagination cursor is missing")
-              | true, None | false, _ ->
-                  Ok (Types.Ci_check.current_runs (List.concat (List.rev acc))))
-          )
+                       (Printf.sprintf
+                          "Commit %s check pagination cursor is missing or \
+                           repeated"
+                          oid))))
   in
-  loop ~after:None ~page:0 []
+  loop ~after:None ~page:0 ~seen:[] []
+
+let fetch_commit_checks ~net ~clock ?timeout t ~oid =
+  fetch_all_contexts ~oid ~fetch_page:(fun ~after ->
+      let body = build_contexts_request_body t ~oid ~after in
+      request ~net ~clock ?timeout t ~meth:`POST ~path:"/graphql" ~body ())
 
 let branch_state ~net ~clock ?known_state t branch =
   let body =
@@ -1546,38 +1535,34 @@ let branch_state ~net ~clock ?known_state t branch =
                       Ok state
                   | Some _ | None ->
                       Result.map
-                        (fetch_all_contexts ~net ~clock ~require_complete:true t
-                           ~oid:head_sha) ~f:(fun checks ->
-                          Forge.{ head_sha; checks }))
+                        (fetch_commit_checks ~net ~clock t ~oid:head_sha)
+                        ~f:(fun checks -> Forge.{ head_sha; checks }))
               | None | Some _ ->
                   Error (Json_parse_error "Branch HEAD is absent")))
 
+(* A pagination failure is a failed observation, just like a failed initial
+   poll. Returning the truncated first page as success would tell the poller
+   that checks stopped passing and remove a manually queued PR. *)
+let resolve_pr_checks ~fetch_checks state =
+  if not state.Pr_state.ci_checks_truncated then Ok state
+  else
+    match state.Pr_state.head_oid with
+    | None ->
+        Error (Json_parse_error "Truncated PR checks have no head commit OID")
+    | Some oid ->
+        Result.map (fetch_checks ~oid) ~f:(fun all_checks ->
+            Pr_state.with_resolved_checks state ~all_checks)
+
 let pr_state ~net ~clock ?timeout t pr =
   let body = build_request_body t pr in
-  match
-    request ~net ~clock ?timeout t ~meth:`POST ~path:"/graphql" ~body ()
-  with
-  | Error _ as e -> e
-  | Ok resp_str -> (
-      match parse_response ~owner:t.owner resp_str with
-      | Error _ as e -> e
-      | Ok state -> (
-          if
-            (* The first-page rollup was complete: trust it as-is. *)
-            not state.Pr_state.ci_checks_truncated
-          then Ok state
-          else
-            (* >100 contexts: the parser conservatively downgraded a passing
-               rollup to Pending. Paginate the full set and re-derive. On a
-               missing head OID or any pagination failure, keep the conservative
-               state — identical to pre-pagination behavior, never worse. *)
-            match state.Pr_state.head_oid with
-            | None -> Ok state
-            | Some oid -> (
-                match fetch_all_contexts ~net ~clock ?timeout t ~oid with
-                | Error _ -> Ok state
-                | Ok all_checks ->
-                    Ok (Pr_state.with_resolved_checks state ~all_checks))))
+  Result.bind
+    (request ~net ~clock ?timeout t ~meth:`POST ~path:"/graphql" ~body ())
+    ~f:(fun resp_str ->
+      Result.bind
+        (parse_response ~owner:t.owner resp_str)
+        ~f:
+          (resolve_pr_checks
+             ~fetch_checks:(fetch_commit_checks ~net ~clock ?timeout t)))
 
 let enqueue_info_query =
   {|query($owner: String!, $repo: String!, $number: Int!) {
@@ -1613,7 +1598,7 @@ let enqueue_pr_info ~net ~clock ?timeout t pr =
 (* [last: 1] yields the most recent removal — the failure that ejected the PR.
    [contexts(first: 100)] fetches the first page; on a truncated rollup (>100
    contexts) [merge_queue_removal_checks] re-fetches the complete list by
-   [beforeCommit] OID via [fetch_all_contexts], so a merge-group with many checks
+   [beforeCommit] OID via [fetch_commit_checks], so a merge-group with many checks
    still surfaces its real failures instead of falling back to the synthetic
    placeholder. *)
 let merge_queue_removal_query =
@@ -1725,7 +1710,7 @@ let merge_queue_removal_checks ~net ~clock ?timeout t pr =
          the pure parser (which returns [Ok []] for the truncated case), keeping
          the synthetic placeholder rather than a partial list. *)
       | Some oid -> (
-          match fetch_all_contexts ~net ~clock ?timeout t ~oid with
+          match fetch_commit_checks ~net ~clock ?timeout t ~oid with
           | Ok all ->
               Ok (List.filter all ~f:Types.Ci_check.is_failure)
               |> merge_group_actions_fallback_if_empty ~net ~clock ?timeout t pr
@@ -2427,6 +2412,175 @@ let%test "is_merge_endpoint_rejection: transport error -> false" =
   not
     (is_merge_endpoint_rejection
        (Transport_error { meth = "PUT"; path = "/merge"; msg = "reset" }))
+
+(* Exercise the same response/pagination boundary as the live PR poll, with
+   scripted transport responses. No test-only surface is exported. *)
+let pagination_test_check id conclusion =
+  Printf.sprintf
+    {|{"__typename":"CheckRun","databaseId":%d,"name":"check-%d",
+        "checkSuite":{"databaseId":1},"conclusion":%S}|}
+    id id conclusion
+
+let pagination_test_rollup ~more ~cursor checks =
+  Printf.sprintf
+    {|{"contexts":{"pageInfo":{"hasNextPage":%b,"endCursor":%s},"nodes":[%s]}}|}
+    more
+    (Yojson.Safe.to_string
+       (match cursor with Some c -> `String c | None -> `Null))
+    (String.concat ~sep:"," checks)
+
+let pagination_test_page ~more ~cursor checks =
+  Printf.sprintf {|{"data":{"repository":{"object":{"statusCheckRollup":%s}}}}|}
+    (pagination_test_rollup ~more ~cursor checks)
+
+let pagination_test_pr ~fetch_page =
+  let first = List.init 100 ~f:(fun id -> pagination_test_check id "SUCCESS") in
+  let response =
+    Printf.sprintf
+      {|{"data":{"repository":{"pullRequest":{"state":"OPEN",
+          "mergeable":"MERGEABLE","mergeStateStatus":"CLEAN",
+          "headRefOid":"head","commits":{"nodes":[{"commit":{"statusCheckRollup":%s}}]}}}}}|}
+      (pagination_test_rollup ~more:true ~cursor:(Some "100") first)
+  in
+  Result.bind
+    (parse_response ~owner:"flowglad" response)
+    ~f:
+      (resolve_pr_checks ~fetch_checks:(fun ~oid ->
+           assert (String.equal oid "head");
+           fetch_all_contexts ~fetch_page ~oid))
+
+let%test_unit "PR polling resolves all 111 checks before approving merge" =
+  let requested = ref [] in
+  let result =
+    pagination_test_pr ~fetch_page:(fun ~after ->
+        requested := after :: !requested;
+        match after with
+        | None ->
+            Ok
+              (pagination_test_page ~more:true ~cursor:(Some "100")
+                 (List.init 100 ~f:(fun id ->
+                      pagination_test_check id "SUCCESS")))
+        | Some "100" ->
+            Ok
+              (pagination_test_page ~more:false ~cursor:None
+                 (List.init 11 ~f:(fun i ->
+                      pagination_test_check (100 + i) "SUCCESS")))
+        | Some _ -> failwith "unexpected cursor")
+  in
+  assert (
+    List.equal
+      (Option.equal String.equal)
+      (List.rev !requested) [ None; Some "100" ]);
+  match result with
+  | Error err -> failwith (show_error err)
+  | Ok state ->
+      assert (List.length state.Pr_state.ci_checks = 111);
+      assert (not state.Pr_state.ci_checks_truncated);
+      assert (Pr_state.checks_passing state && Pr_state.merge_ready state)
+
+let%test_unit "a failing check on page two blocks merge" =
+  let result =
+    pagination_test_pr ~fetch_page:(fun ~after ->
+        match after with
+        | None ->
+            Ok
+              (pagination_test_page ~more:true ~cursor:(Some "100")
+                 (List.init 100 ~f:(fun id ->
+                      pagination_test_check id "SUCCESS")))
+        | Some _ ->
+            Ok
+              (pagination_test_page ~more:false ~cursor:None
+                 [ pagination_test_check 110 "FAILURE" ]))
+  in
+  match result with
+  | Error err -> failwith (show_error err)
+  | Ok state -> (
+      assert (not state.Pr_state.ci_checks_truncated);
+      assert (not (Pr_state.checks_passing state || Pr_state.merge_ready state));
+      match
+        List.filter state.Pr_state.ci_checks ~f:Types.Ci_check.is_failure
+      with
+      | [ check ] -> assert (String.equal check.Types.Ci_check.name "check-110")
+      | _ -> failwith "expected the failure from page two")
+
+let%test_unit "PR pagination errors stay errors rather than failed checks" =
+  let result =
+    pagination_test_pr ~fetch_page:(fun ~after ->
+        match after with
+        | None ->
+            Ok
+              (pagination_test_page ~more:true ~cursor:(Some "100")
+                 [ pagination_test_check 1 "SUCCESS" ])
+        | Some _ -> Ok {|{"errors":[{"message":"page two unavailable"}]}|})
+  in
+  match result with
+  | Error (Graphql_error [ message ]) ->
+      assert (String.equal message "page two unavailable")
+  | Ok _
+  | Error (Graphql_error _)
+  | Error (Http_error _ | Json_parse_error _ | Timeout _ | Transport_error _) ->
+      failwith "expected the pagination error to reach the poller"
+
+let%test_unit "incomplete pagination never becomes a passing observation" =
+  List.iter [ None; Some ""; Some "repeated" ] ~f:(fun cursor ->
+      let result =
+        pagination_test_pr ~fetch_page:(fun ~after:_ ->
+            Ok
+              (pagination_test_page ~more:true ~cursor
+                 [ pagination_test_check 1 "SUCCESS" ]))
+      in
+      assert (Result.is_error result))
+
+let%test_unit "pagination page limit rejects partial passing checks" =
+  let pages = ref 0 in
+  let result =
+    pagination_test_pr ~fetch_page:(fun ~after:_ ->
+        Int.incr pages;
+        Ok
+          (pagination_test_page ~more:true
+             ~cursor:(Some (Int.to_string !pages))
+             [ pagination_test_check !pages "SUCCESS" ]))
+  in
+  assert (Result.is_error result);
+  assert (!pages = max_context_pages)
+
+let%test_unit "pagination accepts the final page at the request limit" =
+  let pages = ref 0 in
+  let result =
+    pagination_test_pr ~fetch_page:(fun ~after:_ ->
+        Int.incr pages;
+        Ok
+          (pagination_test_page
+             ~more:(!pages < max_context_pages)
+             ~cursor:(Some (Int.to_string !pages))
+             [ pagination_test_check !pages "SUCCESS" ]))
+  in
+  match result with
+  | Error err -> failwith (show_error err)
+  | Ok state ->
+      assert (Pr_state.merge_ready state);
+      assert (List.length state.Pr_state.ci_checks = max_context_pages)
+
+let%test_unit "missing later-page data cannot complete the check list" =
+  List.iter
+    [
+      {|{"data":null}|};
+      {|{"data":{"repository":{"object":null}}}|};
+      {|{"data":{"repository":{"object":{"statusCheckRollup":null}}}}|};
+      {|{"data":{"repository":{"object":{"statusCheckRollup":{}}}}}|};
+      {|{"data":{"repository":{"object":{"statusCheckRollup":{"contexts":{"nodes":[]}}}}}}|};
+      {|{"data":{"repository":{"object":{"statusCheckRollup":{"contexts":{"pageInfo":{"hasNextPage":false}}}}}}}|};
+    ] ~f:(fun body ->
+      let result =
+        pagination_test_pr ~fetch_page:(fun ~after ->
+            match after with
+            | None ->
+                Ok
+                  (pagination_test_page ~more:true ~cursor:(Some "100")
+                     [ pagination_test_check 1 "SUCCESS" ])
+            | Some _ -> Ok body)
+      in
+      assert (Result.is_error result))
 
 let%expect_test "show_error includes endpoint + permission hint on 403" =
   let err =
