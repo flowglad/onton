@@ -137,6 +137,12 @@ let () =
                 "existing projects cannot switch";
               rejects [ "--feature-branch" ] "requires a GitHub gameplan";
               rejects
+                [ "--feature-branch"; "--publish-gameplan" ]
+                "cannot be combined with feature branch mode";
+              rejects
+                [ "feature"; "--publish-gameplan" ]
+                "cannot be combined with feature branch mode";
+              rejects
                 [ "--feature-branch"; "--forge"; "sourcehut" ]
                 "requires a GitHub gameplan";
               let gp_path = dir ^ "/gameplan.json" in

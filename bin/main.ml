@@ -1685,6 +1685,19 @@ let run ~project ~gameplan_path ~forge ~github_token ~backend ~model
             else None)
   in
   if
+    (feature_branch
+    || Option.is_some
+         (Option.bind prior (fun c -> c.Project_store.feature_root)))
+    && (publish_gameplan
+       || Option.is_some
+            (Option.bind prior (fun c -> c.Project_store.gameplan_publication))
+       )
+  then (
+    Printf.eprintf
+      "Error: --publish-gameplan cannot be combined with feature branch mode.\n\
+       %!";
+    Stdlib.exit 1);
+  if
     feature_branch && Option.is_some prior
     && Option.is_none
          (Option.bind prior (fun c -> c.Project_store.feature_root))

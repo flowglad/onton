@@ -455,6 +455,8 @@ resolved destination and source contents are persisted with the project and
 reused when resuming without the flag. A revised source requires a new project.
 The flag cannot be added after an existing project's patches have started.
 Source plans that already use Patch 0 or its generated branch are rejected.
+Publication cannot be combined with feature-branch mode, whose integration root
+must remain open until its descendants finish.
 
 Patch 0 uses ordinary merge tracking and the existing automerge policy;
 `--publish-gameplan` alone does not enable automerge. No agent runs for its commit
