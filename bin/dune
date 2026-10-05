@@ -21,11 +21,3 @@
  (libraries onton onton_core)
  (ocamlopt_flags (:standard -w -40-42))
  (ocamlc_flags (:standard -w -40-42)))
-
-(rule
- (target version.ml)
- ; Git refs live outside Dune's sandbox and can change without a source edit.
- (deps (universe))
- (action
-  (with-stdout-to %{target}
-   (run %{ocaml} -I +unix unix.cma %{dep:../scripts/write-version.ml}))))

@@ -557,9 +557,8 @@ dune exec bin/main.exe -- --gameplan path/to/gameplan.yaml
 dune fmt            # auto-format via ocamlformat
 ```
 
-Builds embed `git describe --tags --always` from the source checkout. Tagged
-commits report their tag; other commits report a tag-relative revision or commit
-hash. Source trees without Git metadata report `dev`.
+Local builds report `dev`. The release workflow writes its triggering tag into
+the static version module before compiling.
 
 ## Architecture
 
