@@ -257,7 +257,11 @@ val render_root_merge_conflict_prompt :
   unit ->
   string
 (** Repair a pending history-preserving root merge, including restart guidance
-    pinned to its original MERGE_HEAD rather than a moving upstream ref. *)
+    pinned to its original MERGE_HEAD rather than a moving upstream ref. The
+    turn layer can be overridden with [prompts/turn_root_merge_conflict.md]
+    using [project_name], [pr_number], [base_branch], [merge_head],
+    [git_status], and [git_diff] variables. Gameplan and patch layers remain
+    independent. *)
 
 val render_merge_conflict_prompt :
   project_name:string ->

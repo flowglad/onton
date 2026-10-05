@@ -1603,13 +1603,26 @@ let render_merge_conflict_prompt ~(project_name : string) ?agents_md ?pr_number
   ^ render_turn_layer_merge_conflict ~project_name ?pr_number ~base_branch
       ~git_status ~git_diff ?conflict_info ()
 
-let render_root_merge_conflict_prompt ~(project_name : string) ?agents_md
-    ?pr_number ?patch ?gameplan ~(base_branch : string) ~(merge_head : string)
-    ~(git_status : string) ~(git_diff : string) () : string =
-  layered_prefix ~project_name ?pr_number ?patch ?gameplan
-    ?base_branch:(Some base_branch) ?agents_md ()
-  ^ Printf.sprintf
-      {|# Integration Root Merge Conflict
+let render_turn_layer_root_merge_conflict ~(project_name : string) ?pr_number
+    ~(base_branch : string) ~(merge_head : string) ~(git_status : string)
+    ~(git_diff : string) () : string =
+  let vars =
+    [
+      ("project_name", project_name);
+      ("base_branch", base_branch);
+      ("merge_head", merge_head);
+      ( "pr_number",
+        match pr_number with
+        | Some n -> Int.to_string (Pr_number.to_int n)
+        | None -> "" );
+      ("git_status", git_status);
+      ("git_diff", git_diff);
+    ]
+  in
+  render_with_override ~project_name ~name:"turn_root_merge_conflict" ~vars
+    ~default:(fun () ->
+      Printf.sprintf
+        {|# Integration Root Merge Conflict
 
 A history-preserving merge of `%s` into this integration branch is in progress.
 The merge target captured in MERGE_HEAD is `%s`.
@@ -1644,7 +1657,15 @@ The supervisor will publish the completed merge with a normal push. Do not run
 %s
 ```
 |}
-      base_branch merge_head merge_head git_status git_diff
+        base_branch merge_head merge_head git_status git_diff)
+
+let render_root_merge_conflict_prompt ~(project_name : string) ?agents_md
+    ?pr_number ?patch ?gameplan ~(base_branch : string) ~(merge_head : string)
+    ~(git_status : string) ~(git_diff : string) () : string =
+  layered_prefix ~project_name ?pr_number ?patch ?gameplan
+    ?base_branch:(Some base_branch) ?agents_md ()
+  ^ render_turn_layer_root_merge_conflict ~project_name ?pr_number ~base_branch
+      ~merge_head ~git_status ~git_diff ()
 
 let render_human_message_prompt ~(project_name : string)
     (messages : string list) =

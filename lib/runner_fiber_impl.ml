@@ -1678,9 +1678,13 @@ module Make (Forge : Forge.S) (W : Worktree.S) (Env : Runner_env.S) = struct
                         | Worktree.Noop ->
                             log_event runtime ~patch_id
                               "Rebase noop — already up-to-date"
-                        | Worktree.Conflict _ | Worktree.Merge_conflict _ ->
+                        | Worktree.Conflict _ ->
                             log_event runtime ~patch_id
                               "Rebase conflict — enqueued merge-conflict"
+                        | Worktree.Merge_conflict _ ->
+                            log_event runtime ~patch_id
+                              "Root merge hit conflicts — enqueued \
+                               merge-conflict"
                         | Worktree.Uncommitted_changes _ ->
                             log_event runtime ~patch_id
                               "Rebase blocked by uncommitted changes — \

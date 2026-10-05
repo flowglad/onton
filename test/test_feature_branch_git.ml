@@ -8,6 +8,27 @@ module Git = Onton_test_support.Git_env
 
 let check label value = if not value then failwith label
 
+(* Inject a failed probe through the process boundary while all other commands
+   operate on real Git state. *)
+let failing_conflict_probe_mgr (type tag)
+    (mgr : tag Eio.Process.mgr_ty Eio.Resource.t) probed =
+  let (Eio.Resource.T (state, ops)) = mgr in
+  let module Original = (val Eio.Resource.get ops Eio.Process.Pi.Mgr) in
+  let module Faults = struct
+    include Original
+
+    let spawn t ~sw ?cwd ?stdin ?stdout ?stderr ?env ?executable args =
+      match args with
+      | [ "git"; "-C"; _; "diff"; "--name-only"; "--diff-filter=U" ] ->
+          probed := true;
+          Original.spawn t ~sw ?cwd ?stdin ?stdout ?stderr ?env
+            ~executable:"/bin/sh"
+            [ "/bin/sh"; "-c"; "exit 23" ]
+      | _ ->
+          Original.spawn t ~sw ?cwd ?stdin ?stdout ?stderr ?env ?executable args
+  end in
+  Eio.Resource.T (state, Eio.Process.Pi.mgr (module Faults))
+
 let write path content =
   let oc = Stdlib.open_out path in
   Stdlib.Fun.protect
@@ -240,7 +261,28 @@ let () =
               | Worktree.Uncommitted_changes _ | Worktree.Error _ ->
                   false)
           in
-          expect_merge_conflict (merge_root ());
+          let probed = ref false in
+          let module Failed_probe =
+            (val Worktree.make_with_protection
+                   ~protected_branch:(Some (Branch.of_string "root"))
+                   ~fs:(Eio.Stdenv.fs env) ~config:Worktree_lifecycle.git
+                   ~clock:(Eio.Stdenv.clock env)
+                   ~process_mgr:
+                     (failing_conflict_probe_mgr
+                        (Eio.Stdenv.process_mgr env)
+                        probed)
+                   ~repo_root:dir)
+          in
+          check "failed conflict probe reports error without aborting"
+            (match
+               Failed_probe.rebase_onto ~path:root_path
+                 ~target:(Branch.of_string "origin/main")
+                 ~upstream:base ~project_name:"git-test" ~ancestor_ids:[] ()
+             with
+            | Worktree.Error _ -> !probed
+            | Worktree.Ok | Worktree.Noop | Worktree.Conflict _
+            | Worktree.Merge_conflict _ | Worktree.Uncommitted_changes _ ->
+                false);
           check "root conflict retains merge state and unmerged file"
             (String.equal
                (Git.git_capture ~cwd:root_path [ "rev-parse"; "MERGE_HEAD" ])
@@ -249,6 +291,7 @@ let () =
                  (Git.git_capture ~cwd:root_path
                     [ "diff"; "--name-only"; "--diff-filter=U" ])
                  "shared");
+          expect_merge_conflict (merge_root ());
           check "root conflict preserves HEAD"
             (String.equal
                (Git.git_capture ~cwd:root_path [ "rev-parse"; "HEAD" ])

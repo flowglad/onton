@@ -1204,7 +1204,10 @@ let merge_preserving ~process_mgr ~path ~target : rebase_result =
             with
             | `Conflict sha -> Merge_conflict sha
             | `Error message ->
-                if Option.is_none merge_head then Error message
+                (* A failed index probe cannot establish that aborting is safe.
+                   Preserve the pending merge for the next retry's entry check. *)
+                if diff_code <> 0 || Option.is_none merge_head then
+                  Error message
                 else
                   let abort_code, _, abort_err =
                     run_git_exit_code ~process_mgr
