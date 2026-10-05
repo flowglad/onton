@@ -309,7 +309,7 @@ let scenario_happy_path env =
 (* Reproduce the fresh-clone/rewrite path with a real remote. Interleave an
    independent writer either before planning (and a background fetch), or in
    Git's pre-push hook after the planner has captured its immutable lease. *)
-let scenario_rewrite_interleavings env (commits, race) =
+let scenario_rewrite_interleavings env (commits, race, preserve_history) =
   let process_mgr = Eio.Stdenv.process_mgr env in
   let clock = Eio.Stdenv.clock env in
   with_temp_dir @@ fun root ->
@@ -346,6 +346,11 @@ let scenario_rewrite_interleavings env (commits, race) =
        "git update-ref refs/heads/feat %s; git worktree add -q %s feat"
        old_remote
        (Stdlib.Filename.quote worktree));
+  if race = 3 then (
+    (* The branch once contained the writer, but a rewind discarded it. Its
+       stale tip remains in the branch reflog when the remote later advances. *)
+    sh ~dir:worktree ("git reset -q --hard " ^ writer);
+    sh ~dir:worktree ("git reset -q --hard " ^ old_remote));
   sh ~dir:worktree (Printf.sprintf "git rebase -q --onto origin/main %s" base);
   let rewritten = git_capture ~dir:worktree [ "rev-parse"; "HEAD" ] in
   let publish_writer =
@@ -353,7 +358,7 @@ let scenario_rewrite_interleavings env (commits, race) =
       (Stdlib.Filename.quote origin)
       writer old_remote
   in
-  if race = 1 then (
+  if race = 1 || race = 3 then (
     sh publish_writer;
     sh ~dir:managed "git fetch -q origin")
   else if race = 2 then (
@@ -367,7 +372,8 @@ let scenario_rewrite_interleavings env (commits, race) =
     Unix.chmod hook 0o755;
     sh ~dir:managed ("git config core.hooksPath " ^ Stdlib.Filename.quote hooks));
   let outcome =
-    Worktree.force_push_with_lease ~clock ~process_mgr ~path:worktree
+    Worktree.force_push_with_lease ~preserve_history ~clock ~process_mgr
+      ~path:worktree
       ~branch:(Types.Branch.of_string "feat")
       ~base:(Types.Branch.of_string "main")
       ()
@@ -399,6 +405,109 @@ let scenario_rewrite_interleavings env (commits, race) =
         failwith
           ("concurrent update was accepted: "
           ^ Worktree.show_push_result outcome))
+
+let scenario_initial_publication env ~preserve_history ~race =
+  let process_mgr = Eio.Stdenv.process_mgr env in
+  let clock = Eio.Stdenv.clock env in
+  with_temp_dir @@ fun root ->
+  let origin = Stdlib.Filename.concat root "origin.git" in
+  let managed = Stdlib.Filename.concat root "managed" in
+  setup_origin ~origin_dir:origin;
+  setup_seed_clone ~origin_dir:origin ~managed_dir:managed;
+  let base = git_capture ~dir:managed [ "rev-parse"; "HEAD" ] in
+  sh ~dir:managed
+    "git checkout -q -b feat; echo patch > patch.txt; git add patch.txt; git \
+     commit -q -m patch";
+  let local = git_capture ~dir:managed [ "rev-parse"; "HEAD" ] in
+  if race then (
+    let hooks = Stdlib.Filename.concat managed "hooks" in
+    Unix.mkdir hooks 0o755;
+    let hook = Stdlib.Filename.concat hooks "pre-push" in
+    let oc = Stdlib.open_out hook in
+    Stdlib.output_string oc
+      (Printf.sprintf
+         "#!/bin/sh\nset -eu\ngit --git-dir=%s update-ref refs/heads/feat %s\n"
+         (Stdlib.Filename.quote origin)
+         base);
+    Stdlib.close_out oc;
+    Unix.chmod hook 0o755;
+    sh ~dir:managed ("git config core.hooksPath " ^ Stdlib.Filename.quote hooks));
+  let outcome =
+    Worktree.force_push_with_lease ~preserve_history ~clock ~process_mgr
+      ~path:managed
+      ~branch:(Types.Branch.of_string "feat")
+      ~base:(Types.Branch.of_string "main")
+      ()
+  in
+  let remote =
+    git_capture ~dir:managed [ "ls-remote"; "origin"; "refs/heads/feat" ]
+    |> fun value -> String.prefix value 40
+  in
+  if race then (
+    if not (String.equal remote base) then
+      failwith "initial push overwrote writer";
+    (match outcome with
+    | Worktree.Push_rejected _ -> ()
+    | _ -> failwith ("initial race: " ^ Worktree.show_push_result outcome));
+    if
+      Git_env.git_exit_code ~cwd:managed
+        [ "config"; "--get"; "branch.feat.remote" ]
+      = 0
+    then failwith "failed initial push configured upstream")
+  else (
+    if
+      (not (Worktree.equal_push_result outcome Worktree.Push_ok))
+      || not (String.equal remote local)
+    then failwith ("initial publication: " ^ Worktree.show_push_result outcome);
+    let upstream =
+      git_capture ~dir:managed
+        [ "rev-parse"; "--abbrev-ref"; "feat@{upstream}" ]
+    in
+    if not (String.equal upstream "origin/feat") then
+      failwith "initial upstream missing";
+    sh ~dir:managed "git -c push.default=simple push -q --dry-run";
+    sh ~dir:managed "git pull -q --ff-only");
+  Stdlib.print_endline "  initial_publication: OK"
+
+let scenario_unmatched_merge env =
+  let process_mgr = Eio.Stdenv.process_mgr env in
+  let clock = Eio.Stdenv.clock env in
+  with_temp_dir @@ fun root ->
+  let origin = Stdlib.Filename.concat root "origin.git" in
+  let managed = Stdlib.Filename.concat root "managed" in
+  setup_origin ~origin_dir:origin;
+  setup_seed_clone ~origin_dir:origin ~managed_dir:managed;
+  sh ~dir:managed
+    "git checkout -q -b side; echo side > side.txt; git add side.txt; git \
+     commit -q -m side";
+  let side = git_capture ~dir:managed [ "rev-parse"; "HEAD" ] in
+  sh ~dir:managed
+    "git checkout -q -b feat main; echo feat > feat.txt; git add feat.txt; git \
+     commit -q -m feat";
+  let before_merge = git_capture ~dir:managed [ "rev-parse"; "HEAD" ] in
+  sh ~dir:managed "git merge -q --no-ff side -m merge";
+  (* A merge can contain resolution changes absent from both parents. *)
+  sh ~dir:managed
+    "echo resolution > resolution.txt; git add resolution.txt; git commit -q \
+     --amend --no-edit; git push -q origin feat";
+  let remote = git_capture ~dir:managed [ "rev-parse"; "HEAD" ] in
+  sh ~dir:managed ("git reset -q --hard " ^ before_merge);
+  let _ = git_capture ~dir:managed [ "cherry-pick"; side ] in
+  let outcome =
+    Worktree.force_push_with_lease ~clock ~process_mgr ~path:managed
+      ~branch:(Types.Branch.of_string "feat")
+      ~base:(Types.Branch.of_string "main")
+      ()
+  in
+  (match outcome with
+  | Worktree.Push_rejected Push_reject_classify.Lease_violation -> ()
+  | _ -> failwith ("unmatched merge: " ^ Worktree.show_push_result outcome));
+  let actual =
+    git_capture ~dir:managed [ "ls-remote"; "origin"; "refs/heads/feat" ]
+    |> fun value -> String.prefix value 40
+  in
+  if not (String.equal actual remote) then failwith "merge resolution lost";
+  Stdlib.print_endline "  unmatched_merge: OK (refused)"
 
 (* ── Property: Push_plan.to_push_reject_classify_rejection mapping ────────────
 
@@ -470,13 +579,20 @@ let () =
   scenario_branch_switched env;
   scenario_local_missing_remote env;
   scenario_happy_path env;
+  scenario_unmatched_merge env;
+  List.iter [ false; true ] ~f:(fun preserve_history ->
+      List.iter [ false; true ] ~f:(fun race ->
+          scenario_initial_publication env ~preserve_history ~race);
+      List.iter [ 0; 1; 2; 3 ] ~f:(fun race ->
+          scenario_rewrite_interleavings env (2, race, preserve_history)));
   QCheck2.Test.check_exn
     (QCheck2.Test.make
        ~name:"rewrite publication remains live and preserves concurrent writers"
        ~count:24
-       ~print:(fun (commits, race) ->
-         Printf.sprintf "commits=%d race=%d" commits race)
-       QCheck2.Gen.(pair (int_range 1 4) (int_range 0 2))
+       ~print:(fun (commits, race, preserve_history) ->
+         Printf.sprintf "commits=%d race=%d preserve_history=%b" commits race
+           preserve_history)
+       QCheck2.Gen.(triple (int_range 1 4) (int_range 0 3) bool)
        (fun input ->
          try
            scenario_rewrite_interleavings env input;

@@ -41,7 +41,7 @@ let plan i =
   PP.plan ~expected_branch:"patch" ~worktree_path_exists:i.exists
     ~worktree_head_branch:i.head ~branch_ref_sha:i.local
     ~remote_tracking_sha:i.remote ~ancestry:i.ancestry
-    ~remote_in_reflog:i.integrated ~commits_ahead_of_base:i.commits
+    ~remote_changes_included:i.integrated ~commits_ahead_of_base:i.commits
 
 let safe ~local ~remote ~integrated =
   {

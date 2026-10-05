@@ -406,13 +406,16 @@ val force_push_with_lease :
     [timeout_seconds] (120 seconds by default). A deadline expiry cancels the
     git process and returns [Push_error], allowing the runner to complete the
     current operation and retry instead of remaining busy indefinitely. Thin
-    effectful orchestrator: runs [git rev-list --count base..HEAD], applies
-    [push_gate_from_count] to decide whether to push, and classifies the push
-    output via [classify_push_result]. Initial publication uses a normal push.
-    Updates with an existing remote-tracking ref force-push with lease by
-    default; [preserve_history = true] uses a normal push and reports a
-    non-fast-forward rejection rather than replacing remote history. See
-    [push_gate_from_count] and [classify_push_result] for the pure decision
+    effectful orchestrator: captures the named local and remote SHAs, validates
+    publication through [Push_plan], and classifies Git's result. Every push
+    uses the captured local SHA and an explicit remote SHA lease (an absent-ref
+    lease for initial publication). Successful initial publication configures
+    the named branch's upstream. [preserve_history] remains accepted for caller
+    compatibility; history preservation is handled by merge-based integration,
+    and publication enforces the same captured lease in either mode. Divergent
+    publication requires every remote-only commit to be represented by an
+    equivalent patch in the current local history; unproven rewrites are
+    refused. See [Push_plan] and [classify_push_result] for the pure decision
     logic. *)
 
 val rebase_in_progress : process_mgr:_ Eio.Process.mgr -> path:string -> bool

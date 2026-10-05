@@ -4,9 +4,10 @@
 (** Validate publication at the owning Git boundary. A force-push action carries
     the exact local commit and incorporated remote commit it authorizes. Reading
     a newer tracking ref alone cannot authorize overwriting it: its commit must
-    be reachable from the branch or its rewrite history. The push uses an
-    explicit SHA lease, so later fetches cannot change the authority and
-    concurrent remote writes are rejected by Git. *)
+    be reachable from the captured local commit or have its changes represented
+    in that commit's rewritten history. The push uses an explicit SHA lease, so
+    later fetches cannot change the authority and concurrent remote writes are
+    rejected by Git. *)
 
 type sha = string [@@deriving show, eq, sexp_of, compare]
 
@@ -46,11 +47,11 @@ type refusal =
       (** [ancestry = Local_missing_remote] — pushing now would force-push a
           local that is strictly behind remote on real content, wiping commits.
           [ancestry = Local_diverged_from_remote] is intentionally NOT a refusal
-          here when its pre-rewrite commit is represented in the branch reflog.
-      *)
+          here when every remote-only commit is patch-equivalent to a commit
+          reachable from the captured local SHA. *)
   | Remote_not_integrated of { remote_sha : sha }
       (** The observed remote commit is absent from both current ancestry and
-          local rewrite history. Retry after incorporating remote work. *)
+          current rewritten history. Retry after incorporating remote work. *)
 [@@deriving show, eq, sexp_of, compare]
 
 type decision = Push of action | Refuse of refusal
@@ -63,13 +64,14 @@ val plan :
   branch_ref_sha:sha option ->
   remote_tracking_sha:sha option ->
   ancestry:ancestry ->
-  remote_in_reflog:bool ->
+  remote_changes_included:bool ->
   commits_ahead_of_base:int option ->
   decision
 (** Total and deterministic. Missing worktrees, switched/missing branches, empty
     patches, and strictly-behind branches are refused before publication.
-    Divergent history requires proof of remote integration in the branch reflog.
-*)
+    Divergent history requires [remote_changes_included]: every remote-only
+    commit is patch-equivalent to a commit in the captured current history.
+    Unknown ancestry fails closed in the Git handler. *)
 
 val short_label : decision -> string
 (** A short, lowercase, snake_case identifier for the planner arm that fired,

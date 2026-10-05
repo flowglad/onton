@@ -31,7 +31,7 @@ type decision = Push of action | Refuse of refusal
 [@@deriving show, eq, sexp_of, compare]
 
 let plan ~expected_branch ~worktree_path_exists ~worktree_head_branch
-    ~branch_ref_sha ~remote_tracking_sha ~ancestry ~remote_in_reflog
+    ~branch_ref_sha ~remote_tracking_sha ~ancestry ~remote_changes_included
     ~commits_ahead_of_base =
   if not worktree_path_exists then Refuse Worktree_missing
   else
@@ -60,7 +60,7 @@ let plan ~expected_branch ~worktree_path_exists ~worktree_head_branch
                   Push (Force_push_with_lease { local_sha; remote_sha })
               | ( (Local_diverged_from_remote | No_remote_yet | Unknown),
                   Some remote_sha )
-                when remote_in_reflog ->
+                when remote_changes_included ->
                   Push (Force_push_with_lease { local_sha; remote_sha })
               | ( (Local_diverged_from_remote | No_remote_yet | Unknown),
                   Some remote_sha ) ->
