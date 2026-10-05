@@ -561,6 +561,9 @@ dune exec bin/main.exe -- --gameplan path/to/gameplan.yaml
 dune fmt            # auto-format via ocamlformat
 ```
 
+Local builds report `dev`. The release workflow writes its triggering tag into
+the static version module before compiling.
+
 ## Architecture
 
 ```
@@ -822,6 +825,8 @@ need reproducibility. The names below are accurate as of September 2026 —
 Pushing a `v*` tag builds Apple Silicon macOS and Linux ARM64 and x86_64 binaries, checks
 the Linux binaries in Ubuntu 22.04 containers, creates a GitHub release, and
 updates the Homebrew formula.
+Release builds embed the tag in `onton --version` and verify it before publishing
+the archives.
 
 ## TUI
 

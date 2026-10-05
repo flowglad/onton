@@ -84,14 +84,222 @@ let test_persistent_transient_exhausts () =
   check "persistent transient exhausts attempts then raises"
     (raised && !attempts = 3)
 
+(* Exercise the real runner with faults at the public process-manager boundary,
+   so the tests verify supervisor creation rather than just the retry helper. *)
+let faulting_mgr (type tag) (mgr : tag Eio.Process.mgr_ty Eio.Resource.t)
+    on_spawn =
+  let (Eio.Resource.T (state, ops)) = mgr in
+  let module Original = (val Eio.Resource.get ops Eio.Process.Pi.Mgr) in
+  let module Faults = struct
+    include Original
+
+    let spawn t ~sw ?cwd ?stdin ?stdout ?stderr ?env ?executable args =
+      on_spawn ();
+      Original.spawn t ~sw ?cwd ?stdin ?stdout ?stderr ?env ?executable args
+  end in
+  Eio.Resource.T (state, Eio.Process.Pi.mgr (module Faults))
+
+let test_composite_failures env =
+  let bt = Stdlib.Printexc.get_callstack 0 in
+  let transient = Unix.Unix_error (Unix.EAGAIN, "spawn", "") in
+  let mixed, _ = Eio.Exn.combine (transient, bt) (child_error (), bt) in
+  let io_errors, _ =
+    Eio.Exn.combine
+      (child_error (), bt)
+      ( Eio.Exn.create (Eio.Process.E (Eio.Process.Executable_not_found "shim")),
+        bt )
+  in
+  let nested_io =
+    match io_errors with
+    | Eio.Io (error, context) ->
+        Eio.Exn.create (Eio.Exn.Multiple_io [ (error, context, bt) ])
+    | _ -> failwith "combining IO errors must produce an IO error"
+  in
+  List.iter
+    [
+      ("mixed process error", mixed);
+      ("nested process error", Eio.Exn.Multiple [ (mixed, bt); (transient, bt) ]);
+      ("combined IO process errors", io_errors);
+      ("nested IO process errors", nested_io);
+      ( "nested cancellation",
+        Eio.Exn.Multiple
+          [
+            ( Eio.Exn.Multiple
+                [ (Eio.Cancel.Cancelled (Failure "cancelled"), bt) ],
+              bt );
+            (transient, bt);
+          ] );
+    ]
+    ~f:(fun (name, error) ->
+      let attempts = ref 0 in
+      let on_spawn () =
+        Int.incr attempts;
+        raise error
+      in
+      let propagated f =
+        try
+          ignore (f ());
+          false
+        with exn -> phys_equal exn error
+      in
+      let stopped =
+        propagated (fun () -> Worktree.retry_transient_spawn on_spawn)
+      in
+      check
+        (name ^ " stops retry and preserves the exception")
+        (stopped && !attempts = 1);
+      attempts := 0;
+      let stopped =
+        propagated (fun () ->
+            Process_tree.run
+              ~process_mgr:(faulting_mgr (Eio.Stdenv.process_mgr env) on_spawn)
+              ~clock:(Eio.Stdenv.clock env) ~env:(Unix.environment ())
+              [ "true" ])
+      in
+      check
+        (name ^ " prevents another supervisor spawn")
+        (stopped && !attempts = 1));
+  let attempts = ref 0 in
+  let transient_errors =
+    Eio.Exn.Multiple
+      [
+        (transient, bt); (Eio.Exn.Multiple [ (Failure "spawn failure", bt) ], bt);
+      ]
+  in
+  let result =
+    Worktree.retry_transient_spawn (fun () ->
+        Int.incr attempts;
+        if !attempts < 3 then raise transient_errors else 42)
+  in
+  check "composite transient failures still retry to success"
+    (result = 42 && !attempts = 3)
+
+let test_supervisor_retry env =
+  let attempts = ref 0 in
+  let mgr =
+    faulting_mgr (Eio.Stdenv.process_mgr env) (fun () ->
+        Int.incr attempts;
+        if !attempts < 3 then raise (Unix.Unix_error (Unix.EAGAIN, "spawn", "")))
+  in
+  let file = Stdlib.Filename.temp_file "onton-spawn-retry-" "" in
+  Stdlib.Fun.protect
+    ~finally:(fun () -> Unix.unlink file)
+    (fun () ->
+      let code, out, err =
+        Process_tree.run ~process_mgr:mgr ~clock:(Eio.Stdenv.clock env)
+          ~env:(Unix.environment ())
+          [
+            "sh";
+            "-c";
+            "printf started >> \"$1\"; printf captured; printf diagnostic >&2; \
+             exit 7";
+            "sh";
+            file;
+          ]
+      in
+      let executions =
+        Stdlib.In_channel.with_open_bin file Stdlib.In_channel.input_all
+      in
+      check "supervisor retries EAGAIN to successful spawn" (!attempts = 3);
+      check "started command with nonzero exit runs exactly once"
+        (code = 7 && String.equal executions "started");
+      check "retried supervisor preserves stdout and stderr"
+        (String.equal out "captured" && String.equal err "diagnostic"))
+
+let test_supervisor_spawn_failures env =
+  let run on_spawn =
+    Process_tree.run
+      ~process_mgr:(faulting_mgr (Eio.Stdenv.process_mgr env) on_spawn)
+      ~clock:(Eio.Stdenv.clock env) ~env:(Unix.environment ()) [ "true" ]
+  in
+  let attempts = ref 0 in
+  let exhausted =
+    try
+      ignore
+        (run (fun () ->
+             Int.incr attempts;
+             raise (Unix.Unix_error (Unix.EAGAIN, "spawn", ""))));
+      false
+    with Unix.Unix_error (Unix.EAGAIN, _, _) -> true
+  in
+  check "supervisor persistent EAGAIN exhausts four attempts"
+    (exhausted && !attempts = 4);
+  attempts := 0;
+  let permanent =
+    try
+      ignore
+        (run (fun () ->
+             Int.incr attempts;
+             raise
+               (Eio.Exn.create
+                  (Eio.Process.E (Eio.Process.Executable_not_found "shim")))));
+      false
+    with Eio.Io (Eio.Process.E (Eio.Process.Executable_not_found _), _) ->
+      true
+  in
+  check "supervisor permanent spawn error is not retried"
+    (permanent && !attempts = 1);
+  attempts := 0;
+  let cancelled =
+    Eio.Cancel.sub (fun caller ->
+        try
+          ignore
+            (run (fun () ->
+                 Int.incr attempts;
+                 Eio.Cancel.cancel caller (Failure "cancel during retry");
+                 raise (Unix.Unix_error (Unix.EAGAIN, "spawn", ""))));
+          false
+        with exn when Worktree.has_cancellation exn -> true)
+  in
+  check "cancellation between retries prevents another supervisor spawn"
+    (cancelled && !attempts = 1)
+
+let test_supervisor_signal_status env =
+  let shim =
+    Option.value
+      (Stdlib.Sys.getenv_opt "ONTON_SETSID_EXEC")
+      ~default:"onton-setsid-exec"
+  in
+  List.iter
+    [
+      (Stdlib.Sys.sigkill, "KILL");
+      (Stdlib.Sys.sigterm, "TERM");
+      (Stdlib.Sys.sighup, "HUP");
+    ]
+    ~f:(fun (signal, name) ->
+      let stderr = Buffer.create 128 in
+      let status =
+        Eio.Switch.run (fun sw ->
+            let child =
+              Eio.Process.spawn ~sw
+                (Eio.Stdenv.process_mgr env)
+                ~stdin:(Eio.Flow.string_source "")
+                ~stderr:(Eio.Flow.buffer_sink stderr)
+                [ shim; "--supervise"; "sh"; "-c"; "kill -" ^ name ^ " $$" ]
+            in
+            Eio.Process.await child)
+      in
+      check
+        ("supervisor forwards SIG" ^ name ^ " as a signal status")
+        (match status with
+        | `Signaled observed -> observed = signal
+        | `Exited _ -> false);
+      check
+        ("SIG" ^ name ^ " forwarding emits no supervisor error")
+        (Buffer.length stderr = 0))
+
 let () =
   Stdlib.print_endline "Worktree spawn-retry:";
   (* [retry_transient_spawn] yields between attempts, so run inside a scheduler. *)
-  Eio_main.run (fun _env ->
+  Eio_main.run (fun env ->
       test_classification ();
       test_retry_then_success ();
       test_verdict_not_retried ();
-      test_persistent_transient_exhausts ());
+      test_persistent_transient_exhausts ();
+      test_composite_failures env;
+      test_supervisor_retry env;
+      test_supervisor_spawn_failures env;
+      test_supervisor_signal_status env);
   if !failures > 0 then (
     Stdlib.Printf.printf "%d/%d checks FAILED\n" !failures !total;
     Stdlib.exit 1)

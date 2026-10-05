@@ -54,7 +54,18 @@ jobs:
         run: opam install . --deps-only --with-test -y
 
       - name: Build
-        run: opam exec -- dune build bin/main.exe bin/setsid_exec/main.exe
+        run: |
+          python3 - <<'PY'
+          import json, os, re
+          from pathlib import Path
+          tag = os.environ['GITHUB_REF_NAME']
+          if re.fullmatch(r'v[0-9].*', tag) is None:
+              raise SystemExit('GITHUB_REF_NAME is not a v-prefixed version tag: ' + tag)
+          version = Path('bin/version.ml')
+          header, _, _ = version.read_text().partition('let s =')
+          version.write_text(header + 'let s = ' + json.dumps(tag, ensure_ascii=False) + '\n')
+          PY
+          opam exec -- dune build bin/main.exe bin/setsid_exec/main.exe
 
       - name: Package binary
         run: |
@@ -63,6 +74,7 @@ jobs:
           cp _build/default/bin/setsid_exec/main.exe _dist/bin/onton-setsid-exec
           test -x _dist/bin/onton
           test -x _dist/bin/onton-setsid-exec
+          test "$(./_dist/bin/onton --version)" = "$GITHUB_REF_NAME"
           tar czf onton-${{ matrix.target }}.tar.gz \
             -C _dist/bin onton onton-setsid-exec
           test "$(tar tzf onton-${{ matrix.target }}.tar.gz | sort | tr '\n' ' ')" = \

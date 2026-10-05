@@ -27,33 +27,9 @@ let worktree_dir ~project_name ~patch_id =
     (Stdlib.Filename.concat home ("worktrees/" ^ project_name))
     ("patch-" ^ id_str)
 
-let rec has_cancellation = function
-  | Eio.Cancel.Cancelled _ -> true
-  | Eio.Exn.Multiple exns ->
-      List.exists exns ~f:(fun (exn, _bt) -> has_cancellation exn)
-  | _ -> false
-
-(* [posix_spawn] can transiently fail (e.g. EAGAIN) when the host is near its
-   per-user process limit — a heavily parallel test runner, or many concurrent
-   patches each driving git. Such failures surface as exceptions *other* than a
-   process verdict ([Eio.Process.E _] — [Child_error]/[Executable_not_found],
-   meaning git actually ran) and other than cancellation. We retry only that
-   transient class so a one-off spawn failure isn't mistaken for a git result
-   (or crash an op); a genuine exit status or cancellation is never retried. *)
-let is_transient_spawn_failure = function
-  | Eio.Io (Eio.Process.E _, _) -> false
-  | e -> not (has_cancellation e)
-
-let rec retry_transient_spawn ?(attempts = 4) f =
-  match f () with
-  | x -> x
-  | exception e when attempts <= 1 || not (is_transient_spawn_failure e) ->
-      raise e
-  | exception _ ->
-      (* Yield so the scheduler can make progress (reap exited children, let
-         other fibers release resources) before the next attempt. *)
-      Eio.Fiber.yield ();
-      retry_transient_spawn ~attempts:(attempts - 1) f
+let has_cancellation = Process_tree.has_cancellation
+let is_transient_spawn_failure = Process_tree.is_transient_spawn_failure
+let retry_transient_spawn = Process_tree.retry_transient_spawn
 
 (* [Eio.Process.run] wrapper that retries transient spawn failures. Named
    parameter [mgr] (not [process_mgr]) so a textual rewrite of the call sites
@@ -1044,7 +1020,9 @@ type integration_result =
 let integrate ~process_mgr ~clock ~repo_root ~root_path ~root_branch
     ~descendant_branch ~head_sha =
   let git path args =
-    run_git_exit_code ~process_mgr ([ "git"; "-C"; path ] @ args)
+    Process_tree.run ~process_mgr ~clock
+      ~env:(Stdlib.Lazy.force clean_git_env)
+      ([ "git"; "-C"; path ] @ args)
   in
   let checked path args =
     match git path args with
@@ -1121,9 +1099,15 @@ let integrate ~process_mgr ~clock ~repo_root ~root_path ~root_branch
                   Stdlib.Fun.protect
                     ~finally:(fun () ->
                       Eio.Cancel.protect (fun () ->
+                          (* The add subprocess tree has been reaped before this
+                             finalizer runs. A cancelled checkout may leave
+                             Git's initialization lock; this private temporary
+                             worktree is safe to remove even when locked. *)
                           let _ =
                             git repo_root
-                              [ "worktree"; "remove"; "--force"; tmp ]
+                              [
+                                "worktree"; "remove"; "--force"; "--force"; tmp;
+                              ]
                           in
                           ()))
                     (fun () ->
