@@ -201,7 +201,7 @@ let graphql_query =
                   ... on CheckRun {
                     __typename
                     databaseId
-                    checkSuite { app { id } }
+                    checkSuite { databaseId app { id } }
                     name
                     conclusion
                     detailsUrl
@@ -296,7 +296,10 @@ type oid_obj = { oid : string option [@yojson.default None] }
 type check_app = { id : string option [@yojson.default None] }
 [@@deriving of_yojson] [@@yojson.allow_extra_fields]
 
-type check_suite = { app : check_app option [@yojson.default None] }
+type check_suite = {
+  app : check_app option; [@yojson.default None]
+  database_id : int option; [@key "databaseId"] [@yojson.default None]
+}
 [@@deriving of_yojson] [@@yojson.allow_extra_fields]
 
 type context_node = {
@@ -470,6 +473,8 @@ let ci_check_of_context (n : context_node) : Types.Ci_check.t option =
               n.check_suite
               |> Option.bind ~f:(fun suite -> suite.app)
               |> Option.bind ~f:(fun (app : check_app) -> app.id);
+            check_suite_id =
+              Option.bind n.check_suite ~f:(fun suite -> suite.database_id);
             id = n.database_id;
           })
   | Some "StatusContext" ->
@@ -486,6 +491,7 @@ let ci_check_of_context (n : context_node) : Types.Ci_check.t option =
             description = n.description;
             started_at = n.created_at;
             app_id = None;
+            check_suite_id = None;
             id = None;
           })
   | Some _ | None -> None
@@ -519,7 +525,7 @@ let contexts_by_oid_query =
               ... on CheckRun {
                 __typename
                 databaseId
-                checkSuite { app { id } }
+                checkSuite { databaseId app { id } }
                 name
                 conclusion
                 detailsUrl
@@ -1107,6 +1113,7 @@ let ci_check_of_actions_job (job : actions_job) =
         description = None;
         started_at = job.started_at;
         app_id = None;
+        check_suite_id = None;
         id = job.database_id;
       })
 
@@ -1632,7 +1639,7 @@ let merge_queue_removal_query =
                     ... on CheckRun {
                       __typename
                       databaseId
-                      checkSuite { app { id } }
+                      checkSuite { databaseId app { id } }
                       name
                       conclusion
                       detailsUrl

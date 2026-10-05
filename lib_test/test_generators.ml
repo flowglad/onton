@@ -117,7 +117,14 @@ let gen_patch =
 
 let gen_ci_check =
   QCheck2.Gen.(
-    let gen_name = string_size ~gen:(char_range 'a' 'z') (int_range 3 15) in
+    (* Repeated context names make replacement and collision cases reachable. *)
+    let gen_name =
+      oneof_weighted
+        [
+          (4, oneof_list [ "build"; "test"; "lint" ]);
+          (1, string_size ~gen:(char_range 'a' 'z') (int_range 3 15));
+        ]
+    in
     (* Cover the full GitHub CheckConclusionState / StatusState universe
        the parser can produce, including ambiguous cases ("cancelled",
        "stale", empty string, "pending") that are neither a terminal
@@ -145,6 +152,9 @@ let gen_ci_check =
     in
     let gen_url = option (pure "https://ci.example.com/1") in
     let gen_desc = option (string_size ~gen:printable (int_range 5 40)) in
+    let* app_id = option (oneof_list [ "actions"; "review"; "" ]) in
+    let* check_suite_id = option (int_range 1 3) in
+    let* id = option (int_range 1 1000) in
     map4
       (fun name conclusion details_url description ->
         Ci_check.
@@ -154,8 +164,9 @@ let gen_ci_check =
             details_url;
             description;
             started_at = None;
-            app_id = None;
-            id = None;
+            app_id;
+            check_suite_id;
+            id;
           })
       gen_name gen_conclusion gen_url gen_desc)
 

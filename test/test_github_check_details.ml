@@ -68,11 +68,11 @@ let test_malformed_json () =
         (Printf.sprintf "expected Json_parse_error, got %s"
            (Onton.Github.show_error err))
 
-let check_run ?(app = "actions") ~id ~name conclusion =
+let check_run ?(app = "actions") ?(suite = 1) ~id ~name conclusion =
   Printf.sprintf
     {|{"__typename":"CheckRun","databaseId":%d,"name":%S,
-       "checkSuite":{"app":{"id":%S}},"conclusion":%S}|}
-    id name app conclusion
+       "checkSuite":{"databaseId":%d,"app":{"id":%S}},"conclusion":%S}|}
+    id name suite app conclusion
 
 let rollup ~truncated nodes =
   Printf.sprintf
@@ -215,6 +215,23 @@ let test_current_or_unidentified_checks_still_block () =
         check_run ~app:"other" ~id:2 ~name:"build" "SUCCESS";
       ];
       [
+        check_run ~suite:1 ~id:1 ~name:"build" "FAILURE";
+        check_run ~suite:2 ~id:2 ~name:"build" "SUCCESS";
+      ];
+      [
+        check_run ~suite:1 ~id:1 ~name:"build" "CANCELLED";
+        check_run ~suite:2 ~id:2 ~name:"build" "SUCCESS";
+      ];
+      [
+        {|{"__typename":"CheckRun","name":"build","databaseId":1,
+          "checkSuite":{"app":{"id":"actions"}},"conclusion":"FAILURE"}|};
+        check_run ~id:2 ~name:"build" "SUCCESS";
+      ];
+      [
+        check_run ~suite:0 ~id:1 ~name:"build" "FAILURE";
+        check_run ~suite:0 ~id:2 ~name:"build" "SUCCESS";
+      ];
+      [
         {|{"__typename":"CheckRun","name":"build","databaseId":1,
           "conclusion":"CANCELLED"}|};
         check_run ~id:2 ~name:"build" "SUCCESS";
@@ -250,6 +267,30 @@ let test_merge_group_feedback_uses_current_runs () =
   | Ok _ -> failwith "expected only the current failing check"
   | Error err -> failwith (Onton.Github.show_error err)
 
+let test_same_named_workflows_preserve_failure_feedback () =
+  let failed = check_run ~suite:1 ~id:1 ~name:"build" "FAILURE" in
+  let passed = check_run ~suite:2 ~id:2 ~name:"build" "SUCCESS" in
+  let st = parse_pr ~truncated:false [ failed; passed ] in
+  assert (Pr_state.equal_check_status st.Pr_state.check_status Pr_state.Failing);
+  assert (not (Pr_state.checks_passing st || Pr_state.merge_ready st));
+  let result = Poller.poll ~was_merged:false st in
+  assert (List.exists result.Poller.ci_checks ~f:Types.Ci_check.is_failure);
+  assert (List.length result.Poller.ci_checks = 2);
+  let body =
+    Printf.sprintf
+      {|{"data":{"repository":{"pullRequest":{"timelineItems":{"nodes":[
+       {"beforeCommit":{"oid":"merge-head","statusCheckRollup":%s}}
+       ]}}}}}|}
+      (rollup ~truncated:false [ failed; passed ])
+  in
+  match Onton.Github.parse_merge_queue_removal_response body with
+  | Ok [ check ] ->
+      assert (Option.equal Int.equal check.Types.Ci_check.id (Some 1));
+      assert (
+        Option.equal Int.equal check.Types.Ci_check.check_suite_id (Some 1))
+  | Ok _ -> failwith "expected the independent workflow's failure"
+  | Error err -> failwith (Onton.Github.show_error err)
+
 let () =
   test_field_mapping_and_nulls ();
   test_empty_array ();
@@ -259,4 +300,5 @@ let () =
   test_replacement_on_later_page ();
   test_current_or_unidentified_checks_still_block ();
   test_merge_group_feedback_uses_current_runs ();
+  test_same_named_workflows_preserve_failure_feedback ();
   Stdlib.print_endline "test_github_check_details: OK"

@@ -163,6 +163,7 @@ let checks_for_commit ~owner ~repo ~branch ~sha jobs =
         description = Some (Printf.sprintf "SourceHut build #%d" job.id);
         started_at = job.created;
         app_id = None;
+        check_suite_id = None;
         id = Some job.id;
       })
 

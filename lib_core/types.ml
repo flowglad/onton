@@ -195,6 +195,9 @@ module Ci_check = struct
     app_id : string option; [@yojson.default None]
         (** GitHub App node ID for CheckRuns. Missing for legacy status
             contexts, other forges, and snapshots written before this field. *)
+    check_suite_id : int option; [@yojson.default None]
+        (** GitHub CheckSuite [databaseId]. Separates independently live
+            workflow runs whose checks share an App and name. *)
     id : int option; [@yojson.default None]
         (** GitHub CheckRun [databaseId] when available, [None] for legacy
             StatusContext entries (which have no stable numeric ID). Used as the
@@ -219,37 +222,40 @@ module Ci_check = struct
   let is_success (c : t) =
     List.mem success_conclusions c.conclusion ~equal:String.equal
 
-  (* A replacement is identified by its producer and context name, never by
-     conclusion: a newer failure or pending run must supersede an older pass.
-     Keep unidentifiable checks and equal-ID observations conservatively. *)
+  (* Only collapse replacements within a producer's suite and context name,
+     never across independent workflow runs or based on conclusion. *)
   let current_runs checks =
+    let module Identity = struct
+      module T = struct
+        type t = string * int * string [@@deriving sexp_of, compare]
+      end
+
+      include T
+      include Comparator.Make (T)
+    end in
     let identity (c : t) =
-      match (c.app_id, c.id) with
-      | Some app, Some id when (not (String.is_empty app)) && id > 0 ->
-          Some (app, c.name, id)
+      match (c.app_id, c.check_suite_id, c.id) with
+      | Some app, Some suite, Some id
+        when (not (String.is_empty app)) && suite > 0 && id > 0 ->
+          Some ((app, suite, c.name), id)
       | _ -> None
     in
     let latest =
       List.fold checks
-        ~init:(Map.empty (module String))
-        ~f:(fun apps check ->
+        ~init:(Map.empty (module Identity))
+        ~f:(fun contexts check ->
           match identity check with
-          | None -> apps
-          | Some (app, name, id) ->
-              Map.update apps app ~f:(fun contexts ->
-                  let contexts =
-                    Option.value contexts ~default:(Map.empty (module String))
-                  in
-                  Map.update contexts name ~f:(function
-                    | None -> id
-                    | Some previous -> Int.max previous id)))
+          | None -> contexts
+          | Some (key, id) ->
+              Map.update contexts key ~f:(function
+                | None -> id
+                | Some previous -> Int.max previous id))
     in
     List.filter checks ~f:(fun check ->
         match identity check with
         | None -> true
-        | Some (app, name, id) ->
-            Map.find latest app
-            |> Option.bind ~f:(fun contexts -> Map.find contexts name)
+        | Some (key, id) ->
+            Map.find latest key
             |> Option.value_map ~default:true ~f:(Int.equal id))
 
   let merge_queue_failure_name = "GitHub merge queue"
@@ -266,6 +272,7 @@ module Ci_check = struct
            still in the queue.";
       started_at = None;
       app_id = None;
+      check_suite_id = None;
       id = None;
     }
 

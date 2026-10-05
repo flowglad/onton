@@ -75,6 +75,7 @@ let ready_branch orch n =
             description = None;
             started_at = None;
             app_id = None;
+            check_suite_id = None;
             id = Some n;
           };
       ]
@@ -124,6 +125,7 @@ let () =
                   description = None;
                   started_at = None;
                   app_id = None;
+                  check_suite_id = None;
                   id = Some 2;
                 };
             ]

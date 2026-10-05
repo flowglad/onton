@@ -2123,6 +2123,7 @@ let%test
             description = None;
             started_at = None;
             app_id = None;
+            check_suite_id = None;
             id = None;
           };
       ]
@@ -2368,6 +2369,7 @@ let%test "follow-up prompts without patch+gameplan emit only the turn layer" =
             description = None;
             started_at = None;
             app_id = None;
+            check_suite_id = None;
             id = None;
           };
       ]
@@ -2387,6 +2389,7 @@ let%test "ci failure prompt renders check ids when present" =
             description = None;
             started_at = None;
             app_id = None;
+            check_suite_id = None;
             id = Some 12345;
           };
       ]
@@ -2403,6 +2406,7 @@ let test_ci_check ?id ?details_url ?description name conclusion =
       description;
       started_at = None;
       app_id = None;
+      check_suite_id = None;
       id;
     }
 

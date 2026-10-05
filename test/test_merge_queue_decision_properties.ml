@@ -31,6 +31,7 @@ let gen_ci_check =
           description;
           started_at = None;
           app_id = None;
+          check_suite_id = None;
           id;
         })
     gen_string (oneof_list conclusions) (option gen_string) (option gen_string)
@@ -92,6 +93,7 @@ let failing_check =
       description = None;
       started_at = None;
       app_id = None;
+      check_suite_id = None;
       id = Some 1;
     }
 

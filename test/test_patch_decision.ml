@@ -44,6 +44,7 @@ let failing_check run_id =
       description = None;
       started_at = None;
       app_id = None;
+      check_suite_id = None;
       id = Some run_id;
     }
 
@@ -341,6 +342,7 @@ let () =
                 description = None;
                 started_at = None;
                 app_id = None;
+                check_suite_id = None;
                 id = Some run_id;
               }
           in
@@ -364,6 +366,7 @@ let () =
                 description = None;
                 started_at = None;
                 app_id = None;
+                check_suite_id = None;
                 id = Some run_id;
               }
           in
@@ -428,6 +431,7 @@ let () =
                 description = None;
                 started_at = None;
                 app_id = None;
+                check_suite_id = None;
                 id = Some run_id;
               }
           in
@@ -455,6 +459,7 @@ let () =
                 description = None;
                 started_at = None;
                 app_id = None;
+                check_suite_id = None;
                 id = None;
               }
           in
@@ -467,6 +472,7 @@ let () =
                 description = None;
                 started_at = None;
                 app_id = None;
+                check_suite_id = None;
                 id = Some 1;
               }
           in
@@ -643,6 +649,7 @@ let () =
             description = None;
             started_at = None;
             app_id = None;
+            check_suite_id = None;
             id = None;
           };
         ]
@@ -780,6 +787,7 @@ let () =
                 description = None;
                 started_at = None;
                 app_id = None;
+                check_suite_id = None;
                 id = None;
               };
             ]
@@ -841,6 +849,7 @@ let () =
         description = None;
         started_at = None;
         app_id = None;
+        check_suite_id = None;
         id = Some id;
       }
     in
@@ -875,6 +884,7 @@ let () =
         description = None;
         started_at = None;
         app_id = None;
+        check_suite_id = None;
         id = Some id;
       }
     in
@@ -922,6 +932,7 @@ let () =
         description = None;
         started_at = None;
         app_id = None;
+        check_suite_id = None;
         id = None;
       }
     in

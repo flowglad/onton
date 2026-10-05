@@ -371,6 +371,7 @@ let check ~conclusion : Types.Ci_check.t =
     description = None;
     started_at = None;
     app_id = None;
+    check_suite_id = None;
     id = None;
   }
 

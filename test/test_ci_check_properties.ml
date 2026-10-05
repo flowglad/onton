@@ -5,8 +5,8 @@ open Base
 open Onton_core
 module Check = Types.Ci_check
 
-let check ?(app_id = Some "actions") ?(id = Some 1) ?(name = "build") conclusion
-    : Check.t =
+let check ?(app_id = Some "actions") ?(check_suite_id = Some 1) ?(id = Some 1)
+    ?(name = "build") conclusion : Check.t =
   {
     Check.name;
     conclusion;
@@ -14,14 +14,17 @@ let check ?(app_id = Some "actions") ?(id = Some 1) ?(name = "build") conclusion
     description = None;
     started_at = None;
     app_id;
+    check_suite_id;
     id;
   }
 
 let gen_check =
   let open QCheck2.Gen in
-  map4
-    (fun app_id id name conclusion -> check ~app_id ~id ~name conclusion)
+  map5
+    (fun app_id check_suite_id id name conclusion ->
+      check ~app_id ~check_suite_id ~id ~name conclusion)
     (option (oneof_list [ "actions"; "review"; "" ]))
+    (option (int_range (-1) 3))
     (option (int_range (-1) 100))
     (oneof_list [ "build"; "test"; "" ])
     (oneof_list [ "success"; "failure"; "cancelled"; "pending"; "unknown" ])
@@ -62,6 +65,21 @@ let tests =
           in
           Check.equal
             { check with Check.app_id = None }
+            (Check.t_of_yojson json)
+        with _ -> false);
+    Test.make ~name:"older snapshots without a suite identity remain readable"
+      ~count:300 gen_check (fun check ->
+        try
+          let json =
+            match Check.yojson_of_t check with
+            | `Assoc fields ->
+                `Assoc
+                  (List.filter fields ~f:(fun (key, _) ->
+                       not (String.equal key "check_suite_id")))
+            | other -> other
+          in
+          Check.equal
+            { check with Check.check_suite_id = None }
             (Check.t_of_yojson json)
         with _ -> false);
     Test.make ~name:"resolving pages separately then together is associative"
@@ -113,6 +131,35 @@ let tests =
         && Pr_state.equal_check_status
              (Pr_state.derive_check_status current)
              Pr_state.Pending);
+    Test.make
+      ~name:"same-named checks in different suites remain independently live"
+      ~count:300
+      Gen.(triple (int_range 1 1000) (int_range 1 1000) bool)
+      (fun (id, suite, failing) ->
+        let conclusion, expected =
+          if failing then ("failure", Pr_state.Failing)
+          else ("cancelled", Pr_state.Pending)
+        in
+        let old = check ~check_suite_id:(Some suite) ~id:(Some id) conclusion in
+        let newer =
+          check ~check_suite_id:(Some (suite + 1)) ~id:(Some (id + 1)) "success"
+        in
+        let current = Check.current_runs [ old; newer ] in
+        same current [ old; newer ]
+        && Pr_state.equal_check_status
+             (Pr_state.derive_check_status current)
+             expected);
+    Test.make ~name:"missing or invalid suite identities never discard failures"
+      ~count:300
+      Gen.(pair (oneof_list [ None; Some 0; Some (-1) ]) (int_range 1 1000))
+      (fun (check_suite_id, id) ->
+        let old = check ~check_suite_id ~id:(Some id) "failure" in
+        let newer = check ~check_suite_id ~id:(Some (id + 1)) "success" in
+        let current = Check.current_runs [ old; newer ] in
+        same current [ old; newer ]
+        && Pr_state.equal_check_status
+             (Pr_state.derive_check_status current)
+             Pr_state.Failing);
     Test.make ~name:"unidentified and equal-ID checks remain conservative"
       ~count:300
       Gen.(

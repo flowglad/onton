@@ -522,6 +522,7 @@ let () =
                       description = None;
                       started_at = None;
                       app_id = None;
+                      check_suite_id = None;
                       id = None;
                     })
             in
@@ -570,6 +571,7 @@ let () =
                       description = None;
                       started_at = None;
                       app_id = None;
+                      check_suite_id = None;
                       id = None;
                     })
             in
@@ -796,6 +798,7 @@ let () =
                 description = None;
                 started_at = None;
                 app_id = None;
+                check_suite_id = None;
                 id = None;
               }
           in
@@ -844,6 +847,7 @@ let () =
                 description = None;
                 started_at = None;
                 app_id = None;
+                check_suite_id = None;
                 id = None;
               }
           in
@@ -863,6 +867,7 @@ let () =
                 description = None;
                 started_at = None;
                 app_id = None;
+                check_suite_id = None;
                 id;
               }
           in
@@ -915,6 +920,7 @@ let () =
                 description = None;
                 started_at = None;
                 app_id = None;
+                check_suite_id = None;
                 id;
               }
           in

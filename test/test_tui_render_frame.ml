@@ -227,6 +227,7 @@ let make_checks n =
         description = None;
         started_at = None;
         app_id = None;
+        check_suite_id = None;
         id = None;
       })
 
