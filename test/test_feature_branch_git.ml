@@ -246,22 +246,57 @@ let () =
                      [ "worktree"; "list"; "--porcelain" ])
                   ~substring:"onton-integration-"));
           let late_head = child "late" "late-file" "late\n" in
-          write hook "#!/bin/sh\nsleep 1\n";
-          Unix.chmod hook 0o755;
-          let cancelled =
-            Eio.Time.with_timeout (Eio.Stdenv.clock env) 0.05 (fun () ->
-                Ok (integrate "late" late_head))
+          let marker = dir ^ "/integration-hook-started" in
+          let cancel_at_hook () =
+            let cancelled = ref false in
+            Eio.Time.with_timeout_exn (Eio.Stdenv.clock env) 10. (fun () ->
+                Eio.Fiber.first
+                  (fun () ->
+                    try
+                      ignore
+                        (integrate "late" late_head
+                          : Worktree.integration_result);
+                      failwith "integration finished before cancellation"
+                    with exn when Worktree.has_cancellation exn ->
+                      cancelled := true;
+                      raise exn)
+                  (fun () ->
+                    while not (Stdlib.Sys.file_exists marker) do
+                      Eio.Time.sleep (Eio.Stdenv.clock env) 0.001
+                    done));
+            check "integration cancellation propagates" !cancelled;
+            Unix.unlink marker;
+            check "cancelled worktree cleaned"
+              (not
+                 (String.is_substring
+                    (Git.git_capture ~cwd:dir
+                       [ "worktree"; "list"; "--porcelain" ])
+                    ~substring:"onton-integration-"));
+            check "root lock released after cancellation"
+              (Runtime.with_root_write rt (fun () -> true))
           in
-          check "integration cancellation propagates"
-            (match cancelled with Error `Timeout -> true | Ok _ -> false);
+          (* Cancel while Git is checking out files, before worktree add releases
+             its initialization lock. The marker makes this independent of host speed. *)
+          let filter = dir ^ "/slow-smudge" in
+          write filter
+            ("#!/bin/sh\ntouch "
+            ^ Stdlib.Filename.quote marker
+            ^ "\nsleep 1\ncat\n");
+          Unix.chmod filter 0o755;
+          write
+            (dir ^ "/.git/info/attributes")
+            "shared filter=integration-cancel\n";
+          Git.run_git ~cwd:dir
+            [ "config"; "filter.integration-cancel.smudge"; filter ];
+          cancel_at_hook ();
+          Unix.unlink (dir ^ "/.git/info/attributes");
+          Git.run_git ~cwd:dir
+            [ "config"; "--unset"; "filter.integration-cancel.smudge" ];
+          (* Also cancel after acquisition, while publication is in progress. *)
+          write hook
+            ("#!/bin/sh\ntouch " ^ Stdlib.Filename.quote marker ^ "\nsleep 1\n");
+          Unix.chmod hook 0o755;
+          cancel_at_hook ();
           Unix.unlink hook;
-          check "cancelled worktree cleaned"
-            (not
-               (String.is_substring
-                  (Git.git_capture ~cwd:dir
-                     [ "worktree"; "list"; "--porcelain" ])
-                  ~substring:"onton-integration-"));
-          check "root lock released after cancellation"
-            (Runtime.with_root_write rt (fun () -> true));
           Stdlib.print_endline
             "PASS local Git feature integration, races, recovery and ancestry"))

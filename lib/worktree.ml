@@ -1128,8 +1128,12 @@ let integrate ~process_mgr ~clock ~repo_root ~root_path ~root_branch
                           ()))
                     (fun () ->
                       match
-                        checked repo_root
-                          [ "worktree"; "add"; "--detach"; tmp; tip ]
+                        (* Git holds an initialization lock while checking out
+                           files. Let acquisition finish before cancellation can
+                           reach cleanup, so removal sees an unlocked worktree. *)
+                        Eio.Cancel.protect (fun () ->
+                            checked repo_root
+                              [ "worktree"; "add"; "--detach"; tmp; tip ])
                       with
                       | Result.Error e -> fail e
                       | Result.Ok _ -> (
