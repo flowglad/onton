@@ -90,8 +90,12 @@ let enqueue_pr_body_if_needed t patch_id (agent : Patch_agent.t) =
      would re-enqueue Pr_body on every tick and immediately override the
      escalation — defeating the retry-once-then-intervene contract. *)
   if
-    (not (Patch_agent.has_pr agent))
-    || agent.merged || agent.pr_body_delivered
+    (not (Patch_agent.has_pr agent || agent.branch_published))
+    || agent.merged
+    || agent.pr_body_delivered
+       && not
+            (Orchestrator.is_integration_root t patch_id
+            && agent.pr_body_refresh.Patch_agent.pending)
     || Patch_agent.needs_intervention agent
   then t
   else
@@ -446,7 +450,7 @@ let ready_for_review t patch_id =
    parent that never delivered notes / went green cannot strand its child. *)
 let open_dep_review_ready t pid =
   let a = Orchestrator.agent t pid in
-  (a.Patch_agent.pr_body_delivered || Orchestrator.is_feature_descendant t pid)
+  a.Patch_agent.pr_body_delivered
   && (not a.Patch_agent.has_conflict)
   && a.Patch_agent.checks_passing
 
@@ -507,10 +511,7 @@ let reconcile_patch t ~project_name:_ ~gameplan:_ ~(patch : Patch.t) =
   let agent = Orchestrator.agent t patch_id in
   if agent.Patch_agent.merged then (t, [])
   else
-    let t =
-      if Orchestrator.is_feature_descendant t patch_id then t
-      else enqueue_pr_body_if_needed t patch_id agent
-    in
+    let t = enqueue_pr_body_if_needed t patch_id agent in
     let effects = reconcile_pr_settings t patch_id ~allow_draft_flip:true in
     let t =
       if

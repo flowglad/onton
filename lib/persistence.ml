@@ -214,6 +214,8 @@ let patch_agent_to_yojson (a : Patch_agent.t) =
       ("native_stack_absent_polls", `Int a.native_stack_absent_polls);
       ("is_draft", `Bool a.is_draft);
       ("pr_body_delivered", `Bool a.pr_body_delivered);
+      ("pr_body_refresh_pending", `Bool a.pr_body_refresh.Patch_agent.pending);
+      ("pr_body_refresh_version", `Int a.pr_body_refresh.Patch_agent.version);
       ("pr_body_artifact_miss_count", `Int a.pr_body_artifact_miss_count);
       ("review_unresolved_cycle_count", `Int a.review_unresolved_cycle_count);
       ("start_attempts_without_pr", `Int a.start_attempts_without_pr);
@@ -415,6 +417,22 @@ let patch_agent_of_yojson ~gameplan json =
             (bool_member_opt "base_contains_merged_siblings" json)
             ~default:false)
        ~is_draft:(bool_member "is_draft" json)
+       ~pr_body_refresh_pending:
+         (match bool_member_opt "pr_body_refresh_pending" json with
+         | Some pending -> pending
+         | None -> (
+             (* Legacy snapshots cannot prove that the root body covers integrated
+              descendants. Conservatively require publication at the inferred
+              implementation root, excluding a publication prerequisite. *)
+             match Execution_mode.infer_gameplan gameplan with
+             | Ok mode ->
+                 Execution_mode.is_root mode
+                   (Patch_id.of_string (string_member "patch_id" json))
+             | Error _ -> false))
+       ~pr_body_refresh_version:
+         (Option.value
+            (int_member_opt "pr_body_refresh_version" json)
+            ~default:0)
        ~pr_body_delivered:
          (Option.value (bool_member_opt "pr_body_delivered" json) ~default:true)
        ~pr_body_artifact_miss_count:

@@ -261,6 +261,45 @@ let () =
       (Some "ci_failure_count>=5"));
   print_endline "PASS: raw intervention field decisions stay in lockstep"
 
+let () =
+  QCheck2.Test.check_exn
+    (QCheck2.Test.make
+       ~name:"PR body refresh preserves notes until successful delivery"
+       ~count:300
+       QCheck2.Gen.(pair bool (list (option bool)))
+       (fun (initial_delivered, operations) ->
+         let initial =
+           Patch_agent.set_pr_body_delivered (agent ()) initial_delivered
+         in
+         let _, _, _, valid =
+           List.fold_left
+             (fun (a, delivered, pending, valid) operation ->
+               let a, delivered, pending =
+                 match operation with
+                 | None ->
+                     (Patch_agent.request_pr_body_refresh a, delivered, true)
+                 | Some success ->
+                     let publication = a in
+                     let a = Patch_agent.set_pr_body_delivered a success in
+                     let a =
+                       if success then
+                         Patch_agent.acknowledge_pr_body_refresh a ~publication
+                       else a
+                     in
+                     (a, success, pending && not success)
+               in
+               ( a,
+                 delivered,
+                 pending,
+                 valid
+                 && Bool.equal a.Patch_agent.pr_body_delivered delivered
+                 && Bool.equal a.Patch_agent.pr_body_refresh.Patch_agent.pending
+                      pending ))
+             (initial, initial_delivered, false, true)
+             operations
+         in
+         valid))
+
 (* Exercise the whole Patch_agent decision surface. Some transitions have
    preconditions (e.g. [clear_pr] requires a PR present), so each is applied
    defensively: the property asserts the surface is total — no arbitrary

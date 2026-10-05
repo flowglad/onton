@@ -1312,3 +1312,37 @@ let () =
            && check orch false steps
          with _ -> false));
   Stdlib.print_endline "AO-publication-merge-requirements passed"
+
+let () =
+  QCheck2.Test.check_exn
+    (QCheck2.Test.make
+       ~name:"feature publication acknowledgement preserves later integrations"
+       ~count:200 QCheck2.Gen.bool (fun merge_during_publication ->
+         try
+           let patches = mk_patches 3 in
+           let root = pid_of_idx patches 0 in
+           let first = pid_of_idx patches 1 in
+           let second = pid_of_idx patches 2 in
+           match Execution_mode.infer (Graph.of_patches patches) with
+           | Error _ -> false
+           | Ok mode ->
+               let orch =
+                 Orchestrator.create ~patches ~main_branch:main |> fun o ->
+                 Orchestrator.set_execution_mode o mode |> fun o ->
+                 Orchestrator.set_pr_number o root (Pr_number.of_int 1)
+                 |> fun o -> Orchestrator.mark_merged o first
+               in
+               let publication = Orchestrator.agent orch root in
+               let orch =
+                 if merge_during_publication then
+                   Orchestrator.mark_merged orch second
+                 else orch
+               in
+               let orch =
+                 Orchestrator.acknowledge_pr_body_refresh orch root ~publication
+                 |> fun o -> Orchestrator.set_pr_body_delivered o root true
+               in
+               Bool.equal
+                 (Orchestrator.agent orch root).Patch_agent.pr_body_refresh
+                   .Patch_agent.pending merge_during_publication
+         with _ -> false))

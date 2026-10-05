@@ -119,7 +119,7 @@ let descendants_complete t graph ~has_merged =
 let integration_ready t ~construction_open ~ignore_inflight ~max_failures
     ~terminal (a : Patch_agent.t) =
   is_descendant t a.patch_id && construction_open && a.branch_published
-  && (not a.merged) && (not a.busy)
+  && a.pr_body_delivered && (not a.merged) && (not a.busy)
   && (not (Patch_agent.needs_intervention a))
   && (not a.branch_blocked) && (not a.native_stack) && a.automerge_enabled
   && (ignore_inflight || not a.automerge_inflight)
@@ -145,6 +145,7 @@ let root_ready t graph ~has_merged ~pending_integrations (a : Patch_agent.t) =
   && Option.is_none a.expected_remote_head_oid
   && (not pending_integrations) && (not a.has_conflict) && a.checks_passing
   && a.pr_body_delivered
+  && not a.pr_body_refresh.Patch_agent.pending
 
 let validate_terminal t ~branch_of ~main =
   match root t with

@@ -162,6 +162,10 @@ val set_merge_commit_sha : t -> Patch_id.t -> string option -> t
 val set_base_contains_merged_siblings : t -> Patch_id.t -> bool -> t
 val set_is_draft : t -> Patch_id.t -> bool -> t
 val set_pr_body_delivered : t -> Patch_id.t -> bool -> t
+
+val acknowledge_pr_body_refresh :
+  t -> Patch_id.t -> publication:Patch_agent.t -> t
+
 val reset_pr_body_artifact_miss_count : t -> Patch_id.t -> t
 val increment_start_attempts_without_pr : t -> Patch_id.t -> t
 val reset_intervention_state : t -> Patch_id.t -> t

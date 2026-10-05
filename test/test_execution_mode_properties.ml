@@ -74,6 +74,7 @@ let property name gen f =
 let ready_agent () =
   let a = Patch_agent.create ~branch:(branch 2) (id 2) in
   Patch_agent.mark_branch_published a |> fun a ->
+  Patch_agent.set_pr_body_delivered a true |> fun a ->
   Patch_agent.set_automerge_enabled a true |> fun a ->
   Patch_agent.set_base_branch a (branch 1) |> fun a ->
   Patch_agent.set_branch_rebased_onto a (branch 1) |> fun a ->
@@ -183,18 +184,22 @@ let tests =
                   false))
              [ id 3 ]);
     property "root readiness requires completed descendants and no integration"
-      (G.pair G.bool G.bool) (fun (descendants_merged, pending) ->
+      (G.triple G.bool G.bool G.bool)
+      (fun (descendants_merged, pending, body_dirty) ->
         let root =
           Patch_agent.create ~branch:(branch 1) (id 1) |> fun a ->
           Patch_agent.set_head_oid a (Some "checked-head") |> fun a ->
           Patch_agent.set_checks_passing a true |> fun a ->
           Patch_agent.set_pr_body_delivered a true
         in
+        let root =
+          if body_dirty then Patch_agent.request_pr_body_refresh root else root
+        in
         Bool.equal
           (Execution_mode.root_ready mode graph
              ~has_merged:(fun _ -> descendants_merged)
              ~pending_integrations:pending root)
-          (descendants_merged && not pending));
+          (descendants_merged && (not pending) && not body_dirty));
     property "feature publication defers only old or absent heads"
       (G.option G.string) (fun observed ->
         let a =
@@ -226,6 +231,12 @@ let tests =
           else a
         in
         Bool.equal (integration a) ((not busy) && not queued));
+    property "integration requires delivered implementation notes" G.bool
+      (fun delivered ->
+        Bool.equal
+          (integration
+             (Patch_agent.set_pr_body_delivered (ready_agent ()) delivered))
+          delivered);
     property "published checked head and settled rebase required"
       (G.pair G.bool G.bool) (fun (pending, settled) ->
         let a =
