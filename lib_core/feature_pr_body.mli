@@ -1,3 +1,5 @@
+(* @archlint.module interface
+   @archlint.domain execution-mode *)
 open Types
 
 val render :
