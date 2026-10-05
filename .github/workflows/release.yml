@@ -26,6 +26,8 @@ jobs:
     steps:
       # All build targets use GitHub-hosted runners.
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          fetch-depth: 0
 
       # We deliberately do NOT cache [_opam/]. setup-ocaml@v3 caches its own
       # opam-root state at [~/.opam/]; caching the local switch alongside lets
@@ -54,8 +56,6 @@ jobs:
         run: opam install . --deps-only --with-test -y
 
       - name: Build
-        env:
-          ONTON_VERSION: ${{ github.ref_name }}
         run: opam exec -- dune build bin/main.exe bin/setsid_exec/main.exe
 
       - name: Package binary

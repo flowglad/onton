@@ -557,9 +557,9 @@ dune exec bin/main.exe -- --gameplan path/to/gameplan.yaml
 dune fmt            # auto-format via ocamlformat
 ```
 
-Set `ONTON_VERSION` when building to embed a version in the executable, for
-example `ONTON_VERSION=v0.63.2 dune build`. Builds without it report `dev`.
-Changing this value invalidates the generated version and rebuilds the executable.
+Builds embed `git describe --tags --always` from the source checkout. Tagged
+commits report their tag; other commits report a tag-relative revision or commit
+hash. Source trees without Git metadata report `dev`.
 
 ## Architecture
 
