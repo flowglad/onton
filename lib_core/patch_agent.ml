@@ -67,6 +67,7 @@ type t = {
           Start/Rebase eligibility gate. *)
   is_draft : bool;
   pr_body_delivered : bool;
+  pr_body_refresh_pending : bool;
   pr_body_artifact_miss_count : int;
       (** Consecutive Pr_body sessions that ended with evidence the agent was
           blocked mid-write (see [Orchestrator.Respond_pr_body_miss]). At >=2
@@ -275,6 +276,7 @@ let create ~branch ?(max_ci_failures = default_max_ci_failures) patch_id =
     base_contains_merged_siblings = true;
     is_draft = false;
     pr_body_delivered = false;
+    pr_body_refresh_pending = false;
     pr_body_artifact_miss_count = 0;
     review_unresolved_cycle_count = 0;
     start_attempts_without_pr = 0;
@@ -342,6 +344,7 @@ let create_adhoc ~complexity ~patch_id ~branch ~pr_number ~max_ci_failures =
     base_contains_merged_siblings = true;
     is_draft = false;
     pr_body_delivered = true;
+    pr_body_refresh_pending = false;
     pr_body_artifact_miss_count = 0;
     review_unresolved_cycle_count = 0;
     start_attempts_without_pr = 0;
@@ -503,7 +506,15 @@ let set_base_contains_merged_siblings t v =
   { t with base_contains_merged_siblings = v }
 
 let set_is_draft t v = { t with is_draft = v }
-let set_pr_body_delivered t v = { t with pr_body_delivered = v }
+
+let set_pr_body_delivered t v =
+  {
+    t with
+    pr_body_delivered = v;
+    pr_body_refresh_pending = (if v then false else t.pr_body_refresh_pending);
+  }
+
+let request_pr_body_refresh t = { t with pr_body_refresh_pending = true }
 
 let increment_start_attempts_without_pr t =
   { t with start_attempts_without_pr = t.start_attempts_without_pr + 1 }
@@ -678,15 +689,16 @@ let restore ?(branch_published = false) ~patch_id ~branch ~pr_status
     ~mergeability_unknown ~merge_queue_required ~merge_queue_entry
     ?(native_stack = false) ?(native_stack_absent_polls = 0) ~merge_commit_sha
     ~base_contains_merged_siblings ~is_draft ~pr_body_delivered
-    ~pr_body_artifact_miss_count ?(review_unresolved_cycle_count = 0)
-    ~start_attempts_without_pr ~conflict_noop_count ~no_commits_push_count
-    ~context_exhaustion_count ~push_failure_count ~rebase_failure_count
-    ~branch_rebased_onto ~branch_rebased_onto_sha ~anchor_history
-    ~checks_passing ~current_op ~current_op_state ~current_message_id
-    ~generation ~worktree_path ~branch_blocked ~llm_session_id
-    ~automerge_enabled ~automerge_deadline ~automerge_inflight
-    ?(review_requested_for_oid = None) ?(review_request_inflight = false)
-    ~automerge_failure_count ~delivered_ci_run_ids () =
+    ?(pr_body_refresh_pending = false) ~pr_body_artifact_miss_count
+    ?(review_unresolved_cycle_count = 0) ~start_attempts_without_pr
+    ~conflict_noop_count ~no_commits_push_count ~context_exhaustion_count
+    ~push_failure_count ~rebase_failure_count ~branch_rebased_onto
+    ~branch_rebased_onto_sha ~anchor_history ~checks_passing ~current_op
+    ~current_op_state ~current_message_id ~generation ~worktree_path
+    ~branch_blocked ~llm_session_id ~automerge_enabled ~automerge_deadline
+    ~automerge_inflight ?(review_requested_for_oid = None)
+    ?(review_request_inflight = false) ~automerge_failure_count
+    ~delivered_ci_run_ids () =
   {
     patch_id;
     branch;
@@ -722,6 +734,7 @@ let restore ?(branch_published = false) ~patch_id ~branch ~pr_status
     base_contains_merged_siblings;
     is_draft;
     pr_body_delivered;
+    pr_body_refresh_pending;
     pr_body_artifact_miss_count;
     review_unresolved_cycle_count;
     start_attempts_without_pr;
@@ -778,6 +791,7 @@ let set_pr_number t pr_number =
         native_stack = false;
         native_stack_absent_polls = 0;
         pr_body_delivered = false;
+        pr_body_refresh_pending = false;
         checks_passing = false;
         start_attempts_without_pr = 0;
         ci_checks = [];

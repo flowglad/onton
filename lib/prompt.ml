@@ -845,8 +845,9 @@ let render_pr_description ~(project_name : string) (patch : Patch.t)
 {{changes_section}}{{gameplan_spec_section}}{{patch_spec_section}}{{reachability_section}}{{acceptance_criteria_section}}{{files_section}}{{precedents_section}}|}
         vars)
 
-let render_pr_body_prompt ~(project_name : string) ~(pr_number : Pr_number.t)
-    ~(pr_body : string) ~(spec_suffix : string) ~(artifact_path : string) =
+let render_pr_body_prompt ~(branch_only : bool) ~(project_name : string)
+    ~(pr_number : Pr_number.t) ~(pr_body : string) ~(spec_suffix : string)
+    ~(artifact_path : string) =
   let pr_num_str = Int.to_string (Pr_number.to_int pr_number) in
   let spec_context =
     if String.is_empty (String.strip spec_suffix) then ""
@@ -855,6 +856,26 @@ let render_pr_body_prompt ~(project_name : string) ~(pr_number : Pr_number.t)
   let vars =
     [
       ("pr_number", pr_num_str);
+      ( "publication_context",
+        if branch_only then
+          "You have just finished implementing a dependency patch for feature \
+           PR #" ^ pr_num_str
+          ^ ". This patch publishes a branch, and its description and \
+             specifications are shown below."
+        else
+          "You have just finished implementing this patch. PR #" ^ pr_num_str
+          ^ " was opened with a gameplan-derived body and specifications that \
+             will be kept as-is." );
+      ( "notes_destination",
+        if branch_only then
+          "The supervisor will include this patch’s description, specs, and \
+           notes in the feature PR after integration, grouped under this \
+           patch. Write notes for this patch only."
+        else
+          "The supervisor will keep this description and specs on the PR. Your \
+           job is to write **additional notes** — anything a reviewer needs \
+           beyond the gameplan description. The supervisor will append your \
+           notes to the PR body under an `## Implementation Notes` header." );
       ("pr_body", pr_body);
       ("spec_context", spec_context);
       ("artifact_path", artifact_path);
@@ -862,15 +883,15 @@ let render_pr_body_prompt ~(project_name : string) ~(pr_number : Pr_number.t)
   in
   render_with_override ~project_name ~name:"pr_body" ~vars ~default:(fun () ->
       substitute_variables
-        {|You have just finished implementing this patch. PR #{{pr_number}} was opened with a gameplan-derived body and specifications that will be kept as-is.
+        {|{{publication_context}}
 
-The current PR body is:
+The patch description is:
 
 ---
 {{pr_body}}
 ---
 {{spec_context}}
-The supervisor will keep this description and specs on the PR. Your job is to write **additional notes** — anything a reviewer needs beyond the gameplan description. The supervisor will append your notes to the PR body under an `## Implementation Notes` header. Agents implementing patches that depend on this one are also pointed at these notes, so they double as a handoff to the work built on top of your changes.
+{{notes_destination}} Agents implementing patches that depend on this one are also pointed at these notes, so they double as a handoff to the work built on top of your changes.
 
 **Write just the notes content (no header) to `{{artifact_path}}`.** This is an absolute path outside the worktree — write it with the Write tool. Do NOT run `gh`, `git`, or any forge command; the supervisor reads the file and PATCHes the PR.
 
@@ -2090,10 +2111,26 @@ let%test "gameplan-derived patch layer carries required context resources" =
 
 let%test "pr body prompt tells the author about dependent patch readers" =
   let rendered =
-    render_pr_body_prompt ~project_name:"onton" ~pr_number:(Pr_number.of_int 7)
-      ~pr_body:"body" ~spec_suffix:"" ~artifact_path:"/tmp/pr-body.md"
+    render_pr_body_prompt ~branch_only:false ~project_name:"onton"
+      ~pr_number:(Pr_number.of_int 7) ~pr_body:"body" ~spec_suffix:""
+      ~artifact_path:"/tmp/pr-body.md"
   in
   String.is_substring rendered ~substring:"patches that depend on this one"
+
+let%test "feature dependency notes are a patch-scoped handoff" =
+  let rendered =
+    render_pr_body_prompt ~branch_only:true ~project_name:"onton"
+      ~pr_number:(Pr_number.of_int 7) ~pr_body:"dependency changes"
+      ~spec_suffix:"dependency spec" ~artifact_path:"/tmp/pr-body.md"
+  in
+  List.for_all
+    [
+      "feature PR #7";
+      "after integration";
+      "Write notes for this patch only";
+      "patches that depend on this one";
+      "/tmp/pr-body.md";
+    ] ~f:(fun substring -> String.is_substring rendered ~substring)
 
 let%test
     "gameplan + patch layers are the prefix of every layered prompt for one \
@@ -2516,9 +2553,9 @@ let%test "human and pr_body prompts do not include the gameplan layer" =
     render_human_message_prompt ~project_name:"onton" [ "Please rebase." ]
   in
   let pr_body_prompt =
-    render_pr_body_prompt ~project_name:"onton" ~pr_number:(Pr_number.of_int 42)
-      ~pr_body:"## Patch 1: Foo\nBody." ~spec_suffix:""
-      ~artifact_path:"/tmp/notes.md"
+    render_pr_body_prompt ~branch_only:false ~project_name:"onton"
+      ~pr_number:(Pr_number.of_int 42) ~pr_body:"## Patch 1: Foo\nBody."
+      ~spec_suffix:"" ~artifact_path:"/tmp/notes.md"
   in
   (* Neither contains the gameplan project heading marker — these
      intentionally stay turn-only. The pr_body prompt may legitimately

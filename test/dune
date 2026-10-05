@@ -791,3 +791,8 @@
   (setenv ONTON_SETSID_EXEC
    %{bin:onton-setsid-exec}
    (run %{test}))))
+
+(test
+ (name test_feature_pr_body_properties)
+ (modules test_feature_pr_body_properties)
+ (libraries onton_core qcheck-core qcheck-core.runner))

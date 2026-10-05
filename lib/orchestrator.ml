@@ -234,7 +234,18 @@ let enqueue t patch_id kind =
   update_agent t patch_id ~f:(fun a -> Patch_agent.enqueue a kind)
 
 let mark_merged t patch_id =
+  let newly_integrated =
+    is_feature_descendant t patch_id
+    && Option.value_map (find_agent t patch_id) ~default:false ~f:(fun a ->
+        not a.Patch_agent.merged)
+  in
   let t = update_agent t patch_id ~f:Patch_agent.mark_merged in
+  let t =
+    match Execution_mode.root t.execution_mode with
+    | Some root when newly_integrated ->
+        update_agent t root ~f:Patch_agent.request_pr_body_refresh
+    | Some _ | None -> t
+  in
   (* Eagerly update [base_branch] for direct dependents so it is never stale
      when [Merge_conflict] fires, AND eagerly enqueue a [Rebase] so the dep's
      local branch absorbs the just-merged ancestor before any deferred [Start]

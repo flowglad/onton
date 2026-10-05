@@ -93,6 +93,9 @@ type t = private {
           eligibility gate. *)
   is_draft : bool;
   pr_body_delivered : bool;
+  pr_body_refresh_pending : bool;
+      (** The cumulative feature PR body needs publication. Independent of
+          [pr_body_delivered], which retains successful notes delivery. *)
   pr_body_artifact_miss_count : int;
       (** Consecutive Pr_body sessions that produced [Respond_pr_body_miss]:
           either the artifact was missing/empty AND a Write tool call did not
@@ -456,7 +459,12 @@ val set_pr_body_delivered : t -> bool -> t
 (** Record whether the LLM-authored PR body has been written to the artifact and
     PATCHed onto the PR. Set to [true] on Pr_body Respond_ok regardless of
     whether the artifact existed (so we don't loop on missing artifacts —
-    documented fallback is to keep the gameplan-derived body). *)
+    documented fallback is to keep the gameplan-derived body). Successful
+    delivery also settles any pending cumulative body refresh. *)
+
+val request_pr_body_refresh : t -> t
+(** Demand a fresh PR body without discarding successful implementation notes.
+*)
 
 val increment_start_attempts_without_pr : t -> t
 (** Record a successful Start run that still failed to discover a PR. *)
@@ -753,6 +761,7 @@ val restore :
   base_contains_merged_siblings:bool ->
   is_draft:bool ->
   pr_body_delivered:bool ->
+  ?pr_body_refresh_pending:bool ->
   pr_body_artifact_miss_count:int ->
   ?review_unresolved_cycle_count:int ->
   start_attempts_without_pr:int ->

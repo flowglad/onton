@@ -59,6 +59,7 @@ let check label value = if not value then failwith label
 
 let ready_branch orch n =
   Orchestrator.mark_branch_published orch (id n) |> fun o ->
+  Orchestrator.set_pr_body_delivered o (id n) true |> fun o ->
   Orchestrator.set_automerge_enabled o (id n) true |> fun o ->
   Orchestrator.set_base_branch o (id n) (branch 1) |> fun o ->
   fst (Orchestrator.apply_rebase_result o (id n) Worktree.Noop (branch 1))
@@ -174,6 +175,10 @@ let publication_lifecycle () =
   Runtime.update_orchestrator runtime (fun o ->
       List.fold [ 2; 3; 4 ] ~init:o ~f:(fun o n ->
           Orchestrator.mark_merged o (id n)));
+  check "implementation root waits for cumulative PR body publication"
+    (not (Patch_controller.ready_for_review (orch ()) (id 1)));
+  Runtime.update_orchestrator runtime (fun o ->
+      Orchestrator.set_pr_body_delivered o (id 1) true);
   check "implementation root promotes once descendants complete"
     (Patch_controller.ready_for_review (orch ()) (id 1))
 
@@ -225,6 +230,26 @@ let () =
               (id 99)));
       check "missing feature root keeps construction predicate total"
         (Orchestrator.construction_open (Orchestrator.remove_agent orch (id 1)));
+      let awaiting_notes =
+        Orchestrator.set_pr_body_delivered orch (id 2) false
+      in
+      check "descendant waits for implementation notes before integration"
+        (not (Patch_controller.is_integration_candidate awaiting_notes (id 2)));
+      let with_notes_demand, _ =
+        Patch_controller.reconcile_all awaiting_notes
+          ~project_name:"feature-test" ~gameplan:gp
+      in
+      check "PR-less descendant gets notes demand"
+        (List.mem
+           (Orchestrator.agent with_notes_demand (id 2)).Patch_agent.queue
+           Operation_kind.Pr_body ~equal:Operation_kind.equal);
+      check "PR-less descendant can dispatch notes"
+        (List.exists (Patch_controller.plan_actions with_notes_demand ~patches)
+           ~f:(function
+          | Orchestrator.Respond (p, kind) ->
+              Patch_id.equal p (id 2)
+              && Operation_kind.equal kind Operation_kind.Pr_body
+          | Orchestrator.Start _ | Orchestrator.Rebase _ -> false));
       let claimed, decisions =
         Patch_controller.reconcile_automerge orch ~now:0.
       in
@@ -270,6 +295,55 @@ let () =
         List.fold [ 2; 3; 4 ] ~init:orch ~f:(fun o n ->
             Orchestrator.mark_merged o (id n))
       in
+      check
+        "integration demands a fresh root body while preserving delivered notes"
+        ((Orchestrator.agent complete (id 1))
+           .Patch_agent.pr_body_refresh_pending
+       && (Orchestrator.agent complete (id 1)).Patch_agent.pr_body_delivered);
+      let refreshed, _ =
+        Patch_controller.reconcile_all complete ~project_name:"feature-test"
+          ~gameplan:gp
+      in
+      check "root body refresh queued after integration"
+        (List.mem (Orchestrator.agent refreshed (id 1)).Patch_agent.queue
+           Operation_kind.Pr_body ~equal:Operation_kind.equal);
+      check "stale body prevents promotion"
+        (not (Patch_controller.ready_for_review complete (id 1)));
+      let dirty_rt = Runtime.create ~gameplan:gp ~main_branch:main () in
+      Runtime.update_orchestrator dirty_rt (fun _ -> complete);
+      let restored_dirty =
+        match
+          Persistence.snapshot_of_yojson
+            (Runtime.read dirty_rt Persistence.snapshot_to_yojson)
+        with
+        | Ok snap ->
+            Orchestrator.set_execution_mode snap.Runtime.orchestrator mode
+        | Error e -> failwith e
+      in
+      check "pending body refresh survives restart"
+        ((Orchestrator.agent restored_dirty (id 1))
+           .Patch_agent.pr_body_refresh_pending
+        && not (Patch_controller.ready_for_review restored_dirty (id 1)));
+      let failed_refresh =
+        Orchestrator.apply_respond_outcome complete (id 1)
+          Operation_kind.Pr_body Orchestrator.Respond_pr_body_miss
+      in
+      let retry, _ =
+        Patch_controller.reconcile_all failed_refresh
+          ~project_name:"feature-test" ~gameplan:gp
+      in
+      check "failed refresh retries without losing delivered notes"
+        ((Orchestrator.agent retry (id 1)).Patch_agent.pr_body_delivered
+        && List.mem (Orchestrator.agent retry (id 1)).Patch_agent.queue
+             Operation_kind.Pr_body ~equal:Operation_kind.equal
+        && not (Patch_controller.ready_for_review retry (id 1)));
+      let complete = Orchestrator.set_pr_body_delivered complete (id 1) true in
+      check "duplicate merge observations do not demand another refresh"
+        (not
+           (Orchestrator.agent
+              (Orchestrator.mark_merged complete (id 2))
+              (id 1))
+             .Patch_agent.pr_body_refresh_pending);
       check "root ready when construction complete"
         (Patch_controller.ready_for_review complete (id 1));
       check "old root CI invalidated"

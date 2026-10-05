@@ -750,6 +750,37 @@ module Make (Forge : Forge.S) (W : Worktree.S) (Env : Runner_env.S) = struct
       readable, [None] otherwise. *)
   let read_artifact_file = read_optional_file
 
+  let render_pr_content ~runtime ~project_name ~patch ~gameplan =
+    let included =
+      Runtime.read runtime (fun snap ->
+          let orch = snap.Runtime.orchestrator in
+          if Orchestrator.is_integration_root orch patch.Patch.id then
+            let gameplan = snap.Runtime.gameplan in
+            Some
+              ( gameplan,
+                Base.List.filter gameplan.Gameplan.patches ~f:(fun p ->
+                    Patch_id.equal p.Patch.id patch.id
+                    || Orchestrator.is_feature_descendant orch p.id
+                       && Base.Option.value_map
+                            (Orchestrator.find_agent orch p.id) ~default:false
+                            ~f:(fun a -> a.Patch_agent.merged)) )
+          else None)
+    in
+    match included with
+    | None ->
+        Prompt.render_pr_description ~project_name patch gameplan
+        ^ Prompt.render_spec_suffix patch gameplan
+    | Some (gameplan, patches) ->
+        let notes =
+          Base.List.filter_map patches ~f:(fun p ->
+              Base.Option.map
+                (read_artifact_file
+                   (Project_store.pr_body_artifact_path ~project_name
+                      ~patch_id:p.Patch.id))
+                ~f:(fun content -> (p.id, content)))
+        in
+        Feature_pr_body.render ~gameplan ~patches ~notes
+
   (** Apply the agent-authored notes artifact to the PR. Composes the final body
       as: gameplan description + specs + Implementation Notes (from artifact).
       Returns a tag describing the outcome so the caller can correlate with
@@ -761,7 +792,34 @@ module Make (Forge : Forge.S) (W : Worktree.S) (Env : Runner_env.S) = struct
     let artifact_path =
       Project_store.pr_body_artifact_path ~project_name ~patch_id
     in
+    let publish body outcome =
+      match Forge.update_pr_body ~pr_number ~body with
+      | Ok () ->
+          log_event runtime ~patch_id
+            (Printf.sprintf "pr-body: PATCHed PR #%d"
+               (Pr_number.to_int pr_number));
+          outcome
+      | Error e ->
+          log_event runtime ~patch_id
+            (Printf.sprintf "pr-body: PATCH failed — %s" (Forge.show_error e));
+          `Patch_failed
+    in
     match read_artifact_file artifact_path with
+    | artifact
+      when Runtime.read runtime (fun snap ->
+               Orchestrator.is_integration_root snap.Runtime.orchestrator
+                 patch_id) ->
+        (* Integrated changes must reach the PR even when the root author has
+           no additional notes. Preserve the artifact signal for Write failures. *)
+        let outcome =
+          match artifact with
+          | None -> `Missing
+          | Some notes when String.equal (String.trim notes) "" -> `Empty
+          | Some _ -> `Ok
+        in
+        publish
+          (render_pr_content ~runtime ~project_name ~patch ~gameplan)
+          outcome
     | None ->
         log_event runtime ~patch_id
           (Printf.sprintf
@@ -772,7 +830,12 @@ module Make (Forge : Forge.S) (W : Worktree.S) (Env : Runner_env.S) = struct
         log_event runtime ~patch_id
           "pr-body: artifact empty; keeping initial PR body";
         `Empty
-    | Some notes -> (
+    | Some _
+      when Runtime.read runtime (fun snap ->
+               Orchestrator.is_feature_descendant snap.Runtime.orchestrator
+                 patch_id) ->
+        `Ok
+    | Some notes ->
         let description =
           Prompt.render_pr_description ~project_name patch gameplan
         in
@@ -781,16 +844,7 @@ module Make (Forge : Forge.S) (W : Worktree.S) (Env : Runner_env.S) = struct
           Printf.sprintf "%s%s\n\n## Implementation Notes\n\n%s" description
             spec_suffix (String.trim notes)
         in
-        match Forge.update_pr_body ~pr_number ~body with
-        | Ok () ->
-            log_event runtime ~patch_id
-              (Printf.sprintf "pr-body: PATCHed PR #%d"
-                 (Pr_number.to_int pr_number));
-            `Ok
-        | Error e ->
-            log_event runtime ~patch_id
-              (Printf.sprintf "pr-body: PATCH failed — %s" (Forge.show_error e));
-            `Patch_failed)
+        publish body `Ok
 
   (** Terminal failure — forces [Given_up] so [complete] raises intervention.
       Used for non-retryable errors (patch not found, PR discovery failed).
@@ -1379,9 +1433,8 @@ module Make (Forge : Forge.S) (W : Worktree.S) (Env : Runner_env.S) = struct
                                       patch.Patch.title
                                   in
                                   let pr_body =
-                                    Prompt.render_pr_description ~project_name
-                                      patch gameplan
-                                    ^ Prompt.render_spec_suffix patch gameplan
+                                    render_pr_content ~runtime ~project_name
+                                      ~patch ~gameplan
                                   in
                                   (match
                                      Forge.create_pull_request ~title:pr_title
@@ -1666,9 +1719,21 @@ module Make (Forge : Forge.S) (W : Worktree.S) (Env : Runner_env.S) = struct
                     let is_ci = Operation_kind.equal kind Operation_kind.Ci in
                     let pr_number =
                       Runtime.read runtime (fun snap ->
-                          Patch_agent.pr_number
-                            (Orchestrator.agent snap.Runtime.orchestrator
-                               patch_id))
+                          let orch = snap.Runtime.orchestrator in
+                          let recipient =
+                            if
+                              Operation_kind.equal kind Operation_kind.Pr_body
+                              && Orchestrator.is_feature_descendant orch
+                                   patch_id
+                            then
+                              Execution_mode.root
+                                (Orchestrator.execution_mode orch)
+                            else Some patch_id
+                          in
+                          Base.Option.bind recipient ~f:(fun id ->
+                              Base.Option.bind
+                                (Orchestrator.find_agent orch id)
+                                ~f:Patch_agent.pr_number))
                     in
                     let fresh_pr_state =
                       if is_review || is_ci then (
@@ -1799,6 +1864,15 @@ module Make (Forge : Forge.S) (W : Worktree.S) (Env : Runner_env.S) = struct
                       !updated
                     in
                     With_busy_guard.run ~patch_id ~message_id (fun () ->
+                        let reuse_root_notes =
+                          Operation_kind.equal kind Operation_kind.Pr_body
+                          && Runtime.read runtime (fun snap ->
+                              Orchestrator.is_integration_root
+                                snap.Runtime.orchestrator patch_id
+                              && (Orchestrator.agent snap.Runtime.orchestrator
+                                    patch_id)
+                                   .Patch_agent.pr_body_delivered)
+                        in
                         let ci_run_ids_to_record = ref [] in
                         let result =
                           match (owns_current_message (), ci_skip_reason) with
@@ -1814,6 +1888,23 @@ module Make (Forge : Forge.S) (W : Worktree.S) (Env : Runner_env.S) = struct
                                 (Printf.sprintf "Skipped ci delivery — %s"
                                    reason);
                               `Skip_empty
+                          | true, None when reuse_root_notes -> (
+                              match
+                                ( pr_number,
+                                  Base.List.find gameplan.Gameplan.patches
+                                    ~f:(fun p ->
+                                      Patch_id.equal p.Patch.id patch_id) )
+                              with
+                              | Some pr, Some patch -> (
+                                  (* With_busy_guard already owns the root write lock. *)
+                                  match
+                                    apply_pr_body_artifact ~runtime
+                                      ~project_name ~patch_id ~pr_number:pr
+                                      ~patch ~gameplan
+                                  with
+                                  | `Ok | `Missing | `Empty -> `Ok
+                                  | `Patch_failed -> `Pr_body_miss)
+                              | _ -> `Pr_body_miss)
                           | true, None ->
                               with_session_slot (fun () ->
                                   let owns_after_wait =
@@ -2721,12 +2812,35 @@ module Make (Forge : Forge.S) (W : Worktree.S) (Env : Runner_env.S) = struct
                                                     raise Skip_delivery
                                               in
                                               let pr_body =
-                                                Prompt.render_pr_description
-                                                  ~project_name patch gameplan
+                                                if
+                                                  Runtime.read runtime
+                                                    (fun snap ->
+                                                      Orchestrator
+                                                      .is_integration_root
+                                                        snap
+                                                          .Runtime.orchestrator
+                                                        patch_id)
+                                                then
+                                                  render_pr_content ~runtime
+                                                    ~project_name ~patch
+                                                    ~gameplan
+                                                else
+                                                  Prompt.render_pr_description
+                                                    ~project_name patch gameplan
                                               in
                                               let spec_suffix =
-                                                Prompt.render_spec_suffix patch
-                                                  gameplan
+                                                if
+                                                  Runtime.read runtime
+                                                    (fun snap ->
+                                                      Orchestrator
+                                                      .is_integration_root
+                                                        snap
+                                                          .Runtime.orchestrator
+                                                        patch_id)
+                                                then ""
+                                                else
+                                                  Prompt.render_spec_suffix
+                                                    patch gameplan
                                               in
                                               let artifact_path =
                                                 Project_store
@@ -2751,6 +2865,14 @@ module Make (Forge : Forge.S) (W : Worktree.S) (Env : Runner_env.S) = struct
                                                ->
                                                  ());
                                               Prompt.render_pr_body_prompt
+                                                ~branch_only:
+                                                  (Runtime.read runtime
+                                                     (fun snap ->
+                                                       Orchestrator
+                                                       .is_feature_descendant
+                                                         snap
+                                                           .Runtime.orchestrator
+                                                         patch_id))
                                                 ~project_name ~pr_number:pr
                                                 ~pr_body ~spec_suffix
                                                 ~artifact_path

@@ -163,6 +163,7 @@ val render_spec_suffix : Types.Patch.t -> Types.Gameplan.t -> string
     accidentally drop them. *)
 
 val render_pr_body_prompt :
+  branch_only:bool ->
   project_name:string ->
   pr_number:Pr_number.t ->
   pr_body:string ->

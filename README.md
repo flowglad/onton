@@ -363,15 +363,18 @@ Descendants publish branches without opening PRs. Onton polls checks attached
 to each branch's exact HEAD SHA, including paginated check runs and commit
 statuses. At least one check must exist and all checks must pass. CI must run
 on branch pushes; a workflow that runs only on `pull_request` will leave these
-branches waiting for checks. Descendants can start once their parent has passed
-its CI, conflict, and freshness gates. An open intermediate parent remains the
+branches waiting for checks. Each implementer writes concise implementation
+notes for reviewers and dependent patches. Descendants can start once their
+parent has delivered its notes and passed its CI, conflict, and freshness gates.
+An open intermediate parent remains the
 direct base; after it integrates, the base moves toward the root and never
 past it to main.
 
 Eligible descendants integrate **immediately**, without the automerge idle
 window or required-review approval. Their per-patch automerge toggle defaults
 to enabled and can pause integration. Queued feedback, active work, unresolved
-conflicts, unsettled rebases, and unpublished heads block integration. Failures
+conflicts, undelivered implementation notes, unsettled rebases, and unpublished
+heads block integration. Failures
 use the configured automerge timeout for retry backoff and the existing failure
 cap. Native GitHub stacks cannot use this path.
 
@@ -382,6 +385,13 @@ checkout. Dirty or diverged root checkouts are refused while preserving local
 changes. Retries recognize a descendant head already contained in the remote
 root, including a crash after publication. Root updates from main use merges,
 and root publication uses normal pushes; descendant branches retain rebasing.
+
+The feature PR body contains the gameplan summary and specification, plus
+Changes, Patch Specifications, and Implementation Notes grouped by patch.
+Each integration refreshes these sections with the newly integrated patch,
+preserving prior contributions without duplicates. Planned file lists are
+omitted. Refreshes reuse the existing notes; a failed PR update prevents
+promotion until the update succeeds.
 
 Every root update invalidates readiness. Once all descendants have integrated,
 the root needs fresh passing checks for its current published head and no

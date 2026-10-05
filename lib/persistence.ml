@@ -214,6 +214,7 @@ let patch_agent_to_yojson (a : Patch_agent.t) =
       ("native_stack_absent_polls", `Int a.native_stack_absent_polls);
       ("is_draft", `Bool a.is_draft);
       ("pr_body_delivered", `Bool a.pr_body_delivered);
+      ("pr_body_refresh_pending", `Bool a.pr_body_refresh_pending);
       ("pr_body_artifact_miss_count", `Int a.pr_body_artifact_miss_count);
       ("review_unresolved_cycle_count", `Int a.review_unresolved_cycle_count);
       ("start_attempts_without_pr", `Int a.start_attempts_without_pr);
@@ -415,6 +416,10 @@ let patch_agent_of_yojson ~gameplan json =
             (bool_member_opt "base_contains_merged_siblings" json)
             ~default:false)
        ~is_draft:(bool_member "is_draft" json)
+       ~pr_body_refresh_pending:
+         (Option.value
+            (bool_member_opt "pr_body_refresh_pending" json)
+            ~default:false)
        ~pr_body_delivered:
          (Option.value (bool_member_opt "pr_body_delivered" json) ~default:true)
        ~pr_body_artifact_miss_count:
