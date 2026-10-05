@@ -93,8 +93,28 @@ let scenario env stage expected_phase =
           (fun () -> Stdlib.int_of_string_opt (Stdlib.input_line ic))
       in
       Option.iter pid ~f:(fun pid ->
-          try Unix.kill pid Stdlib.Sys.sigkill
-          with Unix.Unix_error (Unix.ESRCH, _, _) -> ())
+          Eio.Cancel.protect (fun () ->
+              (try Unix.kill pid Stdlib.Sys.sigkill
+               with Unix.Unix_error (Unix.ESRCH, _, _) -> ());
+              let still_exists () =
+                match Unix.kill pid 0 with
+                | () -> true
+                | exception Unix.Unix_error (Unix.ESRCH, _, _) -> false
+              in
+              let clock = Eio.Stdenv.clock env in
+              match
+                Eio.Time.with_timeout clock 5.0 (fun () ->
+                    while still_exists () do
+                      Eio.Time.sleep clock 0.01
+                    done;
+                    Ok ())
+              with
+              | Ok () -> ()
+              | Error `Timeout ->
+                  failwith
+                    (Printf.sprintf
+                       "%s: blocked descendant %d still exists after cleanup"
+                       stage pid)))
   in
   let outcome =
     Stdlib.Fun.protect ~finally:cleanup (fun () ->
