@@ -10,9 +10,9 @@ val create :
   Llm_backend.t
 (** Create an LLM backend that uses the Pi CLI. [model], when provided, is
     passed via [--model]; [None] (or empty) lets the Pi CLI pick its own
-    default. [timeout] is the maximum session duration in seconds before the
-    process is killed. See {!Claude_backend.create} for [setsid_exec] semantics.
-*)
+    default. [timeout] is the maximum idle duration in seconds without stdout or
+    stderr output before the process is killed. See {!Claude_backend.create} for
+    [setsid_exec] semantics. *)
 
 val parse_event : string -> Types.Stream_event.t list
 (** Parse a single NDJSON line from Pi's JSON output. Exposed for testing. *)

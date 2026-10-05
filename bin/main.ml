@@ -13,9 +13,7 @@ type config = Resolved_config.config
 module type STARTUP_RECONCILER = Poller_fiber.STARTUP_RECONCILER
 
 let default_backend = "claude"
-
-let known_backends =
-  [ "claude"; "codex"; "opencode"; "pi"; "gemini"; "patch-agent" ]
+let known_backends = [ "claude"; "codex"; "opencode"; "pi"; "gemini" ]
 
 type repo_coords = {
   forge : string;
@@ -43,8 +41,6 @@ type run_knobs = {
   stored_worktree_backend : string option;
   stored_worktree_executable : string option;
   headless : bool;
-  patch_agent_provider : string option;
-  patch_agent_effort : string option;
 }
 (** Run-time knobs that don't vary inside a single invocation. Built once at the
     top of [resolve_config] from CLI flags and env vars, then shared by all
@@ -155,7 +151,7 @@ module type FIBER_ENV = sig
   val version : string
 
   val pick_backend :
-    complexity:int option -> Backend_registry.kind * Backend_routing.decision
+    complexity:int option -> Llm_backend.t * Backend_routing.decision
 
   val find_pr_number : patch_id:Patch_id.t -> Pr_number.t option
   val register_pr_number : patch_id:Patch_id.t -> pr_number:Pr_number.t -> unit
@@ -191,8 +187,6 @@ struct
           if Forge.supports_reviews then Env.config.repo_config.review_team
           else None
 
-        let patch_agent_provider = Env.config.patch_agent_provider
-        let patch_agent_effort = Env.config.patch_agent_effort
         let findings_registry = Env.findings_registry
         let review_clients = review_clients
         let transcripts = Env.transcripts
@@ -337,8 +331,6 @@ let finalize_run ~project_name ~repo_coords ~run_knobs ~backend_inputs
     stored_worktree_backend;
     stored_worktree_executable;
     headless;
-    patch_agent_provider;
-    patch_agent_effort;
   } =
     run_knobs
   in
@@ -475,8 +467,6 @@ let finalize_run ~project_name ~repo_coords ~run_knobs ~backend_inputs
       max_ci_failures;
       automerge_timeout;
       headless;
-      patch_agent_provider;
-      patch_agent_effort;
       user_config =
         User_config.load
           ~github_owner:(config_owner ~forge github_owner)
@@ -509,20 +499,6 @@ let resolve_config ~project ~gameplan_path ~forge ~github_token ~backend ~model
               s;
             Stdlib.exit 1)
   in
-  let patch_agent_provider =
-    match Stdlib.Sys.getenv_opt "PATCH_AGENT_PROVIDER" with
-    | Some s ->
-        let s = Base.String.strip s in
-        if Base.String.is_empty s then None else Some s
-    | None -> None
-  in
-  let patch_agent_effort =
-    match Stdlib.Sys.getenv_opt "PATCH_AGENT_EFFORT" with
-    | Some s ->
-        let s = Base.String.strip s in
-        if Base.String.is_empty s then None else Some s
-    | None -> None
-  in
   let run_knobs =
     {
       poll_interval;
@@ -538,8 +514,6 @@ let resolve_config ~project ~gameplan_path ~forge ~github_token ~backend ~model
       stored_worktree_backend = None;
       stored_worktree_executable = None;
       headless;
-      patch_agent_provider;
-      patch_agent_effort;
     }
   in
   let cli_backend_inputs ?(stored_backend = "") ?(stored_model = "") () =
@@ -875,7 +849,7 @@ type constructed_capabilities = {
   startup_reconciler : (module STARTUP_RECONCILER);
   branch_of : Patch_id.t -> Branch.t;
   pick_backend :
-    complexity:int option -> Backend_registry.kind * Backend_routing.decision;
+    complexity:int option -> Llm_backend.t * Backend_routing.decision;
   resolve_routing : complexity:int option -> Backend_routing.decision;
   backend_name : string;
   find_pr_number : patch_id:Patch_id.t -> Pr_number.t option;
@@ -1097,10 +1071,7 @@ let construct_capabilities ~net (setup : runtime_setup) =
     in
     (Backend_registry.get registry ~backend ~model ~effort, decision)
   in
-  let backend_name = function
-    | Backend_registry.Ephemeral backend -> backend.Llm_backend.name
-    | Backend_registry.Long_lived (Llm_backend_long_lived.T { name; _ }) -> name
-  in
+  let backend_name backend = backend.Llm_backend.name in
   let resolve_routing ~complexity : Backend_routing.decision =
     let dec : Backend_routing.decision =
       Backend_routing.decide ~repo_config ~default_backend:backend
@@ -1927,9 +1898,7 @@ let backend_arg =
   Arg.(
     value & opt string ""
     & info [ "backend" ] ~docv:"BACKEND"
-        ~doc:
-          "LLM backend to use: claude, codex, opencode, pi, gemini, or \
-           patch-agent.")
+        ~doc:"LLM backend to use: claude, codex, opencode, pi, or gemini.")
 
 let model_arg =
   let open Cmdliner in

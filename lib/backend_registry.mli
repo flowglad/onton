@@ -12,10 +12,6 @@
 
 type t
 
-type kind =
-  | Ephemeral of Llm_backend.t
-  | Long_lived of Llm_backend_long_lived.t
-
 val create :
   process_mgr:Eio_unix.Process.mgr_ty Eio.Resource.t ->
   clock:_ Eio.Time.clock ->
@@ -30,7 +26,11 @@ val create :
     overrides. *)
 
 val get :
-  t -> backend:string -> model:string option -> effort:string option -> kind
+  t ->
+  backend:string ->
+  model:string option ->
+  effort:string option ->
+  Llm_backend.t
 (** Return the cached backend for [(backend, model, effort)], constructing it on
     first request. Raises [Invalid_argument] for unrecognised backend names —
     callers are expected to validate against the known list before asking. *)
@@ -46,8 +46,5 @@ val resolve_model :
   model:string option ->
   complexity:int option ->
   string option
-(** Resolve the model name that should be shown or passed to lifecycle-specific
-    backend code for [(backend, model, complexity)]. [Some "auto"] is resolved
-    through {!auto_model}; backend-specific mandatory defaults, such as
-    [patch-agent]'s model argument, are also applied here so display and
-    execution agree. *)
+(** Resolve the model name for display using the same auto-model mapping as
+    backend execution. *)

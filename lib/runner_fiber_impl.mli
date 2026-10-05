@@ -13,8 +13,6 @@ module Runner_env : sig
     val max_concurrency : int
     val automerge_timeout : float
     val review_team : string option
-    val patch_agent_provider : string option
-    val patch_agent_effort : string option
     val findings_registry : Findings_registry.t
 
     val review_clients :
@@ -27,7 +25,7 @@ module Runner_env : sig
     val event_log : Event_log.t
 
     val pick_backend :
-      complexity:int option -> Backend_registry.kind * Backend_routing.decision
+      complexity:int option -> Llm_backend.t * Backend_routing.decision
 
     val register_pr : patch_id:Patch_id.t -> pr_number:Pr_number.t -> unit
   end

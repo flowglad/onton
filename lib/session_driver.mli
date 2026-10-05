@@ -56,40 +56,6 @@ module Make (_ : Worktree.S) (_ : ENV) : sig
       Callers may also produce a [`Stale] variant from pre-flight checks before
       invoking this function. *)
 
-  type long_lived_session
-  (** Mutable per-patch long-lived backend session state. The backend's
-      existential handle type remains tied to the backend that created it. *)
-
-  val create_long_lived_session :
-    backend:Llm_backend_long_lived.t ->
-    provider:string ->
-    model:string ->
-    effort:string ->
-    gameplan_prompt:string ->
-    patch_prompt:string ->
-    long_lived_session
-
-  val update_long_lived_session_prompts :
-    long_lived_session -> gameplan_prompt:string -> patch_prompt:string -> unit
-
-  val long_lived_session_failed : long_lived_session -> bool
-  val shutdown_long_lived_session : long_lived_session -> unit
-
-  val run_long_lived :
-    sw:Eio.Switch.t ->
-    kind:Types.Operation_kind.t option ->
-    delivery_mode:Patch_decision.delivery_mode ->
-    patch_id:Types.Patch_id.t ->
-    prompt:string ->
-    agent:Patch_agent.t ->
-    on_pr_detected:(Types.Pr_number.t -> unit) ->
-    session:long_lived_session ->
-    complexity:int option ->
-    run_result
-  (** Long-lived backend counterpart to {!run}. It shares the same supervisor
-      bookkeeping and delivers the rendered turn over [backend.prompt] instead
-      of spawning a fresh backend process. *)
-
   val session_mode : Patch_agent.t -> [ `Resume of string | `Fresh | `Give_up ]
   (** Inspect the agent's session-fallback state to decide whether the next
       invocation should resume an existing session, start fresh, or give up. *)

@@ -14,8 +14,8 @@ val create :
     passed to [codex exec] via the [-m] flag; [None] (or empty) lets the Codex
     CLI pick its own default. [effort], when provided, is passed as Codex's
     [model_reasoning_effort] config override. Each item in [extras] is passed as
-    an additional [-c] config override. [timeout] is the maximum session
-    duration in seconds before the process is killed. See
+    an additional [-c] config override. [timeout] is the maximum idle duration
+    in seconds without stdout or stderr output before the process is killed. See
     {!Claude_backend.create} for [setsid_exec] semantics. *)
 
 val parse_event : string -> Types.Stream_event.t list

@@ -26,8 +26,6 @@ type config = {
           persisted project config, repository config, or the built-in default,
           in that order. *)
   headless : bool;
-  patch_agent_provider : string option;
-  patch_agent_effort : string option;
   user_config : User_config.t;
   repo_config : Repo_config.t;
       (** Per-repo [config.json], loaded once during config resolution. Already
@@ -52,8 +50,6 @@ type t = {
   max_ci_failures : int;
   automerge_timeout : float;
   headless : bool;
-  patch_agent_provider : string option;
-  patch_agent_effort : string option;
   user_config : User_config.t;
   repo_config : Repo_config.t;
 }
