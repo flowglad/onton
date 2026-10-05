@@ -789,3 +789,8 @@
  (name test_gameplan_publication)
  (modules test_gameplan_publication)
  (libraries onton onton_core onton_test_support eio_main unix))
+
+(rule
+ (alias runtest)
+ (action
+  (run sh %{dep:test_version.sh} %{ocaml} %{dep:../scripts/write-version.ml})))

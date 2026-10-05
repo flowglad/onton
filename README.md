@@ -557,6 +557,10 @@ dune exec bin/main.exe -- --gameplan path/to/gameplan.yaml
 dune fmt            # auto-format via ocamlformat
 ```
 
+Set `ONTON_VERSION` when building to embed a version in the executable, for
+example `ONTON_VERSION=v0.63.2 dune build`. Builds without it report `dev`.
+Changing this value invalidates the generated version and rebuilds the executable.
+
 ## Architecture
 
 ```
@@ -810,6 +814,8 @@ need reproducibility. The names below are accurate as of September 2026 —
 Pushing a `v*` tag builds Apple Silicon macOS and Linux ARM64 and x86_64 binaries, checks
 the Linux binaries in Ubuntu 22.04 containers, creates a GitHub release, and
 updates the Homebrew formula.
+Release builds embed the tag in `onton --version` and verify it before publishing
+the archives.
 
 ## TUI
 
