@@ -8,6 +8,7 @@ module Test = QCheck2.Test
 module PP = Push_plan
 
 type inputs = {
+  preserve_history : bool;
   exists : bool;
   head : string option;
   local : string option;
@@ -19,6 +20,7 @@ type inputs = {
 
 let gen =
   let open Gen in
+  let* preserve_history = bool in
   let* exists = bool in
   let* head = option (oneof_list [ "patch"; "other" ]) in
   let* local = option string in
@@ -35,16 +37,27 @@ let gen =
   in
   let* integrated = bool in
   let* commits = option int in
-  return { exists; head; local; remote; ancestry; integrated; commits }
+  return
+    {
+      preserve_history;
+      exists;
+      head;
+      local;
+      remote;
+      ancestry;
+      integrated;
+      commits;
+    }
 
 let plan i =
-  PP.plan ~expected_branch:"patch" ~worktree_path_exists:i.exists
-    ~worktree_head_branch:i.head ~branch_ref_sha:i.local
-    ~remote_tracking_sha:i.remote ~ancestry:i.ancestry
+  PP.plan ~preserve_history:i.preserve_history ~expected_branch:"patch"
+    ~worktree_path_exists:i.exists ~worktree_head_branch:i.head
+    ~branch_ref_sha:i.local ~remote_tracking_sha:i.remote ~ancestry:i.ancestry
     ~remote_changes_included:i.integrated ~commits_ahead_of_base:i.commits
 
 let safe ~local ~remote ~integrated =
   {
+    preserve_history = false;
     exists = true;
     head = Some "patch";
     local = Some local;
@@ -78,14 +91,15 @@ let properties =
             && (not (Option.equal Int.equal i.commits (Some 0)))
             && (not (PP.equal_ancestry i.ancestry PP.Local_missing_remote))
             && (PP.equal_ancestry i.ancestry PP.Local_includes_remote
-               || i.integrated));
+               || ((not i.preserve_history) && i.integrated)));
     Test.make ~name:"valid initial and fast-forward publications always proceed"
       ~count:1000
-      Gen.(triple string string bool)
-      (fun (local, remote, initial) ->
+      Gen.(pair (triple string string bool) bool)
+      (fun ((local, remote, initial), preserve_history) ->
         let input =
           {
             (safe ~local ~remote ~integrated:false) with
+            preserve_history;
             remote = (if initial then None else Some remote);
             ancestry =
               (if initial then PP.No_remote_yet else PP.Local_includes_remote);
@@ -119,7 +133,51 @@ let properties =
         | PP.Refuse
             ( PP.Worktree_missing | PP.No_commits_ahead_of_base
             | PP.Branch_ref_missing _ | PP.Branch_switched _
-            | PP.Local_missing_remote_commits _ ) ->
+            | PP.Local_missing_remote_commits _
+            | PP.History_would_be_rewritten _ ) ->
+            false);
+    Test.make ~name:"every protected update preserves captured remote ancestry"
+      ~count:1000 gen (fun i ->
+        match plan { i with preserve_history = true } with
+        | PP.Refuse _ -> true
+        | PP.Push (PP.Initial_push _) -> Option.is_none i.remote
+        | PP.Push (PP.Force_push_with_lease { local_sha; remote_sha }) ->
+            PP.equal_ancestry i.ancestry PP.Local_includes_remote
+            && Option.equal String.equal i.local (Some local_sha)
+            && Option.equal String.equal i.remote (Some remote_sha));
+    Test.make ~name:"history preservation only restricts publication authority"
+      ~count:1000 gen (fun i ->
+        let protected = plan { i with preserve_history = true } in
+        match protected with
+        | PP.Refuse _ -> true
+        | PP.Push _ ->
+            PP.equal_decision protected
+              (plan { i with preserve_history = false }));
+    Test.make
+      ~name:"protected divergence is permanent even with equivalent patches"
+      ~count:300
+      Gen.(pair string string)
+      (fun (local, remote) ->
+        let i =
+          {
+            (safe ~local ~remote ~integrated:true) with
+            preserve_history = true;
+          }
+        in
+        match plan i with
+        | PP.Refuse (PP.History_would_be_rewritten refusal) ->
+            String.equal refusal.local_sha local
+            && String.equal refusal.remote_sha remote
+            && Option.value_map
+                 (PP.to_push_reject_classify_rejection
+                    (PP.History_would_be_rewritten refusal))
+                 ~default:false ~f:Push_reject_classify.is_permanent
+        | PP.Push _
+        | PP.Refuse
+            ( PP.No_commits_ahead_of_base | PP.Worktree_missing
+            | PP.Branch_ref_missing _ | PP.Branch_switched _
+            | PP.Local_missing_remote_commits _ | PP.Remote_not_integrated _ )
+          ->
             false);
     Test.make
       ~name:"lease remains fixed across fetch and remote-write interleavings"

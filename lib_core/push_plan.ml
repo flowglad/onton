@@ -24,15 +24,16 @@ type refusal =
   | Branch_ref_missing of { branch : string }
   | Branch_switched of { expected : string; got : string option }
   | Local_missing_remote_commits of { local_sha : sha; remote_sha : sha }
+  | History_would_be_rewritten of { local_sha : sha; remote_sha : sha }
   | Remote_not_integrated of { remote_sha : sha }
 [@@deriving show, eq, sexp_of, compare]
 
 type decision = Push of action | Refuse of refusal
 [@@deriving show, eq, sexp_of, compare]
 
-let plan ~expected_branch ~worktree_path_exists ~worktree_head_branch
-    ~branch_ref_sha ~remote_tracking_sha ~ancestry ~remote_changes_included
-    ~commits_ahead_of_base =
+let plan ~preserve_history ~expected_branch ~worktree_path_exists
+    ~worktree_head_branch ~branch_ref_sha ~remote_tracking_sha ~ancestry
+    ~remote_changes_included ~commits_ahead_of_base =
   if not worktree_path_exists then Refuse Worktree_missing
   else
     let head_matches =
@@ -60,6 +61,10 @@ let plan ~expected_branch ~worktree_path_exists ~worktree_head_branch
                   Push (Force_push_with_lease { local_sha; remote_sha })
               | ( (Local_diverged_from_remote | No_remote_yet | Unknown),
                   Some remote_sha )
+                when preserve_history ->
+                  Refuse (History_would_be_rewritten { local_sha; remote_sha })
+              | ( (Local_diverged_from_remote | No_remote_yet | Unknown),
+                  Some remote_sha )
                 when remote_changes_included ->
                   Push (Force_push_with_lease { local_sha; remote_sha })
               | ( (Local_diverged_from_remote | No_remote_yet | Unknown),
@@ -75,6 +80,7 @@ let short_label = function
   | Refuse (Branch_switched _) -> "refuse_branch_switched"
   | Refuse (Local_missing_remote_commits _) -> "refuse_local_behind"
   | Refuse (Remote_not_integrated _) -> "refuse_remote_unintegrated"
+  | Refuse (History_would_be_rewritten _) -> "refuse_history_rewrite"
 
 let to_push_reject_classify_rejection (r : refusal) :
     Push_reject_classify.rejection option =
@@ -93,3 +99,7 @@ let to_push_reject_classify_rejection (r : refusal) :
       Some
         (Push_reject_classify.Local_state_unsafe
            { reason = "refuse_local_behind" })
+  | History_would_be_rewritten _ ->
+      Some
+        (Push_reject_classify.Local_state_unsafe
+           { reason = "refuse_history_rewrite" })

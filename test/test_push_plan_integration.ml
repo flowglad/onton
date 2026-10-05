@@ -382,7 +382,20 @@ let scenario_rewrite_interleavings env (commits, race, preserve_history) =
     git_capture ~dir:seed [ "ls-remote"; "origin"; "refs/heads/feat" ]
     |> fun value -> String.prefix value 40
   in
-  if race = 0 then (
+  if preserve_history then (
+    let expected = if race = 1 || race = 3 then writer else old_remote in
+    if not (String.equal remote expected) then
+      failwith "protected rewrite changed remote ancestry";
+    match outcome with
+    | Worktree.Push_rejected
+        (Push_reject_classify.Local_state_unsafe { reason })
+      when String.equal reason "refuse_history_rewrite" ->
+        ()
+    | _ ->
+        failwith
+          ("protected rewrite was not refused: "
+          ^ Worktree.show_push_result outcome))
+  else if race = 0 then (
     if
       (not (Worktree.equal_push_result outcome Worktree.Push_ok))
       || not (String.equal remote rewritten)
@@ -593,7 +606,14 @@ let scenario_missing_tracking env ~preserve_history case =
         (Push_reject_classify.Local_state_unsafe { reason }) )
     when String.equal reason "refuse_local_behind" ->
       ()
-  | Diverged, Worktree.Push_rejected Push_reject_classify.Lease_violation -> ()
+  | Diverged, Worktree.Push_rejected Push_reject_classify.Lease_violation
+    when not preserve_history ->
+      ()
+  | ( Diverged,
+      Worktree.Push_rejected
+        (Push_reject_classify.Local_state_unsafe { reason }) )
+    when preserve_history && String.equal reason "refuse_history_rewrite" ->
+      ()
   | Concurrent_write, Worktree.Push_rejected _ -> ()
   | Remote_unavailable, Worktree.Push_error detail
     when String.is_substring detail ~substring:"Cannot observe remote branch" ->
@@ -633,6 +653,76 @@ let scenario_missing_tracking env ~preserve_history case =
       then failwith "observation modified shared tracking refs");
   Stdlib.print_endline "  missing_tracking: OK"
 
+(* Exercise the public protected-push API across appends, metadata-only
+   rewrites with identical patches, and merge repairs. The real remote's
+   previous tip is the ancestry oracle for every successful publication. *)
+let scenario_protected_history env rewrites =
+  let process_mgr = Eio.Stdenv.process_mgr env in
+  let clock = Eio.Stdenv.clock env in
+  with_temp_dir @@ fun root ->
+  let origin = Stdlib.Filename.concat root "origin.git" in
+  let managed = Stdlib.Filename.concat root "managed" in
+  setup_origin ~origin_dir:origin;
+  setup_seed_clone ~origin_dir:origin ~managed_dir:managed;
+  sh ~dir:managed
+    "git checkout -q -b feat; echo feature > feature.txt; git add feature.txt; \
+     git commit -q -m feature; git push -q -u origin feat";
+  let publish () =
+    let before = git_capture ~dir:origin [ "rev-parse"; "refs/heads/feat" ] in
+    let result =
+      Worktree.force_push_with_lease ~preserve_history:true ~clock ~process_mgr
+        ~path:managed
+        ~branch:(Types.Branch.of_string "feat")
+        ~base:(Types.Branch.of_string "main")
+        ()
+    in
+    let after = git_capture ~dir:origin [ "rev-parse"; "refs/heads/feat" ] in
+    (match result with
+    | Worktree.Push_ok | Worktree.Push_up_to_date ->
+        if
+          Git_env.git_exit_code ~cwd:origin
+            [ "merge-base"; "--is-ancestor"; before; after ]
+          <> 0
+        then failwith "successful protected publication lost remote ancestry"
+    | Worktree.Push_rejected _ | Worktree.Push_error _
+    | Worktree.Push_no_commits | Worktree.Push_worktree_missing ->
+        if not (String.equal before after) then
+          failwith "refused protected publication changed remote");
+    (result, before)
+  in
+  let require_success result =
+    match result with
+    | Worktree.Push_ok | Worktree.Push_up_to_date -> ()
+    | _ ->
+        failwith
+          ("protected merge/append failed: " ^ Worktree.show_push_result result)
+  in
+  require_success (fst (publish ()));
+  List.iteri rewrites ~f:(fun index rewrite ->
+      if rewrite then (
+        sh ~dir:managed
+          (Printf.sprintf "git commit -q --amend -m rewrite-%d" index);
+        let result, before = publish () in
+        (match result with
+        | Worktree.Push_rejected
+            (Push_reject_classify.Local_state_unsafe { reason })
+          when String.equal reason "refuse_history_rewrite" ->
+            ()
+        | _ ->
+            failwith
+              ("equivalent protected rewrite was accepted: "
+              ^ Worktree.show_push_result result));
+        sh ~dir:managed
+          (Printf.sprintf "git merge -q --no-ff -m preserve-%d %s" index before);
+        require_success (fst (publish ())))
+      else (
+        sh ~dir:managed
+          (Printf.sprintf
+             "echo %d > step-%d.txt; git add step-%d.txt; git commit -q -m \
+              append-%d"
+             index index index index);
+        require_success (fst (publish ()))))
+
 (* ── Property: Push_plan.to_push_reject_classify_rejection mapping ────────────
 
    The escalation contract (see push_plan.mli): local-state refusals route to
@@ -661,6 +751,10 @@ let gen_refusal : Push_plan.refusal QCheck2.Gen.t =
         gen_sha;
       map2
         (fun local_sha remote_sha ->
+          Push_plan.History_would_be_rewritten { local_sha; remote_sha })
+        gen_sha gen_sha;
+      map2
+        (fun local_sha remote_sha ->
           Push_plan.Local_missing_remote_commits { local_sha; remote_sha })
         gen_sha gen_sha;
     ]
@@ -680,6 +774,7 @@ let to_rejection_partition =
           match refusal with
           | Push_plan.Branch_switched _
           | Push_plan.Local_missing_remote_commits _
+          | Push_plan.History_would_be_rewritten _
           | Push_plan.Branch_ref_missing _ ->
               String.equal reason
                 (Push_plan.short_label (Push_plan.Refuse refusal))
@@ -712,9 +807,24 @@ let () =
           scenario_initial_publication env ~preserve_history ~race);
       List.iter [ 0; 1; 2; 3 ] ~f:(fun race ->
           scenario_rewrite_interleavings env (2, race, preserve_history)));
+  scenario_protected_history env [ false; true; false; true ];
   QCheck2.Test.check_exn
     (QCheck2.Test.make
-       ~name:"rewrite publication remains live and preserves concurrent writers"
+       ~name:
+         "successful protected publications preserve remote ancestry across \
+          rewrites and merge repairs"
+       ~count:8
+       QCheck2.Gen.(list_size (int_range 1 4) bool)
+       (fun rewrites ->
+         try
+           scenario_protected_history env rewrites;
+           true
+         with _ -> false));
+  QCheck2.Test.check_exn
+    (QCheck2.Test.make
+       ~name:
+         "rewrite publication honors history mode and preserves concurrent \
+          writers"
        ~count:24
        ~print:(fun (commits, race, preserve_history) ->
          Printf.sprintf "commits=%d race=%d preserve_history=%b" commits race

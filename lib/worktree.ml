@@ -922,7 +922,8 @@ let gather_push_plan_inputs ~process_mgr ~path ~branch_str ~base_str =
         remote_changes_included,
         commits_ahead_of_base ))
 
-let force_push_with_lease_unbounded ~process_mgr ~path ~branch ~base =
+let force_push_with_lease_unbounded ~preserve_history ~process_mgr ~path ~branch
+    ~base =
   let branch_str = Types.Branch.to_string branch in
   let base_str = Types.Branch.to_string base in
   match gather_push_plan_inputs ~process_mgr ~path ~branch_str ~base_str with
@@ -936,9 +937,10 @@ let force_push_with_lease_unbounded ~process_mgr ~path ~branch ~base =
         remote_changes_included,
         commits_ahead_of_base ) -> (
       let decision =
-        Push_plan.plan ~expected_branch:branch_str ~worktree_path_exists
-          ~worktree_head_branch ~branch_ref_sha ~remote_tracking_sha ~ancestry
-          ~remote_changes_included ~commits_ahead_of_base
+        Push_plan.plan ~preserve_history ~expected_branch:branch_str
+          ~worktree_path_exists ~worktree_head_branch ~branch_ref_sha
+          ~remote_tracking_sha ~ancestry ~remote_changes_included
+          ~commits_ahead_of_base
       in
       match decision with
       | Refuse Push_plan.Worktree_missing -> Push_worktree_missing
@@ -946,11 +948,12 @@ let force_push_with_lease_unbounded ~process_mgr ~path ~branch ~base =
       | Refuse
           (( Push_plan.Branch_ref_missing _ | Push_plan.Branch_switched _
            | Push_plan.Local_missing_remote_commits _
-           | Push_plan.Remote_not_integrated _ ) as r) -> (
+           | Push_plan.Remote_not_integrated _
+           | Push_plan.History_would_be_rewritten _ ) as r) -> (
           match Push_plan.to_push_reject_classify_rejection r with
           | Some rej -> Push_rejected rej
           | None ->
-              (* These three refusals all map to Some _ per
+              (* These refusals all map to Some _ per
              [to_push_reject_classify_rejection]; fall back conservatively. *)
               Push_error (Push_plan.short_label (Push_plan.Refuse r)))
       | Push action -> (
@@ -1008,12 +1011,14 @@ let force_push_with_lease_unbounded ~process_mgr ~path ~branch ~base =
 
 let default_push_timeout_seconds = 120.0
 
-let force_push_with_lease ?preserve_history:(_ = false)
+let force_push_with_lease ?(preserve_history = false)
     ?(timeout_seconds = default_push_timeout_seconds) ~clock ~process_mgr ~path
     ~branch ~base () =
   match
     Eio.Time.with_timeout clock timeout_seconds (fun () ->
-        Ok (force_push_with_lease_unbounded ~process_mgr ~path ~branch ~base))
+        Ok
+          (force_push_with_lease_unbounded ~preserve_history ~process_mgr ~path
+             ~branch ~base))
   with
   | Ok result -> result
   | Error `Timeout ->

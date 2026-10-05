@@ -7,7 +7,8 @@
     be reachable from the captured local commit or have its changes represented
     in that commit's rewritten history. The push uses an explicit SHA lease, so
     later fetches cannot change the authority and concurrent remote writes are
-    rejected by Git. *)
+    rejected by Git. History-preserving publication additionally requires the
+    captured remote commit to be an ancestor of the captured local commit. *)
 
 type sha = string [@@deriving show, eq, sexp_of, compare]
 
@@ -49,6 +50,10 @@ type refusal =
           [ancestry = Local_diverged_from_remote] is intentionally NOT a refusal
           here when every remote-only commit is patch-equivalent to a commit
           reachable from the captured local SHA. *)
+  | History_would_be_rewritten of { local_sha : sha; remote_sha : sha }
+      (** History-preserving publication requires the captured remote tip to
+          remain an ancestor of the captured local tip. Patch equivalence does
+          not authorize replacing published ancestry. *)
   | Remote_not_integrated of { remote_sha : sha }
       (** The observed remote commit is absent from both current ancestry and
           current rewritten history. Retry after incorporating remote work. *)
@@ -58,6 +63,7 @@ type decision = Push of action | Refuse of refusal
 [@@deriving show, eq, sexp_of, compare]
 
 val plan :
+  preserve_history:bool ->
   expected_branch:string ->
   worktree_path_exists:bool ->
   worktree_head_branch:string option ->
@@ -71,7 +77,9 @@ val plan :
     patches, and strictly-behind branches are refused before publication.
     Divergent history requires [remote_changes_included]: every remote-only
     commit is patch-equivalent to a commit in the captured current history.
-    Unknown ancestry fails closed in the Git handler. *)
+    [preserve_history = true] only authorizes updates with
+    [ancestry = Local_includes_remote], regardless of patch equivalence. Unknown
+    ancestry fails closed in the Git handler. *)
 
 val short_label : decision -> string
 (** A short, lowercase, snake_case identifier for the planner arm that fired,
@@ -86,7 +94,8 @@ val to_push_reject_classify_rejection :
     permanent-rejection escalation:
 
     - [Branch_switched] / [Local_missing_remote_commits] / [Branch_ref_missing]
-      → [Some (Local_state_unsafe { reason = short_label_of_refusal })] — route
+      / [History_would_be_rewritten] →
+      [Some (Local_state_unsafe { reason = short_label_of_refusal })] — route
       through [needs_intervention].
     - [Remote_not_integrated] → [Some Lease_violation] for incorporation/retry.
     - [No_commits_ahead_of_base] / [Worktree_missing] → [None] — the
