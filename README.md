@@ -348,10 +348,16 @@ onton PROJECT                            # Resume the persisted mode and root
 ```
 
 The gameplan must be nonempty and have exactly one dependency root. That patch
-is the integration branch and owns the project's only PR. Its PR stays draft
-while descendants are constructed. Existing projects cannot change modes;
+is the integration branch and owns the implementation's only PR. Its PR stays
+draft while descendants are constructed. Existing projects cannot change modes;
 configs without a stored feature root retain ordinary mainline behavior. This
 mode requires GitHub and the `git` worktree backend.
+
+Combine with `--publish-gameplan` to publish the source first. Patch 0 has a
+separate PR against main, and every implementation patch waits for its merge.
+After it merges, the original gameplan root (typically Patch 1) starts against
+main and becomes the integration branch for descendants. Patch 0 never becomes
+the feature integration root. Both selections persist on resume.
 
 Descendants publish branches without opening PRs. Onton polls checks attached
 to each branch's exact HEAD SHA, including paginated check runs and commit
@@ -460,8 +466,8 @@ reused when resuming without the flag. A revised source requires a new project.
 Publication must be enabled when starting a fresh project; it cannot be enabled
 on resume.
 Source plans that already use Patch 0 or its generated branch are rejected.
-Publication cannot be combined with feature-branch mode, whose integration root
-must remain open until its descendants finish.
+With `--feature-branch`, Patch 0 merges before feature construction starts; the
+original implementation root stays open until its descendants finish.
 
 Patch 0 uses ordinary merge tracking and the existing automerge policy;
 `--publish-gameplan` alone does not enable automerge. No agent runs for its commit

@@ -36,6 +36,35 @@ let mode =
 
 let branch_of p = Branch.of_string ("patch-" ^ Patch_id.to_string p)
 
+let published_gameplan patches =
+  let source =
+    Gameplan.
+      {
+        project_name = "publication-feature";
+        repo_owner = "test";
+        repo_name = "test";
+        problem_statement = "";
+        solution_summary = "";
+        final_state_spec = "";
+        patches;
+        publication = None;
+        functional_changes = [];
+        context_resources = [];
+        reachability_traces = [];
+        current_state_analysis = "";
+        explicit_opinions = "";
+        acceptance_criteria = [];
+        open_questions = [];
+      }
+  in
+  let get = function Ok x -> x | Error e -> failwith e in
+  let publication =
+    get
+      (Gameplan_publication.create ~directory:"gameplans"
+         ~project_name:source.Gameplan.project_name ~yaml:false ~content:"{}")
+  in
+  get (Gameplan.publish source publication)
+
 module G = QCheck2.Gen
 
 let property name gen f =
@@ -57,6 +86,86 @@ let integration a =
 
 let tests =
   [
+    property "publication preserves the original root regardless of ID or order"
+      (G.pair (G.int_range 1 1000) (G.shuffle_list [ 0; 1; 2 ]))
+      (fun (n, order) ->
+        let ps = [ patch n []; patch (n + 1) [ n ]; patch (n + 2) [ n + 1 ] ] in
+        let ps = List.map order ~f:(List.nth_exn ps) in
+        let gp = published_gameplan ps in
+        match Execution_mode.infer_gameplan gp with
+        | Error _ -> false
+        | Ok m ->
+            Option.equal Patch_id.equal (Execution_mode.root m) (Some (id n))
+            && (not (Execution_mode.is_descendant m (id 0)))
+            && (not (Execution_mode.is_root m (id 0)))
+            && Execution_mode.is_descendant m (id (n + 1))
+            && Branch.equal
+                 (Execution_mode.terminal m (id 0) ~branch_of ~main)
+                 main
+            && Branch.equal
+                 (Execution_mode.terminal m (id (n + 2)) ~branch_of ~main)
+                 (branch n)
+            && Result.equal Execution_mode.equal String.equal
+                 (Execution_mode.restore_gameplan gp (Some (id n)))
+                 (Ok m)
+            && Result.is_error
+                 (Execution_mode.restore_gameplan gp (Some (id 0))));
+    property "published implementation requires a merged prerequisite"
+      (G.pair G.bool G.bool) (fun (publication_merged, publication_present) ->
+        let gp = published_gameplan patches in
+        let graph = Graph.of_gameplan gp in
+        match Execution_mode.infer_gameplan gp with
+        | Error _ -> false
+        | Ok m ->
+            Bool.equal
+              (Execution_mode.deps_satisfied m graph (id 1)
+                 ~has_merged:(fun p ->
+                   publication_merged && Patch_id.equal p (id 0))
+                 ~has_pr:(fun _ -> publication_present))
+              publication_merged);
+    property "publication merge interleavings release only implementation root"
+      (G.list G.bool) (fun observations ->
+        let gp = published_gameplan patches in
+        let graph = Graph.of_gameplan gp in
+        match Execution_mode.infer_gameplan gp with
+        | Error _ -> false
+        | Ok m ->
+            let _, valid =
+              List.fold observations ~init:(false, true)
+                ~f:(fun (merged, valid) observation ->
+                  let merged = merged || observation in
+                  let allowed n =
+                    Execution_mode.deps_satisfied m graph (id n)
+                      ~has_merged:(fun p -> merged && Patch_id.equal p (id 0))
+                      ~has_pr:(fun _ -> false)
+                  in
+                  ( merged,
+                    valid && Bool.equal (allowed 1) merged && not (allowed 2) ))
+            in
+            valid);
+    property "publication cannot conceal invalid implementation roots" G.unit
+      (fun () ->
+        List.for_all
+          [ []; [ patch 1 []; patch 2 [] ] ]
+          ~f:(fun ps ->
+            Result.is_error
+              (Execution_mode.infer_gameplan (published_gameplan ps))));
+    property
+      "publication inference is total for malformed implementation graphs"
+      (G.list_size (G.int_range 0 20)
+         (G.pair (G.int_range 1 5)
+            (G.list_size (G.int_range 0 10) (G.int_range 0 5))))
+      (fun nodes ->
+        let gp =
+          published_gameplan (List.map nodes ~f:(fun (n, deps) -> patch n deps))
+        in
+        ignore
+          (Execution_mode.infer_gameplan gp
+            : (Execution_mode.t, string) Result.t);
+        ignore
+          (Execution_mode.restore_gameplan gp (Some (id 1))
+            : (Execution_mode.t, string) Result.t);
+        true);
     property "root and descendant classification" (G.int_range 1 4) (fun n ->
         Bool.equal (Execution_mode.is_root mode (id n)) (Int.equal n 1)
         && Bool.equal

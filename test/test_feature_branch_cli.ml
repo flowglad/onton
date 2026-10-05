@@ -138,10 +138,7 @@ let () =
               rejects [ "--feature-branch" ] "requires a GitHub gameplan";
               rejects
                 [ "--feature-branch"; "--publish-gameplan" ]
-                "cannot be combined with feature branch mode";
-              rejects
-                [ "feature"; "--publish-gameplan" ]
-                "cannot be combined with feature branch mode";
+                "requires a GitHub gameplan";
               rejects
                 [ "--feature-branch"; "--forge"; "sourcehut" ]
                 "requires a GitHub gameplan";
@@ -179,6 +176,14 @@ let () =
               rejects
                 [ "--gameplan"; gp_path; "--feature-branch" ]
                 "nonempty gameplan";
+              rejects
+                [
+                  "--gameplan";
+                  gp_path;
+                  "--feature-branch";
+                  "--publish-gameplan";
+                ]
+                "nonempty gameplan";
               write
                 [
                   root_patch;
@@ -191,7 +196,75 @@ let () =
               rejects
                 [ "--gameplan"; gp_path; "--feature-branch" ]
                 "exactly one dependency root";
+              rejects
+                [
+                  "--gameplan";
+                  gp_path;
+                  "--feature-branch";
+                  "--publish-gameplan";
+                ]
+                "exactly one dependency root";
               check "invalid mode never persisted"
                 (not (Project_store.project_exists "new-feature"));
+              write [ root_patch ];
+              let managed = Project_store.managed_repo_dir "new-feature" in
+              Project_store.ensure_dir managed;
+              Git.run_git ~cwd:managed [ "init"; "-b"; "main" ];
+              Git.run_git ~cwd:managed [ "config"; "user.name"; "Test" ];
+              Git.run_git ~cwd:managed
+                [ "config"; "user.email"; "test@example.com" ];
+              Git.run_git ~cwd:managed
+                [ "config"; "core.sshCommand"; "/usr/bin/false" ];
+              Git.run_git ~cwd:managed
+                [ "commit"; "--allow-empty"; "-m"; "base" ];
+              Git.run_git ~cwd:managed
+                [ "remote"; "add"; "origin"; "git@github.com:test/test.git" ];
+              (* The existing managed clone refuses fetches locally. Terminal
+                 validation stops startup before any forge API requests. *)
+              rejects
+                [
+                  "--gameplan";
+                  gp_path;
+                  "--feature-branch";
+                  "--publish-gameplan";
+                  "--token";
+                  "unused";
+                  "--main-branch";
+                  "new-feature/patch-1";
+                ]
+                "Integration root branch must differ";
+              check "combined fresh startup persists publication"
+                (Option.is_some
+                   (load "new-feature").Project_store.gameplan_publication);
+              let publication =
+                match
+                  Gameplan_publication.create ~directory:"gameplans"
+                    ~project_name:"new-feature" ~yaml:false
+                    ~content:
+                      (Stdlib.In_channel.with_open_bin gp_path
+                         Stdlib.In_channel.input_all)
+                with
+                | Ok p -> p
+                | Error e -> failwith e
+              in
+              Project_store.save_gameplan_source ~project_name:"new-feature"
+                ~source_path:gp_path;
+              Project_store.save_config ~project_name:"new-feature"
+                ~github_owner:"test" ~github_repo:"test" ~backend:"claude"
+                ~model:"" ~main_branch:"new-feature/patch-1" ~poll_interval:30.
+                ~repo_root:dir ~max_concurrency:1 ~max_ci_failures:5
+                ~automerge_timeout:120. ~gameplan_publication:publication ();
+              Project_store.save_execution_mode ~project_name:"new-feature" mode;
+              (* Stop at terminal validation, before creating any network
+                 capabilities. This exercises the real resume/config path. *)
+              rejects
+                [ "new-feature"; "--token"; "unused" ]
+                "Integration root branch must differ";
+              rejects
+                [ "new-feature"; "--publish-gameplan"; "--token"; "unused" ]
+                "Integration root branch must differ";
+              check "combined resume preserves implementation root"
+                (Option.equal String.equal
+                   (load "new-feature").Project_store.feature_root (Some "1"));
               Stdlib.print_endline
                 "PASS feature branch CLI and config persistence")))

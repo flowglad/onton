@@ -3,13 +3,22 @@
 open Base
 open Types
 
-type t = Mainline | Feature_branch of Patch_id.t
+type feature_branch = { root : Patch_id.t; publication : Patch_id.t option }
+[@@deriving sexp_of, show, eq]
+
+type t = Mainline | Feature_branch of feature_branch
 [@@deriving sexp_of, show, eq]
 
 let mainline = Mainline
-let root = function Mainline -> None | Feature_branch id -> Some id
+let root = function Mainline -> None | Feature_branch f -> Some f.root
 let is_root t id = Option.equal Patch_id.equal (root t) (Some id)
-let is_descendant t id = Option.is_some (root t) && not (is_root t id)
+
+let is_descendant t id =
+  match t with
+  | Mainline -> false
+  | Feature_branch f ->
+      (not (Patch_id.equal f.root id))
+      && not (Option.equal Patch_id.equal f.publication (Some id))
 
 let infer graph =
   match
@@ -22,7 +31,7 @@ let infer graph =
              || List.mem
                   (Graph.transitive_ancestors graph p)
                   id ~equal:Patch_id.equal) ->
-      Ok (Feature_branch id)
+      Ok (Feature_branch { root = id; publication = None })
   | [] ->
       Error
         "--feature-branch requires a nonempty gameplan with one dependency root"
@@ -31,18 +40,49 @@ let infer graph =
         "--feature-branch requires exactly one dependency root reachable from \
          every patch"
 
-let restore graph = function
+let restore_inferred inferred = function
   | None -> Ok Mainline
   | Some id -> (
-      match infer graph with
-      | Ok (Feature_branch inferred as mode) when Patch_id.equal inferred id ->
-          Ok mode
+      match inferred with
+      | Ok (Feature_branch f as mode) when Patch_id.equal f.root id -> Ok mode
       | Ok Mainline | Ok (Feature_branch _) | Error _ ->
           Error "Persisted feature branch root does not match the gameplan")
 
+let restore graph root = restore_inferred (infer graph) root
+
+let infer_gameplan (gameplan : Gameplan.t) =
+  if
+    List.contains_dup gameplan.patches ~compare:(fun p q ->
+        Patch_id.compare p.Patch.id q.Patch.id)
+  then Error "Feature branch gameplan has duplicate patch IDs"
+  else
+    let graph = Graph.of_gameplan gameplan in
+    match gameplan.publication with
+    | None -> infer graph
+    | Some _ -> (
+        (* Publication is a merge prerequisite, outside the integration tree.
+         Select the original implementation root and keep Patch 0 on the
+         ordinary PR path throughout construction. *)
+        let publication = Gameplan.publication_patch_id in
+        match
+          List.find gameplan.patches ~f:(fun p ->
+              Patch_id.equal p.id publication)
+        with
+        | Some p when List.is_empty p.dependencies ->
+            Result.map
+              (infer (Graph.remove_patch graph publication))
+              ~f:(function
+                | Mainline -> Mainline
+                | Feature_branch f ->
+                    Feature_branch { f with publication = Some publication })
+        | Some _ | None -> Error "Invalid gameplan publication prerequisite")
+
+let restore_gameplan gameplan root =
+  restore_inferred (infer_gameplan gameplan) root
+
 let terminal t id ~branch_of ~main =
   match t with
-  | Feature_branch r when not (Patch_id.equal r id) -> branch_of r
+  | Feature_branch f when is_descendant t id -> branch_of f.root
   | Mainline | Feature_branch _ -> main
 
 let open_deps t graph id ~has_merged =
@@ -56,7 +96,8 @@ let base t graph id ~has_merged ~branch_of ~main =
   | _ -> None
 
 let deps_satisfied t graph id ~has_merged ~has_pr =
-  List.length (open_deps t graph id ~has_merged) <= 1
+  Graph.merge_deps_satisfied graph id ~has_merged
+  && List.length (open_deps t graph id ~has_merged) <= 1
   && List.for_all (Graph.deps graph id) ~f:(fun d -> has_merged d || has_pr d)
 
 let additions_allowed t graph ~construction_open ~dependencies =
