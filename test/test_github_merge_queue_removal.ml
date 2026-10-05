@@ -233,18 +233,13 @@ let test_contexts_page_parses_checks_and_cursor () =
         (Onton.Github.show_error e);
       Stdlib.exit 1
 
-(* A missing object (gc'd commit / no rollup) is a non-error terminal page. *)
-let test_contexts_page_missing_object_is_terminal () =
+(* A missing commit cannot establish a complete observation. *)
+let test_contexts_page_missing_object_is_unavailable () =
   match parse_page {|{ "data": { "repository": { "object": null } } }|} with
-  | Ok ([], false, None) ->
-      Stdlib.print_endline "  missing object → empty terminal page: OK"
+  | Error _ -> Stdlib.print_endline "  missing object → unavailable checks: OK"
   | Ok _ ->
       Stdlib.Printf.eprintf
-        "  FAIL: missing object returned non-terminal page\n";
-      Stdlib.exit 1
-  | Error e ->
-      Stdlib.Printf.eprintf "  FAIL: missing object errored: %s\n"
-        (Onton.Github.show_error e);
+        "  FAIL: missing object was accepted as a complete page\n";
       Stdlib.exit 1
 
 let test_contexts_page_graphql_errors_propagate () =
@@ -378,7 +373,7 @@ let () =
   test_pagination_none_when_complete ();
   test_pagination_none_when_empty ();
   test_contexts_page_parses_checks_and_cursor ();
-  test_contexts_page_missing_object_is_terminal ();
+  test_contexts_page_missing_object_is_unavailable ();
   test_contexts_page_graphql_errors_propagate ();
   test_merge_group_run_id_finds_failed_queue_run ();
   test_actions_jobs_response_returns_failing_jobs_with_ids ();

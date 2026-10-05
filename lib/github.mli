@@ -101,9 +101,9 @@ val parse_merge_queue_removal_response :
 val parse_contexts_page :
   string -> (Types.Ci_check.t list * bool * string option, error) Result.t
 (** Parse one page of the OID-keyed [statusCheckRollup.contexts] pagination
-    query into [(checks, has_next_page, end_cursor)]. A missing object/rollup
-    yields an empty page with [has_next_page = false]. Pure helper exposed for
-    regression tests. *)
+    query into [(checks, has_next_page, end_cursor)]. Missing commit or rollup
+    data is an error: it cannot prove completion of a paginated check list. Pure
+    helper exposed for regression tests. *)
 
 val parse_merge_queue_removal_pagination : string -> string option
 (** [Some oid] when the latest merge-queue removal event's [beforeCommit] rollup
