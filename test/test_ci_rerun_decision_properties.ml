@@ -34,6 +34,7 @@ let gen_check =
         details_url;
         description = None;
         started_at = None;
+        app_id = None;
         id = None;
       }
 
@@ -84,6 +85,7 @@ let check_of_run_id index run_id =
               index);
       description = None;
       started_at = None;
+      app_id = None;
       id = None;
     }
 

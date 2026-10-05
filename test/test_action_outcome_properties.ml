@@ -569,6 +569,7 @@ let () =
         details_url = None;
         description = None;
         started_at = None;
+        app_id = None;
         id = Some run_id;
       }
   in

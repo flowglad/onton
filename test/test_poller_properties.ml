@@ -140,6 +140,7 @@ let () =
                      details_url;
                      description;
                      started_at = None;
+                     app_id = None;
                      id = None;
                    })
                (triple

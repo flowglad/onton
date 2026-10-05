@@ -105,7 +105,7 @@ val derive_check_status : Ci_check.t list -> check_status
     runs as FAILURE). See implementation for exact semantics. *)
 
 val with_resolved_checks : t -> all_checks:Ci_check.t list -> t
-(** Recompute the rollup-derived fields ([check_status], [merge_ready],
+(** Select current check runs, then recompute ([check_status], [merge_ready],
     [ci_checks], [ci_checks_truncated]) from the {e complete} paginated check
     list. The effectful layer calls this after fetching every page of
     [statusCheckRollup.contexts] to replace the conservative

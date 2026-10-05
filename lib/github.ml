@@ -201,6 +201,7 @@ let graphql_query =
                   ... on CheckRun {
                     __typename
                     databaseId
+                    checkSuite { app { id } }
                     name
                     conclusion
                     detailsUrl
@@ -292,9 +293,16 @@ type oid_obj = { oid : string option [@yojson.default None] }
    one flat all-optional record and dispatch in OCaml ([ci_check_of_context]).
    Optional [typename]/[name]/[context] preserve the "skip unrecognized or
    incomplete node" behavior of the previous hand-rolled parser. *)
+type check_app = { id : string option [@yojson.default None] }
+[@@deriving of_yojson] [@@yojson.allow_extra_fields]
+
+type check_suite = { app : check_app option [@yojson.default None] }
+[@@deriving of_yojson] [@@yojson.allow_extra_fields]
+
 type context_node = {
   typename : string option; [@key "__typename"] [@yojson.default None]
   database_id : int option; [@key "databaseId"] [@yojson.default None]
+  check_suite : check_suite option; [@key "checkSuite"] [@yojson.default None]
   name : string option; [@yojson.default None]
   conclusion : string option; [@yojson.default None]
   details_url : string option; [@key "detailsUrl"] [@yojson.default None]
@@ -439,7 +447,7 @@ type response = { data : data option [@yojson.default None] }
 [@@deriving of_yojson] [@@yojson.allow_extra_fields]
 
 (* Map a decoded context node to a [Ci_check.t], or [None] to skip it.
-   Byte-for-byte equivalent to the former [parse_check_context_node]: unknown or
+   Unknown or
    incomplete nodes are skipped, conclusion is lowercased with a "pending"
    default, and the CheckRun/StatusContext field asymmetry (text vs description,
    id present only for CheckRun) is preserved. *)
@@ -458,6 +466,10 @@ let ci_check_of_context (n : context_node) : Types.Ci_check.t option =
             details_url = n.details_url;
             description = n.text;
             started_at = n.started_at;
+            app_id =
+              n.check_suite
+              |> Option.bind ~f:(fun suite -> suite.app)
+              |> Option.bind ~f:(fun (app : check_app) -> app.id);
             id = n.database_id;
           })
   | Some "StatusContext" ->
@@ -473,6 +485,7 @@ let ci_check_of_context (n : context_node) : Types.Ci_check.t option =
             details_url = n.target_url;
             description = n.description;
             started_at = n.created_at;
+            app_id = None;
             id = None;
           })
   | Some _ | None -> None
@@ -506,6 +519,7 @@ let contexts_by_oid_query =
               ... on CheckRun {
                 __typename
                 databaseId
+                checkSuite { app { id } }
                 name
                 conclusion
                 detailsUrl
@@ -675,6 +689,7 @@ let pr_state_of_pull_request ~owner ~merge_queue_required (pr : pull_request) :
             let truncated = rollup.contexts.page_info.has_next_page in
             let checks =
               List.filter_map rollup.contexts.nodes ~f:ci_check_of_context
+              |> Types.Ci_check.current_runs
             in
             (* Derive check_status from individual conclusions; we deliberately
                do NOT use the GraphQL rollup state (it conflates cancelled runs
@@ -944,7 +959,9 @@ let checks_of_commit (c : commit) : Types.Ci_check.t list =
   | None -> []
   | Some rollup ->
       if rollup.contexts.page_info.has_next_page then []
-      else List.filter_map rollup.contexts.nodes ~f:ci_check_of_context
+      else
+        List.filter_map rollup.contexts.nodes ~f:ci_check_of_context
+        |> Types.Ci_check.current_runs
 
 let parse_merge_queue_removal_response body =
   match Yojson.Safe.from_string body with
@@ -1089,6 +1106,7 @@ let ci_check_of_actions_job (job : actions_job) =
         details_url = job.html_url;
         description = None;
         started_at = job.started_at;
+        app_id = None;
         id = job.database_id;
       })
 
@@ -1453,7 +1471,7 @@ let fetch_all_contexts ~net ~clock ?timeout ?(require_complete = false) t ~oid :
           "onton: statusCheckRollup contexts exceeded %d pages for commit %s — \
            using partial list"
           max_context_pages oid;
-        Ok (List.concat (List.rev acc)))
+        Ok (Types.Ci_check.current_runs (List.concat (List.rev acc))))
     else
       let body = build_contexts_request_body t ~oid ~after in
       match
@@ -1474,7 +1492,9 @@ let fetch_all_contexts ~net ~clock ?timeout ?(require_complete = false) t ~oid :
                   Error
                     (Json_parse_error
                        "Branch check pagination cursor is missing")
-              | true, None | false, _ -> Ok (List.concat (List.rev acc))))
+              | true, None | false, _ ->
+                  Ok (Types.Ci_check.current_runs (List.concat (List.rev acc))))
+          )
   in
   loop ~after:None ~page:0 []
 
@@ -1612,6 +1632,7 @@ let merge_queue_removal_query =
                     ... on CheckRun {
                       __typename
                       databaseId
+                      checkSuite { app { id } }
                       name
                       conclusion
                       detailsUrl

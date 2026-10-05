@@ -162,6 +162,7 @@ let checks_for_commit ~owner ~repo ~branch ~sha jobs =
           Some (Printf.sprintf "https://builds.sr.ht/~%s/job/%d" account job.id);
         description = Some (Printf.sprintf "SourceHut build #%d" job.id);
         started_at = job.created;
+        app_id = None;
         id = Some job.id;
       })
 

@@ -192,6 +192,9 @@ module Ci_check = struct
     details_url : string option;
     description : string option;
     started_at : string option;
+    app_id : string option; [@yojson.default None]
+        (** GitHub App node ID for CheckRuns. Missing for legacy status
+            contexts, other forges, and snapshots written before this field. *)
     id : int option; [@yojson.default None]
         (** GitHub CheckRun [databaseId] when available, [None] for legacy
             StatusContext entries (which have no stable numeric ID). Used as the
@@ -216,6 +219,39 @@ module Ci_check = struct
   let is_success (c : t) =
     List.mem success_conclusions c.conclusion ~equal:String.equal
 
+  (* A replacement is identified by its producer and context name, never by
+     conclusion: a newer failure or pending run must supersede an older pass.
+     Keep unidentifiable checks and equal-ID observations conservatively. *)
+  let current_runs checks =
+    let identity (c : t) =
+      match (c.app_id, c.id) with
+      | Some app, Some id when (not (String.is_empty app)) && id > 0 ->
+          Some (app, c.name, id)
+      | _ -> None
+    in
+    let latest =
+      List.fold checks
+        ~init:(Map.empty (module String))
+        ~f:(fun apps check ->
+          match identity check with
+          | None -> apps
+          | Some (app, name, id) ->
+              Map.update apps app ~f:(fun contexts ->
+                  let contexts =
+                    Option.value contexts ~default:(Map.empty (module String))
+                  in
+                  Map.update contexts name ~f:(function
+                    | None -> id
+                    | Some previous -> Int.max previous id)))
+    in
+    List.filter checks ~f:(fun check ->
+        match identity check with
+        | None -> true
+        | Some (app, name, id) ->
+            Map.find latest app
+            |> Option.bind ~f:(fun contexts -> Map.find contexts name)
+            |> Option.value_map ~default:true ~f:(Int.equal id))
+
   let merge_queue_failure_name = "GitHub merge queue"
 
   let merge_queue_failure () =
@@ -229,6 +265,7 @@ module Ci_check = struct
            removed after queue checks failed, or marked unmergeable while \
            still in the queue.";
       started_at = None;
+      app_id = None;
       id = None;
     }
 

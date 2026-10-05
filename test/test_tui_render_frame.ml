@@ -226,6 +226,7 @@ let make_checks n =
         details_url = None;
         description = None;
         started_at = None;
+        app_id = None;
         id = None;
       })
 

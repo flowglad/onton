@@ -154,6 +154,7 @@ let gen_ci_check =
             details_url;
             description;
             started_at = None;
+            app_id = None;
             id = None;
           })
       gen_name gen_conclusion gen_url gen_desc)

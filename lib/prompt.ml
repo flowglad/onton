@@ -2122,6 +2122,7 @@ let%test
             details_url = None;
             description = None;
             started_at = None;
+            app_id = None;
             id = None;
           };
       ]
@@ -2366,6 +2367,7 @@ let%test "follow-up prompts without patch+gameplan emit only the turn layer" =
             details_url = None;
             description = None;
             started_at = None;
+            app_id = None;
             id = None;
           };
       ]
@@ -2384,6 +2386,7 @@ let%test "ci failure prompt renders check ids when present" =
             details_url = Some "https://example.test/check";
             description = None;
             started_at = None;
+            app_id = None;
             id = Some 12345;
           };
       ]
@@ -2392,7 +2395,16 @@ let%test "ci failure prompt renders check ids when present" =
   && String.is_substring ci_prompt ~substring:"https://example.test/check"
 
 let test_ci_check ?id ?details_url ?description name conclusion =
-  Ci_check.{ name; conclusion; details_url; description; started_at = None; id }
+  Ci_check.
+    {
+      name;
+      conclusion;
+      details_url;
+      description;
+      started_at = None;
+      app_id = None;
+      id;
+    }
 
 let test_ci_detail ?teaser ~artifact_dir ~signal () =
   {
