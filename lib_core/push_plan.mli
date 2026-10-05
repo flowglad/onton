@@ -1,47 +1,14 @@
 (* @archlint.module interface
    @archlint.domain push-plan *)
 
-(** Pure decision: should a [git push] proceed, given the observed state of the
-    worktree, the named branch, and the remote-tracking ref?
-
-    [Worktree.force_push_with_lease] used to gate on
-    [git rev-list --count <base>..HEAD] (worktree HEAD) but push the named
-    branch — so an agent that [git switch]ed to a different local branch
-    mid-session could trip the gate with commits the push command would never
-    upload. Combined with [--force-with-lease]'s blind spot for local commit
-    loss, that pair of mismatches put PR #315 in the position where a push of a
-    stale branch wiped its remote.
-
-    This module makes both pre-conditions explicit. The effectful caller in
-    [Worktree.force_push_with_lease] reads:
-
-    - whether the worktree directory still exists,
-    - the worktree's current HEAD-branch name (via
-      [git rev-parse --abbrev-ref HEAD]),
-    - the SHA of [refs/heads/<expected_branch>],
-    - the SHA of [refs/remotes/origin/<expected_branch>] (if any),
-    - the two-way ancestry between those two SHAs,
-    - [git rev-list --count <base>..refs/heads/<expected_branch>] (commits ahead
-      of base, measured on the named branch — NOT HEAD),
-
-    and passes them to [plan]. The decision is either [Push action] (proceed
-    with the named git command) or [Refuse reason] (skip the push and route the
-    reason to the orchestrator).
-
-    Refusals that map to a planner-only state ([Branch_ref_missing],
-    [Branch_switched], [Local_missing_remote_commits]) are translated to
-    {!Push_reject_classify.Local_state_unsafe} so the existing [is_permanent] →
-    [needs_intervention] escalation path applies without new orchestrator state.
-
-    Note: [ancestry = Local_diverged_from_remote] is NOT refused here. After a
-    conflict-resolution rebase, the local branch's new commits and the remote's
-    pre-rebase commits are legitimately divergent (same content, different SHAs
-    from the replay). Refusing here would strand the orchestrator on
-    [conflict_noop_count >= 2] needs-intervention. The git-level
-    [--force-if-includes] flag covers the actually-unsafe case (remote has
-    commits local doesn't reach via its reflog), so the planner delegates that
-    check to git. [Local_missing_remote_commits] — strictly-behind, the PR #315
-    incident shape — remains as the layered defense the planner enforces. *)
+(** Validate publication at the owning Git boundary. A force-push action carries
+    the exact local commit and incorporated remote commit it authorizes. Reading
+    a newer tracking ref alone cannot authorize overwriting it: its commit must
+    be reachable from the captured local commit or have its changes represented
+    in that commit's rewritten history. The push uses an explicit SHA lease, so
+    later fetches cannot change the authority and concurrent remote writes are
+    rejected by Git. History-preserving publication additionally requires the
+    captured remote commit to be an ancestor of the captured local commit. *)
 
 type sha = string [@@deriving show, eq, sexp_of, compare]
 
@@ -59,13 +26,9 @@ type ancestry =
   | Unknown  (** Ancestry could not be determined; treat conservatively. *)
 [@@deriving show, eq, sexp_of, compare]
 
-type action =
-  | Force_push_if_includes
-      (** [git push --porcelain --force-with-lease --force-if-includes origin
-           <branch>] — the normal supervisor push. *)
-  | Initial_push
-      (** [git push --porcelain -u origin <branch>] — first push of a brand-new
-          branch; no lease/include checks apply because remote ref is absent. *)
+type action = private
+  | Force_push_with_lease of { local_sha : sha; remote_sha : sha }
+  | Initial_push of { local_sha : sha }
 [@@deriving show, eq, sexp_of, compare]
 
 type refusal =
@@ -84,34 +47,41 @@ type refusal =
   | Local_missing_remote_commits of { local_sha : sha; remote_sha : sha }
       (** [ancestry = Local_missing_remote] — pushing now would force-push a
           local that is strictly behind remote on real content, wiping commits.
-          [ancestry = Local_diverged_from_remote] is intentionally NOT a refusal
-          here; see the module-level comment. *)
+          When [preserve_history = false], divergent history is allowed if every
+          remote-only commit is patch-equivalent to a commit reachable from the
+          captured local SHA. *)
+  | History_would_be_rewritten of { local_sha : sha; remote_sha : sha }
+      (** Proven divergence in history-preserving mode: the captured remote tip
+          is not an ancestor of the captured local tip. Patch equivalence does
+          not authorize replacing published ancestry. *)
+  | Remote_not_integrated of { remote_sha : sha }
+      (** Incorporation of the observed remote commit is unproven. Retry after
+          re-observing ancestry or incorporating remote work. *)
 [@@deriving show, eq, sexp_of, compare]
 
 type decision = Push of action | Refuse of refusal
 [@@deriving show, eq, sexp_of, compare]
 
 val plan :
+  preserve_history:bool ->
   expected_branch:string ->
   worktree_path_exists:bool ->
   worktree_head_branch:string option ->
   branch_ref_sha:sha option ->
   remote_tracking_sha:sha option ->
   ancestry:ancestry ->
+  remote_changes_included:bool ->
   commits_ahead_of_base:int option ->
   decision
-(** [plan] is total and deterministic. Pre-emption order, applied top-down:
-
-    + [worktree_path_exists = false] → [Refuse Worktree_missing]
-    + [worktree_head_branch <> Some expected_branch] →
-      [Refuse (Branch_switched { expected; got })]
-    + [branch_ref_sha = None] → [Refuse (Branch_ref_missing { branch })]
-    + [commits_ahead_of_base = Some 0] → [Refuse No_commits_ahead_of_base]
-    + [ancestry = Local_missing_remote] (and both refs present) →
-      [Refuse (Local_missing_remote_commits _)]
-    + [remote_tracking_sha = None] → [Push Initial_push]
-    + otherwise (including [ancestry = Local_diverged_from_remote]) →
-      [Push Force_push_if_includes] *)
+(** Total and deterministic. Missing worktrees, switched/missing branches, empty
+    patches, and strictly-behind branches are refused before publication.
+    Divergent history requires [remote_changes_included]: every remote-only
+    commit is patch-equivalent to a commit in the captured current history.
+    [preserve_history = true] only authorizes updates with
+    [ancestry = Local_includes_remote], regardless of patch equivalence.
+    Unproven ancestry with an observed remote tip returns the retryable
+    [Remote_not_integrated] refusal in history-preserving mode. Unknown ancestry
+    fails closed in the Git handler. *)
 
 val short_label : decision -> string
 (** A short, lowercase, snake_case identifier for the planner arm that fired,
@@ -126,8 +96,10 @@ val to_push_reject_classify_rejection :
     permanent-rejection escalation:
 
     - [Branch_switched] / [Local_missing_remote_commits] / [Branch_ref_missing]
-      → [Some (Local_state_unsafe { reason = short_label_of_refusal })] — route
+      / [History_would_be_rewritten] →
+      [Some (Local_state_unsafe { reason = short_label_of_refusal })] — route
       through [needs_intervention].
+    - [Remote_not_integrated] → [Some Lease_violation] for incorporation/retry.
     - [No_commits_ahead_of_base] / [Worktree_missing] → [None] — the
       orchestrator already has dedicated non-rejection handlers
       ([Push_no_commits], [Push_worktree_missing]). *)

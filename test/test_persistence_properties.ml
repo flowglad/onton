@@ -682,9 +682,78 @@ let () =
               && List.mem dependents_a pid_b ~equal:Patch_id.equal
         with _ -> false)
   in
+  let intervention_snapshot =
+    QCheck2.Test.make
+      ~name:
+        "snapshot publishes intervention and clears it on operator input or \
+         merge"
+      ~count:300
+      QCheck2.Gen.(triple (int_range 0 6) bool bool)
+      (fun (failures, human, merged) ->
+        let module Agent = Onton_core.Patch_agent in
+        let agent =
+          Agent.create_adhoc ~complexity:None
+            ~patch_id:(Patch_id.of_string "24")
+            ~branch:(Branch.of_string "patch") ~pr_number:(Pr_number.of_int 24)
+            ~max_ci_failures:10
+        in
+        let agent =
+          List.fold (List.init failures ~f:Fn.id) ~init:agent ~f:(fun agent _ ->
+              Agent.increment_push_failure_count agent)
+        in
+        let agent =
+          if human then
+            Agent.enqueue
+              (Agent.add_human_message agent "continue")
+              Onton_core.Types.Operation_kind.Human
+          else agent
+        in
+        let agent = if merged then Agent.mark_merged agent else agent in
+        let json = Onton.Persistence.patch_agent_to_yojson agent in
+        let expected =
+          if failures >= 3 && (not human) && not merged then
+            Some (`String "push_failure_count>=3")
+          else None
+        in
+        Poly.equal (Onton_core.Json.field "intervention_reason" json) expected)
+  in
+  let runnable_snapshot =
+    QCheck2.Test.make
+      ~name:"snapshot preserves runnable start until terminal merge" ~count:100
+      QCheck2.Gen.bool (fun merged ->
+        let agent =
+          Onton_core.Patch_agent.create ~branch:(Branch.of_string "patch")
+            (Patch_id.of_string "1")
+        in
+        let gameplan = gameplan_for_agent agent in
+        let orchestrator =
+          Onton.Orchestrator.create ~patches:gameplan.Gameplan.patches
+            ~main_branch:(Branch.of_string "main")
+        in
+        let orchestrator =
+          if merged then
+            Onton.Orchestrator.mark_merged orchestrator (Patch_id.of_string "1")
+          else orchestrator
+        in
+        let snap =
+          {
+            Onton.Runtime.orchestrator;
+            gameplan;
+            activity_log = Onton_core.Activity_log.empty;
+            transcripts = Base.Hashtbl.create (module Patch_id);
+            applied_control_ids = [];
+          }
+        in
+        Poly.equal
+          (Onton_core.Json.bool_field "runnable"
+             (Onton.Persistence.snapshot_to_yojson snap))
+          (Some (not merged)))
+  in
   let exit_code =
     QCheck_base_runner.run_tests
       [
+        runnable_snapshot;
+        intervention_snapshot;
         snapshot_roundtrip;
         legacy_feature_fields_default_false;
         applied_control_ids_decode;

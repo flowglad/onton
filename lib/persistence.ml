@@ -250,6 +250,11 @@ let patch_agent_to_yojson (a : Patch_agent.t) =
       ( "worktree_path",
         match a.worktree_path with None -> `Null | Some p -> `String p );
       ("branch_blocked", `Bool a.branch_blocked);
+      ( "intervention_reason",
+        match Patch_agent.intervention_reason a with
+        | Some reason -> `String reason
+        | None when a.branch_blocked && not a.merged -> `String "branch_blocked"
+        | None -> `Null );
       ( "llm_session_id",
         match a.llm_session_id with None -> `Null | Some s -> `String s );
       ("automerge_enabled", `Bool a.automerge_enabled);
@@ -837,9 +842,18 @@ let transcripts_of_yojson json =
   t
 
 let snapshot_to_yojson (snap : Runtime.snapshot) =
+  (* Export scheduler readiness from its owner. A capped patch can still have
+     a runnable supervisor rebase, and another patch can be ready to start. *)
+  let runnable =
+    not
+      (List.is_empty
+         (Patch_controller.plan_actions snap.orchestrator
+            ~patches:snap.gameplan.Gameplan.patches))
+  in
   `Assoc
     [
       ("version", `Int 1);
+      ("runnable", `Bool runnable);
       ("orchestrator", orchestrator_to_yojson snap.orchestrator);
       ("activity_log", activity_log_to_yojson snap.activity_log);
       ("gameplan", Gameplan.yojson_of_t snap.gameplan);
