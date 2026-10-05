@@ -50,6 +50,7 @@ module Fake_worktree : Worktree.S = struct
     assert false
 
   let force_push_with_lease ~path:_ ~branch:_ ~base:_ = assert false
+  let commit_gameplan ~path:_ ~publication:_ ~message:_ = assert false
   let rebase_in_progress ~path:_ = assert false
 end
 
@@ -73,6 +74,7 @@ module Fake_env : Worktree_setup.ENV = struct
           open_questions = [];
           functional_changes = [];
           context_resources = [];
+          publication = None;
           reachability_traces = [];
         }
       ~main_branch:(Branch.of_string "main") ()
@@ -181,6 +183,7 @@ let () =
       open_questions = [];
       functional_changes = [];
       context_resources = [];
+      publication = None;
       reachability_traces = [];
     }
   in

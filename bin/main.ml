@@ -316,23 +316,13 @@ let normalize_forge_owner ~forge owner =
     |> Base.Option.value ~default:owner
   else owner
 
-(** Attach persisted snapshot to a resolved config, propagating load errors. *)
-let with_snapshot_load ~project_name config gameplan =
-  match load_snapshot ~project_name with
-  | Ok existing_snapshot -> Ok (config, gameplan, existing_snapshot)
-  | Error msg ->
-      Error
-        [
-          Printf.sprintf "Error loading snapshot for project %S: %s"
-            project_name msg;
-        ]
-
 (** Finalize a run: load the per-repo config, layer-merge the effective
     [(backend, model)] from CLI / stored / config / built-in, persist the
     resolved config to disk, and attach the on-disk snapshot. Centralizes the
     body shared by the fresh, gameplan, and resume paths. *)
 let finalize_run ~project_name ~repo_coords ~run_knobs ~backend_inputs
-    ~main_branch ~gameplan =
+    ~main_branch ~gameplan ~publish_gameplan ~source_path =
+  let ( let* ) r f = Base.Result.bind r ~f in
   let { forge; github_token; github_owner; github_repo; repo_root; url_scheme }
       =
     repo_coords
@@ -358,6 +348,83 @@ let finalize_run ~project_name ~repo_coords ~run_knobs ~backend_inputs
   let repo_config =
     load_repo_config_or_exit ~forge ~github_owner ~github_repo
   in
+  let* existing_snapshot =
+    Base.Result.map_error (load_snapshot ~project_name) ~f:(fun msg -> [ msg ])
+  in
+  let* stored =
+    if Project_store.project_exists project_name then
+      Base.Result.map (Project_store.load_config ~project_name) ~f:Option.some
+      |> fun r -> Base.Result.map_error r ~f:(fun msg -> [ msg ])
+    else Ok None
+  in
+  let stored_publication =
+    match
+      Base.Option.bind stored ~f:(fun c -> c.Project_store.gameplan_publication)
+    with
+    | Some _ as publication -> publication
+    | None ->
+        Base.Option.bind existing_snapshot ~f:(fun snap ->
+            snap.Runtime.gameplan.Gameplan.publication)
+  in
+  let* publication =
+    if (not publish_gameplan) && Base.Option.is_none stored_publication then
+      Ok None
+    else
+      match source_path with
+      | None -> Error [ "--publish-gameplan requires a gameplan" ]
+      | Some path -> (
+          let content_result =
+            try
+              Ok
+                (Stdlib.In_channel.with_open_bin path
+                   Stdlib.In_channel.input_all)
+            with Sys_error msg -> Error [ msg ]
+          in
+          let* content = content_result in
+          match stored_publication with
+          | Some publication ->
+              if String.equal content (Gameplan_publication.content publication)
+              then Ok (Some publication)
+              else
+                Error
+                  [
+                    "This project's published gameplan differs from the \
+                     supplied source. Start a new project for a revised \
+                     gameplan.";
+                  ]
+          | None when Base.Option.is_some existing_snapshot ->
+              Error
+                [
+                  "--publish-gameplan must be enabled when starting a fresh \
+                   project; existing patches may already have started.";
+                ]
+          | None ->
+              Gameplan_publication.create
+                ~directory:
+                  (Option.value repo_config.Repo_config.gameplan_directory
+                     ~default:"gameplans")
+                ~project_name
+                ~yaml:
+                  (Filename.check_suffix path ".yaml"
+                  || Filename.check_suffix path ".yml")
+                ~content
+              |> fun r ->
+              Base.Result.map_error r ~f:(fun msg -> [ msg ]) |> fun r ->
+              Base.Result.map r ~f:Option.some)
+  in
+  let* gameplan =
+    match publication with
+    | None -> Ok gameplan
+    | Some publication ->
+        Gameplan.publish gameplan publication |> fun r ->
+        Base.Result.map_error r ~f:(fun msg -> [ msg ])
+  in
+  Base.Option.iter source_path ~f:(fun source_path ->
+      if
+        not
+          (String.equal source_path
+             (Project_store.stored_gameplan_path project_name))
+      then Project_store.save_gameplan_source ~project_name ~source_path);
   let automerge_timeout =
     Option.value automerge_timeout
       ~default:
@@ -384,7 +451,7 @@ let finalize_run ~project_name ~repo_coords ~run_knobs ~backend_inputs
     ~backend ~model
     ~main_branch:(Branch.to_string main_branch)
     ~poll_interval ~repo_root ~max_concurrency ~max_ci_failures
-    ~automerge_timeout ~worktree
+    ~automerge_timeout ~worktree ?gameplan_publication:publication
     ~url_scheme:(Option.map Managed_repo.string_of_url_scheme url_scheme)
     ();
   (* Refresh the agent-readable gameplan copy under artifacts/ so patch
@@ -417,7 +484,7 @@ let finalize_run ~project_name ~repo_coords ~run_knobs ~backend_inputs
       repo_config;
     }
   in
-  with_snapshot_load ~project_name config gameplan
+  Ok (config, gameplan, existing_snapshot)
 
 (** Resolve CLI args into a config ready to run.
     - [--gameplan] provided: parse it, persist config + gameplan source, derive
@@ -428,7 +495,7 @@ let resolve_config ~project ~gameplan_path ~forge ~github_token ~backend ~model
     ~main_branch ~poll_interval ~(repo_root : string option) ~max_concurrency
     ~(max_ci_failures : int option) ~(automerge_timeout : float option)
     ~headless ~worktree_backend ~worktree_executable
-    ~(clone_scheme : string option) =
+    ~(clone_scheme : string option) ~publish_gameplan =
   let clone_scheme_override =
     match clone_scheme with
     | None -> None
@@ -515,6 +582,7 @@ let resolve_config ~project ~gameplan_path ~forge ~github_token ~backend ~model
           open_questions = [];
           functional_changes = [];
           context_resources = [];
+          publication = None;
           reachability_traces = [];
         }
       in
@@ -531,6 +599,7 @@ let resolve_config ~project ~gameplan_path ~forge ~github_token ~backend ~model
       in
       finalize_run ~project_name ~repo_coords ~run_knobs
         ~backend_inputs:(cli_backend_inputs ()) ~main_branch ~gameplan
+        ~publish_gameplan ~source_path:None
   | _, Some gp_path -> (
       match Gameplan_parser.parse_file gp_path with
       | Error msg -> Error [ Printf.sprintf "Error parsing gameplan: %s" msg ]
@@ -602,8 +671,6 @@ let resolve_config ~project ~gameplan_path ~forge ~github_token ~backend ~model
                     ]
               | Ok (repo_root, scheme) ->
                   let main_branch = resolve_branch ~repo_root main_branch in
-                  Project_store.save_gameplan_source ~project_name
-                    ~source_path:gp_path;
                   let repo_coords =
                     {
                       forge;
@@ -616,7 +683,7 @@ let resolve_config ~project ~gameplan_path ~forge ~github_token ~backend ~model
                   in
                   finalize_run ~project_name ~repo_coords ~run_knobs
                     ~backend_inputs:(cli_backend_inputs ()) ~main_branch
-                    ~gameplan)))
+                    ~gameplan ~publish_gameplan ~source_path:(Some gp_path))))
   | Some proj, None -> (
       if not (Project_store.project_exists proj) then
         Error
@@ -783,7 +850,8 @@ let resolve_config ~project ~gameplan_path ~forge ~github_token ~backend ~model
                       ~stored_model:stored.Project_store.model ()
                   in
                   finalize_run ~project_name:proj ~repo_coords ~run_knobs
-                    ~backend_inputs ~main_branch:branch ~gameplan))
+                    ~backend_inputs ~main_branch:branch ~gameplan
+                    ~publish_gameplan ~source_path:(Some stored_gp_path)))
 
 let ok_or_exit = function
   | Ok x -> x
@@ -1595,7 +1663,7 @@ let run ~project ~gameplan_path ~forge ~github_token ~backend ~model
     ~(main_branch : Branch.t option) ~poll_interval ~(repo_root : string option)
     ~max_concurrency ~max_ci_failures ~automerge_timeout ~worktree_backend
     ~worktree_executable ~headless ~headless_transcript ~no_lock ~auto_merge
-    ~clone_scheme ~pr_ops ~feature_branch =
+    ~clone_scheme ~pr_ops ~feature_branch ~publish_gameplan =
   let prior_project =
     match (project, gameplan_path) with
     | Some p, _ -> Some p
@@ -1664,7 +1732,7 @@ let run ~project ~gameplan_path ~forge ~github_token ~backend ~model
     resolve_config ~project ~gameplan_path ~forge ~github_token ~backend ~model
       ~main_branch ~poll_interval ~repo_root ~max_concurrency ~max_ci_failures
       ~automerge_timeout ~worktree_backend ~worktree_executable ~headless
-      ~clone_scheme
+      ~clone_scheme ~publish_gameplan
   with
   | Error errs ->
       Base.List.iter errs ~f:(fun e -> Printf.eprintf "Error: %s\n" e);
@@ -2047,13 +2115,23 @@ let feature_branch_arg =
            Branch-only descendants integrate immediately; the root is promoted \
            when construction completes.")
 
+let publish_gameplan_arg =
+  let open Cmdliner.Arg in
+  value & flag
+  & info [ "publish-gameplan" ]
+      ~doc:
+        "Start with a deterministic Patch 0 PR publishing the supplied YAML or \
+         JSON gameplan under /gameplans/<project>/. All gameplan patches wait \
+         for its merge. The resolved source and path persist on resume. \
+         Override the directory with per-repo gameplan.directory."
+
 let main_cmd ~pr_ops =
   let open Cmdliner in
   let run_cmd project gameplan_path forge github_token backend model main_branch
       poll_interval repo_root max_concurrency max_ci_failures automerge_timeout
       worktree_backend worktree_executable headless headless_transcript
       upload_debug no_lock prune no_refresh auto_merge clone_scheme
-      feature_branch =
+      feature_branch publish_gameplan =
     if prune then
       Stdlib.exit
         ( Eio_main.run @@ fun env ->
@@ -2102,7 +2180,7 @@ let main_cmd ~pr_ops =
         ~model:(Base.String.strip model) ~main_branch ~poll_interval ~repo_root
         ~max_concurrency ~max_ci_failures ~automerge_timeout ~worktree_backend
         ~worktree_executable ~headless ~headless_transcript ~no_lock ~auto_merge
-        ~clone_scheme ~pr_ops ~feature_branch)
+        ~clone_scheme ~pr_ops ~feature_branch ~publish_gameplan)
   in
   let term =
     Term.(
@@ -2112,7 +2190,7 @@ let main_cmd ~pr_ops =
       $ automerge_timeout_arg $ worktree_backend_arg $ worktree_executable_arg
       $ headless_arg $ headless_transcript_arg $ upload_debug_arg $ no_lock_arg
       $ prune_arg $ no_refresh_arg $ auto_merge_arg $ clone_scheme_arg
-      $ feature_branch_arg)
+      $ feature_branch_arg $ publish_gameplan_arg)
   in
   let info =
     Cmd.info "onton" ~version:Version.s

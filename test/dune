@@ -774,3 +774,13 @@
  (modules test_feature_branch_cli)
  (deps ../bin/main.exe)
  (libraries onton onton_core onton_test_support eio eio_main unix yojson))
+
+(test
+ (name test_gameplan_publication_properties)
+ (modules test_gameplan_publication_properties)
+ (libraries onton_core qcheck-core qcheck-core.runner))
+
+(test
+ (name test_gameplan_publication)
+ (modules test_gameplan_publication)
+ (libraries onton onton_core onton_test_support eio_main unix))

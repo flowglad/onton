@@ -38,6 +38,7 @@ let gameplan patches =
     patches;
     functional_changes = [];
     context_resources = [];
+    publication = None;
     reachability_traces = [];
     current_state_analysis = "state";
     explicit_opinions = "opinions";

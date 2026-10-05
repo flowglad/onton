@@ -575,7 +575,8 @@ let plan_action_for_patch t ~branch_map:_ patch_id =
   in
   let open_deps = Orchestrator.open_deps t patch_id in
   let dependencies_allow_start =
-    List.length open_deps <= 1
+    Graph.merge_deps_satisfied (Orchestrator.graph t) patch_id ~has_merged
+    && List.length open_deps <= 1
     &&
     match Patch_agent.worktree_state agent with
     | Patch_agent.Materialized _ ->
@@ -1234,6 +1235,7 @@ let%test "reconcile_patch escalates repeated start discovery failures" =
             open_questions = [];
             functional_changes = [];
             context_resources = [];
+            publication = None;
             reachability_traces = [];
           }
       ~patch
@@ -1261,6 +1263,7 @@ let%test "reconcile_patch enqueues pr_body after PR creation" =
         open_questions = [];
         functional_changes = [];
         context_resources = [];
+        publication = None;
         reachability_traces = [];
       }
   in
@@ -1293,6 +1296,7 @@ let%test "reconcile_patch requests ready-for-review after pr_body on main" =
             open_questions = [];
             functional_changes = [];
             context_resources = [];
+            publication = None;
             reachability_traces = [];
           }
       ~patch
@@ -1326,6 +1330,7 @@ let%test "reconcile_patch keeps PR draft while CI is not green" =
             open_questions = [];
             functional_changes = [];
             context_resources = [];
+            publication = None;
             reachability_traces = [];
           }
       ~patch
@@ -1361,6 +1366,7 @@ let%test "reconcile_patch never re-drafts a PR once it is ready for review" =
             open_questions = [];
             functional_changes = [];
             context_resources = [];
+            publication = None;
             reachability_traces = [];
           }
       ~patch
@@ -1396,6 +1402,7 @@ let%test "reconcile_patch keeps PR draft while merge conflict is active" =
             open_questions = [];
             functional_changes = [];
             context_resources = [];
+            publication = None;
             reachability_traces = [];
           }
       ~patch
@@ -1464,6 +1471,7 @@ let%test
         open_questions = [];
         functional_changes = [];
         context_resources = [];
+        publication = None;
         reachability_traces = [];
       }
   in
@@ -1617,6 +1625,7 @@ let%test "reconcile_patch emits no effects for merged agent" =
             open_questions = [];
             functional_changes = [];
             context_resources = [];
+            publication = None;
             reachability_traces = [];
           }
       ~patch
@@ -1641,6 +1650,7 @@ let empty_gameplan =
       open_questions = [];
       functional_changes = [];
       context_resources = [];
+      publication = None;
       reachability_traces = [];
     }
 

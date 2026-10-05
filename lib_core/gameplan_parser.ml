@@ -740,6 +740,7 @@ let parse_json_string input =
                                     functional_changes;
                                     context_resources;
                                     reachability_traces;
+                                    publication = None;
                                     current_state_analysis;
                                     explicit_opinions;
                                     acceptance_criteria;

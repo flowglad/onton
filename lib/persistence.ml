@@ -617,6 +617,16 @@ let orchestrator_to_yojson (o : Orchestrator.t) =
     [
       ("main_branch", Branch.yojson_of_t (Orchestrator.main_branch o));
       ("promotion_claimed", `Bool (Orchestrator.promotion_claimed o));
+      ( "merge_required_dependencies",
+        `List
+          (List.concat_map
+             (Graph.all_patch_ids (Orchestrator.graph o))
+             ~f:(fun pid ->
+               List.map
+                 (Graph.merge_required_deps (Orchestrator.graph o) pid)
+                 ~f:(fun dep ->
+                   `List [ Patch_id.yojson_of_t pid; Patch_id.yojson_of_t dep ])))
+      );
       ("agents", `Assoc agents);
       ("outbox", `Assoc outbox);
     ]
@@ -654,7 +664,7 @@ let message_status_of_string = function
 let orchestrator_of_yojson ~gameplan json =
   try
     let ( let* ) r f = Result.bind r ~f in
-    let graph = Graph.of_patches gameplan.Gameplan.patches in
+    let graph = Graph.of_gameplan gameplan in
     let main_branch = Branch.of_string (string_member "main_branch" json) in
     Result.bind
       (result_all
@@ -761,6 +771,23 @@ let orchestrator_of_yojson ~gameplan json =
                                 Graph.add_dependency g pid ~dep:dep_pid
                             | _ -> g))))
           in
+          let* graph =
+            match member "merge_required_dependencies" json with
+            | `Null -> Ok graph
+            | `List edges ->
+                List.fold edges ~init:(Ok graph) ~f:(fun result edge ->
+                    let* graph = result in
+                    match edge with
+                    | `List [ `String pid; `String dep ]
+                      when Graph.depends_on graph (Patch_id.of_string pid)
+                             ~dep:(Patch_id.of_string dep) ->
+                        Ok
+                          (Graph.add_dependency ~requirement:Merged graph
+                             (Patch_id.of_string pid)
+                             ~dep:(Patch_id.of_string dep))
+                    | _ -> Error "Invalid merge-required dependency in snapshot")
+            | _ -> Error "merge_required_dependencies must be an array"
+          in
           Ok
             (Orchestrator.restore
                ~promotion_claimed:
@@ -810,7 +837,11 @@ let snapshot_of_yojson json =
       Error (Printf.sprintf "unsupported version: %d" version)
     else
       Result.bind
-        (try_of_yojson Gameplan.t_of_yojson (member "gameplan" json))
+        (Result.bind
+           (Gameplan_publication.parse_optional
+              (Json.field "publication" (member "gameplan" json)))
+           ~f:(fun _ ->
+             try_of_yojson Gameplan.t_of_yojson (member "gameplan" json)))
         ~f:(fun gameplan ->
           Result.bind
             (orchestrator_of_yojson ~gameplan (member "orchestrator" json))
@@ -941,6 +972,7 @@ let%test_module "session_id_sidecars" =
           open_questions = [];
           functional_changes = [];
           context_resources = [];
+          publication = None;
           reachability_traces = [];
         }
 

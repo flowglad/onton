@@ -8,7 +8,17 @@ open Base
     Encodes the spec fragment: deps, depends-on, deps-satisfied, open-pr-deps,
     sole-open-dep, initial-base. *)
 
+type requirement = Stackable | Merged [@@deriving sexp_of]
 type t [@@deriving sexp_of]
+
+val of_gameplan : Types.Gameplan.t -> t
+(** Includes merge-required publication edges when the run publishes a gameplan.
+*)
+
+val merge_deps_satisfied :
+  t -> Types.Patch_id.t -> has_merged:(Types.Patch_id.t -> bool) -> bool
+
+val merge_required_deps : t -> Types.Patch_id.t -> Types.Patch_id.t list
 
 val of_patches : Types.Patch.t list -> t
 (** Build a graph from a list of patches. Duplicate dependency edges within a
@@ -45,7 +55,8 @@ val deps_satisfied :
   bool
 (** [deps_satisfied t p ~has_merged ~has_pr] is true when:
     - [#(open_pr_deps t p) <= 1], AND
-    - every dep has either merged or has an open PR. *)
+    - every dep has either merged or has an open PR;
+    - every merge-required dep has merged. *)
 
 val sole_open_dep :
   t ->
@@ -91,11 +102,13 @@ val add_patch_with_deps :
     the existing rebase machinery (detect_rebases, initial_base, …) treats the
     patch like any other stacked patch. *)
 
-val add_dependency : t -> Types.Patch_id.t -> dep:Types.Patch_id.t -> t
+val add_dependency :
+  ?requirement:requirement -> t -> Types.Patch_id.t -> dep:Types.Patch_id.t -> t
 (** [add_dependency t pid ~dep] adds an edge [pid -> dep] to the graph. No-op if
-    either endpoint is absent, if [pid = dep], or if the edge already exists.
-    Intended for snapshot restore, where ad-hoc patches are first added as bare
-    nodes and then linked once all nodes are present. *)
+    either endpoint is absent or [pid = dep]. Existing edges can be upgraded
+    from [Stackable] to [Merged]; duplicate calls never downgrade them. Intended
+    for snapshot restore, where ad-hoc patches are first added as bare nodes and
+    then linked once all nodes are present. *)
 
 val remove_patch : t -> Types.Patch_id.t -> t
 (** [remove_patch t pid] removes an ad-hoc patch from the graph. Any edges

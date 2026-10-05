@@ -315,6 +315,7 @@ onton --repo ../my-repo [OPTIONS]        # Ad-hoc mode (no gameplan)
 |------|---------|-------------|
 | `PROJECT` | (derived from gameplan) | Project name (positional). Required to resume, optional with `--gameplan` |
 | `--gameplan` | — | Path to a YAML or JSON gameplan file |
+| `--publish-gameplan` | off | Publish the source as a deterministic Patch 0 PR; all gameplan patches wait for its merge |
 | `--repo` | `.` | Path to the git repository. Forge owner/repo are inferred from `git remote` |
 | `--forge` | `auto` | Forge: `github`, `sourcehut`, or local-origin auto-detection. Gameplan projects default to GitHub unless specified. |
 | `--token` | forge-specific | API token. Defaults to `$GITHUB_TOKEN` / `gh auth token` for GitHub or `$SRHT_TOKEN` for SourceHut. |
@@ -419,6 +420,47 @@ chmod +x ~/.config/onton/myorg/myrepo/on_worktree_create
 Worktrees are discovered from `git worktree list`. If no existing worktree is
 found for a patch's branch, one is created at
 `~/worktrees/<project>/patch-<id>`.
+
+### Publishing a gameplan
+
+Start a fresh project with:
+
+```sh
+onton --gameplan checkout-redesign.yaml --publish-gameplan
+```
+
+Onton creates Patch 0 against the configured main branch and commits the supplied
+file without an agent. YAML stays YAML, including comments and formatting; JSON
+stays JSON. The default destination is `/gameplans/<project>/gameplan.yaml` or
+`gameplan.json`, where `/` means the repository root and the project name is
+converted to a safe directory name. Original patch IDs and dependencies are
+preserved. Every gameplan patch receives an additional merge-required dependency
+on Patch 0, so an open or review-ready Patch 0 cannot release implementation.
+Agents receive the committed repository-relative path as their full-plan reference.
+
+Override the base directory in the existing per-repo
+`~/.config/onton/<owner>/<repo>/config.json`:
+
+```json
+{
+  "gameplan": {
+    "directory": "/docs/gameplans/"
+  }
+}
+```
+
+The directory is repository-specific; onton owns filename derivation, commit/PR
+creation, and dependency enforcement. This configuration is host-local. The
+resolved destination and source contents are persisted with the project and
+reused when resuming without the flag. A revised source requires a new project.
+The flag cannot be added after an existing project's patches have started.
+Source plans that already use Patch 0 or its generated branch are rejected.
+
+Patch 0 uses ordinary merge tracking and the existing automerge policy;
+`--publish-gameplan` alone does not enable automerge. No agent runs for its commit
+or PR body. Feedback needing edits, conflicting destination contents, or a real
+merge conflict requires manual intervention. Existing different files and
+unrelated worktree changes are preserved rather than overwritten or committed.
 
 ### Worktree backends
 

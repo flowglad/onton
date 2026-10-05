@@ -93,11 +93,33 @@ let update_agent t patch_id ~f =
       in
       { t with agents = Map.set t.agents ~key:patch_id ~data:a' }
 
+let merge_dependencies_allow_action t = function
+  | Start (patch_id, _) ->
+      Graph.merge_deps_satisfied t.graph patch_id ~has_merged:(fun pid ->
+          Option.value_map (find_agent t pid) ~default:false ~f:(fun a ->
+              a.Patch_agent.merged))
+  | Respond _ | Rebase _ -> true
+
+let require_dependency_merge t patch_id ~dep =
+  {
+    t with
+    graph = Graph.add_dependency ~requirement:Merged t.graph patch_id ~dep;
+  }
+
+let apply_gameplan_merge_requirements t gameplan =
+  let requirements = Graph.of_gameplan gameplan in
+  List.fold gameplan.Gameplan.patches ~init:t ~f:(fun t patch ->
+      List.fold (Graph.merge_required_deps requirements patch.Patch.id) ~init:t
+        ~f:(fun t dep -> require_dependency_merge t patch.id ~dep))
+
 let fire t action =
   match action with
   | Start (pid, base) ->
       let a = agent t pid in
-      if Patch_agent.has_pr a || a.Patch_agent.busy then t
+      if
+        (not (merge_dependencies_allow_action t action))
+        || Patch_agent.has_pr a || a.Patch_agent.busy
+      then t
       else
         update_agent t pid ~f:(fun a -> Patch_agent.start a ~base_branch:base)
   | Respond (pid, k) -> update_agent t pid ~f:(fun a -> Patch_agent.respond a k)
@@ -458,6 +480,8 @@ let runnable_messages t =
   |> List.filter ~f:(fun msg ->
       match msg.status with
       | Pending -> (
+          merge_dependencies_allow_action t msg.action
+          &&
           (* Gate a [Start] on base freshness only when it will materialize the
              worktree. A retry reuses an existing checkout and is no longer
              sensitive to later base-branch state. [Rebase] always remains
@@ -496,6 +520,8 @@ let accept_message t message_id =
   | Some msg -> (
       match msg.status with
       | Acked | Completed | Obsolete -> (t, None)
+      | Pending when not (merge_dependencies_allow_action t msg.action) ->
+          (t, None)
       | Pending ->
           let agent = agent t msg.patch_id in
           if agent.Patch_agent.generation <> msg.generation then
@@ -522,7 +548,8 @@ let resume_message t message_id =
           if
             Option.equal Message_id.equal agent.current_message_id
               (Some message_id)
-            && not agent.busy
+            && (not agent.busy)
+            && merge_dependencies_allow_action t msg.action
           then
             let op =
               match msg.action with

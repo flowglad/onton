@@ -162,6 +162,7 @@ type stored_config = {
          default; newly resolved values are persisted as [Some]. *)
   worktree_backend : string option; [@yojson.default None]
   worktree_executable : string option; [@yojson.default None]
+  gameplan_publication : Gameplan_publication.persisted; [@yojson.default None]
   url_scheme : string option; [@yojson.default None]
       (* Persisted transport scheme for the managed clone's [origin]. [None]
          on legacy configs predating P0-D; on the next [ensure_managed_repo]
@@ -173,7 +174,7 @@ type stored_config = {
 let save_config ~project_name ?(forge = "github") ~github_owner ~github_repo
     ~backend ~model ~main_branch ~poll_interval ~repo_root ~max_concurrency
     ~max_ci_failures ~automerge_timeout ?(worktree = Worktree_lifecycle.git)
-    ?(url_scheme : string option = None) () =
+    ?(url_scheme : string option = None) ?gameplan_publication () =
   let dir = project_dir project_name in
   ensure_dir dir;
   let config =
@@ -198,6 +199,7 @@ let save_config ~project_name ?(forge = "github") ~github_owner ~github_repo
       worktree_backend = Some (Worktree_lifecycle.backend_name worktree.backend);
       worktree_executable = worktree.executable;
       url_scheme;
+      gameplan_publication;
     }
   in
   let json = yojson_of_stored_config config in
@@ -255,12 +257,16 @@ let load_config ~project_name =
         (fun () -> Stdlib.In_channel.input_all ic)
     in
     let json = Yojson.Safe.from_string content in
-    match json with
-    | `Assoc fields ->
-        Ok
-          (stored_config_of_yojson
-             (`Assoc (drop_legacy_fields (migrate_backend_model fields))))
-    | _ -> Ok (stored_config_of_yojson json)
+    Result.bind
+      (Gameplan_publication.parse_optional
+         (Json.field "gameplan_publication" json))
+      ~f:(fun _ ->
+        match json with
+        | `Assoc fields ->
+            Ok
+              (stored_config_of_yojson
+                 (`Assoc (drop_legacy_fields (migrate_backend_model fields))))
+        | _ -> Ok (stored_config_of_yojson json))
   with exn -> Error (Stdlib.Printexc.to_string exn)
 
 let save_gameplan_source ~project_name ~source_path =

@@ -345,6 +345,7 @@ module Gameplan = struct
     solution_summary : string;
     final_state_spec : string; [@yojson.default ""]
     patches : Patch.t list;
+    publication : Gameplan_publication.persisted; [@yojson.default None]
     functional_changes : Functional_change.t list; [@yojson.default []]
     context_resources : Context_resource.t list; [@yojson.default []]
     reachability_traces : Reachability_trace.t list; [@yojson.default []]
@@ -375,6 +376,52 @@ module Gameplan = struct
   let branch_of_id (t : t) (id : Patch_id.t) : Branch.t =
     Branch.of_string (slugify t.project_name ^ "/patch-" ^ Patch_id.to_string id)
 
+  let publication_patch_id = Patch_id.of_string "0"
+
+  let is_publication_patch t id =
+    Option.is_some t.publication && Patch_id.equal id publication_patch_id
+
+  let publish t publication =
+    let id = publication_patch_id in
+    let branch = branch_of_id t id in
+    if
+      List.exists t.patches ~f:(fun p ->
+          Patch_id.equal p.Patch.id id || Branch.equal p.branch branch)
+    then
+      Error
+        "--publish-gameplan reserves Patch 0 and its branch; the source \
+         gameplan already uses them"
+    else
+      let path = Gameplan_publication.path publication in
+      let patch =
+        {
+          Patch.id;
+          branch;
+          dependencies = [];
+          title = "Publish gameplan";
+          description =
+            "Commit the supplied gameplan unchanged at `" ^ path
+            ^ "`. This patch is constructed deterministically by onton.";
+          spec = "";
+          acceptance_criteria =
+            [ "The supplied gameplan is committed without changes." ];
+          files = [ path ];
+          classification = "INFRA";
+          changes = [];
+          test_stubs_introduced = [];
+          test_stubs_implemented = [];
+          complexity = None;
+          precedents = [];
+          required_context = [];
+        }
+      in
+      let patches =
+        patch
+        :: List.map t.patches ~f:(fun p ->
+            { p with Patch.dependencies = id :: p.dependencies })
+      in
+      Ok { t with patches; publication = Some publication }
+
   (* Smallest [addN] id (N ≥ 1) not already used by a patch. Alphanumeric so it
      satisfies the parser's id invariant, and never a bare integer so it cannot
      collide with an ad-hoc PR id (which is [string_of_int pr_number]). *)
@@ -403,6 +450,11 @@ module Gameplan = struct
     let existing =
       List.map t.patches ~f:(fun p -> p.Patch.id)
       |> Set.of_list (module Patch_id)
+    in
+    let dependencies =
+      match t.publication with
+      | None -> dependencies
+      | Some _ -> publication_patch_id :: dependencies
     in
     let unknown =
       List.filter dependencies ~f:(fun d -> not (Set.mem existing d))

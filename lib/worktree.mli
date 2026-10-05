@@ -434,6 +434,17 @@ val integrate :
 (** The caller must hold the root-write lock throughout this operation. It
     reads, merges, and publishes the shared integration root. *)
 
+val commit_gameplan :
+  clock:float Eio.Time.clock_ty Eio.Time.clock ->
+  process_mgr:_ Eio.Process.mgr ->
+  path:string ->
+  publication:Gameplan_publication.t ->
+  message:string ->
+  (unit, string) Result.t
+(** Commit source bytes without a model. Refuses unrelated changes, symlink
+    destinations, and existing different contents. Repeated calls are
+    idempotent. Git commands have closed stdin and a bounded timeout. *)
+
 module type S = sig
   val resolve_main_root : unit -> string
   val is_checked_out_in_repo_root : Types.Branch.t -> bool
@@ -516,6 +527,12 @@ module type S = sig
     head_sha:string ->
     integration_result
   (** The caller must hold the root-write lock throughout this operation. *)
+
+  val commit_gameplan :
+    path:string ->
+    publication:Gameplan_publication.t ->
+    message:string ->
+    (unit, string) Result.t
 
   val rebase_in_progress : path:string -> bool
 end

@@ -15,9 +15,9 @@
 val clean_env : unit -> string array
 (** [Unix.environment ()] with all [GIT_*] variables removed.
 
-    onton only spawns git for repository queries, not for authoring commits, so
-    stripping [GIT_AUTHOR_*] / [GIT_COMMITTER_*] along with the rest is harmless
-    and keeps the isolation boundary simple.
+    Commit authoring uses the checkout's git identity configuration rather than
+    inherited [GIT_AUTHOR_*] / [GIT_COMMITTER_*] variables. Stripping these
+    along with the other Git overrides keeps the isolation boundary explicit.
 
     The returned environment also disables terminal prompts and installs a
     controlled HTTPS askpass helper. For GitHub remotes, the helper supplies the

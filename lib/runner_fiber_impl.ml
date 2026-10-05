@@ -941,56 +941,174 @@ module Make (Forge : Forge.S) (W : Worktree.S) (Env : Runner_env.S) = struct
       in
       let prompt = prompt ^ mode_instructions in
       let patch_prompt = patch_prompt ^ mode_instructions in
+
+      let gameplan = Runtime.read runtime (fun snap -> snap.Runtime.gameplan) in
       let session_result =
-        match pick_backend ~complexity with
-        | Backend_registry.Ephemeral backend, _decision ->
-            Session_driver.run ~kind ~delivery_mode ~patch_id ~prompt ~agent
-              ~on_pr_detected ~backend ~complexity
-        | Backend_registry.Long_lived backend, decision -> (
-            let patch_agent_model_result =
-              match
-                Backend_registry.resolve_model
-                  ~backend:decision.Backend_routing.backend
-                  ~model:decision.Backend_routing.model ~complexity
-              with
-              | Some m when not (Base.String.is_empty (Base.String.strip m)) ->
-                  Ok (Base.String.strip m)
-              | Some _ | None ->
-                  Error
-                    "patch-agent backend requires a concrete non-empty model \
-                     after routing"
+        match gameplan.Gameplan.publication with
+        | Some publication when Gameplan.is_publication_patch gameplan patch_id
+          -> (
+            let result disposition =
+              ({ disposition; tool_failures = []; turn_accepted = true }
+                : Session_driver.run_result)
             in
-            match patch_agent_model_result with
-            | Error message ->
-                log_event runtime ~patch_id message;
-                ({
-                   disposition = `Failed;
-                   tool_failures = [];
-                   turn_accepted = false;
-                 }
-                  : Session_driver.run_result)
-            | Ok patch_agent_model ->
-                let session =
-                  match
-                    Long_lived_sessions.find long_lived_sessions patch_id
-                  with
-                  | Some session ->
-                      Session_driver.update_long_lived_session_prompts session
-                        ~gameplan_prompt ~patch_prompt;
-                      session
-                  | None ->
-                      let session =
-                        Session_driver.create_long_lived_session ~backend
-                          ~provider:patch_agent_provider
-                          ~model:patch_agent_model ~effort:patch_agent_effort
-                          ~gameplan_prompt ~patch_prompt
-                      in
-                      Long_lived_sessions.register long_lived_sessions patch_id
-                        session;
-                      session
+            let fail message =
+              log_event runtime ~patch_id
+                ("Gameplan publication requires intervention: " ^ message);
+              mark_session_failed event_log runtime patch_id;
+              result `Failed
+            in
+            match kind with
+            | Some Operation_kind.Pr_body -> (
+                let artifact =
+                  Project_store.pr_body_artifact_path ~project_name ~patch_id
                 in
-                Session_driver.run_long_lived ~sw ~kind ~delivery_mode ~patch_id
-                  ~prompt ~agent ~on_pr_detected ~session ~complexity)
+                Project_store.ensure_dir (Stdlib.Filename.dirname artifact);
+                match
+                  Persistence.write_file_atomically ~path:artifact
+                    ~content:
+                      ("Published the supplied gameplan unchanged at `"
+                      ^ Gameplan_publication.path publication
+                      ^ "`. No agent was used.")
+                with
+                | Ok () -> result `Ok
+                | Error message -> fail message)
+            | None | Some Operation_kind.Human -> (
+                let worktree_state =
+                  Runtime.read runtime (fun snap ->
+                      Patch_agent.worktree_state
+                        (Orchestrator.agent snap.Runtime.orchestrator patch_id))
+                in
+                match worktree_state with
+                | Patch_agent.Unmaterialized ->
+                    fail "Worktree is not materialized"
+                | Patch_agent.Materialized path -> (
+                    let message =
+                      Printf.sprintf "[%s] Patch 0: Publish gameplan"
+                        project_name
+                    in
+                    match W.commit_gameplan ~path ~publication ~message with
+                    | Error message -> fail message
+                    | Ok () -> (
+                        let branch = agent.Patch_agent.branch in
+                        let base =
+                          Option.value agent.base_branch
+                            ~default:Env.main_branch
+                        in
+                        let local_sha =
+                          W.read_branch_sha ~path
+                            ~ref_name:("refs/heads/" ^ Branch.to_string branch)
+                        in
+                        let before =
+                          Runtime.read runtime (fun snap ->
+                              Orchestrator.agent snap.Runtime.orchestrator
+                                patch_id)
+                        in
+                        let push =
+                          Push_publication.with_pending_push
+                            ~update:(Runtime.update_orchestrator runtime)
+                            ~patch_id ~local_sha (fun () ->
+                              W.force_push_with_lease ~path ~branch ~base)
+                        in
+                        let session =
+                          Orchestrator.combine_session_and_push ~delivery_mode
+                            ~branch_changed:true
+                            ~session:Orchestrator.Session_ok ~push
+                        in
+                        Runtime.update_orchestrator runtime (fun orch ->
+                            Orchestrator.apply_session_result orch patch_id
+                              session);
+                        let after =
+                          Runtime.read runtime (fun snap ->
+                              Orchestrator.agent snap.Runtime.orchestrator
+                                patch_id)
+                        in
+                        Event_log.log_complete event_log ~patch_id
+                          ~result:session ~agent_before:before
+                          ~agent_after:after;
+                        Event_log.log_push event_log ~patch_id
+                          ~kind:Event_log.Session_end_push ~result:push
+                          ~local_sha
+                          ~remote_tracking_sha:
+                            (W.read_branch_sha ~path
+                               ~ref_name:
+                                 ("refs/remotes/origin/"
+                                ^ Branch.to_string branch))
+                          ~base_sha:
+                            (W.read_branch_sha ~path
+                               ~ref_name:
+                                 ("refs/remotes/origin/" ^ Branch.to_string base))
+                          ~agent_before:before ~agent_after:after;
+                        match push with
+                        | Worktree.Push_ok | Worktree.Push_up_to_date ->
+                            result `Ok
+                        | Worktree.Push_no_commits ->
+                            fail
+                              "The plan is already present in the base branch; \
+                               there is no change to open as Patch 0"
+                        | Worktree.Push_rejected _ | Worktree.Push_error _
+                        | Worktree.Push_worktree_missing ->
+                            result `Retry_push)))
+            | Some
+                ( Operation_kind.Rebase | Operation_kind.Merge_conflict
+                | Operation_kind.Ci | Operation_kind.Review_comments
+                | Operation_kind.Findings | Operation_kind.Uncommitted_changes
+                  ) ->
+                fail
+                  "Resolve this feedback manually; Patch 0 never invokes a \
+                   patch agent")
+        | None | Some _ -> (
+            match pick_backend ~complexity with
+            | Backend_registry.Ephemeral backend, _decision ->
+                Session_driver.run ~kind ~delivery_mode ~patch_id ~prompt ~agent
+                  ~on_pr_detected ~backend ~complexity
+            | Backend_registry.Long_lived backend, decision -> (
+                let patch_agent_model_result =
+                  match
+                    Backend_registry.resolve_model
+                      ~backend:decision.Backend_routing.backend
+                      ~model:decision.Backend_routing.model ~complexity
+                  with
+                  | Some m when not (Base.String.is_empty (Base.String.strip m))
+                    ->
+                      Ok (Base.String.strip m)
+                  | Some _ | None ->
+                      Error
+                        "patch-agent backend requires a concrete non-empty \
+                         model after routing"
+                in
+                match patch_agent_model_result with
+                | Error message ->
+                    log_event runtime ~patch_id message;
+                    ({
+                       disposition = `Failed;
+                       tool_failures = [];
+                       turn_accepted = false;
+                     }
+                      : Session_driver.run_result)
+                | Ok patch_agent_model ->
+                    let session =
+                      match
+                        Long_lived_sessions.find long_lived_sessions patch_id
+                      with
+                      | Some session ->
+                          Session_driver.update_long_lived_session_prompts
+                            session ~gameplan_prompt ~patch_prompt;
+                          session
+                      | None ->
+                          let session =
+                            Session_driver.create_long_lived_session ~backend
+                              ~provider:patch_agent_provider
+                              ~model:patch_agent_model
+                              ~effort:patch_agent_effort ~gameplan_prompt
+                              ~patch_prompt
+                          in
+                          Long_lived_sessions.register long_lived_sessions
+                            patch_id session;
+                          session
+                    in
+                    Session_driver.run_long_lived ~sw ~kind ~delivery_mode
+                      ~patch_id ~prompt ~agent ~on_pr_detected ~session
+                      ~complexity))
       in
       let disposition =
         if

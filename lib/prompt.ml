@@ -194,15 +194,14 @@ let agents_md_section = function
    [prompts/review.md], [prompts/ci_failure.md], etc.) are no longer
    honoured. *)
 
-(* The gameplan-reference section points agents at the read-only copy
-   published by [Project_store.publish_gameplan_artifact] at startup. The
-   path is a pure function of the project name (no filesystem probe here),
-   so the rendered gameplan layer stays byte-identical across the run. *)
-let gameplan_reference_section ~(project_name : string) : string =
+(* Publication runs refer to the frozen repository path. Other runs use the
+   read-only artifact published at startup. Both stay stable across turns. *)
+let gameplan_reference_section ~(project_name : string) ?publication () : string
+    =
   Printf.sprintf
     "\n\
      ## Full Gameplan Reference\n\n\
-     A read-only copy of the complete gameplan JSON — every patch's full \
+     A read-only reference to the complete gameplan — every patch's full \
      description, spec, acceptance criteria, and the functional-change \
      ownership map — is saved at:\n\n\
      `%s`\n\n\
@@ -211,7 +210,9 @@ let gameplan_reference_section ~(project_name : string) : string =
      context — for example, to check a sibling patch's scope before deciding \
      whether a change belongs to you. Do not edit the file, and do not take on \
      work owned by sibling patches.\n"
-    (Project_store.gameplan_artifact_path project_name)
+    (match publication with
+    | None -> Project_store.gameplan_artifact_path project_name
+    | Some publication -> Gameplan_publication.path publication)
 
 let render_gameplan_layer ~(project_name : string) (gameplan : Gameplan.t) :
     string =
@@ -237,7 +238,9 @@ let render_gameplan_layer ~(project_name : string) (gameplan : Gameplan.t) :
         optional_section ~header:"Current State Analysis"
           gameplan.Gameplan.current_state_analysis );
       ("patches_list", patches_list);
-      ("gameplan_reference_section", gameplan_reference_section ~project_name);
+      ( "gameplan_reference_section",
+        gameplan_reference_section ~project_name
+          ?publication:gameplan.publication () );
     ]
   in
   render_with_override ~project_name ~name:"gameplan" ~vars ~default:(fun () ->
@@ -657,6 +660,7 @@ let%test "render_spec_suffix: both empty" =
       patches = [];
       functional_changes = [];
       context_resources = [];
+      publication = None;
       reachability_traces = [];
       current_state_analysis = "";
       explicit_opinions = "";
@@ -697,6 +701,7 @@ let%test "render_spec_suffix: gameplan spec only" =
       patches = [];
       functional_changes = [];
       context_resources = [];
+      publication = None;
       reachability_traces = [];
       current_state_analysis = "";
       explicit_opinions = "";
@@ -740,6 +745,7 @@ let%test "render_spec_suffix: patch spec only" =
       patches = [];
       functional_changes = [];
       context_resources = [];
+      publication = None;
       reachability_traces = [];
       current_state_analysis = "";
       explicit_opinions = "";
@@ -783,6 +789,7 @@ let%test "render_spec_suffix: both present" =
       patches = [];
       functional_changes = [];
       context_resources = [];
+      publication = None;
       reachability_traces = [];
       current_state_analysis = "";
       explicit_opinions = "";
@@ -1664,6 +1671,7 @@ let%test "patch prompt includes title and deps" =
           ];
         functional_changes = [];
         context_resources = [];
+        publication = None;
         reachability_traces = [];
       }
   in
@@ -1745,6 +1753,7 @@ let%test "patch prompt static prefix is byte-identical across patches" =
         patches = [ patch_1; patch_2 ];
         functional_changes = [];
         context_resources = [];
+        publication = None;
         reachability_traces = [];
       }
   in
@@ -1800,6 +1809,7 @@ let%test "agents_md content appears in static prefix when Some" =
         patches = [ patch ];
         functional_changes = [];
         context_resources = [];
+        publication = None;
         reachability_traces = [];
       }
   in
@@ -1851,6 +1861,7 @@ let%test "agents_md section is omitted when None" =
         patches = [ patch ];
         functional_changes = [];
         context_resources = [];
+        publication = None;
         reachability_traces = [];
       }
   in
@@ -1960,6 +1971,7 @@ let make_layer_test_fixture () =
             };
           ];
         context_resources = [];
+        publication = None;
         reachability_traces = [];
       }
   in

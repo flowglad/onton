@@ -145,6 +145,7 @@ let run_git_exit_code ~process_mgr args =
     let child =
       retry_transient_spawn (fun () ->
           Eio.Process.spawn ~sw process_mgr ~env
+            ~stdin:(Eio.Flow.string_source "")
             ~stdout:(Eio.Flow.buffer_sink stdout_buf)
             ~stderr:(Eio.Flow.buffer_sink stderr_buf)
             args)
@@ -1214,6 +1215,99 @@ let merge_preserving ~process_mgr ~path ~target : rebase_result =
             Error ("Root merge failed and was aborted: " ^ err)
           else Error ("Root merge failed and abort also failed: " ^ abort_err)
 
+let commit_gameplan ~clock ~process_mgr ~path ~publication ~message :
+    (unit, string) Result.t =
+  let relative_path = Gameplan_publication.path publication in
+  let content = Gameplan_publication.content publication in
+  let git args =
+    let code, stdout, stderr =
+      run_git_exit_code ~process_mgr ([ "git"; "-C"; path ] @ args)
+    in
+    if code <> 0 then
+      failwith
+        (Printf.sprintf "git %s exited %d: %s"
+           (String.concat ~sep:" " args)
+           code stderr);
+    stdout
+  in
+  try
+    Eio.Time.with_timeout_exn clock 120. (fun () ->
+        (* This checkout is supervisor-owned. Refuse unrelated staged or dirty
+           files rather than including or discarding them in a generated commit. *)
+        List.iter
+          [
+            [ "diff"; "--name-only"; "-z" ];
+            [ "diff"; "--cached"; "--name-only"; "-z" ];
+            [ "ls-files"; "--others"; "--exclude-standard"; "-z" ];
+          ]
+          ~f:(fun args ->
+            git args |> String.split ~on:'\000'
+            |> List.iter ~f:(fun entry ->
+                if
+                  not (String.is_empty entry || String.equal entry relative_path)
+                then
+                  failwith
+                    ("Unrelated worktree change prevents gameplan publication: "
+                   ^ entry)));
+        let components = String.split relative_path ~on:'/' in
+        let rec prepare parent = function
+          | [] -> failwith "Empty publication path"
+          | [ filename ] -> Stdlib.Filename.concat parent filename
+          | dir :: rest ->
+              let next = Stdlib.Filename.concat parent dir in
+              (match Unix.lstat next with
+              | stat when Poly.equal stat.Unix.st_kind Unix.S_DIR -> ()
+              | _ ->
+                  failwith
+                    ("Publication directory is not a real directory: " ^ next)
+              | exception Unix.Unix_error (Unix.ENOENT, _, _) ->
+                  Unix.mkdir next 0o755);
+              prepare next rest
+        in
+        let destination = prepare path components in
+        (match Unix.lstat destination with
+        | stat when Poly.equal stat.Unix.st_kind Unix.S_REG ->
+            let existing =
+              Stdlib.In_channel.with_open_bin destination
+                Stdlib.In_channel.input_all
+            in
+            if not (String.equal existing content) then
+              failwith
+                ("Gameplan destination already contains different content: "
+               ^ relative_path)
+        | _ ->
+            failwith
+              ("Gameplan destination is not a regular file: " ^ relative_path)
+        | exception Unix.Unix_error (Unix.ENOENT, _, _) ->
+            Stdlib.Out_channel.with_open_bin destination (fun out ->
+                Stdlib.Out_channel.output_string out content));
+        ignore (git [ "add"; "--"; relative_path ]);
+        if
+          not
+            (String.is_empty
+               (git [ "diff"; "--cached"; "--name-only"; "--"; relative_path ]))
+        then (
+          let before = String.strip (git [ "rev-parse"; "HEAD" ]) in
+          ignore
+            (git [ "commit"; "--only"; "-m"; message; "--"; relative_path ]);
+          let committed_paths =
+            git [ "diff"; "--name-only"; "-z"; before; "HEAD" ]
+            |> String.split ~on:'\000'
+            |> List.filter ~f:(fun path -> not (String.is_empty path))
+          in
+          if not (List.equal String.equal committed_paths [ relative_path ])
+          then
+            failwith
+              "Commit hook changed files outside the gameplan; publication was \
+               not pushed");
+        let committed = git [ "show"; "HEAD:" ^ relative_path ] in
+        if not (String.equal committed content) then
+          failwith "Commit hook changed the supplied gameplan";
+        Result.Ok ())
+  with
+  | exn when has_cancellation exn -> raise exn
+  | exn -> Result.Error (Stdlib.Printexc.to_string exn)
+
 module type S = sig
   val resolve_main_root : unit -> string
   val is_checked_out_in_repo_root : Types.Branch.t -> bool
@@ -1289,6 +1383,12 @@ module type S = sig
     descendant_branch:Types.Branch.t ->
     head_sha:string ->
     integration_result
+
+  val commit_gameplan :
+    path:string ->
+    publication:Gameplan_publication.t ->
+    message:string ->
+    (unit, string) Result.t
 
   val rebase_in_progress : path:string -> bool
 end
@@ -1408,6 +1508,9 @@ let make_with_protection ~protected_branch ~fs ~config ~clock ~process_mgr
     let integrate ~root_path ~root_branch ~descendant_branch ~head_sha =
       integrate ~process_mgr ~clock ~repo_root ~root_path ~root_branch
         ~descendant_branch ~head_sha
+
+    let commit_gameplan ~path ~publication ~message =
+      commit_gameplan ~clock ~process_mgr ~path ~publication ~message
 
     let rebase_in_progress ~path = rebase_in_progress ~process_mgr ~path
   end : S)

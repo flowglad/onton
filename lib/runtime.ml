@@ -58,6 +58,14 @@ let create ~gameplan ~(main_branch : Branch.t)
           },
           [] )
   in
+  let snap =
+    {
+      snap with
+      orchestrator =
+        Orchestrator.apply_gameplan_merge_requirements snap.orchestrator
+          snap.gameplan;
+    }
+  in
   (* Config wins over whatever the snapshot (or the constructor default)
      carried: the cap is a per-project setting resolved from the CLI flag and
      stored config, re-applied on every startup. *)
@@ -150,6 +158,10 @@ let add_patch t ~title ~description ~dependencies =
             let orchestrator =
               Orchestrator.add_planned_patch s.orchestrator patch
                 ~deps:patch.Patch.dependencies
+            in
+            let orchestrator =
+              Orchestrator.apply_gameplan_merge_requirements orchestrator
+                gameplan
             in
             result := Ok patch;
             { s with gameplan; orchestrator });

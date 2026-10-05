@@ -36,6 +36,13 @@ type patch_agent_message = {
 }
 [@@deriving sexp_of, show, eq]
 
+val require_dependency_merge : t -> Patch_id.t -> dep:Patch_id.t -> t
+(** Upgrade an existing dependency, or add it, to require a merge before Start.
+*)
+
+val apply_gameplan_merge_requirements : t -> Gameplan.t -> t
+(** Apply the graph-owned merge requirements to fresh or resumed state. *)
+
 val fire : t -> action -> t
 (** Apply a single action to the orchestrator state. *)
 

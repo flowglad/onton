@@ -48,6 +48,7 @@ let gameplan_for_agent (agent : Onton_core.Patch_agent.t) =
       open_questions = [];
       functional_changes = [];
       context_resources = [];
+      publication = None;
       reachability_traces = [];
     }
 
@@ -248,6 +249,7 @@ let () =
                 open_questions = [];
                 functional_changes = [];
                 context_resources = [];
+                publication = None;
                 reachability_traces = [];
               }
           in
@@ -573,6 +575,7 @@ let () =
                 open_questions = [];
                 functional_changes = [];
                 context_resources = [];
+                publication = None;
                 reachability_traces = [];
               }
           in
@@ -630,6 +633,7 @@ let () =
                 open_questions = [];
                 functional_changes = [];
                 context_resources = [];
+                publication = None;
                 reachability_traces = [];
               }
           in

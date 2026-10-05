@@ -53,6 +53,7 @@ module Fake_worktree : Worktree.S = struct
     if String.equal !head "base" then Worktree.Push_no_commits
     else Worktree.Push_ok
 
+  let commit_gameplan ~path:_ ~publication:_ ~message:_ = assert false
   let rebase_in_progress ~path:_ = assert false
 end
 
@@ -109,6 +110,7 @@ let run_case ?(detect_pr = false) ?(advance_base = false) env ~content ~commit
             open_questions = [];
             functional_changes = [];
             context_resources = [];
+            publication = None;
             reachability_traces = [];
           }
       in

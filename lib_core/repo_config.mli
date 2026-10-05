@@ -53,6 +53,10 @@ type t = {
       (** Validated, flattened configuration overrides from top-level [extras],
           such as [features.fast_mode=true]. Values use TOML syntax; Codex
           passes them to the CLI's [-c] option. *)
+  gameplan_directory : string option;
+      (** [gameplan.directory], a repository-rooted base directory for published
+          gameplans. Defaults to [gameplans] when publication is enabled. A
+          leading slash means the repository root, never the host root. *)
   worktree : Worktree_lifecycle.config option;
   automerge_timeout : float option;
       (** Top-level [automerge_timeout] in seconds. Must be finite and greater

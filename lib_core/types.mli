@@ -356,6 +356,9 @@ module Gameplan : sig
     solution_summary : string;
     final_state_spec : string; [@yojson.default ""]
     patches : Patch.t list;
+    publication : Gameplan_publication.persisted; [@yojson.default None]
+        (** Internal run metadata, absent from authored gameplans. Carries the
+            frozen source and repo path when Patch 0 publication is enabled. *)
     functional_changes : Functional_change.t list; [@yojson.default []]
         (** Exhaustive enumeration of the functional/behavioural changes the
             gameplan introduces, each assigned to exactly one owning patch.
@@ -384,6 +387,13 @@ module Gameplan : sig
   val branch_of_id : t -> Patch_id.t -> Branch.t
   (** Branch for a patch id, matching the parser's [{slug}/patch-{id}]
       convention. *)
+
+  val publication_patch_id : Patch_id.t
+  val is_publication_patch : t -> Patch_id.t -> bool
+
+  val publish : t -> Gameplan_publication.t -> (t, string) Result.t
+  (** Synthesize Patch 0 and dependencies without rewriting the source document.
+      Rejects an existing Patch 0 or branch collision. *)
 
   val add_patch :
     t ->

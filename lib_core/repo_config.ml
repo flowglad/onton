@@ -16,6 +16,7 @@ type t = {
   default_model : string option;
   default_effort : string option;
   extras : string list;
+  gameplan_directory : string option;
   worktree : Worktree_lifecycle.config option;
   automerge_timeout : float option;
   review_team : string option;
@@ -29,6 +30,7 @@ let empty =
     default_model = None;
     default_effort = None;
     extras = [];
+    gameplan_directory = None;
     worktree = None;
     automerge_timeout = None;
     review_team = None;
@@ -310,35 +312,54 @@ let parse_string ~known_backends
             | Some (`String s) -> Ok (Some (String.strip s))
             | Some _ -> Error "review_team must be a string"
           in
-          Result.bind extras_result ~f:(fun extras ->
-              Result.bind
-                (Worktree_lifecycle.parse_optional (Json.field "worktree" json))
-                ~f:(fun worktree ->
-                  Result.bind (parse_automerge_timeout json)
-                    ~f:(fun automerge_timeout ->
-                      Result.bind (parse_default ~known_backends default_json)
-                        ~f:(fun
-                            (default_backend, default_model, default_effort) ->
-                          Result.bind review_team_result ~f:(fun review_team ->
-                              Result.bind
-                                (parse_routing ~known_backends routing)
-                                ~f:(fun routes ->
-                                  Result.map
-                                    (Review_backend.parse_array
-                                       ~known_kinds:known_review_kinds
-                                       review_backends_json)
-                                    ~f:(fun review_backends ->
-                                      {
-                                        default_backend;
-                                        default_model;
-                                        default_effort;
-                                        extras;
-                                        worktree;
-                                        automerge_timeout;
-                                        review_team;
-                                        complexity_routes = routes;
-                                        review_backends;
-                                      })))))))
+          let gameplan_directory_result =
+            match Json.field "gameplan" json with
+            | None -> Ok None
+            | Some (`Assoc _ as gameplan) -> (
+                match Json.field "directory" gameplan with
+                | None -> Ok None
+                | Some (`String directory) ->
+                    Result.map
+                      (Gameplan_publication.normalize_directory directory)
+                      ~f:Option.some
+                | Some _ -> Error "gameplan.directory must be a string")
+            | Some _ -> Error "gameplan must be an object"
+          in
+          Result.bind gameplan_directory_result ~f:(fun gameplan_directory ->
+              Result.bind extras_result ~f:(fun extras ->
+                  Result.bind
+                    (Worktree_lifecycle.parse_optional
+                       (Json.field "worktree" json))
+                    ~f:(fun worktree ->
+                      Result.bind (parse_automerge_timeout json)
+                        ~f:(fun automerge_timeout ->
+                          Result.bind
+                            (parse_default ~known_backends default_json)
+                            ~f:(fun
+                                (default_backend, default_model, default_effort)
+                              ->
+                              Result.bind review_team_result
+                                ~f:(fun review_team ->
+                                  Result.bind
+                                    (parse_routing ~known_backends routing)
+                                    ~f:(fun routes ->
+                                      Result.map
+                                        (Review_backend.parse_array
+                                           ~known_kinds:known_review_kinds
+                                           review_backends_json)
+                                        ~f:(fun review_backends ->
+                                          {
+                                            default_backend;
+                                            default_model;
+                                            default_effort;
+                                            extras;
+                                            gameplan_directory;
+                                            worktree;
+                                            automerge_timeout;
+                                            review_team;
+                                            complexity_routes = routes;
+                                            review_backends;
+                                          }))))))))
       | _ -> Error "config.json: top-level value must be an object")
 
 let load ~config_dir ~known_backends ?known_review_kinds () =

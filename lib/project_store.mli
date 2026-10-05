@@ -63,6 +63,9 @@ type stored_config = {
           {!Patch_controller.default_automerge_timeout}. *)
   worktree_backend : string option;
   worktree_executable : string option;
+  gameplan_publication : Gameplan_publication.persisted;
+      (** Frozen destination and source bytes for deterministic Patch 0
+          publication. Absent on ordinary and legacy runs. *)
   url_scheme : string option;
       (** Persisted transport for the managed [origin]. [None] on legacy configs
           predating P0-D; gets auto-resolved on the next
@@ -86,6 +89,7 @@ val save_config :
   automerge_timeout:float ->
   ?worktree:Worktree_lifecycle.config ->
   ?url_scheme:string option ->
+  ?gameplan_publication:Gameplan_publication.t ->
   unit ->
   unit
 (** Persist project config to the data directory. Creates the directory if

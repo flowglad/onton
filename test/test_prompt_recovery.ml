@@ -230,6 +230,7 @@ let () =
         open_questions = [];
         functional_changes = [];
         context_resources = [];
+        publication = None;
         reachability_traces = [];
       }
   in

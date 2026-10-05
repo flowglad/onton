@@ -4,8 +4,15 @@
 open Base
 open Types
 
+type requirement = Stackable | Merged [@@deriving sexp_of]
+
+type dependency = { patch_id : Patch_id.t; requirement : requirement }
+[@@deriving sexp_of]
+
+let dependency_id d = d.patch_id
+
 type t = {
-  deps_map : Patch_id.t list Map.M(Patch_id).t;
+  deps_map : dependency list Map.M(Patch_id).t;
   dependents_map : Patch_id.t list Map.M(Patch_id).t;
   all_ids : Patch_id.t list;
 }
@@ -18,7 +25,10 @@ let of_patches (patches : Patch.t list) =
     List.fold patches
       ~init:(Map.empty (module Patch_id))
       ~f:(fun acc { Patch.id; dependencies; _ } ->
-        let deps = dedup_deps dependencies in
+        let deps =
+          dedup_deps dependencies
+          |> List.map ~f:(fun patch_id -> { patch_id; requirement = Stackable })
+        in
         match Map.add acc ~key:id ~data:deps with
         | `Ok m -> m
         | `Duplicate -> invalid_arg "of_patches: duplicate patch id")
@@ -27,14 +37,28 @@ let of_patches (patches : Patch.t list) =
     Map.fold deps_map
       ~init:(Map.empty (module Patch_id))
       ~f:(fun ~key:patch_id ~data:deps acc ->
-        List.fold deps ~init:acc ~f:(fun acc dep_id ->
+        List.fold deps ~init:acc ~f:(fun acc dependency ->
+            let dep_id = dependency_id dependency in
             Map.update acc dep_id ~f:(fun existing ->
                 patch_id :: Option.value existing ~default:[])))
   in
   let all_ids = Map.keys deps_map in
   { deps_map; dependents_map; all_ids }
 
-let deps t patch_id = Map.find t.deps_map patch_id |> Option.value ~default:[]
+let dependency_edges t patch_id =
+  Map.find t.deps_map patch_id |> Option.value ~default:[]
+
+let deps t patch_id = dependency_edges t patch_id |> List.map ~f:dependency_id
+
+let merge_deps_satisfied t patch_id ~has_merged =
+  List.for_all (dependency_edges t patch_id) ~f:(fun d ->
+      match d.requirement with
+      | Stackable -> true
+      | Merged -> has_merged d.patch_id)
+
+let merge_required_deps t patch_id =
+  List.filter_map (dependency_edges t patch_id) ~f:(fun d ->
+      match d.requirement with Stackable -> None | Merged -> Some d.patch_id)
 
 let depends_on t patch_id ~dep =
   List.mem (deps t patch_id) dep ~equal:Patch_id.equal
@@ -57,7 +81,8 @@ let open_pr_deps t patch_id ~has_merged =
 let deps_satisfied t patch_id ~has_merged ~has_pr =
   let all_deps = deps t patch_id in
   let open_deps = List.filter all_deps ~f:(fun d -> not (has_merged d)) in
-  List.length open_deps <= 1
+  merge_deps_satisfied t patch_id ~has_merged
+  && List.length open_deps <= 1
   && List.for_all all_deps ~f:(fun d -> has_merged d || has_pr d)
 
 let sole_open_dep t patch_id ~has_merged =
@@ -90,31 +115,57 @@ let add_patch_with_deps t patch_id ~deps =
               patch_id :: Option.value existing ~default:[]))
     in
     {
-      deps_map = Map.set t.deps_map ~key:patch_id ~data:deps;
+      deps_map =
+        Map.set t.deps_map ~key:patch_id
+          ~data:
+            (List.map deps ~f:(fun patch_id ->
+                 { patch_id; requirement = Stackable }));
       dependents_map;
       all_ids = t.all_ids @ [ patch_id ];
     }
 
 let add_patch t patch_id = add_patch_with_deps t patch_id ~deps:[]
 
-let add_dependency t patch_id ~dep =
-  if Patch_id.equal patch_id dep then t
-  else if not (Map.mem t.deps_map patch_id) then t
-  else if not (Map.mem t.deps_map dep) then t
+let add_dependency ?(requirement = Stackable) t patch_id ~dep =
+  if
+    Patch_id.equal patch_id dep
+    || (not (Map.mem t.deps_map patch_id))
+    || not (Map.mem t.deps_map dep)
+  then t
   else
-    let existing = Map.find t.deps_map patch_id |> Option.value ~default:[] in
-    if List.mem existing dep ~equal:Patch_id.equal then t
+    let existing = dependency_edges t patch_id in
+    if List.exists existing ~f:(fun d -> Patch_id.equal d.patch_id dep) then
+      let edges =
+        List.map existing ~f:(fun d ->
+            if Patch_id.equal d.patch_id dep && Poly.equal requirement Merged
+            then { d with requirement = Merged }
+            else d)
+      in
+      { t with deps_map = Map.set t.deps_map ~key:patch_id ~data:edges }
     else
       {
-        deps_map = Map.set t.deps_map ~key:patch_id ~data:(dep :: existing);
+        t with
+        deps_map =
+          Map.set t.deps_map ~key:patch_id
+            ~data:({ patch_id = dep; requirement } :: existing);
         dependents_map =
           Map.update t.dependents_map dep ~f:(fun existing ->
               patch_id :: Option.value existing ~default:[]);
-        all_ids = t.all_ids;
       }
 
+let of_gameplan gameplan =
+  let graph = of_patches gameplan.Gameplan.patches in
+  match gameplan.publication with
+  | None -> graph
+  | Some _ ->
+      List.fold gameplan.patches ~init:graph ~f:(fun graph p ->
+          if Gameplan.is_publication_patch gameplan p.Patch.id then graph
+          else
+            add_dependency ~requirement:Merged graph p.id
+              ~dep:Gameplan.publication_patch_id)
+
 let remove_patch t patch_id =
-  let deps = Map.find t.deps_map patch_id |> Option.value ~default:[] in
+  let deps = deps t patch_id in
   let dependents =
     Map.find t.dependents_map patch_id |> Option.value ~default:[]
   in
@@ -134,7 +185,8 @@ let remove_patch t patch_id =
           | None -> None
           | Some lst ->
               let lst' =
-                List.filter lst ~f:(fun d -> not (Patch_id.equal d patch_id))
+                List.filter lst ~f:(fun d ->
+                    not (Patch_id.equal d.patch_id patch_id))
               in
               Some lst'))
   in
