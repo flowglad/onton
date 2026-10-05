@@ -404,7 +404,8 @@ let prop_aar_noop_refreshes =
 
 (** RD-AAR-3: Conflict preserves prev unchanged. *)
 let prop_aar_conflict_preserves =
-  Test.make ~count:50 ~name:"anchor_after_result: Conflict -> prev unchanged"
+  Test.make ~count:50
+    ~name:"anchor_after_result: rebase/merge conflict -> prev unchanged"
     (Gen.pair gen_typed_branch (Gen.option gen_hex40))
     (fun (base, resolved) ->
       let prev = Some (some_anchor ()) in
@@ -418,11 +419,13 @@ let prop_aar_conflict_preserves =
             orig_head = "";
           }
       in
-      let a =
-        Rebase_decision.anchor_after_result ~prev ~result:conflict
-          ~resolved_remote_sha:resolved ~base_branch:base
-      in
-      Option.equal Anchor.equal a prev)
+      List.for_all [ conflict; Worktree_parser.Merge_conflict "upstream-sha" ]
+        ~f:(fun result ->
+          let a =
+            Rebase_decision.anchor_after_result ~prev ~result
+              ~resolved_remote_sha:resolved ~base_branch:base
+          in
+          Option.equal Anchor.equal a prev))
 
 (** RD-AAR-4: Error preserves prev unchanged. *)
 let prop_aar_error_preserves =

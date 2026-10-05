@@ -244,6 +244,21 @@ val render_uncommitted_changes_prompt :
   unit ->
   string
 
+val render_root_merge_conflict_prompt :
+  project_name:string ->
+  ?agents_md:string ->
+  ?pr_number:Types.Pr_number.t ->
+  ?patch:Patch.t ->
+  ?gameplan:Gameplan.t ->
+  base_branch:string ->
+  merge_head:string ->
+  git_status:string ->
+  git_diff:string ->
+  unit ->
+  string
+(** Repair a pending history-preserving root merge, including restart guidance
+    pinned to its original MERGE_HEAD rather than a moving upstream ref. *)
+
 val render_merge_conflict_prompt :
   project_name:string ->
   ?agents_md:string ->

@@ -106,14 +106,14 @@ module Make (W : Worktree.S) (Env : Run_env.S) : S = struct
           with
           | (Worktree.Ok | Worktree.Noop) as r ->
               loop ~path ~last_rebase:r ~events rest
-          | ( Worktree.Conflict _ | Worktree.Uncommitted_changes _
-            | Worktree.Error _ ) as r ->
+          | ( Worktree.Conflict _ | Worktree.Merge_conflict _
+            | Worktree.Uncommitted_changes _ | Worktree.Error _ ) as r ->
               (r, path, Base.List.rev events))
       | Worktree_plan.Record_anchor_on_success { slot; base } :: rest ->
           let events' =
             match last_rebase with
-            | Worktree.Conflict _ | Worktree.Uncommitted_changes _
-            | Worktree.Error _ ->
+            | Worktree.Conflict _ | Worktree.Merge_conflict _
+            | Worktree.Uncommitted_changes _ | Worktree.Error _ ->
                 events
             | Worktree.Ok | Worktree.Noop -> (
                 match get_slot slot with

@@ -1603,6 +1603,49 @@ let render_merge_conflict_prompt ~(project_name : string) ?agents_md ?pr_number
   ^ render_turn_layer_merge_conflict ~project_name ?pr_number ~base_branch
       ~git_status ~git_diff ?conflict_info ()
 
+let render_root_merge_conflict_prompt ~(project_name : string) ?agents_md
+    ?pr_number ?patch ?gameplan ~(base_branch : string) ~(merge_head : string)
+    ~(git_status : string) ~(git_diff : string) () : string =
+  layered_prefix ~project_name ?pr_number ?patch ?gameplan
+    ?base_branch:(Some base_branch) ?agents_md ()
+  ^ Printf.sprintf
+      {|# Integration Root Merge Conflict
+
+A history-preserving merge of `%s` into this integration branch is in progress.
+The merge target captured in MERGE_HEAD is `%s`.
+
+Resolve the conflicted files, preserving both the integrated patches and upstream
+changes. Stage the resolved files and finish the merge:
+
+```
+git add <resolved files>
+git -c core.editor=true merge --continue
+```
+
+Preserve all published history. Never rebase, reset, or force-push this branch.
+If the merge was aborted, restart the same merge with:
+
+```
+git merge --no-ff --no-edit %s
+```
+
+The supervisor will publish the completed merge with a normal push. Do not run
+`git push` yourself.
+
+## Current merge state
+
+```
+%s
+```
+
+## Conflict markers
+
+```diff
+%s
+```
+|}
+      base_branch merge_head merge_head git_status git_diff
+
 let render_human_message_prompt ~(project_name : string)
     (messages : string list) =
   match messages with

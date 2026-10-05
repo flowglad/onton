@@ -205,7 +205,7 @@ let () =
                  ~upstream:base ~project_name:"git-test" ~ancestor_ids:[] ()
              with
             | Worktree.Ok -> true
-            | Worktree.Noop | Worktree.Conflict _
+            | Worktree.Noop | Worktree.Conflict _ | Worktree.Merge_conflict _
             | Worktree.Uncommitted_changes _ | Worktree.Error _ ->
                 false);
           let root_tip =
@@ -224,21 +224,131 @@ let () =
           Git.run_git ~cwd:dir [ "push"; "-q"; "origin"; "main" ];
           check "fetch conflicting upstream"
             (Result.is_ok (W.fetch_origin ~fetch_lock ~path:root_path));
-          check "root merge conflict aborts"
+          let conflicting_tip =
+            Git.git_capture ~cwd:dir [ "rev-parse"; "main" ]
+          in
+          let merge_root () =
+            W.rebase_onto ~path:root_path
+              ~target:(Branch.of_string "origin/main")
+              ~upstream:base ~project_name:"git-test" ~ancestor_ids:[] ()
+          in
+          let expect_merge_conflict result =
+            check "root conflict classified for repair"
+              (match result with
+              | Worktree.Merge_conflict sha -> String.equal sha conflicting_tip
+              | Worktree.Ok | Worktree.Noop | Worktree.Conflict _
+              | Worktree.Uncommitted_changes _ | Worktree.Error _ ->
+                  false)
+          in
+          expect_merge_conflict (merge_root ());
+          check "root conflict retains merge state and unmerged file"
+            (String.equal
+               (Git.git_capture ~cwd:root_path [ "rev-parse"; "MERGE_HEAD" ])
+               conflicting_tip
+            && String.equal
+                 (Git.git_capture ~cwd:root_path
+                    [ "diff"; "--name-only"; "--diff-filter=U" ])
+                 "shared");
+          check "root conflict preserves HEAD"
+            (String.equal
+               (Git.git_capture ~cwd:root_path [ "rev-parse"; "HEAD" ])
+               root_tip);
+          let before_retry = W.conflict_diff ~path:root_path in
+          (* A fresh client models a supervisor restart; a moved target must not
+             replace the target of the merge already in progress. *)
+          let module Restarted =
+            (val Worktree.make_with_protection
+                   ~protected_branch:(Some (Branch.of_string "root"))
+                   ~fs:(Eio.Stdenv.fs env) ~config:Worktree_lifecycle.git
+                   ~clock:(Eio.Stdenv.clock env)
+                   ~process_mgr:(Eio.Stdenv.process_mgr env)
+                   ~repo_root:dir)
+          in
+          expect_merge_conflict
+            (Restarted.rebase_onto ~path:root_path
+               ~target:(Branch.of_string "missing-target")
+               ~upstream:base ~project_name:"git-test" ~ancestor_ids:[] ());
+          check "retry preserves conflict contents"
+            (String.equal before_retry (W.conflict_diff ~path:root_path));
+          write (root_path ^ "/shared") "root and upstream resolved\n";
+          Git.run_git ~cwd:root_path [ "add"; "shared" ];
+          expect_merge_conflict (merge_root ());
+          check "retry preserves staged resolution"
+            (String.is_empty (Git.git_capture ~cwd:root_path [ "diff" ])
+            && not
+                 (String.is_empty
+                    (Git.git_capture ~cwd:root_path [ "diff"; "--cached" ])));
+          Git.run_git ~cwd:root_path
+            [ "-c"; "core.editor=true"; "merge"; "--continue" ];
+          let repaired =
+            Git.git_capture ~cwd:root_path [ "rev-parse"; "HEAD" ]
+          in
+          check "repair preserves both parents"
+            (String.equal
+               (Git.git_capture ~cwd:root_path
+                  [ "show"; "-s"; "--format=%P"; "HEAD" ])
+               (root_tip ^ " " ^ conflicting_tip));
+          check "completed repair is a noop"
+            (Worktree.equal_rebase_result (merge_root ()) Worktree.Noop);
+          check "repair publishes normally"
+            (match
+               W.force_push_with_lease ~path:root_path
+                 ~branch:(Branch.of_string "root")
+                 ~base:(Branch.of_string "main")
+             with
+            | Worktree.Push_ok -> true
+            | Worktree.Push_up_to_date | Worktree.Push_no_commits
+            | Worktree.Push_rejected _ | Worktree.Push_worktree_missing
+            | Worktree.Push_error _ ->
+                false);
+          check "remote contains repaired merge"
+            (String.equal
+               (Git.git_capture ~cwd:bare [ "rev-parse"; "root" ])
+               repaired);
+          check "invalid target has command diagnostics"
             (match
                W.rebase_onto ~path:root_path
-                 ~target:(Branch.of_string "origin/main")
+                 ~target:(Branch.of_string "missing-target")
                  ~upstream:base ~project_name:"git-test" ~ancestor_ids:[] ()
              with
-            | Worktree.Error _ -> true
+            | Worktree.Error detail ->
+                String.is_substring detail ~substring:"missing-target"
+                && String.is_substring detail ~substring:"exit"
             | Worktree.Ok | Worktree.Noop | Worktree.Conflict _
-            | Worktree.Uncommitted_changes _ ->
+            | Worktree.Merge_conflict _ | Worktree.Uncommitted_changes _ ->
                 false);
-          check "root checkout clean after failed merge"
+          (* A failed commit hook leaves MERGE_HEAD but no unmerged index. It is
+             an execution error, so abort that failed attempt and retain output. *)
+          let _ = commit dir "hook-upstream" "upstream\n" in
+          Git.run_git ~cwd:dir [ "push"; "-q"; "origin"; "main" ];
+          check "fetch hook upstream"
+            (Result.is_ok (W.fetch_origin ~fetch_lock ~path:root_path));
+          let merge_hook = dir ^ "/.git/hooks/pre-merge-commit" in
+          Git.run_git ~cwd:dir
+            [ "config"; "core.hooksPath"; dir ^ "/.git/hooks" ];
+          write merge_hook
+            "#!/bin/sh\n\
+             echo merge-hook-stdout\n\
+             echo merge-hook-stderr >&2\n\
+             exit 1\n";
+          Unix.chmod merge_hook 0o755;
+          check "hook failure retains both diagnostic streams"
+            (match merge_root () with
+            | Worktree.Error detail ->
+                String.is_substring detail ~substring:"merge-hook-stdout"
+                && String.is_substring detail ~substring:"merge-hook-stderr"
+            | Worktree.Ok | Worktree.Noop | Worktree.Conflict _
+            | Worktree.Merge_conflict _ | Worktree.Uncommitted_changes _ ->
+                false);
+          Unix.unlink merge_hook;
+          check "hook failure cleans only the failed merge"
             (String.is_empty
                (Git.git_capture ~cwd:root_path [ "status"; "--porcelain" ])
             && Git.git_exit_code ~cwd:root_path [ "rev-parse"; "MERGE_HEAD" ]
-               <> 0);
+               <> 0
+            && String.equal
+                 (Git.git_capture ~cwd:root_path [ "rev-parse"; "HEAD" ])
+                 repaired);
           check "no temporary worktree remains"
             (not
                (String.is_substring

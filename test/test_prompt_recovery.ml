@@ -245,3 +245,27 @@ let () =
     ~substring:"This worktree already has uncommitted changes"
 
 let () = Stdlib.print_endline "All prompt-recovery tests passed."
+
+let () =
+  let prompt =
+    Prompt.render_root_merge_conflict_prompt ~project_name:""
+      ~base_branch:"main" ~merge_head:"deadbeef"
+      ~git_status:"both modified: migration-journal.json"
+      ~git_diff:"<<<<<<< HEAD\nroot\n=======\nupstream\n>>>>>>> main" ()
+  in
+  assert_contains "root: merge continuation" prompt
+    ~substring:"git -c core.editor=true merge --continue";
+  assert_contains "root: restart pins original merge target" prompt
+    ~substring:"git merge --no-ff --no-edit deadbeef";
+  assert_contains "root: preserves history" prompt
+    ~substring:"Never rebase, reset, or force-push";
+  assert_contains "root: supervisor publishes normally" prompt
+    ~substring:"normal push";
+  assert_contains "root: includes status" prompt
+    ~substring:"both modified: migration-journal.json";
+  assert_contains "root: includes conflict markers" prompt
+    ~substring:"<<<<<<< HEAD";
+  assert_not_contains "root: does not instruct rebase continuation" prompt
+    ~substring:"git rebase --continue";
+  assert_not_contains "root: does not instruct reset" prompt
+    ~substring:"git reset --hard"

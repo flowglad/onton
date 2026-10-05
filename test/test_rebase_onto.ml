@@ -900,18 +900,21 @@ let assert_eq label expected actual =
 
 let assert_rebase_ok label = function
   | Worktree.Ok -> ()
-  | Worktree.Noop | Worktree.Conflict _ | Worktree.Uncommitted_changes _
-  | Worktree.Error _ ->
+  | Worktree.Noop | Worktree.Conflict _ | Worktree.Merge_conflict _
+  | Worktree.Uncommitted_changes _ | Worktree.Error _ ->
       failwith (Printf.sprintf "%s: expected Ok" label)
 
 let assert_rebase_noop label = function
   | Worktree.Noop -> ()
-  | Worktree.Ok | Worktree.Conflict _ | Worktree.Uncommitted_changes _
-  | Worktree.Error _ ->
+  | Worktree.Ok | Worktree.Conflict _ | Worktree.Merge_conflict _
+  | Worktree.Uncommitted_changes _ | Worktree.Error _ ->
       failwith (Printf.sprintf "%s: expected Noop" label)
 
 let assert_rebase_conflict label = function
   | Worktree.Conflict _ -> ()
+  | Worktree.Merge_conflict _ ->
+      failwith
+        (Printf.sprintf "%s: expected rebase conflict, got merge conflict" label)
   | Worktree.Ok ->
       failwith (Printf.sprintf "%s: expected Conflict, got Ok" label)
   | Worktree.Noop ->
@@ -926,7 +929,8 @@ let assert_rebase_uncommitted label = function
   | Worktree.Uncommitted_changes status when not (String.is_empty status) -> ()
   | Worktree.Uncommitted_changes _ ->
       failwith (Printf.sprintf "%s: expected non-empty status" label)
-  | Worktree.Ok | Worktree.Noop | Worktree.Conflict _ | Worktree.Error _ ->
+  | Worktree.Ok | Worktree.Noop | Worktree.Conflict _
+  | Worktree.Merge_conflict _ | Worktree.Error _ ->
       failwith (Printf.sprintf "%s: expected Uncommitted_changes" label)
 
 (** Simulate squash-merge of [branch] into main: checkout main, create a single
@@ -1194,7 +1198,7 @@ let () =
    (match result with
    | Worktree.Ok | Worktree.Noop -> ()
    | Worktree.Error msg when not (String.is_empty msg) -> ()
-   | Worktree.Conflict _ | Worktree.Error _ ->
+   | Worktree.Conflict _ | Worktree.Merge_conflict _ | Worktree.Error _ ->
        failwith "test7: expected Ok, Noop, or structured Error"
    | Worktree.Uncommitted_changes _ ->
        failwith "test7: expected clean fixture worktree");
@@ -1228,6 +1232,8 @@ let () =
       since D1 content overlaps with squash. Either way it shouldn't crash. *)
    (match result with
    | Worktree.Ok | Worktree.Noop | Worktree.Conflict _ -> ()
+   | Worktree.Merge_conflict _ ->
+       failwith "test8: expected a rebase outcome, got a root merge conflict"
    | Worktree.Uncommitted_changes _ ->
        failwith "test8: expected clean fixture worktree"
    | Worktree.Error msg ->
@@ -1266,6 +1272,8 @@ let () =
        (* x.txt should contain feat's version *)
        let content = read_file ~dir ~filename:"x.txt" in
        assert_eq "test9: x.txt content" "v2" content
+   | Worktree.Merge_conflict _ ->
+       failwith "test9: expected a rebase outcome, got a root merge conflict"
    | Worktree.Noop | Worktree.Conflict _ ->
        (* Git's apply/rename heuristics around a squash-merged base plus a
           later modification vary across versions. This case remains useful as
@@ -1397,7 +1405,8 @@ let () =
    | Worktree.Uncommitted_changes status ->
        if not (String.is_substring status ~substring:"f.txt") then
          failwith "test11: dirty status omitted modified file"
-   | Worktree.Ok | Worktree.Noop | Worktree.Conflict _ | Worktree.Error _ ->
+   | Worktree.Ok | Worktree.Noop | Worktree.Conflict _
+   | Worktree.Merge_conflict _ | Worktree.Error _ ->
        failwith "test11: expected Uncommitted_changes");
    assert_eq "test11: HEAD unchanged" original_head
      (git ~process_mgr ~dir [ "rev-parse"; "HEAD" ]);
@@ -1432,7 +1441,8 @@ let () =
    | Worktree.Uncommitted_changes status ->
        if not (String.is_substring status ~substring:"?? scratch.txt") then
          failwith "test12: dirty status omitted untracked file"
-   | Worktree.Ok | Worktree.Noop | Worktree.Conflict _ | Worktree.Error _ ->
+   | Worktree.Ok | Worktree.Noop | Worktree.Conflict _
+   | Worktree.Merge_conflict _ | Worktree.Error _ ->
        failwith "test12: expected Uncommitted_changes");
    assert_eq "test12: HEAD unchanged" original_head
      (git ~process_mgr ~dir [ "rev-parse"; "HEAD" ]);

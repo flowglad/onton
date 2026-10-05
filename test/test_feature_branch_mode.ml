@@ -583,3 +583,70 @@ let () =
        (Orchestrator.agent finished (id 1)).Patch_agent.pr_body_refresh
          .Patch_agent.pending);
   Stdlib.print_endline "feature PR publication generations: OK"
+
+let () =
+  let open Patch_agent in
+  let pid = id 1 in
+  let claim_rebase orch =
+    Orchestrator.enqueue orch pid Operation_kind.Rebase |> fun o ->
+    Orchestrator.fire o (Orchestrator.Rebase (pid, main))
+  in
+  let claim_conflict orch =
+    Orchestrator.enqueue orch pid Operation_kind.Merge_conflict |> fun o ->
+    Orchestrator.fire o
+      (Orchestrator.Respond (pid, Operation_kind.Merge_conflict))
+  in
+  let initial = claim_rebase (fresh ()) in
+  let failed, _ =
+    Orchestrator.apply_rebase_result initial pid
+      (Worktree.Error "transient command failure") main
+  in
+  check "root command error consumes failure budget"
+    ((Orchestrator.agent failed pid).Patch_agent.rebase_failure_count = 1);
+  let conflicted, effects =
+    Orchestrator.apply_rebase_result (claim_rebase failed) pid
+      (Worktree.Merge_conflict "upstream-sha") main
+  in
+  let a = Orchestrator.agent conflicted pid in
+  check "root merge conflict queues agent repair without failure budget"
+    (a.has_conflict && (not a.busy) && a.rebase_failure_count = 0
+    && (not (Patch_agent.needs_intervention a))
+    && List.mem a.queue Operation_kind.Merge_conflict
+         ~equal:Operation_kind.equal
+    && List.is_empty effects);
+  (* Repeated deliveries after interrupted sessions are repairable conflicts,
+     rather than two command failures that strand the root in needs-help. *)
+  let repaired =
+    List.fold [ 1; 2; 3 ] ~init:conflicted ~f:(fun orch _ ->
+        let running = claim_conflict orch in
+        let orch, decision, effects =
+          Orchestrator.apply_conflict_rebase_result running pid
+            (Worktree.Merge_conflict "upstream-sha") main
+        in
+        check "pending root merge reaches repair agent"
+          (Orchestrator.equal_conflict_rebase_decision decision
+             Orchestrator.Deliver_to_agent
+          && List.is_empty effects);
+        let orch, resolution =
+          Orchestrator.apply_conflict_push_result orch pid decision None
+        in
+        let a = Orchestrator.agent orch pid in
+        check "pending root merge retains ownership for agent"
+          (Orchestrator.equal_conflict_resolution resolution
+             Orchestrator.Conflict_needs_agent
+          && a.busy && a.has_conflict && a.rebase_failure_count = 0
+          && not (Patch_agent.needs_intervention a));
+        Orchestrator.complete orch pid)
+  in
+  let finished, decision, effects =
+    Orchestrator.apply_conflict_rebase_result (claim_conflict repaired) pid
+      Worktree.Ok main
+  in
+  let a = Orchestrator.agent finished pid in
+  check "completed root repair schedules publication and releases ownership"
+    (Orchestrator.equal_conflict_rebase_decision decision
+       Orchestrator.Conflict_resolved
+    && List.equal Orchestrator.equal_rebase_effect effects
+         [ Orchestrator.Push_branch ]
+    && (not a.busy) && (not a.has_conflict)
+    && not (Patch_agent.needs_intervention a))
