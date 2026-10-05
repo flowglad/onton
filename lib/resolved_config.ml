@@ -19,8 +19,6 @@ type config = {
   max_ci_failures : int;
   automerge_timeout : float;
   headless : bool;
-  patch_agent_provider : string option;
-  patch_agent_effort : string option;
   user_config : User_config.t;
   repo_config : Repo_config.t;
 }
@@ -41,22 +39,15 @@ type t = {
   max_ci_failures : int;
   automerge_timeout : float;
   headless : bool;
-  patch_agent_provider : string option;
-  patch_agent_effort : string option;
   user_config : User_config.t;
   repo_config : Repo_config.t;
 }
 
-let known_backends =
-  [ "claude"; "codex"; "opencode"; "pi"; "gemini"; "patch-agent" ]
-
-let known_patch_agent_providers = [ "anthropic"; "openai" ]
-let known_patch_agent_efforts = [ "low"; "medium"; "high" ]
+let known_backends = [ "claude"; "codex"; "opencode"; "pi"; "gemini" ]
 
 let validate_resolved_config ~project_name ~forge ~backend ~github_token
     ~github_owner ~github_repo ~main_branch ~poll_interval ~max_concurrency
-    ~max_ci_failures ~automerge_timeout ~patch_agent_provider
-    ~patch_agent_effort =
+    ~max_ci_failures ~automerge_timeout =
   let errors =
     Base.List.filter_map
       [
@@ -86,24 +77,6 @@ let validate_resolved_config ~project_name ~forge ~backend ~github_token
         ( max_ci_failures < 1,
           Printf.sprintf "--max-ci-failures must be >= 1 (got %d)"
             max_ci_failures );
-        ( (match patch_agent_provider with
-          | Some provider ->
-              not
-                (Base.List.mem known_patch_agent_providers provider
-                   ~equal:String.equal)
-          | None -> false),
-          Printf.sprintf
-            "--patch-agent-provider / PATCH_AGENT_PROVIDER must be one of: %s"
-            (String.concat ", " known_patch_agent_providers) );
-        ( (match patch_agent_effort with
-          | Some effort ->
-              not
-                (Base.List.mem known_patch_agent_efforts effort
-                   ~equal:String.equal)
-          | None -> false),
-          Printf.sprintf
-            "--patch-agent-effort / PATCH_AGENT_EFFORT must be one of: %s"
-            (String.concat ", " known_patch_agent_efforts) );
       ]
       ~f:(fun (cond, msg) -> if cond then Some msg else None)
   in
@@ -126,8 +99,6 @@ let of_config (config : config) =
       ~max_concurrency:config.max_concurrency
       ~max_ci_failures:config.max_ci_failures
       ~automerge_timeout:config.automerge_timeout
-      ~patch_agent_provider:config.patch_agent_provider
-      ~patch_agent_effort:config.patch_agent_effort
   with
   | Error errs -> Error errs
   | Ok () ->
@@ -148,8 +119,6 @@ let of_config (config : config) =
           max_ci_failures = config.max_ci_failures;
           automerge_timeout = config.automerge_timeout;
           headless = config.headless;
-          patch_agent_provider = config.patch_agent_provider;
-          patch_agent_effort = config.patch_agent_effort;
           user_config = config.user_config;
           repo_config = config.repo_config;
         }

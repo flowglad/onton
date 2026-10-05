@@ -160,11 +160,11 @@ module Make (W : Worktree.S) (Env : ENV) = struct
 
   module WS = Worktree_setup.Make (W) (Env)
 
-  let run_with_backend ~session_mode_for_agent
-      ~(kind : Types.Operation_kind.t option)
+  let run ~(kind : Types.Operation_kind.t option)
       ~(delivery_mode : Patch_decision.delivery_mode) ~patch_id ~prompt
-      ~(agent : Patch_agent.t) ~on_pr_detected ~backend_name ~run_backend
+      ~(agent : Patch_agent.t) ~on_pr_detected ~(backend : Llm_backend.t)
       ~complexity =
+    let backend_name = backend.name in
     let make_run_result ?(turn_accepted = false) disposition tool_failures =
       { disposition; tool_failures; turn_accepted }
     in
@@ -180,7 +180,7 @@ module Make (W : Worktree.S) (Env : ENV) = struct
     in
     let log_event = Runtime_logging.log_event in
     let log_stream_entry = Runtime_logging.log_stream_entry in
-    match session_mode_for_agent agent with
+    match session_mode agent with
     | `Give_up ->
         log_event runtime ~patch_id
           "Session fallback exhausted — continue and fresh both failed, needs \
@@ -526,8 +526,9 @@ module Make (W : Worktree.S) (Env : ENV) = struct
                 let result =
                   try
                     Ok
-                      (run_backend ~project_name ~cwd ~patch_id ~prompt
-                         ~resume_session ~session_uuid ~complexity ~on_event)
+                      (backend.run_streaming ~project_name ~cwd ~patch_id
+                         ~prompt ~resume_session ~session_uuid ~complexity
+                         ~on_event)
                   with
                   | Eio.Cancel.Cancelled _ as exn ->
                       cancelled := Some exn;
@@ -991,186 +992,4 @@ module Make (W : Worktree.S) (Env : ENV) = struct
                       ~agent_after:push_agent_after;
                     make_run_result ~turn_accepted:!backend_accepted_turn
                       final_user_result (List.rev !tool_failures)))
-
-  let run ~(kind : Types.Operation_kind.t option)
-      ~(delivery_mode : Patch_decision.delivery_mode) ~patch_id ~prompt
-      ~(agent : Patch_agent.t) ~on_pr_detected ~backend ~complexity =
-    run_with_backend ~kind ~delivery_mode ~patch_id ~prompt ~agent
-      ~on_pr_detected ~session_mode_for_agent:session_mode
-      ~backend_name:backend.Llm_backend.name
-      ~run_backend:backend.Llm_backend.run_streaming ~complexity
-
-  type long_lived_session =
-    | Long_lived_session : {
-        name : string;
-        start :
-          sw:Eio.Switch.t -> Llm_backend_long_lived.start_config -> 'handle;
-        prompt_backend :
-          'handle ->
-          prompt:string ->
-          timeout:float ->
-          on_event:(Types.Stream_event.t -> unit) ->
-          Llm_backend_long_lived.result;
-        shutdown : 'handle -> unit;
-        mutable handle : 'handle option;
-        mutable pending_shutdown_handle : 'handle option;
-        mutable failed : bool;
-        mutable failure_reason : string option;
-        provider : string;
-        model : string;
-        effort : string;
-        mutable gameplan_prompt : string;
-        mutable patch_prompt : string;
-        timeout : float;
-      }
-        -> long_lived_session
-
-  let create_long_lived_session ~(backend : Llm_backend_long_lived.t) ~provider
-      ~model ~effort ~gameplan_prompt ~patch_prompt =
-    let (Llm_backend_long_lived.T
-           { name; timeout; start; prompt = prompt_backend; shutdown; _ }) =
-      backend
-    in
-    Long_lived_session
-      {
-        name;
-        start;
-        prompt_backend;
-        shutdown;
-        handle = None;
-        pending_shutdown_handle = None;
-        failed = false;
-        failure_reason = None;
-        provider;
-        model;
-        effort;
-        gameplan_prompt;
-        patch_prompt;
-        timeout;
-      }
-
-  let update_long_lived_session_prompts session ~gameplan_prompt ~patch_prompt =
-    let (Long_lived_session session) = session in
-    let changed =
-      (not (String.equal session.gameplan_prompt gameplan_prompt))
-      || not (String.equal session.patch_prompt patch_prompt)
-    in
-    if changed && Option.is_some session.handle then (
-      let handle = session.handle in
-      session.handle <- None;
-      session.pending_shutdown_handle <- handle;
-      session.failed <- true;
-      session.failure_reason <-
-        Some "long-lived backend prompt prefix changed after session start");
-    session.gameplan_prompt <- gameplan_prompt;
-    session.patch_prompt <- patch_prompt
-
-  let long_lived_session_failed = function
-    | Long_lived_session session -> session.failed
-
-  let shutdown_long_lived_session = function
-    | Long_lived_session session -> (
-        let pending_shutdown_handle = session.pending_shutdown_handle in
-        let handle = session.handle in
-        session.pending_shutdown_handle <- None;
-        session.handle <- None;
-        (match pending_shutdown_handle with
-        | None -> ()
-        | Some handle -> session.shutdown handle);
-        match handle with None -> () | Some handle -> session.shutdown handle)
-
-  let run_long_lived ~sw ~(kind : Types.Operation_kind.t option)
-      ~(delivery_mode : Patch_decision.delivery_mode) ~patch_id ~prompt
-      ~(agent : Patch_agent.t) ~on_pr_detected ~session ~complexity =
-    let (Long_lived_session session) = session in
-    let run_backend ~project_name ~cwd ~patch_id ~prompt ~resume_session:_
-        ~session_uuid:_ ~complexity:_ ~on_event =
-      let failed_result message =
-        on_event (Types.Stream_event.Error message);
-        {
-          Llm_backend.exit_code = 1;
-          stdout = "";
-          stderr = message;
-          got_events = true;
-          saw_final_result = false;
-          timed_out = false;
-        }
-      in
-      if session.failed then
-        failed_result
-          (Option.value session.failure_reason
-             ~default:
-               "long-lived backend session already failed; waiting for teardown")
-      else
-        match
-          match session.handle with
-          | Some handle -> Ok handle
-          | None -> (
-              try
-                let handle =
-                  session.start ~sw
-                    {
-                      project_name;
-                      worktree = cwd;
-                      patch_id;
-                      provider = session.provider;
-                      model = session.model;
-                      effort = session.effort;
-                      gameplan_prompt = session.gameplan_prompt;
-                      patch_prompt = session.patch_prompt;
-                    }
-                in
-                session.handle <- Some handle;
-                Ok handle
-              with
-              | Eio.Cancel.Cancelled _ as exn -> raise exn
-              | exn ->
-                  session.failed <- true;
-                  let message =
-                    Printf.sprintf "long-lived backend start raised: %s"
-                      (Stdlib.Printexc.to_string exn)
-                  in
-                  session.failure_reason <- Some message;
-                  Error message)
-        with
-        | Error message -> failed_result message
-        | Ok handle -> (
-            try
-              let result =
-                session.prompt_backend handle ~prompt ~timeout:session.timeout
-                  ~on_event
-              in
-              if
-                result.Llm_backend.exit_code <> 0
-                || result.Llm_backend.timed_out
-              then (
-                session.handle <- None;
-                session.failed <- true;
-                session.failure_reason <-
-                  Some "long-lived backend prompt failed or timed out";
-                try session.shutdown handle with _ -> ());
-              result
-            with
-            | Eio.Cancel.Cancelled _ as exn ->
-                session.handle <- None;
-                session.failed <- true;
-                session.failure_reason <-
-                  Some "long-lived backend prompt cancelled";
-                (try session.shutdown handle with _ -> ());
-                raise exn
-            | exn ->
-                session.handle <- None;
-                session.pending_shutdown_handle <- Some handle;
-                session.failed <- true;
-                let message =
-                  Printf.sprintf "long-lived backend prompt raised: %s"
-                    (Stdlib.Printexc.to_string exn)
-                in
-                session.failure_reason <- Some message;
-                failed_result message)
-    in
-    run_with_backend ~kind ~delivery_mode ~patch_id ~prompt ~agent
-      ~on_pr_detected
-      ~session_mode_for_agent:(fun _ -> `Fresh)
-      ~backend_name:session.name ~run_backend ~complexity
 end

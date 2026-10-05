@@ -33,6 +33,30 @@ let spawn_and_stream ~process_mgr ~clock ~timeout ~cwd ~env ~setsid_exec ~args
   let args =
     match setsid_exec with Some path -> path :: args | None -> args
   in
+  let exception Idle_timeout in
+  let idle_deadline = ref (Eio.Time.now clock +. timeout) in
+  (* Observe bytes at the pipe boundary, before buffering or backend parsing.
+     Partial lines and diagnostic output are activity too. The watchdog covers
+     event callbacks and waiting for process exit as well as reads. *)
+  let observe_output flow =
+    let module Source = struct
+      type t = unit
+
+      let read_methods = []
+
+      let single_read () buf =
+        let count = Eio.Flow.single_read flow buf in
+        idle_deadline := Eio.Time.now clock +. timeout;
+        count
+    end in
+    Eio.Resource.T ((), Eio.Flow.Pi.source (module Source))
+  in
+  let rec watch_idle () =
+    let remaining = !idle_deadline -. Eio.Time.now clock in
+    if Float.(remaining <= 0.0) then raise Idle_timeout;
+    Eio.Time.sleep clock remaining;
+    watch_idle ()
+  in
   let stdout_max_size = 64 * 1024 * 1024 in
   let stderr_max_size = 1024 * 1024 in
   let stdout_capture_max_size = 64 * 1024 in
@@ -109,7 +133,7 @@ let spawn_and_stream ~process_mgr ~clock ~timeout ~cwd ~env ~setsid_exec ~args
             | Error `Timeout -> (
                 signal_child Stdlib.Sys.sigkill;
                 (* SIGKILL is unconditional; 1s is more than enough for the
-                   kernel to deliver it. The outer session timeout is a final
+                   kernel to deliver it. The idle timeout is a final
                    backstop, but it can be very long (e.g. 1800s), so cap
                    locally to keep the guarantee tight here. *)
                 match await_child_with_timeout 1.0 with
@@ -163,10 +187,10 @@ let spawn_and_stream ~process_mgr ~clock ~timeout ~cwd ~env ~setsid_exec ~args
       Eio.Flow.close stdout_w;
       Eio.Flow.close stderr_w;
       let stdout_buf =
-        Eio.Buf_read.of_flow ~max_size:stdout_max_size stdout_r
+        Eio.Buf_read.of_flow ~max_size:stdout_max_size (observe_output stdout_r)
       in
       let stderr_buf =
-        Eio.Buf_read.of_flow ~max_size:stderr_max_size stderr_r
+        Eio.Buf_read.of_flow ~max_size:stderr_max_size (observe_output stderr_r)
       in
       let err_ref = ref "" in
       let terminal_status_ref = ref None in
@@ -180,6 +204,7 @@ let spawn_and_stream ~process_mgr ~clock ~timeout ~cwd ~env ~setsid_exec ~args
           (fun () -> `Read (read ()))
       in
       let drain_flow_until_stopped ~stop flow =
+        let flow = observe_output flow in
         let drain_buf = Bytes.create 4096 in
         let rec drain () =
           match
@@ -302,23 +327,22 @@ let spawn_and_stream ~process_mgr ~clock ~timeout ~cwd ~env ~setsid_exec ~args
       in
       (stderr_content, code)
     in
-    Ok
-      {
-        exit_code;
-        stdout = captured_stdout ();
-        stderr = stderr_content;
-        got_events = !got_events_ref;
-        saw_final_result = !saw_final_result_ref;
-        timed_out = false;
-      }
+    {
+      exit_code;
+      stdout = captured_stdout ();
+      stderr = stderr_content;
+      got_events = !got_events_ref;
+      saw_final_result = !saw_final_result_ref;
+      timed_out = false;
+    }
   in
-  match Eio.Time.with_timeout clock timeout run with
-  | Ok result -> result
-  | Error `Timeout ->
+  match Eio.Fiber.first run watch_idle with
+  | result -> result
+  | exception Idle_timeout ->
       {
         exit_code = 128 + 9 (* SIGKILL — sent via on_release hook *);
         stdout = captured_stdout ();
-        stderr = "process timed out";
+        stderr = "process idle timed out";
         got_events = !got_events_ref;
         saw_final_result = !saw_final_result_ref;
         timed_out = true;

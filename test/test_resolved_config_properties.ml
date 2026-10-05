@@ -24,8 +24,6 @@ let valid_config ~max_concurrency ~max_ci_failures : Resolved_config.config =
     Resolved_config.automerge_timeout =
       Patch_controller.default_automerge_timeout;
     Resolved_config.headless = true;
-    Resolved_config.patch_agent_provider = None;
-    Resolved_config.patch_agent_effort = None;
     Resolved_config.user_config = { User_config.on_worktree_create = None };
     Resolved_config.repo_config = Repo_config.empty;
   }

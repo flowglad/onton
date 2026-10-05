@@ -34,7 +34,7 @@ let assert_smoke ~name ~result ~got ~expected =
      CLI that does not leave during the graceful-shutdown window is terminated
      by onton and may exit nonzero. Both are successful runs from onton's
      perspective. [timed_out] must always be false: a run that also tripped the
-     outer timeout is never a pass, even if we observed Final_result. *)
+     idle timeout is never a pass, even if we observed Final_result. *)
   let exit_ok =
     (not result.timed_out) && (result.exit_code = 0 || result.saw_final_result)
   in

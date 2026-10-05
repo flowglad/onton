@@ -59,8 +59,12 @@ val spawn_and_stream :
     Each stdout line is passed to [process_line] which returns events to forward
     to [on_event]. Handles pipe setup, stdin EOF, stderr capture, and exit code
     extraction. Stdout allows large single-line JSON events from CLIs such as
-    Codex; stderr is capped and truncated. The process is killed after [timeout]
-    seconds.
+    Codex; stderr is capped and truncated. [timeout] is an idle window in
+    seconds, renewed by every read of stdout or stderr bytes, even partial lines
+    or output that produces no parsed events. Active sessions have no
+    total-duration limit. The deadline also covers event callbacks and waiting
+    for process exit after EOF; timeout kills the subprocess and sets
+    [timed_out].
 
     When [setsid_exec] is supplied, [args] is prefixed with that path (a tiny
     OCaml shim that calls [setsid(2)] before exec'ing). The child then leads its

@@ -106,9 +106,9 @@ let _check_narrowed :
 
 (** Patch 2 compile-time signature check.
 
-    Verifies that [Session_driver.Make(W)(Env)] exposes [run] and
-    [run_long_lived] with only per-session inputs after the stable session
-    environment is captured as a functor argument. *)
+    Verifies that [Session_driver.Make(W)(Env)] exposes [run] with only
+    per-session inputs after the stable session environment is captured as a
+    functor argument. *)
 
 module Fake_sd_env : Session_driver.ENV = struct
   let runtime = Fake_env.runtime
@@ -149,20 +149,6 @@ let _check_narrowed_run :
     complexity:int option ->
     Session_driver.run_result =
   SD.run
-
-(* Compile-time assertion: run_long_lived accepts only per-session inputs. *)
-let _check_narrowed_run_long_lived :
-    sw:Eio.Switch.t ->
-    kind:Operation_kind.t option ->
-    delivery_mode:Patch_decision.delivery_mode ->
-    patch_id:Patch_id.t ->
-    prompt:string ->
-    agent:Patch_agent.t ->
-    on_pr_detected:(Pr_number.t -> unit) ->
-    session:SD.long_lived_session ->
-    complexity:int option ->
-    Session_driver.run_result =
-  SD.run_long_lived
 
 let () =
   Eio_main.run @@ fun env ->
@@ -255,8 +241,6 @@ let () =
   ignore check_narrowed_run;
   print_endline
     "Patch 2: Session_driver.Make(W)(Env).run narrowed signature: OK";
-  print_endline
-    "Patch 2: Session_driver.Make(W)(Env).run_long_lived narrowed signature: OK";
   (* Patch 3: Make_fibers environment derivation.
      Both Worktree_setup.ENV and Session_driver.ENV are derived from a single
      fiber-level environment, mirroring what Make_fibers(Forge)(W)(Fiber_env)
@@ -316,18 +300,6 @@ let () =
         agent:_ ->
         on_pr_detected:_ ->
         backend:_ ->
-        complexity:_ ->
-        _);
-  ignore
-    (SD3.run_long_lived
-      : sw:_ ->
-        kind:_ ->
-        delivery_mode:_ ->
-        patch_id:_ ->
-        prompt:_ ->
-        agent:_ ->
-        on_pr_detected:_ ->
-        session:_ ->
         complexity:_ ->
         _);
   print_endline

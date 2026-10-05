@@ -331,6 +331,10 @@ onton --repo ../my-repo [OPTIONS]        # Ad-hoc mode (no gameplan)
 | `--headless` | off | Run without TUI (structured JSONL activity output to stdout) |
 | `--headless-transcript` | off | With `--headless`, include live patch-agent transcript chunks on stdout |
 
+All supported LLM backends (Claude, Codex, OpenCode, Pi, and Gemini) use a
+30-minute idle timeout. Any stdout or stderr output renews the deadline,
+including partial lines. Active sessions can run longer than 30 minutes.
+
 Project config and state are persisted to `~/.local/share/onton/<project>/`.
 Resuming a project reloads the saved snapshot (including agent transcripts) and
 reconciles against GitHub. The snapshot includes the durable patch-agent

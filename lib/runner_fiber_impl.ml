@@ -106,8 +106,6 @@ module Runner_env = struct
     val max_concurrency : int
     val automerge_timeout : float
     val review_team : string option
-    val patch_agent_provider : string option
-    val patch_agent_effort : string option
     val findings_registry : Findings_registry.t
 
     val review_clients :
@@ -120,7 +118,7 @@ module Runner_env = struct
     val event_log : Event_log.t
 
     val pick_backend :
-      complexity:int option -> Backend_registry.kind * Backend_routing.decision
+      complexity:int option -> Llm_backend.t * Backend_routing.decision
 
     val register_pr : patch_id:Patch_id.t -> pr_number:Pr_number.t -> unit
   end
@@ -156,7 +154,6 @@ module Make (Forge : Forge.S) (W : Worktree.S) (Env : Runner_env.S) = struct
 
   module WS = Worktree_setup.Make (W) (WS_Env)
   module Session_driver = Session_driver.Make (W) (SD_Env)
-  module Long_lived_sessions = Long_lived_sessions.Make (Session_driver)
 
   module Busy_guard_env = struct
     let runtime = Env.runtime
@@ -914,15 +911,8 @@ module Make (Forge : Forge.S) (W : Worktree.S) (Env : Runner_env.S) = struct
        [refs/remotes/origin/*] store. Shared via [Env.fetch_mutex] so a
        single mutex covers every fiber. See [Worktree.fetch_origin]. *)
     let fetch_mutex = Env.fetch_mutex in
-    let long_lived_sessions = Long_lived_sessions.create () in
-    let patch_agent_provider =
-      Base.Option.value Env.patch_agent_provider ~default:"anthropic"
-    in
-    let patch_agent_effort =
-      Base.Option.value Env.patch_agent_effort ~default:"medium"
-    in
-    let run_llm_session ~sw ~gameplan_prompt ~patch_prompt ~kind ~delivery_mode
-        ~patch_id ~prompt ~agent ~on_pr_detected ~complexity =
+    let run_llm_session ~kind ~delivery_mode ~patch_id ~prompt ~agent
+        ~on_pr_detected ~complexity =
       let mode_instructions =
         Runtime.read runtime (fun snap ->
             let orch = snap.Runtime.orchestrator in
@@ -940,7 +930,6 @@ module Make (Forge : Forge.S) (W : Worktree.S) (Env : Runner_env.S) = struct
             else "")
       in
       let prompt = prompt ^ mode_instructions in
-      let patch_prompt = patch_prompt ^ mode_instructions in
 
       let gameplan = Runtime.read runtime (fun snap -> snap.Runtime.gameplan) in
       let session_result =
@@ -1056,59 +1045,10 @@ module Make (Forge : Forge.S) (W : Worktree.S) (Env : Runner_env.S) = struct
                 fail
                   "Resolve this feedback manually; Patch 0 never invokes a \
                    patch agent")
-        | None | Some _ -> (
-            match pick_backend ~complexity with
-            | Backend_registry.Ephemeral backend, _decision ->
-                Session_driver.run ~kind ~delivery_mode ~patch_id ~prompt ~agent
-                  ~on_pr_detected ~backend ~complexity
-            | Backend_registry.Long_lived backend, decision -> (
-                let patch_agent_model_result =
-                  match
-                    Backend_registry.resolve_model
-                      ~backend:decision.Backend_routing.backend
-                      ~model:decision.Backend_routing.model ~complexity
-                  with
-                  | Some m when not (Base.String.is_empty (Base.String.strip m))
-                    ->
-                      Ok (Base.String.strip m)
-                  | Some _ | None ->
-                      Error
-                        "patch-agent backend requires a concrete non-empty \
-                         model after routing"
-                in
-                match patch_agent_model_result with
-                | Error message ->
-                    log_event runtime ~patch_id message;
-                    ({
-                       disposition = `Failed;
-                       tool_failures = [];
-                       turn_accepted = false;
-                     }
-                      : Session_driver.run_result)
-                | Ok patch_agent_model ->
-                    let session =
-                      match
-                        Long_lived_sessions.find long_lived_sessions patch_id
-                      with
-                      | Some session ->
-                          Session_driver.update_long_lived_session_prompts
-                            session ~gameplan_prompt ~patch_prompt;
-                          session
-                      | None ->
-                          let session =
-                            Session_driver.create_long_lived_session ~backend
-                              ~provider:patch_agent_provider
-                              ~model:patch_agent_model
-                              ~effort:patch_agent_effort ~gameplan_prompt
-                              ~patch_prompt
-                          in
-                          Long_lived_sessions.register long_lived_sessions
-                            patch_id session;
-                          session
-                    in
-                    Session_driver.run_long_lived ~sw ~kind ~delivery_mode
-                      ~patch_id ~prompt ~agent ~on_pr_detected ~session
-                      ~complexity))
+        | None | Some _ ->
+            let backend, _decision = pick_backend ~complexity in
+            Session_driver.run ~kind ~delivery_mode ~patch_id ~prompt ~agent
+              ~on_pr_detected ~backend ~complexity
       in
       let disposition =
         if
@@ -1119,37 +1059,7 @@ module Make (Forge : Forge.S) (W : Worktree.S) (Env : Runner_env.S) = struct
       in
       (disposition, session_result.tool_failures)
     in
-    let shutdown_finished_long_lived_sessions ~sw () =
-      let finished =
-        Runtime.read runtime (fun snap ->
-            Base.List.fold (Long_lived_sessions.to_alist long_lived_sessions)
-              ~init:[] ~f:(fun acc (patch_id, session) ->
-                if Session_driver.long_lived_session_failed session then
-                  (patch_id, session) :: acc
-                else
-                  match
-                    Orchestrator.find_agent snap.Runtime.orchestrator patch_id
-                  with
-                  | None -> (patch_id, session) :: acc
-                  | Some agent
-                    when agent.Patch_agent.merged && not agent.Patch_agent.busy
-                    ->
-                      (patch_id, session) :: acc
-                  | Some _ -> acc))
-      in
-      Base.List.iter finished ~f:(fun (patch_id, session) ->
-          Long_lived_sessions.remove long_lived_sessions patch_id;
-          Eio.Fiber.fork_daemon ~sw (fun () ->
-              (try Session_driver.shutdown_long_lived_session session with
-              | Eio.Cancel.Cancelled _ -> ()
-              | exn ->
-                  log_event runtime ~patch_id
-                    (Printf.sprintf "long-lived backend shutdown error — %s"
-                       (Printexc.to_string exn)));
-              `Stop_daemon))
-    in
     let rec loop sw =
-      shutdown_finished_long_lived_sessions ~sw ();
       let gameplan = Runtime.read runtime (fun snap -> snap.Runtime.gameplan) in
       let lifecycle_effects, messages, pre_fire_agents =
         Runtime.update_orchestrator_returning runtime (fun orch ->
@@ -1388,22 +1298,8 @@ module Make (Forge : Forge.S) (W : Worktree.S) (Env : Runner_env.S) = struct
                                           patch_complexity ~gameplan ~agent
                                             ~patch_id
                                         in
-                                        let gameplan_prompt =
-                                          Prompt.render_gameplan_layer
-                                            ~project_name gameplan
-                                        in
-                                        let patch_prompt =
-                                          Prompt.render_patch_layer_of_gameplan
-                                            ~project_name
-                                            ?pr_number:
-                                              (Patch_agent.pr_number agent)
-                                            patch gameplan
-                                            ~base_branch:
-                                              (Branch.to_string base_branch)
-                                        in
                                         let r, _tool_failures =
-                                          run_llm_session ~sw ~gameplan_prompt
-                                            ~patch_prompt ~kind
+                                          run_llm_session ~kind
                                             ~delivery_mode:Patch_decision.Start
                                             ~patch_id ~prompt ~agent
                                             ~on_pr_detected ~complexity
@@ -2173,22 +2069,8 @@ module Make (Forge : Forge.S) (W : Worktree.S) (Env : Runner_env.S) = struct
                                           patch_complexity ~gameplan ~agent
                                             ~patch_id
                                         in
-                                        let gameplan_prompt =
-                                          Prompt.render_gameplan_layer
-                                            ~project_name gameplan
-                                        in
-                                        let patch_prompt =
-                                          match patch with
-                                          | Some p ->
-                                              Prompt
-                                              .render_patch_layer_of_gameplan
-                                                ~project_name ?pr_number p
-                                                gameplan ~base_branch:base
-                                          | None -> ""
-                                        in
                                         let result, _tool_failures =
-                                          run_llm_session ~sw ~gameplan_prompt
-                                            ~patch_prompt
+                                          run_llm_session
                                             ~kind:
                                               (Some
                                                  Operation_kind.Merge_conflict)
@@ -2931,24 +2813,8 @@ module Make (Forge : Forge.S) (W : Worktree.S) (Env : Runner_env.S) = struct
                                           patch_complexity ~gameplan ~agent
                                             ~patch_id
                                         in
-                                        let gameplan_prompt =
-                                          Prompt.render_gameplan_layer
-                                            ~project_name gameplan
-                                        in
-                                        let patch_prompt =
-                                          match patch_for_layer with
-                                          | Some p ->
-                                              Prompt
-                                              .render_patch_layer_of_gameplan
-                                                ~project_name ?pr_number p
-                                                gameplan
-                                                ~base_branch:
-                                                  base_branch_for_layer
-                                          | None -> ""
-                                        in
                                         let result, tool_failures =
-                                          run_llm_session ~sw ~gameplan_prompt
-                                            ~patch_prompt ~kind:(Some kind)
+                                          run_llm_session ~kind:(Some kind)
                                             ~delivery_mode:
                                               Patch_decision.Respond ~patch_id
                                             ~prompt ~agent ~on_pr_detected

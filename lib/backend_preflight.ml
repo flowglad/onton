@@ -9,7 +9,6 @@ let command_for_backend = function
   | "opencode" -> Some "opencode"
   | "pi" -> Some "pi"
   | "gemini" -> Some "gemini"
-  | "patch-agent" -> Some "patch-agent"
   | _ -> None
 
 let path_dirs getenv_opt =
