@@ -1778,6 +1778,8 @@ let () =
                   details_url = None;
                   description = None;
                   started_at = None;
+                  app_id = None;
+                  check_suite_id = None;
                   id = Some new_run_id;
                 }
             in
@@ -1855,6 +1857,8 @@ let () =
                   details_url = None;
                   description = None;
                   started_at = None;
+                  app_id = None;
+                  check_suite_id = None;
                   id = Some run_id;
                 }
             in

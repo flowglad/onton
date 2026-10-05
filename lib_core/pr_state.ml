@@ -182,6 +182,7 @@ let derive_check_status (checks : Types.Ci_check.t list) : check_status =
     recomputing it would require the raw [mergeStateStatus], which is not
     carried on [t]. *)
 let with_resolved_checks (st : t) ~(all_checks : Types.Ci_check.t list) : t =
+  let all_checks = Types.Ci_check.current_runs all_checks in
   let check_status = derive_check_status all_checks in
   let merge_ready =
     merge_ready_of ~merge_state:st.merge_state ~check_status
@@ -369,6 +370,8 @@ let check ~conclusion : Types.Ci_check.t =
     details_url = None;
     description = None;
     started_at = None;
+    app_id = None;
+    check_suite_id = None;
     id = None;
   }
 

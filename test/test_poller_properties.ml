@@ -100,6 +100,39 @@ let () =
           List.equal Ci_check.equal result.Onton_core.Poller.ci_checks
             pr.Onton_core.Pr_state.ci_checks);
       (* -- derive_check_status semantics ------------------------------- *)
+      Test.make ~name:"resolved CI replacements reach the poller conservatively"
+        ~count:1000
+        Gen.(pair gen_pr_state gen_ci_check)
+        (fun (pr, check) ->
+          let old = { check with Ci_check.conclusion = "failure" } in
+          let newer =
+            {
+              check with
+              Ci_check.conclusion = "success";
+              id = Option.map check.Ci_check.id ~f:(fun id -> id + 1);
+            }
+          in
+          let replaces =
+            match
+              ( check.Ci_check.app_id,
+                check.Ci_check.check_suite_id,
+                check.Ci_check.id )
+            with
+            | Some app, Some suite, Some id ->
+                (not (String.is_empty app)) && suite > 0 && id > 0
+            | _ -> false
+          in
+          let st =
+            Onton_core.Pr_state.with_resolved_checks pr
+              ~all_checks:[ old; newer ]
+          in
+          let result = Onton_core.Poller.poll ~was_merged:false st in
+          let expected_checks =
+            if replaces then [ newer ] else [ old; newer ]
+          in
+          List.equal Ci_check.equal result.Onton_core.Poller.ci_checks
+            expected_checks
+          && Bool.equal result.Onton_core.Poller.checks_passing replaces);
       (* Failing iff any conclusion is in failure_conclusions *)
       Test.make ~name:"derive_check_status: Failing iff any is_failure"
         ~count:1000
@@ -140,6 +173,8 @@ let () =
                      details_url;
                      description;
                      started_at = None;
+                     app_id = None;
+                     check_suite_id = None;
                      id = None;
                    })
                (triple

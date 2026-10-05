@@ -24,7 +24,16 @@ let gen_ci_check =
   map5
     (fun name conclusion details_url description id ->
       Ci_check.
-        { name; conclusion; details_url; description; started_at = None; id })
+        {
+          name;
+          conclusion;
+          details_url;
+          description;
+          started_at = None;
+          app_id = None;
+          check_suite_id = None;
+          id;
+        })
     gen_string (oneof_list conclusions) (option gen_string) (option gen_string)
     (option (int_range 1 999_999))
 
@@ -83,6 +92,8 @@ let failing_check =
       details_url = None;
       description = None;
       started_at = None;
+      app_id = None;
+      check_suite_id = None;
       id = Some 1;
     }
 

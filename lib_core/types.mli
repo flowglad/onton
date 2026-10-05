@@ -195,6 +195,12 @@ module Ci_check : sig
     details_url : string option;
     description : string option;
     started_at : string option;
+    app_id : string option;
+        (** GitHub App node ID for CheckRuns. Missing for legacy status
+            contexts, other forges, and snapshots written before this field. *)
+    check_suite_id : int option;
+        (** GitHub CheckSuite [databaseId]. Separates independently live
+            workflow runs whose checks share an App and name. *)
     id : int option;
         (** GitHub CheckRun [databaseId] when available, [None] for legacy
             StatusContext entries (which expose no stable numeric ID). Used as
@@ -213,6 +219,17 @@ module Ci_check : sig
 
   val is_failure : t -> bool
   val is_success : t -> bool
+
+  val current_runs : t list -> t list
+  (** Retain the greatest CheckRun ID for each (GitHub App, check suite, check
+      name). Same-named checks in different suites remain independently live.
+      Within one suite, same-named checks are treated as replacements; producers
+      must use distinct names for independent checks within that suite. Checks
+      without complete, valid producer/suite/run identity and equal-ID
+      observations remain. Apply after assembling all pages so replacements can
+      cross page boundaries. Cancelled checks without a replacement still block
+      readiness. *)
+
   val merge_queue_failure : unit -> t
   val is_merge_queue_failure : t -> bool
 end

@@ -451,7 +451,16 @@ let read_file_for_test path =
 
 let ci_check_for_test ?id ?details_url ?description ?started_at
     ?(name = "Build and Test") ?(conclusion = "failure") () : Types.Ci_check.t =
-  { name; conclusion; details_url; description; started_at; id }
+  {
+    name;
+    conclusion;
+    details_url;
+    description;
+    started_at;
+    app_id = None;
+    check_suite_id = None;
+    id;
+  }
 
 let dir_entries_for_test path =
   Stdlib.Sys.readdir path |> Array.to_list |> List.sort ~compare:String.compare

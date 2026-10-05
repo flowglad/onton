@@ -291,6 +291,11 @@
  (ocamlc_flags (:standard -w -40-42-4)))
 
 (test
+ (name test_ci_check_properties)
+ (modules test_ci_check_properties)
+ (libraries onton_core base qcheck-core))
+
+(test
  (name test_token_scrub_properties)
  (modules test_token_scrub_properties)
  (libraries onton_core qcheck-core))

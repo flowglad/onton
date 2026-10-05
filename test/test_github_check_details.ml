@@ -68,8 +68,237 @@ let test_malformed_json () =
         (Printf.sprintf "expected Json_parse_error, got %s"
            (Onton.Github.show_error err))
 
+let check_run ?(app = "actions") ?(suite = 1) ~id ~name conclusion =
+  Printf.sprintf
+    {|{"__typename":"CheckRun","databaseId":%d,"name":%S,
+       "checkSuite":{"databaseId":%d,"app":{"id":%S}},"conclusion":%S}|}
+    id name suite app conclusion
+
+let rollup ~truncated nodes =
+  Printf.sprintf
+    {|{"state":"FAILURE","contexts":{"pageInfo":{"hasNextPage":%b},
+       "nodes":[%s]}}|}
+    truncated
+    (String.concat nodes ~sep:",")
+
+let pr_response ~truncated nodes =
+  Printf.sprintf
+    {|{"data":{"repository":{"mergeQueue":{"id":"queue"},
+       "pullRequest":{"id":"pr","state":"OPEN","mergeable":"MERGEABLE",
+         "mergeStateStatus":"CLEAN","baseRefName":"main",
+         "headRefName":"feature","headRefOid":"head",
+         "mergeQueueEntry":{"id":"entry","state":"QUEUED","position":1},
+         "commits":{"nodes":[{"commit":{"statusCheckRollup":%s}}]}}}}}|}
+    (rollup ~truncated nodes)
+
+let parse_pr ~truncated nodes =
+  match
+    Onton.Github.parse_response ~owner:"flowglad" (pr_response ~truncated nodes)
+  with
+  | Ok st -> st
+  | Error err -> failwith (Onton.Github.show_error err)
+
+let polled_orchestrator st =
+  let main = Types.Branch.of_string "main" in
+  let pid = Types.Patch_id.of_string "1" in
+  let orch = Onton.Orchestrator.create ~patches:[] ~main_branch:main in
+  let orch =
+    Onton.Orchestrator.add_agent orch ~patch_id:pid
+      ~branch:(Types.Branch.of_string "feature")
+      ~base_branch:main ~pr_number:(Types.Pr_number.of_int 1)
+  in
+  let orch, _, _ =
+    Onton.Patch_controller.apply_poll_result orch pid
+      {
+        Onton.Patch_controller.poll_result = Poller.poll ~was_merged:false st;
+        base_branch = Some main;
+        native_stack = false;
+        branch_in_root = false;
+        worktree_path = None;
+      }
+  in
+  orch
+
+let queued_agent st =
+  Onton.Orchestrator.agent (polled_orchestrator st)
+    (Types.Patch_id.of_string "1")
+
+let test_replaced_cancellation_allows_automerge_enqueue () =
+  let st =
+    parse_pr ~truncated:false
+      [
+        check_run ~id:1 ~name:"build" "CANCELLED";
+        check_run ~id:2 ~name:"build" "SUCCESS";
+      ]
+  in
+  let st = { st with Pr_state.merge_queue_entry = None } in
+  let orch =
+    Onton.Orchestrator.set_automerge_enabled (polled_orchestrator st)
+      (Types.Patch_id.of_string "1")
+      true
+  in
+  let orch, _ = Onton.Patch_controller.reconcile_automerge orch ~now:0.0 in
+  let _, decisions =
+    Onton.Patch_controller.reconcile_automerge orch ~now:121.0
+  in
+  match decisions with
+  | [ Onton.Patch_controller.Github_merge { action; _ } ] ->
+      assert (
+        Onton.Patch_controller.equal_merge_action action
+          Onton.Patch_controller.Enqueue)
+  | [ Onton.Patch_controller.Git_integrate _ ] | [] | _ :: _ :: _ ->
+      failwith "expected an automerge enqueue after the idle window"
+
+let test_replaced_cancellation_keeps_pr_queued () =
+  let st =
+    parse_pr ~truncated:false
+      [
+        check_run ~id:2 ~name:"build" "SUCCESS";
+        check_run ~id:1 ~name:"build" "CANCELLED";
+      ]
+  in
+  assert (Pr_state.checks_passing st && Pr_state.merge_ready st);
+  assert (List.length st.Pr_state.ci_checks = 1);
+  assert (
+    List.is_empty
+      (Onton.Patch_controller.dequeue_merge_queue_reasons (queued_agent st)
+         ~main_branch:(Types.Branch.of_string "main")
+         ~entry_id:"entry"))
+
+let test_replacement_on_later_page () =
+  let first =
+    check_run ~id:1 ~name:"build" "CANCELLED"
+    :: List.init 99 ~f:(fun i ->
+        check_run ~id:(10 + i) ~name:(Printf.sprintf "test-%d" i) "SUCCESS")
+  in
+  let st = parse_pr ~truncated:true first in
+  assert (not (Pr_state.merge_ready st));
+  let page =
+    Printf.sprintf
+      {|{"data":{"repository":{"object":{"statusCheckRollup":%s}}}}|}
+      (rollup ~truncated:false [ check_run ~id:200 ~name:"build" "SUCCESS" ])
+  in
+  let second =
+    match Onton.Github.parse_contexts_page page with
+    | Ok (checks, false, _) -> checks
+    | Ok _ -> failwith "unexpected pagination state"
+    | Error err -> failwith (Onton.Github.show_error err)
+  in
+  let st =
+    Pr_state.with_resolved_checks st ~all_checks:(st.Pr_state.ci_checks @ second)
+  in
+  assert (Pr_state.checks_passing st && Pr_state.merge_ready st);
+  assert (List.length st.Pr_state.ci_checks = 100);
+  assert (
+    not
+      (Onton.Patch_controller.should_dequeue_merge_queue (queued_agent st)
+         ~main_branch:(Types.Branch.of_string "main")
+         ~entry_id:"entry"))
+
+let test_current_or_unidentified_checks_still_block () =
+  List.iter
+    [
+      [
+        check_run ~id:1 ~name:"build" "SUCCESS";
+        check_run ~id:2 ~name:"build" "FAILURE";
+      ];
+      [
+        check_run ~id:1 ~name:"build" "SUCCESS";
+        check_run ~id:2 ~name:"build" "PENDING";
+      ];
+      [
+        check_run ~id:1 ~name:"build" "CANCELLED";
+        check_run ~id:2 ~name:"test" "SUCCESS";
+      ];
+      [
+        check_run ~id:1 ~name:"build" "CANCELLED";
+        check_run ~app:"other" ~id:2 ~name:"build" "SUCCESS";
+      ];
+      [
+        check_run ~suite:1 ~id:1 ~name:"build" "FAILURE";
+        check_run ~suite:2 ~id:2 ~name:"build" "SUCCESS";
+      ];
+      [
+        check_run ~suite:1 ~id:1 ~name:"build" "CANCELLED";
+        check_run ~suite:2 ~id:2 ~name:"build" "SUCCESS";
+      ];
+      [
+        {|{"__typename":"CheckRun","name":"build","databaseId":1,
+          "checkSuite":{"app":{"id":"actions"}},"conclusion":"FAILURE"}|};
+        check_run ~id:2 ~name:"build" "SUCCESS";
+      ];
+      [
+        check_run ~suite:0 ~id:1 ~name:"build" "FAILURE";
+        check_run ~suite:0 ~id:2 ~name:"build" "SUCCESS";
+      ];
+      [
+        {|{"__typename":"CheckRun","name":"build","databaseId":1,
+          "conclusion":"CANCELLED"}|};
+        check_run ~id:2 ~name:"build" "SUCCESS";
+      ];
+    ]
+    ~f:(fun nodes ->
+      let st = parse_pr ~truncated:false nodes in
+      assert (not (Pr_state.merge_ready st));
+      assert (
+        Onton.Patch_controller.should_dequeue_merge_queue (queued_agent st)
+          ~main_branch:(Types.Branch.of_string "main")
+          ~entry_id:"entry"))
+
+let test_merge_group_feedback_uses_current_runs () =
+  let nodes =
+    [
+      check_run ~id:1 ~name:"build" "FAILURE";
+      check_run ~id:2 ~name:"build" "SUCCESS";
+      check_run ~id:3 ~name:"test" "FAILURE";
+    ]
+  in
+  let body =
+    Printf.sprintf
+      {|{"data":{"repository":{"pullRequest":{"timelineItems":{"nodes":[
+       {"beforeCommit":{"oid":"merge-head","statusCheckRollup":%s}}
+       ]}}}}}|}
+      (rollup ~truncated:false nodes)
+  in
+  match Onton.Github.parse_merge_queue_removal_response body with
+  | Ok [ check ] ->
+      assert (String.equal check.Types.Ci_check.name "test");
+      assert (Option.equal Int.equal check.Types.Ci_check.id (Some 3))
+  | Ok _ -> failwith "expected only the current failing check"
+  | Error err -> failwith (Onton.Github.show_error err)
+
+let test_same_named_workflows_preserve_failure_feedback () =
+  let failed = check_run ~suite:1 ~id:1 ~name:"build" "FAILURE" in
+  let passed = check_run ~suite:2 ~id:2 ~name:"build" "SUCCESS" in
+  let st = parse_pr ~truncated:false [ failed; passed ] in
+  assert (Pr_state.equal_check_status st.Pr_state.check_status Pr_state.Failing);
+  assert (not (Pr_state.checks_passing st || Pr_state.merge_ready st));
+  let result = Poller.poll ~was_merged:false st in
+  assert (List.exists result.Poller.ci_checks ~f:Types.Ci_check.is_failure);
+  assert (List.length result.Poller.ci_checks = 2);
+  let body =
+    Printf.sprintf
+      {|{"data":{"repository":{"pullRequest":{"timelineItems":{"nodes":[
+       {"beforeCommit":{"oid":"merge-head","statusCheckRollup":%s}}
+       ]}}}}}|}
+      (rollup ~truncated:false [ failed; passed ])
+  in
+  match Onton.Github.parse_merge_queue_removal_response body with
+  | Ok [ check ] ->
+      assert (Option.equal Int.equal check.Types.Ci_check.id (Some 1));
+      assert (
+        Option.equal Int.equal check.Types.Ci_check.check_suite_id (Some 1))
+  | Ok _ -> failwith "expected the independent workflow's failure"
+  | Error err -> failwith (Onton.Github.show_error err)
+
 let () =
   test_field_mapping_and_nulls ();
   test_empty_array ();
   test_malformed_json ();
+  test_replaced_cancellation_keeps_pr_queued ();
+  test_replaced_cancellation_allows_automerge_enqueue ();
+  test_replacement_on_later_page ();
+  test_current_or_unidentified_checks_still_block ();
+  test_merge_group_feedback_uses_current_runs ();
+  test_same_named_workflows_preserve_failure_feedback ();
   Stdlib.print_endline "test_github_check_details: OK"
