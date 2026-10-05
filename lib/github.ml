@@ -1687,10 +1687,21 @@ let merge_group_actions_checks ~net ~clock ?timeout t pr =
           | Error _ as e -> e
           | Ok jobs_body -> parse_actions_jobs_response jobs_body))
 
-let merge_group_actions_fallback_if_empty ~net ~clock ?timeout t pr result =
-  match Result.ok result with
-  | Some [] -> merge_group_actions_checks ~net ~clock ?timeout t pr
-  | _ -> result
+let resolve_merge_queue_removal_checks ~fetch_checks ~fetch_actions resp_str =
+  let result =
+    match parse_merge_queue_removal_pagination resp_str with
+    (* Complete first page (or no event): the parser has the full failure list. *)
+    | None -> parse_merge_queue_removal_response resp_str
+    (* A failed pagination is an incomplete observation. Preserve the error so
+       the poller treats the ejection as a CI failure to be safe, rather than
+       interpreting an empty Actions fallback as proof of a conflict. *)
+    | Some oid ->
+        Result.map (fetch_checks ~oid)
+          ~f:(List.filter ~f:Types.Ci_check.is_failure)
+  in
+  match result with
+  | Ok [] -> fetch_actions ()
+  | Ok (_ :: _) | Error _ -> result
 
 let merge_queue_removal_checks ~net ~clock ?timeout t pr =
   let body = build_merge_queue_removal_request_body t pr in
@@ -1698,26 +1709,11 @@ let merge_queue_removal_checks ~net ~clock ?timeout t pr =
     request ~net ~clock ?timeout t ~meth:`POST ~path:"/graphql" ~body ()
   with
   | Error _ as e -> e
-  | Ok resp_str -> (
-      match parse_merge_queue_removal_pagination resp_str with
-      (* Complete first page (or no event): the pure parser already has the full
-         failure list. *)
-      | None ->
-          parse_merge_queue_removal_response resp_str
-          |> merge_group_actions_fallback_if_empty ~net ~clock ?timeout t pr
-      (* >100 contexts on the merge-group commit: paginate by OID and filter to
-         failures over the complete set. On any pagination failure, fall back to
-         the pure parser (which returns [Ok []] for the truncated case), keeping
-         the synthetic placeholder rather than a partial list. *)
-      | Some oid -> (
-          match fetch_commit_checks ~net ~clock ?timeout t ~oid with
-          | Ok all ->
-              Ok (List.filter all ~f:Types.Ci_check.is_failure)
-              |> merge_group_actions_fallback_if_empty ~net ~clock ?timeout t pr
-          | Error _ ->
-              parse_merge_queue_removal_response resp_str
-              |> merge_group_actions_fallback_if_empty ~net ~clock ?timeout t pr
-          ))
+  | Ok resp_str ->
+      resolve_merge_queue_removal_checks resp_str
+        ~fetch_checks:(fetch_commit_checks ~net ~clock ?timeout t)
+        ~fetch_actions:(fun () ->
+          merge_group_actions_checks ~net ~clock ?timeout t pr)
 
 (** Parse the REST response from [GET /repos/:owner/:repo/pulls]. Returns a list
     of [(pr_number, base_branch, merged)] for non-CLOSED PRs, newest first. Pure
@@ -2432,6 +2428,111 @@ let pagination_test_rollup ~more ~cursor checks =
 let pagination_test_page ~more ~cursor checks =
   Printf.sprintf {|{"data":{"repository":{"object":{"statusCheckRollup":%s}}}}|}
     (pagination_test_rollup ~more ~cursor checks)
+
+let pagination_test_removal ~fetch_page ~fetch_actions =
+  let response =
+    Printf.sprintf
+      {|{"data":{"repository":{"pullRequest":{"timelineItems":{"nodes":[{
+          "beforeCommit":{"oid":"merge-group","statusCheckRollup":%s}
+      }]}}}}}|}
+      (pagination_test_rollup ~more:true ~cursor:(Some "100")
+         [ pagination_test_check 1 "SUCCESS" ])
+  in
+  resolve_merge_queue_removal_checks response ~fetch_actions
+    ~fetch_checks:(fun ~oid ->
+      assert (String.equal oid "merge-group");
+      fetch_all_contexts ~fetch_page ~oid)
+
+let%test_unit
+    "merge queue pagination errors reach the poller without Actions fallback" =
+  let errors =
+    [
+      Graphql_error [ "page two unavailable" ];
+      Http_error
+        { meth = "POST"; path = "/graphql"; status = 503; body = "unavailable" };
+      Timeout { meth = "POST"; path = "/graphql"; seconds = 30. };
+      Transport_error { meth = "POST"; path = "/graphql"; msg = "reset" };
+      Json_parse_error "malformed page";
+    ]
+  in
+  List.iter errors ~f:(fun error ->
+      let requested = ref [] in
+      let actions_called = ref false in
+      let result =
+        pagination_test_removal
+          ~fetch_page:(fun ~after ->
+            requested := after :: !requested;
+            match after with
+            | None ->
+                Ok
+                  (pagination_test_page ~more:true ~cursor:(Some "100")
+                     [ pagination_test_check 1 "FAILURE" ])
+            | Some _ -> Error error)
+          ~fetch_actions:(fun () ->
+            actions_called := true;
+            Ok [])
+      in
+      assert (not !actions_called);
+      assert (
+        List.equal
+          (Option.equal String.equal)
+          (List.rev !requested) [ None; Some "100" ]);
+      match result with
+      | Error actual ->
+          assert (String.equal (show_error actual) (show_error error))
+      | Ok _ -> failwith "expected the pagination error to reach the poller")
+
+let%test_unit "merge queue incomplete pagination cannot become an empty success"
+    =
+  List.iter [ None; Some ""; Some "repeated" ] ~f:(fun cursor ->
+      let actions_called = ref false in
+      let result =
+        pagination_test_removal
+          ~fetch_page:(fun ~after:_ ->
+            Ok
+              (pagination_test_page ~more:true ~cursor
+                 [ pagination_test_check 1 "SUCCESS" ]))
+          ~fetch_actions:(fun () ->
+            actions_called := true;
+            Ok [])
+      in
+      assert (not !actions_called);
+      match result with
+      | Error (Json_parse_error _) -> ()
+      | Error (Http_error _ | Graphql_error _ | Timeout _ | Transport_error _)
+      | Ok _ ->
+          failwith "expected incomplete pagination to fail")
+
+let%test_unit
+    "merge queue complete pagination preserves failures and empty fallback" =
+  List.iter [ "SUCCESS"; "FAILURE" ] ~f:(fun conclusion ->
+      let actions_called = ref false in
+      let result =
+        pagination_test_removal
+          ~fetch_page:(fun ~after ->
+            match after with
+            | None ->
+                Ok
+                  (pagination_test_page ~more:true ~cursor:(Some "100")
+                     [ pagination_test_check 1 "SUCCESS" ])
+            | Some _ ->
+                Ok
+                  (pagination_test_page ~more:false ~cursor:None
+                     [ pagination_test_check 110 conclusion ]))
+          ~fetch_actions:(fun () ->
+            actions_called := true;
+            Ok [])
+      in
+      match result with
+      | Ok [] ->
+          assert (String.equal conclusion "SUCCESS");
+          assert !actions_called
+      | Ok [ check ] ->
+          assert (String.equal conclusion "FAILURE");
+          assert (not !actions_called);
+          assert (String.equal check.Types.Ci_check.name "check-110")
+      | Ok _ | Error _ ->
+          failwith "expected complete merge-group checks or Actions fallback")
 
 let pagination_test_pr ~fetch_page =
   let first = List.init 100 ~f:(fun id -> pagination_test_check id "SUCCESS") in
