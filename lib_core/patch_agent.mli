@@ -470,8 +470,9 @@ val request_pr_body_refresh : t -> t
 *)
 
 val acknowledge_pr_body_refresh : t -> publication:t -> t
-(** Settle only the refresh version captured in the published agent snapshot. A
-    newer request or a publication for another patch leaves refresh pending. *)
+(** Settle only the refresh version and PR identity captured in the published
+    agent snapshot. A newer request, a changed PR status, or a publication for
+    another patch leaves refresh pending. *)
 
 val increment_start_attempts_without_pr : t -> t
 (** Record a successful Start run that still failed to discover a PR. *)
