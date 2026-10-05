@@ -76,7 +76,9 @@ let supervise argv =
       match !status with
       | Some (Unix.WEXITED code) -> exit code
       | Some (Unix.WSIGNALED signal) ->
-          Sys.set_signal signal Sys.Signal_default;
+          (* Uncatchable signals cannot have their disposition changed. *)
+          if signal <> Sys.sigkill && signal <> Sys.sigstop then
+            Sys.set_signal signal Sys.Signal_default;
           Unix.kill (Unix.getpid ()) signal;
           exit 128
       | Some (Unix.WSTOPPED _) | None -> exit 127)

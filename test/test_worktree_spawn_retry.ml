@@ -179,6 +179,40 @@ let test_supervisor_spawn_failures env =
   check "cancellation between retries prevents another supervisor spawn"
     (cancelled && !attempts = 1)
 
+let test_supervisor_signal_status env =
+  let shim =
+    Option.value
+      (Stdlib.Sys.getenv_opt "ONTON_SETSID_EXEC")
+      ~default:"onton-setsid-exec"
+  in
+  List.iter
+    [
+      (Stdlib.Sys.sigkill, "KILL");
+      (Stdlib.Sys.sigterm, "TERM");
+      (Stdlib.Sys.sighup, "HUP");
+    ]
+    ~f:(fun (signal, name) ->
+      let stderr = Buffer.create 128 in
+      let status =
+        Eio.Switch.run (fun sw ->
+            let child =
+              Eio.Process.spawn ~sw
+                (Eio.Stdenv.process_mgr env)
+                ~stdin:(Eio.Flow.string_source "")
+                ~stderr:(Eio.Flow.buffer_sink stderr)
+                [ shim; "--supervise"; "sh"; "-c"; "kill -" ^ name ^ " $$" ]
+            in
+            Eio.Process.await child)
+      in
+      check
+        ("supervisor forwards SIG" ^ name ^ " as a signal status")
+        (match status with
+        | `Signaled observed -> observed = signal
+        | `Exited _ -> false);
+      check
+        ("SIG" ^ name ^ " forwarding emits no supervisor error")
+        (Buffer.length stderr = 0))
+
 let () =
   Stdlib.print_endline "Worktree spawn-retry:";
   (* [retry_transient_spawn] yields between attempts, so run inside a scheduler. *)
@@ -188,7 +222,8 @@ let () =
       test_verdict_not_retried ();
       test_persistent_transient_exhausts ();
       test_supervisor_retry env;
-      test_supervisor_spawn_failures env);
+      test_supervisor_spawn_failures env;
+      test_supervisor_signal_status env);
   if !failures > 0 then (
     Stdlib.Printf.printf "%d/%d checks FAILED\n" !failures !total;
     Stdlib.exit 1)
