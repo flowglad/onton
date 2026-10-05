@@ -73,6 +73,45 @@ let normalization =
             Gameplan_publication.normalize_directory normalized = Ok normalized
       with _ -> false)
 
+let optional_persistence =
+  QCheck2.Test.make ~name:"optional publication metadata preserves source bytes"
+    ~count:300
+    QCheck2.Gen.(pair bool string)
+    (fun (present, content) ->
+      try
+        let p =
+          get
+            (Gameplan_publication.create ~directory:"gameplans"
+               ~project_name:"demo" ~yaml:true ~content)
+        in
+        let value = if present then Some p else None in
+        let json = Gameplan_publication.yojson_of_persisted value in
+        let expected =
+          if present then
+            `Assoc
+              [
+                ("path", `String "gameplans/demo/gameplan.yaml");
+                ("content", `String content);
+              ]
+          else `Null
+        in
+        json = expected
+        && Gameplan_publication.equal_persisted value
+             (get (Gameplan_publication.parse_optional (Some json)))
+        && Gameplan_publication.parse_optional None = Ok None
+        && Gameplan_publication.parse_optional (Some `Null) = Ok None
+        && Result.is_error
+             (Gameplan_publication.parse_optional (Some (`String content)))
+        && Result.is_error
+             (Gameplan_publication.parse_optional
+                (Some
+                   (`Assoc
+                      [
+                        ("path", `String "../outside/gameplan.yaml");
+                        ("content", `String content);
+                      ])))
+      with _ -> false)
+
 let merge_barrier =
   QCheck2.Test.make
     ~name:"merge-required edges stay blocked under PR/merge interleavings"
@@ -113,10 +152,11 @@ let upgrade_is_sticky =
                 graph (pid "2") ~dep:(pid "1"))
             graph steps
         in
-        (not
-           (Graph.deps_satisfied graph (pid "2")
-              ~has_merged:(fun _ -> false)
-              ~has_pr:(fun _ -> true)))
+        Graph.merge_required_deps graph (pid "2") = [ pid "1" ]
+        && (not
+              (Graph.deps_satisfied graph (pid "2")
+                 ~has_merged:(fun _ -> false)
+                 ~has_pr:(fun _ -> true)))
         && Graph.deps_satisfied graph (pid "2")
              ~has_merged:(fun _ -> true)
              ~has_pr:(fun _ -> false)
@@ -159,4 +199,11 @@ let () =
   boundaries ();
   List.iter
     (fun test -> QCheck2.Test.check_exn test)
-    [ totality; roundtrip; normalization; merge_barrier; upgrade_is_sticky ]
+    [
+      totality;
+      roundtrip;
+      normalization;
+      optional_persistence;
+      merge_barrier;
+      upgrade_is_sticky;
+    ]

@@ -1238,3 +1238,75 @@ let () =
                false
          with _ -> false));
   Stdlib.print_endline "AO-feature-mode passed"
+
+let () =
+  QCheck2.Test.check_exn
+    (QCheck2.Test.make
+       ~name:
+         "publication merge requirements block Start until publication merges"
+       ~count:300
+       QCheck2.Gen.(list (triple bool bool bool))
+       (fun steps ->
+         try
+           let patches = mk_patches 2 in
+           let child = pid_of_idx patches 0 in
+           let publication_id = Gameplan.publication_patch_id in
+           let publication =
+             match
+               Gameplan_publication.create ~directory:"gameplans"
+                 ~project_name:"test-project" ~yaml:true ~content:"source"
+             with
+             | Ok publication -> publication
+             | Error error -> failwith error
+           in
+           let gameplan =
+             match Gameplan.publish (make_gameplan patches) publication with
+             | Ok gameplan -> gameplan
+             | Error error -> failwith error
+           in
+           let orch =
+             Orchestrator.create ~patches:gameplan.Gameplan.patches
+               ~main_branch:main
+             |> fun orch ->
+             Orchestrator.apply_gameplan_merge_requirements orch gameplan
+           in
+           let rec check orch merged = function
+             | [] -> true
+             | (apply_plan, observe_pr, merge) :: rest ->
+                 let orch =
+                   if apply_plan then
+                     Orchestrator.apply_gameplan_merge_requirements orch
+                       gameplan
+                   else
+                     Orchestrator.require_dependency_merge orch child
+                       ~dep:publication_id
+                 in
+                 let orch =
+                   if observe_pr then
+                     Orchestrator.set_pr_number orch publication_id
+                       (Pr_number.of_int 1)
+                   else orch
+                 in
+                 let orch =
+                   if merge then Orchestrator.mark_merged orch publication_id
+                   else orch
+                 in
+                 let merged = merged || merge in
+                 let attempted =
+                   Orchestrator.fire orch (Orchestrator.Start (child, main))
+                 in
+                 Bool.equal
+                   (Orchestrator.agent attempted child).Patch_agent.busy merged
+                 && List.equal Patch_id.equal
+                      (Graph.merge_required_deps (Orchestrator.graph orch) child)
+                      [ publication_id ]
+                 && check orch merged rest
+           in
+           (not
+              (Orchestrator.agent
+                 (Orchestrator.fire orch (Orchestrator.Start (child, main)))
+                 child)
+                .Patch_agent.busy)
+           && check orch false steps
+         with _ -> false));
+  Stdlib.print_endline "AO-publication-merge-requirements passed"
