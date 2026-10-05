@@ -99,6 +99,81 @@ let faulting_mgr (type tag) (mgr : tag Eio.Process.mgr_ty Eio.Resource.t)
   end in
   Eio.Resource.T (state, Eio.Process.Pi.mgr (module Faults))
 
+let test_composite_failures env =
+  let bt = Stdlib.Printexc.get_callstack 0 in
+  let transient = Unix.Unix_error (Unix.EAGAIN, "spawn", "") in
+  let mixed, _ = Eio.Exn.combine (transient, bt) (child_error (), bt) in
+  let io_errors, _ =
+    Eio.Exn.combine
+      (child_error (), bt)
+      ( Eio.Exn.create (Eio.Process.E (Eio.Process.Executable_not_found "shim")),
+        bt )
+  in
+  let nested_io =
+    match io_errors with
+    | Eio.Io (error, context) ->
+        Eio.Exn.create (Eio.Exn.Multiple_io [ (error, context, bt) ])
+    | _ -> failwith "combining IO errors must produce an IO error"
+  in
+  List.iter
+    [
+      ("mixed process error", mixed);
+      ("nested process error", Eio.Exn.Multiple [ (mixed, bt); (transient, bt) ]);
+      ("combined IO process errors", io_errors);
+      ("nested IO process errors", nested_io);
+      ( "nested cancellation",
+        Eio.Exn.Multiple
+          [
+            ( Eio.Exn.Multiple
+                [ (Eio.Cancel.Cancelled (Failure "cancelled"), bt) ],
+              bt );
+            (transient, bt);
+          ] );
+    ]
+    ~f:(fun (name, error) ->
+      let attempts = ref 0 in
+      let on_spawn () =
+        Int.incr attempts;
+        raise error
+      in
+      let propagated f =
+        try
+          ignore (f ());
+          false
+        with exn -> phys_equal exn error
+      in
+      let stopped =
+        propagated (fun () -> Worktree.retry_transient_spawn on_spawn)
+      in
+      check
+        (name ^ " stops retry and preserves the exception")
+        (stopped && !attempts = 1);
+      attempts := 0;
+      let stopped =
+        propagated (fun () ->
+            Process_tree.run
+              ~process_mgr:(faulting_mgr (Eio.Stdenv.process_mgr env) on_spawn)
+              ~clock:(Eio.Stdenv.clock env) ~env:(Unix.environment ())
+              [ "true" ])
+      in
+      check
+        (name ^ " prevents another supervisor spawn")
+        (stopped && !attempts = 1));
+  let attempts = ref 0 in
+  let transient_errors =
+    Eio.Exn.Multiple
+      [
+        (transient, bt); (Eio.Exn.Multiple [ (Failure "spawn failure", bt) ], bt);
+      ]
+  in
+  let result =
+    Worktree.retry_transient_spawn (fun () ->
+        Int.incr attempts;
+        if !attempts < 3 then raise transient_errors else 42)
+  in
+  check "composite transient failures still retry to success"
+    (result = 42 && !attempts = 3)
+
 let test_supervisor_retry env =
   let attempts = ref 0 in
   let mgr =
@@ -221,6 +296,7 @@ let () =
       test_retry_then_success ();
       test_verdict_not_retried ();
       test_persistent_transient_exhausts ();
+      test_composite_failures env;
       test_supervisor_retry env;
       test_supervisor_spawn_failures env;
       test_supervisor_signal_status env);

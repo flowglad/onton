@@ -6,8 +6,9 @@ val is_transient_spawn_failure : exn -> bool
 
 val retry_transient_spawn : ?attempts:int -> (unit -> 'a) -> 'a
 (** Retry transient spawn exceptions, yielding between attempts (four by
-    default). Cancellation and process errors propagate immediately; exhausted
-    attempts propagate the last exception. Apply only to process creation. *)
+    default). Cancellation and process errors, including those nested in
+    composite exceptions, propagate immediately; exhausted attempts propagate
+    the last exception. Apply only to process creation. *)
 
 val run :
   process_mgr:_ Eio.Process.mgr ->

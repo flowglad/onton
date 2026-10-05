@@ -12,9 +12,19 @@ let rec has_cancellation = function
 (* Retain the worktree spawn policy: retry failures before a process verdict,
    such as EAGAIN under process-table pressure, but never retry cancellation or
    a process error (including executable discovery and child exit failures). *)
-let is_transient_spawn_failure = function
-  | Eio.Io (Eio.Process.E _, _) -> false
-  | e -> not (has_cancellation e)
+let rec has_process_error = function
+  | Eio.Process.E _ -> true
+  | Eio.Exn.Multiple_io errors ->
+      List.exists errors ~f:(fun (error, _context, _bt) ->
+          has_process_error error)
+  | _ -> false
+
+let rec is_transient_spawn_failure = function
+  | Eio.Cancel.Cancelled _ -> false
+  | Eio.Io (error, _) -> not (has_process_error error)
+  | Eio.Exn.Multiple exns ->
+      List.for_all exns ~f:(fun (exn, _bt) -> is_transient_spawn_failure exn)
+  | _ -> true
 
 let rec retry_transient_spawn ?(attempts = 4) f =
   match f () with
