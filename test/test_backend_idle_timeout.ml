@@ -32,6 +32,20 @@ let with_env name value f =
       | Some value -> Unix.putenv name value
       | None -> Unix.unsetenv name)
 
+(* Exercise the real spawn boundary without relying on slow OS process setup. *)
+let delay_spawn (type tag) ~clock ~delay
+    (process_mgr : tag Eio.Process.mgr_ty Eio.Resource.t) =
+  let (Eio.Resource.T (value, ops)) = process_mgr in
+  let module Manager = (val Eio.Resource.get ops Eio.Process.Pi.Mgr) in
+  let module Delayed = struct
+    include Manager
+
+    let spawn t ~sw ?cwd ?stdin ?stdout ?stderr ?env ?executable args =
+      Eio.Time.sleep clock delay;
+      Manager.spawn t ~sw ?cwd ?stdin ?stdout ?stderr ?env ?executable args
+  end in
+  Eio.Resource.T (value, Eio.Process.Pi.mgr (module Delayed))
+
 let () =
   Eio_main.run @@ fun env ->
   let process_mgr = Eio.Stdenv.process_mgr env in
@@ -45,8 +59,8 @@ let () =
     ~finally:(fun () -> remove_tree root)
     ~f:(fun () ->
       let patch_id = Types.Patch_id.of_string "idle-timeout" in
-      let run ?(timeout = 0.5) ?(process_line = fun _ -> [])
-          ?(on_event = fun _ -> ()) script =
+      let run ?(process_mgr = process_mgr) ?(timeout = 0.5)
+          ?(process_line = fun _ -> []) ?(on_event = fun _ -> ()) script =
         let start = Eio.Time.now clock in
         let result =
           Llm_backend.spawn_and_stream ~process_mgr ~clock ~timeout ~cwd
@@ -59,6 +73,21 @@ let () =
       let silent, elapsed = run "exec /bin/sleep 30" in
       expect "initial silence times out" silent.timed_out;
       expect "initial silence is bounded" Float.(elapsed < 3.0);
+      let delayed_mgr = delay_spawn ~clock ~delay:0.7 process_mgr in
+      let delayed_success, elapsed =
+        run ~process_mgr:delayed_mgr "printf 'spawned\n'"
+      in
+      expect "spawn latency does not consume the idle window"
+        ((not delayed_success.timed_out) && delayed_success.exit_code = 0);
+      expect "delayed spawn really exceeds the idle window"
+        Float.(elapsed >= 0.7);
+      let delayed_silent, elapsed =
+        run ~process_mgr:delayed_mgr "exec /bin/sleep 30"
+      in
+      expect "silence after delayed spawn times out" delayed_silent.timed_out;
+      expect "delayed child receives the full first idle window"
+        Float.(elapsed >= 1.15);
+      expect "delayed-spawn timeout remains bounded" Float.(elapsed < 3.0);
       let active_then_silent, elapsed =
         run
           "printf 'first\n\
@@ -97,6 +126,45 @@ let () =
       in
       expect "blocked callbacks remain bounded" blocked_callback.timed_out;
       expect "callback timeout is bounded" Float.(elapsed < 3.0);
+      let teardown_error = Failure "callback teardown failed" in
+      let nested_error =
+        Eio.Exn.Multiple
+          [
+            (teardown_error, Stdlib.Printexc.get_callstack 0);
+            (Eio.Buf_read.Buffer_limit_exceeded, Stdlib.Printexc.get_callstack 0);
+          ]
+      in
+      List.iter
+        [
+          ("single failure", teardown_error); ("nested failures", nested_error);
+        ]
+        ~f:(fun (name, error) ->
+          let callback_started = ref false in
+          let raced, elapsed =
+            run "printf 'event\n'; exec /bin/sleep 30"
+              ~process_line:(fun _ -> [ Types.Stream_event.Text_delta "event" ])
+              ~on_event:(fun _ ->
+                callback_started := true;
+                Exn.protect
+                  ~f:(fun () -> Eio.Time.sleep clock 30.0)
+                  ~finally:(fun () -> raise error))
+          in
+          expect
+            (name ^ " races during callback cancellation")
+            !callback_started;
+          expect (name ^ " preserves timeout classification") raced.timed_out;
+          expect (name ^ " timeout remains bounded") Float.(elapsed < 3.0);
+          let propagated =
+            try
+              ignore
+                (run "printf 'event\n'; exec /bin/sleep 30"
+                   ~process_line:(fun _ -> raise error));
+              false
+            with exn -> phys_equal exn error
+          in
+          expect
+            (name ^ " propagates unchanged without idle timeout")
+            propagated);
       let cancelled =
         Eio.Time.with_timeout clock 0.1 (fun () ->
             Ok (run ~timeout:5.0 "exec /bin/sleep 30"))

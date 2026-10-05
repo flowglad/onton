@@ -34,7 +34,9 @@ let spawn_and_stream ~process_mgr ~clock ~timeout ~cwd ~env ~setsid_exec ~args
     match setsid_exec with Some path -> path :: args | None -> args
   in
   let exception Idle_timeout in
-  let idle_deadline = ref (Eio.Time.now clock +. timeout) in
+  (* Publish the deadline only once the child exists. Pipe setup and spawning
+     are not child inactivity, and the watchdog must not cancel them. *)
+  let idle_started, idle_started_u = Eio.Promise.create () in
   (* Observe bytes at the pipe boundary, before buffering or backend parsing.
      Partial lines and diagnostic output are activity too. The watchdog covers
      event callbacks and waiting for process exit as well as reads. *)
@@ -46,16 +48,27 @@ let spawn_and_stream ~process_mgr ~clock ~timeout ~cwd ~env ~setsid_exec ~args
 
       let single_read () buf =
         let count = Eio.Flow.single_read flow buf in
+        let idle_deadline = Eio.Promise.await idle_started in
         idle_deadline := Eio.Time.now clock +. timeout;
         count
     end in
     Eio.Resource.T ((), Eio.Flow.Pi.source (module Source))
   in
-  let rec watch_idle () =
-    let remaining = !idle_deadline -. Eio.Time.now clock in
-    if Float.(remaining <= 0.0) then raise Idle_timeout;
-    Eio.Time.sleep clock remaining;
-    watch_idle ()
+  let watch_idle () =
+    let idle_deadline = Eio.Promise.await idle_started in
+    let rec watch () =
+      let remaining = !idle_deadline -. Eio.Time.now clock in
+      if Float.(remaining <= 0.0) then raise Idle_timeout;
+      Eio.Time.sleep clock remaining;
+      watch ()
+    in
+    watch ()
+  in
+  let rec is_idle_timeout = function
+    | Idle_timeout -> true
+    | Eio.Exn.Multiple errors ->
+        List.exists errors ~f:(fun (exn, _) -> is_idle_timeout exn)
+    | _ -> false
   in
   let stdout_max_size = 64 * 1024 * 1024 in
   let stderr_max_size = 1024 * 1024 in
@@ -99,6 +112,7 @@ let spawn_and_stream ~process_mgr ~clock ~timeout ~cwd ~env ~setsid_exec ~args
         Eio.Process.spawn ~sw process_mgr ~cwd ~stdin:stdin_r ~stdout:stdout_w
           ~stderr:stderr_w ~env args
       in
+      Eio.Promise.resolve idle_started_u (ref (Eio.Time.now clock +. timeout));
       (* Await the process exactly once.  Timeout races below wait on this
          promise rather than repeatedly cancelling [Eio.Process.await], which
          cannot reliably be resumed after its waiting fiber is cancelled. *)
@@ -338,7 +352,10 @@ let spawn_and_stream ~process_mgr ~clock ~timeout ~cwd ~env ~setsid_exec ~args
   in
   match Eio.Fiber.first run watch_idle with
   | result -> result
-  | exception Idle_timeout ->
+  (* [first] combines concurrent failures, including errors raised while the
+     losing fiber tears down. Preserve timeout classification in that case;
+     unrelated failures and external cancellation still propagate unchanged. *)
+  | exception exn when is_idle_timeout exn ->
       {
         exit_code = 128 + 9 (* SIGKILL — sent via on_release hook *);
         stdout = captured_stdout ();
