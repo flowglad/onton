@@ -118,19 +118,20 @@ let tests =
         && Pr_state.equal_check_status
              (Pr_state.derive_check_status current)
              expected);
-    Test.make ~name:"same-named checks from different producers remain blocking"
+    Test.make ~name:"suite replacements work independently of App visibility"
       ~count:300
-      Gen.(int_range 1 1000)
-      (fun id ->
-        let cancelled = check ~id:(Some id) "cancelled" in
-        let other =
-          check ~app_id:(Some "review") ~id:(Some (id + 1)) "success"
-        in
-        let current = Check.current_runs [ cancelled; other ] in
-        same current [ cancelled; other ]
+      Gen.(
+        triple (int_range 1 1000)
+          (option (oneof_list [ "actions"; "review"; "" ]))
+          (option (oneof_list [ "actions"; "review"; "" ])))
+      (fun (id, old_app, new_app) ->
+        let failed = check ~app_id:old_app ~id:(Some id) "failure" in
+        let passed = check ~app_id:new_app ~id:(Some (id + 1)) "success" in
+        let current = Check.current_runs [ failed; passed ] in
+        same current [ passed ]
         && Pr_state.equal_check_status
              (Pr_state.derive_check_status current)
-             Pr_state.Pending);
+             Pr_state.Passing);
     Test.make
       ~name:"same-named checks in different suites remain independently live"
       ~count:300
@@ -162,18 +163,10 @@ let tests =
              Pr_state.Failing);
     Test.make ~name:"unidentified and equal-ID checks remain conservative"
       ~count:300
-      Gen.(
-        oneof_list
-          [
-            (None, Some 1);
-            (Some "", Some 1);
-            (Some "actions", None);
-            (Some "actions", Some 0);
-            (Some "actions", Some 1);
-          ])
-      (fun (app_id, id) ->
-        let cancelled = check ~app_id ~id "cancelled" in
-        let passing = check ~app_id ~id "success" in
+      Gen.(oneof_list [ None; Some (-1); Some 0; Some 1 ])
+      (fun id ->
+        let cancelled = check ~id "cancelled" in
+        let passing = check ~id "success" in
         let current = Check.current_runs [ cancelled; passing ] in
         same current [ cancelled; passing ]
         && Pr_state.equal_check_status

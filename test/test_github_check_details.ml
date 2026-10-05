@@ -68,11 +68,11 @@ let test_malformed_json () =
         (Printf.sprintf "expected Json_parse_error, got %s"
            (Onton.Github.show_error err))
 
-let check_run ?(app = "actions") ?(suite = 1) ~id ~name conclusion =
+let check_run ?(suite = 1) ~id ~name conclusion =
   Printf.sprintf
     {|{"__typename":"CheckRun","databaseId":%d,"name":%S,
-       "checkSuite":{"databaseId":%d,"app":{"id":%S}},"conclusion":%S}|}
-    id name suite app conclusion
+       "checkSuite":{"databaseId":%d},"conclusion":%S}|}
+    id name suite conclusion
 
 let rollup ~truncated nodes =
   Printf.sprintf
@@ -212,19 +212,15 @@ let test_current_or_unidentified_checks_still_block () =
       ];
       [
         check_run ~id:1 ~name:"build" "CANCELLED";
-        check_run ~app:"other" ~id:2 ~name:"build" "SUCCESS";
+        check_run ~suite:2 ~id:2 ~name:"build" "SUCCESS";
       ];
       [
         check_run ~suite:1 ~id:1 ~name:"build" "FAILURE";
         check_run ~suite:2 ~id:2 ~name:"build" "SUCCESS";
       ];
       [
-        check_run ~suite:1 ~id:1 ~name:"build" "CANCELLED";
-        check_run ~suite:2 ~id:2 ~name:"build" "SUCCESS";
-      ];
-      [
         {|{"__typename":"CheckRun","name":"build","databaseId":1,
-          "checkSuite":{"app":{"id":"actions"}},"conclusion":"FAILURE"}|};
+          "checkSuite":{},"conclusion":"FAILURE"}|};
         check_run ~id:2 ~name:"build" "SUCCESS";
       ];
       [
@@ -291,6 +287,28 @@ let test_same_named_workflows_preserve_failure_feedback () =
   | Ok _ -> failwith "expected the independent workflow's failure"
   | Error err -> failwith (Onton.Github.show_error err)
 
+let test_private_producer_checks_preserve_pr_and_failure_feedback () =
+  let st =
+    parse_pr ~truncated:false
+      [
+        check_run ~suite:10 ~id:1 ~name:"Flowglad Review" "SUCCESS";
+        check_run ~suite:20 ~id:2 ~name:"build" "FAILURE";
+        check_run ~suite:20 ~id:3 ~name:"build" "SUCCESS";
+        check_run ~suite:30 ~id:4 ~name:"test" "FAILURE";
+      ]
+  in
+  assert (
+    Option.equal Types.Branch.equal st.Pr_state.head_branch
+      (Some (Types.Branch.of_string "feature")));
+  assert (not (Pr_state.merge_ready st));
+  let result = Poller.poll ~was_merged:false st in
+  assert (List.length result.Poller.ci_checks = 3);
+  match List.filter result.Poller.ci_checks ~f:Types.Ci_check.is_failure with
+  | [ check ] ->
+      assert (String.equal check.Types.Ci_check.name "test");
+      assert (Option.equal Int.equal check.Types.Ci_check.id (Some 4))
+  | _ -> failwith "expected actionable feedback from the current failing run"
+
 let () =
   test_field_mapping_and_nulls ();
   test_empty_array ();
@@ -301,4 +319,5 @@ let () =
   test_current_or_unidentified_checks_still_block ();
   test_merge_group_feedback_uses_current_runs ();
   test_same_named_workflows_preserve_failure_feedback ();
+  test_private_producer_checks_preserve_pr_and_failure_feedback ();
   Stdlib.print_endline "test_github_check_details: OK"

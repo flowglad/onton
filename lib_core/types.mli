@@ -196,11 +196,11 @@ module Ci_check : sig
     description : string option;
     started_at : string option;
     app_id : string option;
-        (** GitHub App node ID for CheckRuns. Missing for legacy status
-            contexts, other forges, and snapshots written before this field. *)
+        (** Legacy snapshot metadata. Retained for checkpoint compatibility;
+            check-suite identity owns replacement matching. *)
     check_suite_id : int option;
-        (** GitHub CheckSuite [databaseId]. Separates independently live
-            workflow runs whose checks share an App and name. *)
+        (** GitHub CheckSuite [databaseId]. Identifies a producer's run and
+            separates independently live workflows whose checks share a name. *)
     id : int option;
         (** GitHub CheckRun [databaseId] when available, [None] for legacy
             StatusContext entries (which expose no stable numeric ID). Used as
@@ -221,14 +221,15 @@ module Ci_check : sig
   val is_success : t -> bool
 
   val current_runs : t list -> t list
-  (** Retain the greatest CheckRun ID for each (GitHub App, check suite, check
-      name). Same-named checks in different suites remain independently live.
-      Within one suite, same-named checks are treated as replacements; producers
-      must use distinct names for independent checks within that suite. Checks
-      without complete, valid producer/suite/run identity and equal-ID
-      observations remain. Apply after assembling all pages so replacements can
-      cross page boundaries. Cancelled checks without a replacement still block
-      readiness. *)
+  (** Retain the greatest CheckRun ID for each (check suite, check name). A
+      suite scopes its producer, even when App metadata is inaccessible.
+      Same-named checks in different suites remain independently live. Within
+      one suite, same-named checks are treated as replacements; producers must
+      use distinct names for independent checks within that suite. Checks
+      without complete, valid suite/run identity and equal-ID observations
+      remain. Apply after assembling all pages so replacements can cross page
+      boundaries. Cancelled checks without a replacement still block readiness.
+  *)
 
   val merge_queue_failure : unit -> t
   val is_merge_queue_failure : t -> bool

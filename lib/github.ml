@@ -166,6 +166,9 @@ type t = {
 let create ~token ~owner ~repo ~main_branch =
   { token; owner; repo; main_branch }
 
+(* CheckSuite database IDs scope replacement checks without reading App
+   metadata. An installation token may read another producer's checks while
+   GitHub forbids access to that producer's private App. *)
 let graphql_query =
   {|query($owner: String!, $repo: String!, $number: Int!, $mergeQueueBranch: String) {
   repository(owner: $owner, name: $repo) {
@@ -201,7 +204,7 @@ let graphql_query =
                   ... on CheckRun {
                     __typename
                     databaseId
-                    checkSuite { databaseId app { id } }
+                    checkSuite { databaseId }
                     name
                     conclusion
                     detailsUrl
@@ -293,11 +296,7 @@ type oid_obj = { oid : string option [@yojson.default None] }
    one flat all-optional record and dispatch in OCaml ([ci_check_of_context]).
    Optional [typename]/[name]/[context] preserve the "skip unrecognized or
    incomplete node" behavior of the previous hand-rolled parser. *)
-type check_app = { id : string option [@yojson.default None] }
-[@@deriving of_yojson] [@@yojson.allow_extra_fields]
-
 type check_suite = {
-  app : check_app option; [@yojson.default None]
   database_id : int option; [@key "databaseId"] [@yojson.default None]
 }
 [@@deriving of_yojson] [@@yojson.allow_extra_fields]
@@ -469,10 +468,7 @@ let ci_check_of_context (n : context_node) : Types.Ci_check.t option =
             details_url = n.details_url;
             description = n.text;
             started_at = n.started_at;
-            app_id =
-              n.check_suite
-              |> Option.bind ~f:(fun suite -> suite.app)
-              |> Option.bind ~f:(fun (app : check_app) -> app.id);
+            app_id = None;
             check_suite_id =
               Option.bind n.check_suite ~f:(fun suite -> suite.database_id);
             id = n.database_id;
@@ -525,7 +521,7 @@ let contexts_by_oid_query =
               ... on CheckRun {
                 __typename
                 databaseId
-                checkSuite { databaseId app { id } }
+                checkSuite { databaseId }
                 name
                 conclusion
                 detailsUrl
@@ -1639,7 +1635,7 @@ let merge_queue_removal_query =
                     ... on CheckRun {
                       __typename
                       databaseId
-                      checkSuite { databaseId app { id } }
+                      checkSuite { databaseId }
                       name
                       conclusion
                       detailsUrl

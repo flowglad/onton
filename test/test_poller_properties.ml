@@ -113,13 +113,8 @@ let () =
             }
           in
           let replaces =
-            match
-              ( check.Ci_check.app_id,
-                check.Ci_check.check_suite_id,
-                check.Ci_check.id )
-            with
-            | Some app, Some suite, Some id ->
-                (not (String.is_empty app)) && suite > 0 && id > 0
+            match (check.Ci_check.check_suite_id, check.Ci_check.id) with
+            | Some suite, Some id -> suite > 0 && id > 0
             | _ -> false
           in
           let st =

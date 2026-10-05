@@ -193,11 +193,11 @@ module Ci_check = struct
     description : string option;
     started_at : string option;
     app_id : string option; [@yojson.default None]
-        (** GitHub App node ID for CheckRuns. Missing for legacy status
-            contexts, other forges, and snapshots written before this field. *)
+        (** Legacy snapshot metadata. Retained for checkpoint compatibility;
+            check-suite identity owns replacement matching. *)
     check_suite_id : int option; [@yojson.default None]
-        (** GitHub CheckSuite [databaseId]. Separates independently live
-            workflow runs whose checks share an App and name. *)
+        (** GitHub CheckSuite [databaseId]. Identifies a producer's run and
+            separates independently live workflows whose checks share a name. *)
     id : int option; [@yojson.default None]
         (** GitHub CheckRun [databaseId] when available, [None] for legacy
             StatusContext entries (which have no stable numeric ID). Used as the
@@ -222,22 +222,22 @@ module Ci_check = struct
   let is_success (c : t) =
     List.mem success_conclusions c.conclusion ~equal:String.equal
 
-  (* Only collapse replacements within a producer's suite and context name,
-     never across independent workflow runs or based on conclusion. *)
+  (* A GitHub suite identifies its producer's run. Only collapse replacements
+     within that suite and context name, never across independent workflow
+     runs or based on conclusion. App visibility is not required. *)
   let current_runs checks =
     let module Identity = struct
       module T = struct
-        type t = string * int * string [@@deriving sexp_of, compare]
+        type t = int * string [@@deriving sexp_of, compare]
       end
 
       include T
       include Comparator.Make (T)
     end in
     let identity (c : t) =
-      match (c.app_id, c.check_suite_id, c.id) with
-      | Some app, Some suite, Some id
-        when (not (String.is_empty app)) && suite > 0 && id > 0 ->
-          Some ((app, suite, c.name), id)
+      match (c.check_suite_id, c.id) with
+      | Some suite, Some id when suite > 0 && id > 0 ->
+          Some ((suite, c.name), id)
       | _ -> None
     in
     let latest =
