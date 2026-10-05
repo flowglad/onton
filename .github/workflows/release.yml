@@ -56,9 +56,12 @@ jobs:
       - name: Build
         run: |
           python3 - <<'PY'
-          import json, os
+          import json, os, re
           from pathlib import Path
-          Path('bin/version.ml').write_text('let s = ' + json.dumps(os.environ['GITHUB_REF_NAME'], ensure_ascii=False) + '\n')
+          tag = os.environ['GITHUB_REF_NAME']
+          if re.fullmatch(r'v[0-9].*', tag) is None:
+              raise SystemExit('GITHUB_REF_NAME is not a v-prefixed version tag: ' + tag)
+          Path('bin/version.ml').write_text('let s = ' + json.dumps(tag, ensure_ascii=False) + '\n')
           PY
           opam exec -- dune build bin/main.exe bin/setsid_exec/main.exe
 
