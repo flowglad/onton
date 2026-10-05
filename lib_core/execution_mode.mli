@@ -2,8 +2,7 @@
    @archlint.domain execution-mode *)
 open Types
 
-type t = private Mainline | Feature_branch of Patch_id.t
-[@@deriving sexp_of, show, eq]
+type t [@@deriving sexp_of, show, eq]
 
 val mainline : t
 val root : t -> Patch_id.t option
@@ -16,6 +15,15 @@ val infer : Graph.t -> (t, string) result
 val restore : Graph.t -> Patch_id.t option -> (t, string) result
 (** Missing persisted selection means mainline; a stored root must still match.
 *)
+
+val infer_gameplan : Gameplan.t -> (t, string) result
+(** Infer the implementation root, excluding the deterministic publication
+    prerequisite. Publication retains the ordinary PR lifecycle and targets
+    main; implementation remains behind its merge-required dependencies. *)
+
+val restore_gameplan : Gameplan.t -> Patch_id.t option -> (t, string) result
+(** Restore the persisted implementation root, including publication metadata.
+    Missing selection retains mainline behavior. *)
 
 val terminal :
   t ->

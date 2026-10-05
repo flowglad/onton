@@ -222,7 +222,7 @@ module Fake_forge : Forge.S with type error = string = struct
   let check_repo_access () = Ok ()
 end
 
-let runner_without_backend env =
+let runner_without_backend env ~feature =
   Git.with_temp_repo (fun path ->
       let origin = Filename.temp_dir "onton-publication-origin-" "" in
       Fun.protect
@@ -250,6 +250,10 @@ let runner_without_backend env =
             let ensure_ready ~path:_ ~branch:_ = Ok true
           end in
           let runtime = Runtime.create ~gameplan ~main_branch:main () in
+          if feature then
+            Runtime.update_orchestrator runtime (fun orch ->
+                Orchestrator.set_execution_mode orch
+                  (get (Execution_mode.infer_gameplan gameplan)));
           let backend_calls = ref 0 in
           let module Env : Runner_fiber.Runner_env.S = struct
             let runtime = runtime
@@ -327,5 +331,6 @@ let () =
           commit env ~yaml:false
             ~content:"{\n  \"preserve\": \"formatting\"\n}\n";
           refuses_symlink env ();
-          runner_without_backend env));
+          runner_without_backend env ~feature:false;
+          runner_without_backend env ~feature:true));
   print_endline "test_gameplan_publication: OK"

@@ -94,8 +94,92 @@ let fresh () =
   Orchestrator.create ~patches ~main_branch:main |> fun o ->
   Orchestrator.set_execution_mode o mode |> ready_root
 
+let publication_lifecycle () =
+  let get = function Ok x -> x | Error e -> failwith e in
+  let publication =
+    get
+      (Gameplan_publication.create ~directory:"gameplans"
+         ~project_name:gp.Gameplan.project_name ~yaml:false ~content:"{}")
+  in
+  let gameplan = get (Gameplan.publish gp publication) in
+  let mode = get (Execution_mode.infer_gameplan gameplan) in
+  let runtime = Runtime.create ~gameplan ~main_branch:main () in
+  Runtime.update_orchestrator runtime (fun o ->
+      Orchestrator.set_execution_mode o mode);
+  let orch () = Runtime.read runtime (fun s -> s.Runtime.orchestrator) in
+  let starts () =
+    Patch_controller.plan_actions (orch ()) ~patches:gameplan.Gameplan.patches
+    |> List.filter_map ~f:(function
+      | Orchestrator.Start (p, b) -> Some (p, b)
+      | Orchestrator.Respond _ | Orchestrator.Rebase _ -> None)
+  in
+  let check_starts label expected =
+    check label
+      (List.equal
+         (fun (p, b) (p', b') -> Patch_id.equal p p' && Branch.equal b b')
+         (starts ()) expected)
+  in
+  let resume () =
+    let snapshot =
+      get
+        (Persistence.snapshot_of_yojson
+           (Runtime.read runtime Persistence.snapshot_to_yojson))
+    in
+    let mode =
+      get
+        (Execution_mode.restore_gameplan snapshot.Runtime.gameplan
+           (Some (id 1)))
+    in
+    Runtime.update_orchestrator runtime (fun _ ->
+        Orchestrator.set_execution_mode snapshot.Runtime.orchestrator mode)
+  in
+  check_starts "only publication starts against main" [ (id 0, main) ];
+  Runtime.update_orchestrator runtime (fun o ->
+      Orchestrator.set_pr_number o (id 0) (Pr_number.of_int 10) |> fun o ->
+      Orchestrator.set_base_branch o (id 0) main |> fun o ->
+      fst (Orchestrator.apply_rebase_result o (id 0) Worktree.Noop main)
+      |> fun o ->
+      Orchestrator.set_pr_body_delivered o (id 0) true |> fun o ->
+      Orchestrator.set_checks_passing o (id 0) true);
+  check "publication ready for review before implementation starts"
+    (Patch_controller.ready_for_review (orch ()) (id 0));
+  check "publication excluded from feature descendants"
+    (not (Orchestrator.is_feature_descendant (orch ()) (id 0)));
+  check_starts "ready publication cannot release implementation" [];
+  Runtime.update_orchestrator runtime (fun o ->
+      Orchestrator.set_worktree_path o (id 1) "/existing-root" |> fun o ->
+      Orchestrator.fire o (Orchestrator.Start (id 1, main)));
+  check "materialized root cannot bypass publication merge"
+    (not (Orchestrator.agent (orch ()) (id 1)).Patch_agent.busy);
+  resume ();
+  check_starts "resume before publication merge remains blocked" [];
+  Runtime.update_orchestrator runtime (fun o ->
+      Orchestrator.mark_merged o (id 0));
+  check_starts "publication merge releases original root against main"
+    [ (id 1, main) ];
+  resume ();
+  check_starts "resume after publication merge preserves root" [ (id 1, main) ];
+  Runtime.update_orchestrator runtime ready_root;
+  check "implementation root remains draft during construction"
+    (not (Patch_controller.ready_for_review (orch ()) (id 1)));
+  check_starts "children start beneath original implementation root"
+    [ (id 2, branch 1); (id 3, branch 1) ];
+  Runtime.update_orchestrator runtime (fun o -> ready_branch o 2);
+  let _, decisions = Patch_controller.reconcile_automerge (orch ()) ~now:0. in
+  check "descendant integrates into implementation root rather than publication"
+    (List.exists decisions ~f:(function
+      | Patch_controller.Git_integrate { root; merge_patch_id; _ } ->
+          Patch_id.equal root (id 1) && Patch_id.equal merge_patch_id (id 2)
+      | Patch_controller.Github_merge _ -> false));
+  Runtime.update_orchestrator runtime (fun o ->
+      List.fold [ 2; 3; 4 ] ~init:o ~f:(fun o n ->
+          Orchestrator.mark_merged o (id n)));
+  check "implementation root promotes once descendants complete"
+    (Patch_controller.ready_for_review (orch ()) (id 1))
+
 let () =
   Eio_main.run (fun _ ->
+      publication_lifecycle ();
       let orch = fresh () in
       let actions = Patch_controller.plan_actions orch ~patches in
       check "children start on draft root after CI"

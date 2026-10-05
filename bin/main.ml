@@ -1581,8 +1581,7 @@ let run_with_config ~no_lock ~auto_merge ~pr_ops ~headless_transcript
         Stdlib.exit 1
     | Ok stored -> (
         match
-          Execution_mode.restore
-            (Graph.of_patches gameplan.Gameplan.patches)
+          Execution_mode.restore_gameplan gameplan
             (Option.map Patch_id.of_string stored.Project_store.feature_root)
         with
         | Ok m -> m
@@ -1656,19 +1655,6 @@ let run ~project ~gameplan_path ~forge ~github_token ~backend ~model
             else None)
   in
   if
-    (feature_branch
-    || Option.is_some
-         (Option.bind prior (fun c -> c.Project_store.feature_root)))
-    && (publish_gameplan
-       || Option.is_some
-            (Option.bind prior (fun c -> c.Project_store.gameplan_publication))
-       )
-  then (
-    Printf.eprintf
-      "Error: --publish-gameplan cannot be combined with feature branch mode.\n\
-       %!";
-    Stdlib.exit 1);
-  if
     feature_branch && Option.is_some prior
     && Option.is_none
          (Option.bind prior (fun c -> c.Project_store.feature_root))
@@ -1696,14 +1682,12 @@ let run ~project ~gameplan_path ~forge ~github_token ~backend ~model
           Printf.eprintf "Error: %s\n%!" e;
           Stdlib.exit 1
       | Ok parsed -> (
-          let graph =
-            Graph.of_patches parsed.Gameplan_parser.gameplan.Gameplan.patches
-          in
+          let gameplan = parsed.Gameplan_parser.gameplan in
           let validation =
             match prior with
-            | None -> Execution_mode.infer graph
+            | None -> Execution_mode.infer_gameplan gameplan
             | Some c ->
-                Execution_mode.restore graph
+                Execution_mode.restore_gameplan gameplan
                   (Option.map Patch_id.of_string c.Project_store.feature_root)
           in
           match validation with
@@ -1722,14 +1706,13 @@ let run ~project ~gameplan_path ~forge ~github_token ~backend ~model
       Base.List.iter errs ~f:(fun e -> Printf.eprintf "Error: %s\n" e);
       Stdlib.exit 1
   | Ok (config, gameplan, existing_snapshot) ->
-      let graph = Graph.of_patches gameplan.Gameplan.patches in
       let mode =
         (match prior with
           | Some stored ->
-              Execution_mode.restore graph
+              Execution_mode.restore_gameplan gameplan
                 (Option.map Patch_id.of_string stored.Project_store.feature_root)
           | None ->
-              if feature_branch then Execution_mode.infer graph
+              if feature_branch then Execution_mode.infer_gameplan gameplan
               else Ok Execution_mode.mainline)
         |> function
         | Ok m -> m
