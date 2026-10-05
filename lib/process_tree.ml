@@ -21,6 +21,8 @@ let rec has_process_error = function
 
 let rec is_transient_spawn_failure = function
   | Eio.Cancel.Cancelled _ -> false
+  (* Io and Multiple_io carry typed error codes, not exception values.
+     Cancellation can appear in Multiple, which is traversed below. *)
   | Eio.Io (error, _) -> not (has_process_error error)
   | Eio.Exn.Multiple exns ->
       List.for_all exns ~f:(fun (exn, _bt) -> is_transient_spawn_failure exn)
