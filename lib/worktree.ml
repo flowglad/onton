@@ -724,7 +724,7 @@ let classify_push_result = Worktree_parser.classify_push_result
 
 (* Gather the inputs [Push_plan.plan] needs. Returns a tuple so the caller
    can pattern-match the planner output without re-reading git twice. *)
-let gather_push_plan_inputs ~process_mgr ~path ~branch_str ~base_str =
+let gather_push_plan_inputs ~on_phase ~process_mgr ~path ~branch_str ~base_str =
   let worktree_path_exists = Stdlib.Sys.file_exists path in
   let worktree_head_branch =
     if not worktree_path_exists then None
@@ -764,6 +764,7 @@ let gather_push_plan_inputs ~process_mgr ~path ~branch_str ~base_str =
     | None when not worktree_path_exists -> Result.Ok None
     | None -> (
         let remote_ref = "refs/heads/" ^ branch_str in
+        on_phase "remote observation (git ls-remote)";
         let code, stdout, stderr =
           run_git_exit_code ~process_mgr
             [
@@ -789,6 +790,7 @@ let gather_push_plan_inputs ~process_mgr ~path ~branch_str ~base_str =
               (* Fetch only this observation's objects, leaving shared tracking
                  refs and FETCH_HEAD alone. A later remote write still fails the
                  captured lease; a fetch failure grants no publication authority. *)
+              on_phase "remote object fetch (git fetch)";
               let code, _, stderr =
                 run_git_exit_code ~process_mgr
                   [
@@ -811,6 +813,7 @@ let gather_push_plan_inputs ~process_mgr ~path ~branch_str ~base_str =
         )
   in
   Result.map remote_observation ~f:(fun remote_tracking_sha ->
+      on_phase "publication planning";
       let ancestry : Push_plan.ancestry =
         if not worktree_path_exists then Push_plan.Unknown
         else
@@ -922,11 +925,13 @@ let gather_push_plan_inputs ~process_mgr ~path ~branch_str ~base_str =
         remote_changes_included,
         commits_ahead_of_base ))
 
-let force_push_with_lease_unbounded ~preserve_history ~process_mgr ~path ~branch
-    ~base =
+let force_push_with_lease_unbounded ~on_phase ~preserve_history ~process_mgr
+    ~path ~branch ~base =
   let branch_str = Types.Branch.to_string branch in
   let base_str = Types.Branch.to_string base in
-  match gather_push_plan_inputs ~process_mgr ~path ~branch_str ~base_str with
+  match
+    gather_push_plan_inputs ~on_phase ~process_mgr ~path ~branch_str ~base_str
+  with
   | Error detail -> Push_error detail
   | Ok
       ( worktree_path_exists,
@@ -983,6 +988,7 @@ let force_push_with_lease_unbounded ~preserve_history ~process_mgr ~path ~branch
                   local_sha ^ ":refs/heads/" ^ branch_str;
                 ]
           in
+          on_phase "git push";
           let code, stdout, stderr = run_git_exit_code ~process_mgr args in
           let result = classify_push_result ~code ~stdout ~stderr in
           match action with
@@ -991,6 +997,7 @@ let force_push_with_lease_unbounded ~preserve_history ~process_mgr ~path ~branch
                  || equal_push_result result Push_up_to_date ->
               (* -u cannot identify a local branch from an immutable SHA refspec.
              Set the named branch's upstream only after successful publication. *)
+              on_phase "upstream configuration (git branch)";
               let code, _, stderr =
                 run_git_exit_code ~process_mgr
                   [
@@ -1014,16 +1021,21 @@ let default_push_timeout_seconds = 120.0
 let force_push_with_lease ?(preserve_history = false)
     ?(timeout_seconds = default_push_timeout_seconds) ~clock ~process_mgr ~path
     ~branch ~base () =
+  (* Keep a single deadline for the whole operation, including remote IO before
+     the push. Cancellation reports the operation actually awaiting completion. *)
+  let phase = ref "publication planning" in
+  let on_phase current = phase := current in
   match
     Eio.Time.with_timeout clock timeout_seconds (fun () ->
         Ok
-          (force_push_with_lease_unbounded ~preserve_history ~process_mgr ~path
-             ~branch ~base))
+          (force_push_with_lease_unbounded ~on_phase ~preserve_history
+             ~process_mgr ~path ~branch ~base))
   with
   | Ok result -> result
   | Error `Timeout ->
       Push_error
-        (Printf.sprintf "git push timed out after %.0fs" timeout_seconds)
+        (Printf.sprintf "Publication timed out after %.0fs during %s"
+           timeout_seconds !phase)
 
 let rebase_in_progress ~process_mgr ~path =
   rebase_in_progress_raw ~process_mgr ~path

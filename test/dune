@@ -509,6 +509,14 @@
  (ocamlc_flags (:standard -w -40-42)))
 
 (test
+ (name test_push_timeout_integration)
+ (modules test_push_timeout_integration)
+ (locks git-integration)
+ (libraries onton onton_core onton_test_support eio eio.mock eio_main unix)
+ (ocamlopt_flags (:standard -w -40-42-4))
+ (ocamlc_flags (:standard -w -40-42-4)))
+
+(test
  (name test_push_plan_integration)
  (modules test_push_plan_integration)
  (locks git-integration)

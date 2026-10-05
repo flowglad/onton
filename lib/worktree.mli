@@ -402,24 +402,26 @@ val force_push_with_lease :
   base:Types.Branch.t ->
   unit ->
   push_result
-(** Push the given branch from the worktree at [path], bounded by
+(** Push the given branch from the worktree at [path]. The entire operation,
+    including planning and remote observation, shares one deadline of
     [timeout_seconds] (120 seconds by default). A deadline expiry cancels the
-    git process and returns [Push_error], allowing the runner to complete the
-    current operation and retry instead of remaining busy indefinitely. Thin
-    effectful orchestrator: captures the named local and remote SHAs, validates
-    publication through [Push_plan], and classifies Git's result. If the
-    tracking ref is absent, it observes the remote branch directly and fetches
-    the exact observed commit without updating shared refs before validating
-    publication. Remote observation or fetch failures return [Push_error]. Every
-    push uses the captured local SHA and an explicit remote SHA lease (an
-    absent-ref lease for initial publication). Successful initial publication
-    configures the named branch's upstream. [preserve_history = true] requires
-    the captured remote tip to be an ancestor of the captured local tip; a
-    divergent or unproven history returns a permanent unsafe-state rejection
-    even if its patches are equivalent. Both modes enforce the captured lease.
-    With [preserve_history = false], divergent publication requires every
-    remote-only commit to be represented by an equivalent patch in the current
-    local history; unproven rewrites are refused. See [Push_plan] and
+    git process and returns [Push_error] identifying the phase that timed out,
+    allowing the runner to complete the current operation and retry instead of
+    remaining busy indefinitely. Thin effectful orchestrator: captures the named
+    local and remote SHAs, validates publication through [Push_plan], and
+    classifies Git's result. If the tracking ref is absent, it observes the
+    remote branch directly and fetches the exact observed commit without
+    updating shared refs before validating publication. Remote observation or
+    fetch failures return [Push_error]. Every push uses the captured local SHA
+    and an explicit remote SHA lease (an absent-ref lease for initial
+    publication). Successful initial publication configures the named branch's
+    upstream. [preserve_history = true] requires the captured remote tip to be
+    an ancestor of the captured local tip; a divergent or unproven history
+    returns a permanent unsafe-state rejection even if its patches are
+    equivalent. Both modes enforce the captured lease. With
+    [preserve_history = false], divergent publication requires every remote-only
+    commit to be represented by an equivalent patch in the current local
+    history; unproven rewrites are refused. See [Push_plan] and
     [classify_push_result] for the pure decision logic. *)
 
 val rebase_in_progress : process_mgr:_ Eio.Process.mgr -> path:string -> bool
