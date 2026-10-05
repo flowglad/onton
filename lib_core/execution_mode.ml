@@ -145,7 +145,7 @@ let root_ready t graph ~has_merged ~pending_integrations (a : Patch_agent.t) =
   && Option.is_none a.expected_remote_head_oid
   && (not pending_integrations) && (not a.has_conflict) && a.checks_passing
   && a.pr_body_delivered
-  && not a.pr_body_refresh_pending
+  && not a.pr_body_refresh.Patch_agent.pending
 
 let validate_terminal t ~branch_of ~main =
   match root t with

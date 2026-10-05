@@ -18,6 +18,9 @@ type op_state = Queued | Running
 type worktree_state = Unmaterialized | Materialized of string
 [@@deriving show, eq, sexp_of, compare]
 
+type pr_body_refresh = private { version : int; pending : bool }
+[@@deriving eq, sexp_of, compare]
+
 type t = private {
   patch_id : Types.Patch_id.t;
   branch : Types.Branch.t;
@@ -93,7 +96,7 @@ type t = private {
           eligibility gate. *)
   is_draft : bool;
   pr_body_delivered : bool;
-  pr_body_refresh_pending : bool;
+  pr_body_refresh : pr_body_refresh;
       (** The cumulative feature PR body needs publication. Independent of
           [pr_body_delivered], which retains successful notes delivery. *)
   pr_body_artifact_miss_count : int;
@@ -460,11 +463,15 @@ val set_pr_body_delivered : t -> bool -> t
     PATCHed onto the PR. Set to [true] on Pr_body Respond_ok regardless of
     whether the artifact existed (so we don't loop on missing artifacts —
     documented fallback is to keep the gameplan-derived body). Successful
-    delivery also settles any pending cumulative body refresh. *)
+    delivery is independent of cumulative body publication. *)
 
 val request_pr_body_refresh : t -> t
 (** Demand a fresh PR body without discarding successful implementation notes.
 *)
+
+val acknowledge_pr_body_refresh : t -> publication:t -> t
+(** Settle only the refresh version captured in the published agent snapshot. A
+    newer request or a publication for another patch leaves refresh pending. *)
 
 val increment_start_attempts_without_pr : t -> t
 (** Record a successful Start run that still failed to discover a PR. *)
@@ -762,6 +769,7 @@ val restore :
   is_draft:bool ->
   pr_body_delivered:bool ->
   ?pr_body_refresh_pending:bool ->
+  ?pr_body_refresh_version:int ->
   pr_body_artifact_miss_count:int ->
   ?review_unresolved_cycle_count:int ->
   start_attempts_without_pr:int ->

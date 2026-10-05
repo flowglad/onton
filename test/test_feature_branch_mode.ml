@@ -178,7 +178,8 @@ let publication_lifecycle () =
   check "implementation root waits for cumulative PR body publication"
     (not (Patch_controller.ready_for_review (orch ()) (id 1)));
   Runtime.update_orchestrator runtime (fun o ->
-      Orchestrator.set_pr_body_delivered o (id 1) true);
+      Orchestrator.acknowledge_pr_body_refresh o (id 1)
+        ~publication:(Orchestrator.agent o (id 1)));
   check "implementation root promotes once descendants complete"
     (Patch_controller.ready_for_review (orch ()) (id 1))
 
@@ -297,8 +298,8 @@ let () =
       in
       check
         "integration demands a fresh root body while preserving delivered notes"
-        ((Orchestrator.agent complete (id 1))
-           .Patch_agent.pr_body_refresh_pending
+        ((Orchestrator.agent complete (id 1)).Patch_agent.pr_body_refresh
+           .Patch_agent.pending
        && (Orchestrator.agent complete (id 1)).Patch_agent.pr_body_delivered);
       let refreshed, _ =
         Patch_controller.reconcile_all complete ~project_name:"feature-test"
@@ -321,13 +322,60 @@ let () =
         | Error e -> failwith e
       in
       check "pending body refresh survives restart"
-        ((Orchestrator.agent restored_dirty (id 1))
-           .Patch_agent.pr_body_refresh_pending
+        ((Orchestrator.agent restored_dirty (id 1)).Patch_agent.pr_body_refresh
+           .Patch_agent.pending
         && not (Patch_controller.ready_for_review restored_dirty (id 1)));
-      let failed_refresh =
-        Orchestrator.apply_respond_outcome complete (id 1)
-          Operation_kind.Pr_body Orchestrator.Respond_pr_body_miss
+      let rec legacy_snapshot = function
+        | `Assoc fields ->
+            `Assoc
+              (List.filter_map fields ~f:(fun (key, value) ->
+                   if
+                     String.equal key "pr_body_refresh_pending"
+                     || String.equal key "pr_body_refresh_version"
+                   then None
+                   else Some (key, legacy_snapshot value)))
+        | `List values -> `List (List.map values ~f:legacy_snapshot)
+        | value -> value
       in
+      let legacy =
+        match
+          Persistence.snapshot_of_yojson
+            (legacy_snapshot
+               (Runtime.read dirty_rt Persistence.snapshot_to_yojson))
+        with
+        | Ok snap ->
+            let mainline, _ =
+              Patch_controller.reconcile_all snap.Runtime.orchestrator
+                ~project_name:"feature-test" ~gameplan:gp
+            in
+            check "legacy migration does not refresh ordinary mainline PRs"
+              (not
+                 (List.mem
+                    (Orchestrator.agent mainline (id 1)).Patch_agent.queue
+                    Operation_kind.Pr_body ~equal:Operation_kind.equal));
+            ready_root
+              (Orchestrator.set_execution_mode snap.Runtime.orchestrator mode)
+        | Error e -> failwith e
+      in
+      check "legacy merged descendants demand publication after restart"
+        ((Orchestrator.agent legacy (id 1)).Patch_agent.pr_body_refresh
+           .Patch_agent.pending
+       && (Orchestrator.agent legacy (id 1)).Patch_agent.pr_body_delivered
+        && not (Patch_controller.ready_for_review legacy (id 1)));
+      let legacy_published =
+        Orchestrator.acknowledge_pr_body_refresh legacy (id 1)
+          ~publication:(Orchestrator.agent legacy (id 1))
+      in
+      check "publishing migrated cumulative body releases promotion"
+        (Patch_controller.ready_for_review legacy_published (id 1));
+      let failed_refresh =
+        Orchestrator.apply_respond_outcome
+          (Orchestrator.fire refreshed
+             (Orchestrator.Respond (id 1, Operation_kind.Pr_body)))
+          (id 1) Operation_kind.Pr_body Orchestrator.Respond_pr_body_miss
+      in
+      check "failed refresh completes its in-flight response"
+        (not (Orchestrator.agent failed_refresh (id 1)).Patch_agent.busy);
       let retry, _ =
         Patch_controller.reconcile_all failed_refresh
           ~project_name:"feature-test" ~gameplan:gp
@@ -337,13 +385,17 @@ let () =
         && List.mem (Orchestrator.agent retry (id 1)).Patch_agent.queue
              Operation_kind.Pr_body ~equal:Operation_kind.equal
         && not (Patch_controller.ready_for_review retry (id 1)));
-      let complete = Orchestrator.set_pr_body_delivered complete (id 1) true in
+      let complete =
+        Orchestrator.acknowledge_pr_body_refresh complete (id 1)
+          ~publication:(Orchestrator.agent complete (id 1))
+      in
       check "duplicate merge observations do not demand another refresh"
         (not
            (Orchestrator.agent
               (Orchestrator.mark_merged complete (id 2))
               (id 1))
-             .Patch_agent.pr_body_refresh_pending);
+             .Patch_agent.pr_body_refresh
+             .Patch_agent.pending);
       check "root ready when construction complete"
         (Patch_controller.ready_for_review complete (id 1));
       check "old root CI invalidated"
@@ -480,3 +532,54 @@ let () =
         || List.equal String.equal !trace
              [ "session-end"; "session-start"; "integration" ]);
       Stdlib.print_endline "PASS feature branch decisions and lifecycle")
+
+let () =
+  let initial =
+    Orchestrator.create ~patches ~main_branch:main |> fun o ->
+    Orchestrator.set_execution_mode o mode |> ready_root |> fun o ->
+    ready_branch o 2 |> fun o ->
+    ready_branch o 3 |> fun o -> Orchestrator.mark_merged o (id 2)
+  in
+  let queued, _ =
+    Patch_controller.reconcile_all initial ~project_name:"feature-test"
+      ~gameplan:gp
+  in
+  let running =
+    Orchestrator.fire queued
+      (Orchestrator.Respond (id 1, Operation_kind.Pr_body))
+  in
+  check "publication is in-flight"
+    (Orchestrator.agent running (id 1)).Patch_agent.busy;
+  let publication = Orchestrator.agent running (id 1) in
+  let raced = Orchestrator.mark_merged running (id 3) in
+  let finished =
+    Orchestrator.acknowledge_pr_body_refresh raced (id 1) ~publication
+    |> fun o ->
+    Orchestrator.apply_respond_outcome o (id 1) Operation_kind.Pr_body
+      Orchestrator.Respond_ok
+  in
+  check "older publication preserves newer integration demand"
+    ((Orchestrator.agent finished (id 1)).Patch_agent.pr_body_refresh
+       .Patch_agent.pending
+    && (not (Orchestrator.agent finished (id 1)).Patch_agent.busy)
+    && not (Patch_controller.ready_for_review finished (id 1)));
+  let queued, _ =
+    Patch_controller.reconcile_all finished ~project_name:"feature-test"
+      ~gameplan:gp
+  in
+  let running =
+    Orchestrator.fire queued
+      (Orchestrator.Respond (id 1, Operation_kind.Pr_body))
+  in
+  let current = Orchestrator.agent running (id 1) in
+  let finished =
+    Orchestrator.acknowledge_pr_body_refresh running (id 1) ~publication:current
+    |> fun o ->
+    Orchestrator.apply_respond_outcome o (id 1) Operation_kind.Pr_body
+      Orchestrator.Respond_ok
+  in
+  check "current publication settles refresh"
+    (not
+       (Orchestrator.agent finished (id 1)).Patch_agent.pr_body_refresh
+         .Patch_agent.pending);
+  Stdlib.print_endline "feature PR publication generations: OK"

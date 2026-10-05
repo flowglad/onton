@@ -84,7 +84,6 @@ let tests =
           (render [ p 1 ] [ (id 1, "decision") ])
           "## Changes\n\n\
            ### Patch 1: title1\n\n\
-           description1\n\n\
            - change1\n\n\
            ## Patch Specifications\n\n\
            ### Patch 1: title1\n\n\
@@ -94,6 +93,60 @@ let tests =
            ## Implementation Notes\n\n\
            ### Patch 1: title1\n\n\
            decision\n\n");
+    property "canonical changes render once despite parsed description" G.string
+      (fun change ->
+        let change = String.strip change in
+        let input =
+          `Assoc
+            [
+              ("projectName", `String "render-test");
+              ( "patches",
+                `List
+                  [
+                    `Assoc
+                      [
+                        ("number", `Int 1);
+                        ("title", `String "patch");
+                        ("changes", `List [ `String change ]);
+                      ];
+                  ] );
+            ]
+          |> Yojson.Safe.to_string
+        in
+        match Gameplan_parser.parse_json_string input with
+        | Error _ -> false
+        | Ok parsed ->
+            let body =
+              render parsed.Gameplan_parser.gameplan.Gameplan.patches []
+            in
+            if String.is_empty change then String.is_empty body
+            else
+              String.equal body
+                ("## Changes\n\n### Patch 1: patch\n\n- " ^ change ^ "\n\n"));
+    property "blank changes never create bullets"
+      (G.list (G.oneof_list [ ""; " "; "\n\t" ]))
+      (fun changes ->
+        String.is_empty (render [ Patch.{ (patch 1 []) with changes } ] []));
+    property "cached contributions preserve supplied reviewer-note order"
+      (G.shuffle_list [ 1; 2; 3 ])
+      (fun ids ->
+        let contributions =
+          List.map ids ~f:(fun n ->
+              Feature_pr_body.render_contribution ~patch:(patch n [])
+                ~notes:(Some ("note" ^ Int.to_string n)))
+        in
+        let body =
+          Feature_pr_body.render_contributions ~gameplan contributions
+        in
+        let _, valid =
+          List.fold ids ~init:(-1, true) ~f:(fun (previous, valid) n ->
+              match
+                String.substr_index body ~pattern:("note" ^ Int.to_string n)
+              with
+              | None -> (previous, false)
+              | Some position -> (position, valid && position > previous))
+        in
+        valid);
     property "refresh deterministic for same included patches"
       (G.list (G.int_range 1 8))
       (fun ids ->
@@ -122,7 +175,7 @@ let tests =
               ( after,
                 valid
                 && List.for_all after ~f:(fun i ->
-                    List.for_all [ "description"; "change"; "spec"; "note" ]
+                    List.for_all [ "title"; "change"; "spec"; "note" ]
                       ~f:(fun prefix ->
                         String.is_substring body
                           ~substring:(prefix ^ Int.to_string i))) ))

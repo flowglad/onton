@@ -796,3 +796,8 @@
  (name test_feature_pr_body_properties)
  (modules test_feature_pr_body_properties)
  (libraries onton_core qcheck-core qcheck-core.runner))
+
+(test
+ (name test_patch_agent_properties)
+ (modules test_patch_agent_properties)
+ (libraries onton_core base qcheck-core qcheck-core.runner))

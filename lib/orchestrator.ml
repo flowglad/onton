@@ -719,6 +719,10 @@ let set_is_draft t patch_id v =
 let set_pr_body_delivered t patch_id v =
   update_agent t patch_id ~f:(fun a -> Patch_agent.set_pr_body_delivered a v)
 
+let acknowledge_pr_body_refresh t patch_id ~publication =
+  update_agent t patch_id ~f:(fun a ->
+      Patch_agent.acknowledge_pr_body_refresh a ~publication)
+
 let reset_pr_body_artifact_miss_count t patch_id =
   update_agent t patch_id ~f:Patch_agent.reset_pr_body_artifact_miss_count
 

@@ -92,7 +92,10 @@ let enqueue_pr_body_if_needed t patch_id (agent : Patch_agent.t) =
   if
     (not (Patch_agent.has_pr agent || agent.branch_published))
     || agent.merged
-    || (agent.pr_body_delivered && not agent.pr_body_refresh_pending)
+    || agent.pr_body_delivered
+       && not
+            (Orchestrator.is_integration_root t patch_id
+            && agent.pr_body_refresh.Patch_agent.pending)
     || Patch_agent.needs_intervention agent
   then t
   else

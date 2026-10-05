@@ -365,7 +365,7 @@ statuses. At least one check must exist and all checks must pass. CI must run
 on branch pushes; a workflow that runs only on `pull_request` will leave these
 branches waiting for checks. Each implementer writes concise implementation
 notes for reviewers and dependent patches. Descendants can start once their
-parent has delivered its notes and passed its CI, conflict, and freshness gates.
+parent has delivered its notes and passed its CI and conflict gates.
 An open intermediate parent remains the
 direct base; after it integrates, the base moves toward the root and never
 past it to main.

@@ -279,16 +279,22 @@ let () =
                  | None ->
                      (Patch_agent.request_pr_body_refresh a, delivered, true)
                  | Some success ->
-                     ( Patch_agent.set_pr_body_delivered a success,
-                       success,
-                       pending && not success )
+                     let publication = a in
+                     let a = Patch_agent.set_pr_body_delivered a success in
+                     let a =
+                       if success then
+                         Patch_agent.acknowledge_pr_body_refresh a ~publication
+                       else a
+                     in
+                     (a, success, pending && not success)
                in
                ( a,
                  delivered,
                  pending,
                  valid
                  && Bool.equal a.Patch_agent.pr_body_delivered delivered
-                 && Bool.equal a.Patch_agent.pr_body_refresh_pending pending ))
+                 && Bool.equal a.Patch_agent.pr_body_refresh.Patch_agent.pending
+                      pending ))
              (initial, initial_delivered, false, true)
              operations
          in
