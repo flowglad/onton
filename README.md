@@ -605,6 +605,14 @@ The session fallback chain: `--continue` (resume worktree session) -> fresh
 session (no `--continue`) -> give up (needs intervention). If `--continue`
 produces no events, it's treated as a resume failure and falls back to fresh.
 
+A session deadline is an interruption rather than a failed resume. Onton keeps
+its recorded backend session ID, makes the patch retryable, and resumes the same
+conversation on the next attempt, including after a supervisor restart. Repeated
+timeouts do not consume the resume/fresh failure budget. If no session ID was
+captured, the retry starts fresh. Invalid resumes still fall back to a fresh
+session, and context exhaustion still discards the exhausted session. Worktree
+changes remain on disk; interrupted subprocesses are not restored.
+
 Additional flags: `--dangerously-skip-permissions`, `--max-turns 200`,
 `--output-format stream-json`, `--verbose`.
 

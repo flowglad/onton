@@ -727,7 +727,7 @@ let gen_pr_json =
 
 (* -- Printers for QCheck2 shrinking/reporting -- *)
 
-let gen_session_result =
+let gen_non_timeout_session_result =
   QCheck2.Gen.(
     oneof
       [
@@ -747,6 +747,15 @@ let gen_session_result =
         return (Onton.Orchestrator.Session_push_failed None);
         return Onton.Orchestrator.Session_no_commits;
       ])
+
+let gen_session_result =
+  QCheck2.Gen.oneof
+    [
+      gen_non_timeout_session_result;
+      QCheck2.Gen.return
+        (Onton.Orchestrator.Session_timed_out
+           { session_id = None; detail = None });
+    ]
 
 let print_session_result = Onton.Orchestrator.show_session_result
 let print_patch_id = Patch_id.to_string

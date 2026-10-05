@@ -610,12 +610,19 @@ module Make (W : Worktree.S) (Env : ENV) = struct
                       (Orchestrator.Session_no_resume, `Failed)
                   | Timed_out ->
                       let detail =
-                        Printf.sprintf "Session timed out (%s) — marking failed"
+                        Printf.sprintf
+                          "Session timed out (%s) — preserving session for \
+                           retry"
                           backend_name
                       in
                       log_event runtime ~patch_id detail;
-                      ( Orchestrator.Session_failed
-                          { is_fresh; detail = Some detail },
+                      ( Orchestrator.Session_timed_out
+                          {
+                            session_id =
+                              Option.first_some !captured_session_id
+                                resume_session;
+                            detail = Some detail;
+                          },
                         `Failed )
                   | Context_exhausted { stream_errors } ->
                       (* The model's context window overflowed (e.g. Codex "ran
@@ -932,6 +939,7 @@ module Make (W : Worktree.S) (Env : ENV) = struct
                       | Orchestrator.Session_no_commits
                       | Orchestrator.Session_process_error _
                       | Orchestrator.Session_no_resume
+                      | Orchestrator.Session_timed_out _
                       | Orchestrator.Session_failed _
                       | Orchestrator.Session_give_up
                       | Orchestrator.Session_worktree_missing
@@ -951,6 +959,7 @@ module Make (W : Worktree.S) (Env : ENV) = struct
                       | Orchestrator.Session_no_commits -> `No_commits
                       | Orchestrator.Session_process_error _
                       | Orchestrator.Session_no_resume
+                      | Orchestrator.Session_timed_out _
                       | Orchestrator.Session_failed _
                       | Orchestrator.Session_give_up
                       | Orchestrator.Session_worktree_missing

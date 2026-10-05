@@ -1116,6 +1116,11 @@ type session_result =
   | Session_ok
   | Session_process_error of { is_fresh : bool; detail : string option }
   | Session_no_resume
+  | Session_timed_out of { session_id : string option; detail : string option }
+      (** Deadline interruption: preserve the session and retry without
+          consuming the fresh/resume failure budget. [session_id] is the ID
+          captured by this attempt, or its resumed ID; [None] clears any stale
+          ID from a previous failed attempt. *)
   | Session_failed of { is_fresh : bool; detail : string option }
   | Session_give_up
   | Session_worktree_missing
@@ -1229,6 +1234,10 @@ let apply_session_result t patch_id result =
             Patch_agent.set_llm_session_id a None)
       in
       complete_failed t patch_id
+  | Session_timed_out { session_id; _ } ->
+      let t = set_llm_session_id t patch_id session_id in
+      let t = clear_session_fallback t patch_id in
+      complete_failed t patch_id
   | Session_failed { is_fresh; _ } ->
       let t = on_session_failure t patch_id ~is_fresh in
       complete_failed t patch_id
@@ -1327,9 +1336,10 @@ let combine_session_and_push ~delivery_mode ~branch_changed
           | Worktree.Push_worktree_missing ->
               Session_worktree_missing
               (* unreachable — outer match catches this *))
-      | Session_process_error _ | Session_no_resume | Session_failed _
-      | Session_give_up | Session_worktree_missing | Session_push_failed _
-      | Session_no_commits | Session_context_exhausted ->
+      | Session_process_error _ | Session_no_resume | Session_timed_out _
+      | Session_failed _ | Session_give_up | Session_worktree_missing
+      | Session_push_failed _ | Session_no_commits | Session_context_exhausted
+        ->
           session)
 
 type start_outcome = Start_ok | Start_failed | Start_stale

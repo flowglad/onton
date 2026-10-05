@@ -267,6 +267,11 @@ type session_result =
   | Session_ok
   | Session_process_error of { is_fresh : bool; detail : string option }
   | Session_no_resume
+  | Session_timed_out of { session_id : string option; detail : string option }
+      (** Deadline interruption: preserve the session and retry without
+          consuming the fresh/resume failure budget. [session_id] is the ID
+          captured by this attempt, or its resumed ID; [None] clears any stale
+          ID from a previous failed attempt. *)
   | Session_failed of { is_fresh : bool; detail : string option }
   | Session_give_up
   | Session_worktree_missing
@@ -285,9 +290,10 @@ val apply_session_result : t -> Patch_id.t -> session_result -> t
 (** Apply a Claude session outcome to the orchestrator. Pure function.
     [Session_ok] -> clear_session_fallback. [Session_process_error] ->
     on_session_failure + on_pre_session_failure + complete_failed.
-    [Session_failed] -> on_session_failure + complete_failed.
-    [Session_no_resume] -> on_session_failure (not fresh) + clear llm_session_id
-    \+ complete_failed. [Session_give_up] -> set_session_failed +
+    [Session_timed_out] -> set the resumable [session_id] carried by the result,
+    clear_session_fallback + complete_failed. [Session_failed] ->
+    on_session_failure + complete_failed. [Session_no_resume] -> clear
+    llm_session_id \+ complete_failed. [Session_give_up] -> set_session_failed +
     set_tried_fresh + clear llm_session_id + complete_failed.
     [Session_worktree_missing] -> on_pre_session_failure + clear_worktree_path
     + complete_failed.
@@ -320,9 +326,9 @@ val combine_session_and_push :
 (** Pure: fold the LLM session outcome and the supervisor's post-session push
     outcome into a single [session_result] for [apply_session_result].
     - A pre-existing LLM failure ([Session_process_error], [Session_failed],
-      [Session_no_resume], [Session_give_up], [Session_worktree_missing],
-      [Session_push_failed _]) is preserved unchanged — the push outcome doesn't
-      change anything.
+      [Session_timed_out], [Session_no_resume], [Session_give_up],
+      [Session_worktree_missing], [Session_push_failed _]) is preserved
+      unchanged — the push outcome doesn't change anything.
     - [Session_ok] with [Push_ok] or [Push_up_to_date] stays [Session_ok] when
       [branch_changed] is true or the delivery is [Start]. A successful Start
       can publish a PR from commits pushed by an earlier failed session. For

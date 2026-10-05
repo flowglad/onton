@@ -2630,8 +2630,8 @@ let respond_outcome_of session_result =
   | Orchestrator.Session_push_failed _ -> Orchestrator.Respond_retry_push
   | Orchestrator.Session_no_commits -> Orchestrator.Respond_no_commits
   | Orchestrator.Session_process_error _ | Orchestrator.Session_no_resume
-  | Orchestrator.Session_failed _ | Orchestrator.Session_give_up
-  | Orchestrator.Session_worktree_missing
+  | Orchestrator.Session_timed_out _ | Orchestrator.Session_failed _
+  | Orchestrator.Session_give_up | Orchestrator.Session_worktree_missing
   | Orchestrator.Session_context_exhausted ->
       Orchestrator.Respond_failed
 
@@ -2889,10 +2889,14 @@ let () =
   QCheck2.Test.check_exn prop_cv4;
   Stdlib.print_endline "CV-4 passed"
 
-(** CV-5: Universal convergence — for ANY session_result category, the full
-    Respond(Human) pipeline repeated up to 10 times either drains the queue or
-    reaches needs_intervention. This is the catch-all property that would have
-    detected the original Session_push_failed infinite loop.
+(** CV-5: Convergence for terminal failures and successful session categories.
+    Timeouts are retryable interruptions and may repeat indefinitely; their
+    retry behavior is covered by test_session_timeout and the repeated-timeout
+    property in test_properties, rather than the failure escalation model. For
+    these session_result categories, the full Respond(Human) pipeline repeated
+    up to 10 times either drains the queue or reaches needs_intervention. This
+    is the catch-all property that would have detected the original
+    Session_push_failed infinite loop.
 
     Two classes of session_result:
 
@@ -2900,10 +2904,11 @@ let () =
     Session_no_commits): the LLM ran. Messages were delivered. Converges in 1
     iteration because inflight messages are consumed.
 
-    (b) "Session failed" (all others): the LLM could not run or crashed.
-    Messages were NOT delivered. Converges via the escalation chain (Resume fail
-    -> Fresh fail -> Give_up -> intervention). Each iteration adapts the result
-    to the current session_mode, matching the production runner's behavior.
+    (b) "Session failed" (all other non-timeout results): the LLM could not run
+    or crashed. Messages were NOT delivered. Converges via the escalation chain
+    (Resume fail -> Fresh fail -> Give_up -> intervention). Each iteration
+    adapts the result to the current session_mode, matching the production
+    runner's behavior.
 
     Resume-path coverage: [mk_bootstrapped] leaves [llm_session_id = None], so
     [session_failure_for_state] here always enters on the Fresh-first arm
@@ -2915,12 +2920,12 @@ let () =
   let prop_cv5 =
     QCheck2.Test.make
       ~name:
-        "CV-5: universal convergence — any session_result category terminates \
+        "CV-5: convergence — non-timeout session_result categories terminate \
          within 10 iterations"
       ~count:500
       (QCheck2.Gen.pair
          (QCheck2.Gen.string_size (QCheck2.Gen.int_range 1 40))
-         Onton_test_support.Test_generators.gen_session_result)
+         Onton_test_support.Test_generators.gen_non_timeout_session_result)
       (fun (msg, result_template) ->
         let orch, pid, _patches = mk_bootstrapped () in
         let orch = Orchestrator.send_human_message orch pid msg in
@@ -2933,7 +2938,8 @@ let () =
           | Orchestrator.Session_ok | Orchestrator.Session_push_failed _
           | Orchestrator.Session_no_commits ->
               true
-          | Orchestrator.Session_failed _ | Orchestrator.Session_process_error _
+          | Orchestrator.Session_timed_out _ | Orchestrator.Session_failed _
+          | Orchestrator.Session_process_error _
           | Orchestrator.Session_no_resume | Orchestrator.Session_give_up
           | Orchestrator.Session_worktree_missing
           | Orchestrator.Session_context_exhausted ->

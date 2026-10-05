@@ -117,6 +117,7 @@ let failure_subkind_of_session_result (result : Orchestrator.session_result) =
   | Session_ok -> Failure_subkind.Ok
   | Session_process_error _ -> Failure_subkind.Process_error
   | Session_no_resume -> Failure_subkind.No_session_to_resume
+  | Session_timed_out _ -> Failure_subkind.Timed_out
   | Session_failed { detail = None; _ } -> Failure_subkind.Empty_response
   | Session_failed { detail = Some detail; _ }
     when String.is_empty detail || String.equal detail "(no error details)" ->
