@@ -23,7 +23,7 @@ let failing_conflict_probe_mgr (type tag)
           probed := true;
           Original.spawn t ~sw ?cwd ?stdin ?stdout ?stderr ?env
             ~executable:"/bin/sh"
-            [ "/bin/sh"; "-c"; "exit 23" ]
+            [ "/bin/sh"; "-c"; "echo index-probe-stderr >&2; exit 23" ]
       | _ ->
           Original.spawn t ~sw ?cwd ?stdin ?stdout ?stderr ?env ?executable args
   end in
@@ -279,7 +279,20 @@ let () =
                  ~target:(Branch.of_string "origin/main")
                  ~upstream:base ~project_name:"git-test" ~ancestor_ids:[] ()
              with
-            | Worktree.Error _ -> !probed
+            | Worktree.Error detail ->
+                !probed
+                && String.is_substring detail
+                     ~substring:"Root merge failed (exit 1)"
+                && String.is_substring detail
+                     ~substring:
+                       "Unmerged-index probe failed (exit 23): \
+                        index-probe-stderr"
+                && String.is_substring detail
+                     ~substring:
+                       ("Pending root merge preserved (MERGE_HEAD "
+                      ^ conflicting_tip ^ ")")
+                && String.is_substring detail
+                     ~substring:"next retry will route to merge repair"
             | Worktree.Ok | Worktree.Noop | Worktree.Conflict _
             | Worktree.Merge_conflict _ | Worktree.Uncommitted_changes _ ->
                 false);

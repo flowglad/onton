@@ -1193,7 +1193,7 @@ let merge_preserving ~process_mgr ~path ~target : rebase_result =
             let merge_head =
               read_branch_sha ~process_mgr ~path ~ref_name:"MERGE_HEAD"
             in
-            let diff_code, unmerged_paths, _ =
+            let diff_code, unmerged_paths, diff_stderr =
               run_git_exit_code ~process_mgr
                 [ "git"; "-C"; path; "diff"; "--name-only"; "--diff-filter=U" ]
             in
@@ -1206,8 +1206,22 @@ let merge_preserving ~process_mgr ~path ~target : rebase_result =
             | `Error message ->
                 (* A failed index probe cannot establish that aborting is safe.
                    Preserve the pending merge for the next retry's entry check. *)
-                if diff_code <> 0 || Option.is_none merge_head then
-                  Error message
+                if diff_code <> 0 then
+                  let preserved_merge =
+                    match merge_head with
+                    | None -> ""
+                    | Some sha ->
+                        Printf.sprintf
+                          "\n\
+                           Pending root merge preserved (MERGE_HEAD %s); the \
+                           next retry will route to merge repair."
+                          sha
+                  in
+                  Error
+                    (Printf.sprintf
+                       "%s\nUnmerged-index probe failed (exit %d): %s%s" message
+                       diff_code (String.strip diff_stderr) preserved_merge)
+                else if Option.is_none merge_head then Error message
                 else
                   let abort_code, _, abort_err =
                     run_git_exit_code ~process_mgr
