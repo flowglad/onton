@@ -2,4 +2,7 @@
  (name main)
  (public_name onton-setsid-exec)
  (package onton)
- (libraries unix))
+ (libraries unix)
+ (foreign_stubs
+  (language c)
+  (names supervisor_stubs)))

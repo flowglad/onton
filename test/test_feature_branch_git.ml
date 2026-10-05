@@ -247,7 +247,22 @@ let () =
                   ~substring:"onton-integration-"));
           let late_head = child "late" "late-file" "late\n" in
           let marker = dir ^ "/integration-hook-started" in
+          let filter_pid = dir ^ "/smudge-pid" in
+          let helper_pid = dir ^ "/smudge-helper-pid" in
           let check_cleanup () =
+            List.iter [ filter_pid; helper_pid ] ~f:(fun file ->
+                if Stdlib.Sys.file_exists file then
+                  let pid =
+                    Stdlib.In_channel.with_open_bin file
+                      Stdlib.In_channel.input_all
+                    |> String.strip |> Int.of_string
+                  in
+                  let gone =
+                    match Unix.kill pid 0 with
+                    | () -> false
+                    | exception Unix.Unix_error (Unix.ESRCH, _, _) -> true
+                  in
+                  check "subprocess tree reaped before cleanup returns" gone);
             check "cancelled worktree cleaned"
               (not
                  (String.is_substring
@@ -281,36 +296,32 @@ let () =
           (* Cancel while Git is checking out files, before worktree add releases
              its initialization lock. The marker makes this independent of host speed. *)
           let filter = dir ^ "/slow-smudge" in
-          let filter_pid = dir ^ "/smudge-pid" in
-          write filter
-            ("#!/bin/sh\necho $$ > "
+          let stalled_script =
+            "#!/bin/sh\necho $$ > "
             ^ Stdlib.Filename.quote filter_pid
+            ^ "\nsleep 30 &\necho $! > "
+            ^ Stdlib.Filename.quote helper_pid
             ^ "\ntouch "
             ^ Stdlib.Filename.quote marker
-            ^ "\nexec sleep 30\n");
+            ^ "\nwait\n"
+          in
+          write filter stalled_script;
           Unix.chmod filter 0o755;
           write
             (dir ^ "/.git/info/attributes")
             "shared filter=integration-cancel\n";
           Git.run_git ~cwd:dir
             [ "config"; "filter.integration-cancel.smudge"; filter ];
-          (* Git cancellation reaps the direct child. Explicitly stop the
-             deliberately stalled fixture descendant after each scenario. *)
+          (* The implementation must reap both the filter and its helper.
+             Fixture teardown only removes files; it never kills subprocesses. *)
           let with_stalled_filter f =
             Stdlib.Fun.protect
               ~finally:(fun () ->
-                if Stdlib.Sys.file_exists filter_pid then (
-                  let pid =
-                    Stdlib.In_channel.with_open_bin filter_pid
-                      Stdlib.In_channel.input_all
-                    |> String.strip |> Int.of_string
-                  in
-                  (try Unix.kill pid Stdlib.Sys.sigkill
-                   with Unix.Unix_error (Unix.ESRCH, _, _) -> ());
-                  Unix.unlink filter_pid);
-                if Stdlib.Sys.file_exists marker then Unix.unlink marker)
+                List.iter [ filter_pid; helper_pid; marker ] ~f:(fun file ->
+                    if Stdlib.Sys.file_exists file then Unix.unlink file))
               f
           in
+          with_stalled_filter cancel_at_hook;
           with_stalled_filter cancel_at_hook;
           with_stalled_filter (fun () ->
               let clock = Eio.Stdenv.clock env in
@@ -330,10 +341,9 @@ let () =
           Git.run_git ~cwd:dir
             [ "config"; "--unset"; "filter.integration-cancel.smudge" ];
           (* Also cancel after acquisition, while publication is in progress. *)
-          write hook
-            ("#!/bin/sh\ntouch " ^ Stdlib.Filename.quote marker ^ "\nsleep 1\n");
+          write hook stalled_script;
           Unix.chmod hook 0o755;
-          cancel_at_hook ();
+          with_stalled_filter cancel_at_hook;
           Unix.unlink hook;
           Stdlib.print_endline
             "PASS local Git feature integration, races, recovery and ancestry"))

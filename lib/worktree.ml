@@ -1044,7 +1044,9 @@ type integration_result =
 let integrate ~process_mgr ~clock ~repo_root ~root_path ~root_branch
     ~descendant_branch ~head_sha =
   let git path args =
-    run_git_exit_code ~process_mgr ([ "git"; "-C"; path ] @ args)
+    Process_tree.run ~process_mgr ~clock
+      ~env:(Stdlib.Lazy.force clean_git_env)
+      ([ "git"; "-C"; path ] @ args)
   in
   let checked path args =
     match git path args with
@@ -1121,7 +1123,7 @@ let integrate ~process_mgr ~clock ~repo_root ~root_path ~root_branch
                   Stdlib.Fun.protect
                     ~finally:(fun () ->
                       Eio.Cancel.protect (fun () ->
-                          (* The add subprocess has been reaped before this
+                          (* The add subprocess tree has been reaped before this
                              finalizer runs. A cancelled checkout may leave
                              Git's initialization lock; this private temporary
                              worktree is safe to remove even when locked. *)
