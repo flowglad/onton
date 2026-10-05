@@ -1121,19 +1121,21 @@ let integrate ~process_mgr ~clock ~repo_root ~root_path ~root_branch
                   Stdlib.Fun.protect
                     ~finally:(fun () ->
                       Eio.Cancel.protect (fun () ->
+                          (* The add subprocess has been reaped before this
+                             finalizer runs. A cancelled checkout may leave
+                             Git's initialization lock; this private temporary
+                             worktree is safe to remove even when locked. *)
                           let _ =
                             git repo_root
-                              [ "worktree"; "remove"; "--force"; tmp ]
+                              [
+                                "worktree"; "remove"; "--force"; "--force"; tmp;
+                              ]
                           in
                           ()))
                     (fun () ->
                       match
-                        (* Git holds an initialization lock while checking out
-                           files. Let acquisition finish before cancellation can
-                           reach cleanup, so removal sees an unlocked worktree. *)
-                        Eio.Cancel.protect (fun () ->
-                            checked repo_root
-                              [ "worktree"; "add"; "--detach"; tmp; tip ])
+                        checked repo_root
+                          [ "worktree"; "add"; "--detach"; tmp; tip ]
                       with
                       | Result.Error e -> fail e
                       | Result.Ok _ -> (

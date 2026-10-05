@@ -247,6 +247,16 @@ let () =
                   ~substring:"onton-integration-"));
           let late_head = child "late" "late-file" "late\n" in
           let marker = dir ^ "/integration-hook-started" in
+          let check_cleanup () =
+            check "cancelled worktree cleaned"
+              (not
+                 (String.is_substring
+                    (Git.git_capture ~cwd:dir
+                       [ "worktree"; "list"; "--porcelain" ])
+                    ~substring:"onton-integration-"));
+            check "root lock released after cancellation"
+              (Runtime.with_root_write rt (fun () -> true))
+          in
           let cancel_at_hook () =
             let cancelled = ref false in
             Eio.Time.with_timeout_exn (Eio.Stdenv.clock env) 10. (fun () ->
@@ -266,29 +276,56 @@ let () =
                     done));
             check "integration cancellation propagates" !cancelled;
             Unix.unlink marker;
-            check "cancelled worktree cleaned"
-              (not
-                 (String.is_substring
-                    (Git.git_capture ~cwd:dir
-                       [ "worktree"; "list"; "--porcelain" ])
-                    ~substring:"onton-integration-"));
-            check "root lock released after cancellation"
-              (Runtime.with_root_write rt (fun () -> true))
+            check_cleanup ()
           in
           (* Cancel while Git is checking out files, before worktree add releases
              its initialization lock. The marker makes this independent of host speed. *)
           let filter = dir ^ "/slow-smudge" in
+          let filter_pid = dir ^ "/smudge-pid" in
           write filter
-            ("#!/bin/sh\ntouch "
+            ("#!/bin/sh\necho $$ > "
+            ^ Stdlib.Filename.quote filter_pid
+            ^ "\ntouch "
             ^ Stdlib.Filename.quote marker
-            ^ "\nsleep 1\ncat\n");
+            ^ "\nexec sleep 30\n");
           Unix.chmod filter 0o755;
           write
             (dir ^ "/.git/info/attributes")
             "shared filter=integration-cancel\n";
           Git.run_git ~cwd:dir
             [ "config"; "filter.integration-cancel.smudge"; filter ];
-          cancel_at_hook ();
+          (* Git cancellation reaps the direct child. Explicitly stop the
+             deliberately stalled fixture descendant after each scenario. *)
+          let with_stalled_filter f =
+            Stdlib.Fun.protect
+              ~finally:(fun () ->
+                if Stdlib.Sys.file_exists filter_pid then (
+                  let pid =
+                    Stdlib.In_channel.with_open_bin filter_pid
+                      Stdlib.In_channel.input_all
+                    |> String.strip |> Int.of_string
+                  in
+                  (try Unix.kill pid Stdlib.Sys.sigkill
+                   with Unix.Unix_error (Unix.ESRCH, _, _) -> ());
+                  Unix.unlink filter_pid);
+                if Stdlib.Sys.file_exists marker then Unix.unlink marker)
+              f
+          in
+          with_stalled_filter cancel_at_hook;
+          with_stalled_filter (fun () ->
+              let clock = Eio.Stdenv.clock env in
+              let started = Eio.Time.now clock in
+              let result =
+                Eio.Time.with_timeout clock 10. (fun () ->
+                    Ok (integrate "late" late_head))
+              in
+              check "checkout reached before deadline"
+                (Stdlib.Sys.file_exists marker);
+              check "stalled checkout deadline propagates"
+                (match result with Error `Timeout -> true | Ok _ -> false);
+              check "deadline does not wait for stalled checkout"
+                Float.(Eio.Time.now clock -. started < 20.);
+              check_cleanup ());
           Unix.unlink (dir ^ "/.git/info/attributes");
           Git.run_git ~cwd:dir
             [ "config"; "--unset"; "filter.integration-cancel.smudge" ];
