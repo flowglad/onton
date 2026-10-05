@@ -758,27 +758,67 @@ let gather_push_plan_inputs ~process_mgr ~path ~branch_str ~base_str =
         | Some head when String.equal head branch_str -> read_sha branch_str
         | Some _ | None -> None)
   in
-  let remote_tracking_sha = read_sha ("refs/remotes/origin/" ^ branch_str) in
-  let ancestry : Push_plan.ancestry =
-    if not worktree_path_exists then Push_plan.Unknown
-    else
-      match (branch_ref_sha, remote_tracking_sha) with
-      | _, None -> Push_plan.No_remote_yet
-      | None, Some _ -> Push_plan.Unknown
-      | Some local, Some remote -> (
-          let code, _, _ =
-            run_git_exit_code ~process_mgr
-              [
-                "git"; "-C"; path; "merge-base"; "--is-ancestor"; remote; local;
-              ]
-          in
-          (* exit 0 = remote is ancestor of local (local includes remote);
-             exit 1 only means remote is not an ancestor of local. Probe the
-             inverse to distinguish local-behind from true divergence. *)
-          match code with
-          | 0 -> Push_plan.Local_includes_remote
-          | 1 -> (
-              let inverse_code, _, _ =
+  let remote_observation =
+    match read_sha ("refs/remotes/origin/" ^ branch_str) with
+    | Some sha -> Result.Ok (Some sha)
+    | None when not worktree_path_exists -> Result.Ok None
+    | None -> (
+        let remote_ref = "refs/heads/" ^ branch_str in
+        let code, stdout, stderr =
+          run_git_exit_code ~process_mgr
+            [
+              "git";
+              "-C";
+              path;
+              "ls-remote";
+              "--exit-code";
+              "--refs";
+              "origin";
+              remote_ref;
+            ]
+        in
+        if code = 2 then Result.Ok None
+        else if code <> 0 then
+          Result.Error ("Cannot observe remote branch: " ^ String.strip stderr)
+        else
+          match
+            Worktree_parser.parse_ls_remote_sha ~ref_name:remote_ref stdout
+          with
+          | None -> Result.Error "Cannot decode observed remote branch SHA"
+          | Some sha ->
+              (* Fetch only this observation's objects, leaving shared tracking
+                 refs and FETCH_HEAD alone. A later remote write still fails the
+                 captured lease; a fetch failure grants no publication authority. *)
+              let code, _, stderr =
+                run_git_exit_code ~process_mgr
+                  [
+                    "git";
+                    "-C";
+                    path;
+                    "fetch";
+                    "--no-write-fetch-head";
+                    "--refmap=";
+                    "--no-tags";
+                    "--no-prune";
+                    "origin";
+                    sha;
+                  ]
+              in
+              if code = 0 then Result.Ok (Some sha)
+              else
+                Result.Error
+                  ("Cannot fetch observed remote commit: " ^ String.strip stderr)
+        )
+  in
+  Result.map remote_observation ~f:(fun remote_tracking_sha ->
+      let ancestry : Push_plan.ancestry =
+        if not worktree_path_exists then Push_plan.Unknown
+        else
+          match (branch_ref_sha, remote_tracking_sha) with
+          | _, None -> Push_plan.No_remote_yet
+          | None, Some _ -> Push_plan.Unknown
+          | Some local, Some remote -> (
+              let code, _, _ =
                 run_git_exit_code ~process_mgr
                   [
                     "git";
@@ -786,162 +826,185 @@ let gather_push_plan_inputs ~process_mgr ~path ~branch_str ~base_str =
                     path;
                     "merge-base";
                     "--is-ancestor";
-                    local;
                     remote;
+                    local;
                   ]
               in
-              match inverse_code with
-              | 0 -> Push_plan.Local_missing_remote
-              | 1 -> Push_plan.Local_diverged_from_remote
+              (* exit 0 = remote is ancestor of local (local includes remote);
+             exit 1 only means remote is not an ancestor of local. Probe the
+             inverse to distinguish local-behind from true divergence. *)
+              match code with
+              | 0 -> Push_plan.Local_includes_remote
+              | 1 -> (
+                  let inverse_code, _, _ =
+                    run_git_exit_code ~process_mgr
+                      [
+                        "git";
+                        "-C";
+                        path;
+                        "merge-base";
+                        "--is-ancestor";
+                        local;
+                        remote;
+                      ]
+                  in
+                  match inverse_code with
+                  | 0 -> Push_plan.Local_missing_remote
+                  | 1 -> Push_plan.Local_diverged_from_remote
+                  | _ -> Push_plan.Unknown)
               | _ -> Push_plan.Unknown)
-          | _ -> Push_plan.Unknown)
-  in
-  (* Only the captured current history can authorize a rewrite. Every remote
+      in
+      (* Only the captured current history can authorize a rewrite. Every remote
      commit must be reachable or patch-equivalent to a commit on that history;
      stale reflog tips are never evidence of incorporation. Keep merges in the
      result so unmatched merge resolutions fail closed as well. *)
-  let remote_changes_included =
-    match (branch_ref_sha, remote_tracking_sha, ancestry) with
-    | Some _, Some _, Push_plan.Local_includes_remote -> true
-    | Some local, Some remote, Push_plan.Local_diverged_from_remote ->
-        let code, stdout, _ =
-          run_git_exit_code ~process_mgr
-            [
-              "git";
-              "-C";
-              path;
-              "rev-list";
-              "--cherry-pick";
-              "--right-only";
-              "--count";
-              local ^ "..." ^ remote;
-              "--";
-            ]
-        in
-        Option.equal Int.equal
-          (Worktree_parser.parse_commit_count ~code ~stdout)
-          (Some 0)
-    | ( _,
-        _,
-        ( Push_plan.Local_missing_remote | Push_plan.No_remote_yet
-        | Push_plan.Unknown ) )
-    | ( None,
-        _,
-        (Push_plan.Local_includes_remote | Push_plan.Local_diverged_from_remote)
-      )
-    | ( _,
-        None,
-        (Push_plan.Local_includes_remote | Push_plan.Local_diverged_from_remote)
-      ) ->
-        false
-  in
-  let commits_ahead_of_base =
-    if not worktree_path_exists then None
-    else
-      (* Measure ahead-of-base on the captured commit, not worktree HEAD —
+      let remote_changes_included =
+        match (branch_ref_sha, remote_tracking_sha, ancestry) with
+        | Some _, Some _, Push_plan.Local_includes_remote -> true
+        | Some local, Some remote, Push_plan.Local_diverged_from_remote ->
+            let code, stdout, _ =
+              run_git_exit_code ~process_mgr
+                [
+                  "git";
+                  "-C";
+                  path;
+                  "rev-list";
+                  "--cherry-pick";
+                  "--right-only";
+                  "--count";
+                  local ^ "..." ^ remote;
+                  "--";
+                ]
+            in
+            Option.equal Int.equal
+              (Worktree_parser.parse_commit_count ~code ~stdout)
+              (Some 0)
+        | ( _,
+            _,
+            ( Push_plan.Local_missing_remote | Push_plan.No_remote_yet
+            | Push_plan.Unknown ) )
+        | ( None,
+            _,
+            ( Push_plan.Local_includes_remote
+            | Push_plan.Local_diverged_from_remote ) )
+        | ( _,
+            None,
+            ( Push_plan.Local_includes_remote
+            | Push_plan.Local_diverged_from_remote ) ) ->
+            false
+      in
+      let commits_ahead_of_base =
+        if not worktree_path_exists then None
+        else
+          (* Measure ahead-of-base on the captured commit, not worktree HEAD —
          so a concurrent checkout or branch update cannot authorize a different
          commit from the one this publication will upload. *)
-      let code, stdout, _ =
-        run_git_exit_code ~process_mgr
-          [
-            "git";
-            "-C";
-            path;
-            "rev-list";
-            "--count";
-            base_str ^ ".."
-            ^ Option.value branch_ref_sha ~default:("refs/heads/" ^ branch_str);
-          ]
-      in
-      Worktree_parser.parse_commit_count ~code ~stdout
-  in
-  ( worktree_path_exists,
-    worktree_head_branch,
-    branch_ref_sha,
-    remote_tracking_sha,
-    ancestry,
-    remote_changes_included,
-    commits_ahead_of_base )
-
-let force_push_with_lease_unbounded ~process_mgr ~path ~branch ~base =
-  let branch_str = Types.Branch.to_string branch in
-  let base_str = Types.Branch.to_string base in
-  let ( worktree_path_exists,
-        worktree_head_branch,
-        branch_ref_sha,
-        remote_tracking_sha,
-        ancestry,
-        remote_changes_included,
-        commits_ahead_of_base ) =
-    gather_push_plan_inputs ~process_mgr ~path ~branch_str ~base_str
-  in
-  let decision =
-    Push_plan.plan ~expected_branch:branch_str ~worktree_path_exists
-      ~worktree_head_branch ~branch_ref_sha ~remote_tracking_sha ~ancestry
-      ~remote_changes_included ~commits_ahead_of_base
-  in
-  match decision with
-  | Refuse Push_plan.Worktree_missing -> Push_worktree_missing
-  | Refuse Push_plan.No_commits_ahead_of_base -> Push_no_commits
-  | Refuse
-      (( Push_plan.Branch_ref_missing _ | Push_plan.Branch_switched _
-       | Push_plan.Local_missing_remote_commits _
-       | Push_plan.Remote_not_integrated _ ) as r) -> (
-      match Push_plan.to_push_reject_classify_rejection r with
-      | Some rej -> Push_rejected rej
-      | None ->
-          (* These three refusals all map to Some _ per
-             [to_push_reject_classify_rejection]; fall back conservatively. *)
-          Push_error (Push_plan.short_label (Push_plan.Refuse r)))
-  | Push action -> (
-      let args =
-        match action with
-        | Push_plan.Force_push_with_lease { local_sha; remote_sha } ->
-            [
-              "git";
-              "-C";
-              path;
-              "push";
-              "--porcelain";
-              "--force-with-lease=refs/heads/" ^ branch_str ^ ":" ^ remote_sha;
-              "origin";
-              local_sha ^ ":refs/heads/" ^ branch_str;
-            ]
-        | Push_plan.Initial_push { local_sha } ->
-            [
-              "git";
-              "-C";
-              path;
-              "push";
-              "--porcelain";
-              "--force-with-lease=refs/heads/" ^ branch_str ^ ":";
-              "origin";
-              local_sha ^ ":refs/heads/" ^ branch_str;
-            ]
-      in
-      let code, stdout, stderr = run_git_exit_code ~process_mgr args in
-      let result = classify_push_result ~code ~stdout ~stderr in
-      match action with
-      | Push_plan.Initial_push _
-        when equal_push_result result Push_ok
-             || equal_push_result result Push_up_to_date ->
-          (* -u cannot identify a local branch from an immutable SHA refspec.
-             Set the named branch's upstream only after successful publication. *)
-          let code, _, stderr =
+          let code, stdout, _ =
             run_git_exit_code ~process_mgr
               [
                 "git";
                 "-C";
                 path;
-                "branch";
-                "--set-upstream-to=origin/" ^ branch_str;
-                branch_str;
+                "rev-list";
+                "--count";
+                base_str ^ ".."
+                ^ Option.value branch_ref_sha
+                    ~default:("refs/heads/" ^ branch_str);
               ]
           in
-          if code = 0 then result
-          else
-            Push_error ("Published branch but failed to set upstream: " ^ stderr)
-      | Push_plan.Initial_push _ | Push_plan.Force_push_with_lease _ -> result)
+          Worktree_parser.parse_commit_count ~code ~stdout
+      in
+      ( worktree_path_exists,
+        worktree_head_branch,
+        branch_ref_sha,
+        remote_tracking_sha,
+        ancestry,
+        remote_changes_included,
+        commits_ahead_of_base ))
+
+let force_push_with_lease_unbounded ~process_mgr ~path ~branch ~base =
+  let branch_str = Types.Branch.to_string branch in
+  let base_str = Types.Branch.to_string base in
+  match gather_push_plan_inputs ~process_mgr ~path ~branch_str ~base_str with
+  | Error detail -> Push_error detail
+  | Ok
+      ( worktree_path_exists,
+        worktree_head_branch,
+        branch_ref_sha,
+        remote_tracking_sha,
+        ancestry,
+        remote_changes_included,
+        commits_ahead_of_base ) -> (
+      let decision =
+        Push_plan.plan ~expected_branch:branch_str ~worktree_path_exists
+          ~worktree_head_branch ~branch_ref_sha ~remote_tracking_sha ~ancestry
+          ~remote_changes_included ~commits_ahead_of_base
+      in
+      match decision with
+      | Refuse Push_plan.Worktree_missing -> Push_worktree_missing
+      | Refuse Push_plan.No_commits_ahead_of_base -> Push_no_commits
+      | Refuse
+          (( Push_plan.Branch_ref_missing _ | Push_plan.Branch_switched _
+           | Push_plan.Local_missing_remote_commits _
+           | Push_plan.Remote_not_integrated _ ) as r) -> (
+          match Push_plan.to_push_reject_classify_rejection r with
+          | Some rej -> Push_rejected rej
+          | None ->
+              (* These three refusals all map to Some _ per
+             [to_push_reject_classify_rejection]; fall back conservatively. *)
+              Push_error (Push_plan.short_label (Push_plan.Refuse r)))
+      | Push action -> (
+          let args =
+            match action with
+            | Push_plan.Force_push_with_lease { local_sha; remote_sha } ->
+                [
+                  "git";
+                  "-C";
+                  path;
+                  "push";
+                  "--porcelain";
+                  "--force-with-lease=refs/heads/" ^ branch_str ^ ":"
+                  ^ remote_sha;
+                  "origin";
+                  local_sha ^ ":refs/heads/" ^ branch_str;
+                ]
+            | Push_plan.Initial_push { local_sha } ->
+                [
+                  "git";
+                  "-C";
+                  path;
+                  "push";
+                  "--porcelain";
+                  "--force-with-lease=refs/heads/" ^ branch_str ^ ":";
+                  "origin";
+                  local_sha ^ ":refs/heads/" ^ branch_str;
+                ]
+          in
+          let code, stdout, stderr = run_git_exit_code ~process_mgr args in
+          let result = classify_push_result ~code ~stdout ~stderr in
+          match action with
+          | Push_plan.Initial_push _
+            when equal_push_result result Push_ok
+                 || equal_push_result result Push_up_to_date ->
+              (* -u cannot identify a local branch from an immutable SHA refspec.
+             Set the named branch's upstream only after successful publication. *)
+              let code, _, stderr =
+                run_git_exit_code ~process_mgr
+                  [
+                    "git";
+                    "-C";
+                    path;
+                    "branch";
+                    "--set-upstream-to=origin/" ^ branch_str;
+                    branch_str;
+                  ]
+              in
+              if code = 0 then result
+              else
+                Push_error
+                  ("Published branch but failed to set upstream: " ^ stderr)
+          | Push_plan.Initial_push _ | Push_plan.Force_push_with_lease _ ->
+              result))
 
 let default_push_timeout_seconds = 120.0
 

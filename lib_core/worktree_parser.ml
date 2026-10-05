@@ -292,6 +292,22 @@ type fetch_branch_result =
   | Fetch_branch_error of string
 [@@deriving show, eq, sexp_of, compare]
 
+(** Decode a single exact [ls-remote --refs] result. Reject malformed hashes,
+    extra refs, and mismatched names rather than granting remote authority. *)
+let parse_ls_remote_sha ~ref_name stdout =
+  match String.split_lines stdout with
+  | [ line ] -> (
+      match String.split line ~on:'\t' with
+      | [ sha; name ]
+        when String.equal name ref_name
+             && (String.length sha = 40 || String.length sha = 64)
+             && String.for_all sha ~f:(function
+               | '0' .. '9' | 'a' .. 'f' -> true
+               | _ -> false) ->
+          Some sha
+      | _ -> None)
+  | _ -> None
+
 (** Pure classifier for branch-scoped fetches. The [no_remote_ref] case keys off
     git's canonical phrasing ["couldn't find remote ref"]; any other non-zero
     exit produces [Fetch_branch_error] with the exit code and stripped stderr

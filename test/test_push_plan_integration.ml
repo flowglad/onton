@@ -509,6 +509,130 @@ let scenario_unmatched_merge env =
   if not (String.equal actual remote) then failwith "merge resolution lost";
   Stdlib.print_endline "  unmatched_merge: OK (refused)"
 
+type missing_tracking_case =
+  | Fast_forward
+  | Behind
+  | Diverged
+  | Concurrent_write
+  | Remote_unavailable
+
+let scenario_missing_tracking env ~preserve_history case =
+  let process_mgr = Eio.Stdenv.process_mgr env in
+  let clock = Eio.Stdenv.clock env in
+  with_temp_dir @@ fun root ->
+  let origin = Stdlib.Filename.concat root "origin.git" in
+  let seed = Stdlib.Filename.concat root "seed" in
+  let managed = Stdlib.Filename.concat root "managed" in
+  setup_origin ~origin_dir:origin;
+  setup_seed_clone ~origin_dir:origin ~managed_dir:seed;
+  sh ~dir:seed
+    "git checkout -q -b feat; echo shared > shared.txt; git add shared.txt; \
+     git commit -q -m shared; git push -q origin feat";
+  let shared = git_capture ~dir:seed [ "rev-parse"; "HEAD" ] in
+  sh
+    (Printf.sprintf "git clone -q --branch feat %s %s"
+       (Stdlib.Filename.quote origin)
+       (Stdlib.Filename.quote managed));
+  sh ~dir:managed
+    "git config user.name Test; git config user.email test@example.com";
+  sh ~dir:managed
+    "git update-ref -d refs/remotes/origin/feat; printf sentinel > \
+     .git/FETCH_HEAD";
+  (match case with
+  | Behind -> ()
+  | Fast_forward | Diverged | Concurrent_write | Remote_unavailable ->
+      sh ~dir:managed
+        "echo local > local.txt; git add local.txt; git commit -q -m local");
+  let local = git_capture ~dir:managed [ "rev-parse"; "HEAD" ] in
+  sh ~dir:seed
+    "echo writer > writer.txt; git add writer.txt; git commit -q -m writer";
+  let writer = git_capture ~dir:seed [ "rev-parse"; "HEAD" ] in
+  (match case with
+  | Behind | Diverged ->
+      sh ~dir:seed "git push -q origin feat";
+      if
+        Git_env.git_exit_code ~cwd:managed
+          [ "cat-file"; "-e"; writer ^ "^{commit}" ]
+        = 0
+      then failwith "precondition: writer object already exists locally"
+  | Concurrent_write ->
+      sh ~dir:seed "git push -q origin HEAD:refs/heads/writer-object";
+      let hooks = Stdlib.Filename.concat managed "hooks" in
+      Unix.mkdir hooks 0o755;
+      let hook = Stdlib.Filename.concat hooks "pre-push" in
+      let oc = Stdlib.open_out hook in
+      Stdlib.output_string oc
+        (Printf.sprintf
+           "#!/bin/sh\n\
+            set -eu\n\
+            if git show-ref --verify --quiet refs/remotes/origin/feat; then \
+            exit 88; fi\n\
+            git --git-dir=%s update-ref refs/heads/feat %s %s\n"
+           (Stdlib.Filename.quote origin)
+           writer shared);
+      Stdlib.close_out oc;
+      Unix.chmod hook 0o755;
+      sh ~dir:managed
+        ("git config core.hooksPath " ^ Stdlib.Filename.quote hooks)
+  | Remote_unavailable ->
+      sh ~dir:managed
+        ("git remote set-url origin "
+        ^ Stdlib.Filename.quote (Stdlib.Filename.concat root "missing.git"))
+  | Fast_forward -> ());
+  let result =
+    Worktree.force_push_with_lease ~preserve_history ~clock ~process_mgr
+      ~path:managed
+      ~branch:(Types.Branch.of_string "feat")
+      ~base:(Types.Branch.of_string "main")
+      ()
+  in
+  (match (case, result) with
+  | Fast_forward, Worktree.Push_ok -> ()
+  | ( Behind,
+      Worktree.Push_rejected
+        (Push_reject_classify.Local_state_unsafe { reason }) )
+    when String.equal reason "refuse_local_behind" ->
+      ()
+  | Diverged, Worktree.Push_rejected Push_reject_classify.Lease_violation -> ()
+  | Concurrent_write, Worktree.Push_rejected _ -> ()
+  | Remote_unavailable, Worktree.Push_error detail
+    when String.is_substring detail ~substring:"Cannot observe remote branch" ->
+      ()
+  | _ -> failwith ("missing tracking: " ^ Worktree.show_push_result result));
+  let expected =
+    match case with
+    | Fast_forward -> local
+    | Behind | Diverged | Concurrent_write -> writer
+    | Remote_unavailable -> shared
+  in
+  let actual =
+    git_capture ~dir:seed [ "ls-remote"; "origin"; "refs/heads/feat" ]
+    |> fun value -> String.prefix value 40
+  in
+  if not (String.equal actual expected) then
+    failwith "missing tracking lost remote work";
+  let fetch_head =
+    Stdlib.open_in (Stdlib.Filename.concat managed ".git/FETCH_HEAD")
+  in
+  let contents =
+    Stdlib.Fun.protect
+      ~finally:(fun () -> Stdlib.close_in_noerr fetch_head)
+      (fun () ->
+        Stdlib.really_input_string fetch_head
+          (Stdlib.in_channel_length fetch_head))
+  in
+  if not (String.equal contents "sentinel") then
+    failwith "observation modified shared FETCH_HEAD";
+  (match case with
+  | Fast_forward -> ()
+  | Behind | Diverged | Concurrent_write | Remote_unavailable ->
+      if
+        Git_env.git_exit_code ~cwd:managed
+          [ "show-ref"; "--verify"; "--quiet"; "refs/remotes/origin/feat" ]
+        = 0
+      then failwith "observation modified shared tracking refs");
+  Stdlib.print_endline "  missing_tracking: OK"
+
 (* ── Property: Push_plan.to_push_reject_classify_rejection mapping ────────────
 
    The escalation contract (see push_plan.mli): local-state refusals route to
@@ -581,6 +705,9 @@ let () =
   scenario_happy_path env;
   scenario_unmatched_merge env;
   List.iter [ false; true ] ~f:(fun preserve_history ->
+      List.iter
+        [ Fast_forward; Behind; Diverged; Concurrent_write; Remote_unavailable ]
+        ~f:(scenario_missing_tracking env ~preserve_history);
       List.iter [ false; true ] ~f:(fun race ->
           scenario_initial_publication env ~preserve_history ~race);
       List.iter [ 0; 1; 2; 3 ] ~f:(fun race ->

@@ -387,9 +387,9 @@ val push_gate_from_count : int option -> push_gate
 
 val classify_push_result :
   code:int -> stdout:string -> stderr:string -> push_result
-(** Pure: classify a [git push --porcelain] with an explicit expected-remote SHA
-    lease invocation into a [push_result]. [Push_no_commits] is never returned
-    by this function — that variant is only produced by the gate (the push is
+(** Pure: classify [git push --porcelain] output into a [push_result],
+    regardless of publication strategy. [Push_no_commits] is never returned by
+    this function — that variant is only produced by the gate (the push is
     skipped entirely when the branch has no commits ahead of base). *)
 
 val force_push_with_lease :
@@ -407,16 +407,19 @@ val force_push_with_lease :
     git process and returns [Push_error], allowing the runner to complete the
     current operation and retry instead of remaining busy indefinitely. Thin
     effectful orchestrator: captures the named local and remote SHAs, validates
-    publication through [Push_plan], and classifies Git's result. Every push
-    uses the captured local SHA and an explicit remote SHA lease (an absent-ref
-    lease for initial publication). Successful initial publication configures
-    the named branch's upstream. [preserve_history] remains accepted for caller
-    compatibility; history preservation is handled by merge-based integration,
-    and publication enforces the same captured lease in either mode. Divergent
-    publication requires every remote-only commit to be represented by an
-    equivalent patch in the current local history; unproven rewrites are
-    refused. See [Push_plan] and [classify_push_result] for the pure decision
-    logic. *)
+    publication through [Push_plan], and classifies Git's result. If the
+    tracking ref is absent, it observes the remote branch directly and fetches
+    the exact observed commit without updating shared refs before validating
+    publication. Remote observation or fetch failures return [Push_error]. Every
+    push uses the captured local SHA and an explicit remote SHA lease (an
+    absent-ref lease for initial publication). Successful initial publication
+    configures the named branch's upstream. [preserve_history] remains accepted
+    for caller compatibility; history preservation is handled by merge-based
+    integration, and publication enforces the same captured lease in either
+    mode. Divergent publication requires every remote-only commit to be
+    represented by an equivalent patch in the current local history; unproven
+    rewrites are refused. See [Push_plan] and [classify_push_result] for the
+    pure decision logic. *)
 
 val rebase_in_progress : process_mgr:_ Eio.Process.mgr -> path:string -> bool
 (** Returns [true] if there is a rebase currently in progress in the worktree at

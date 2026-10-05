@@ -320,8 +320,54 @@ let () =
         && Poly.equal (classify (Some " sha\n") "file") (`Conflict "sha"))
   in
 
+  let prop_remote_sha_total =
+    Test.make ~name:"ls-remote SHA decoding is total" ~count:1000
+      Gen.(pair string string)
+      (fun (ref_name, stdout) ->
+        match Worktree_parser.parse_ls_remote_sha ~ref_name stdout with
+        | None -> true
+        | Some sha ->
+            (String.length sha = 40 || String.length sha = 64)
+            && List.equal String.equal
+                 (String.split_lines stdout)
+                 [ sha ^ "\t" ^ ref_name ])
+  in
+  let prop_remote_sha_roundtrip =
+    Test.make ~name:"ls-remote exact SHA roundtrip" ~count:300
+      Gen.(pair (oneof_list [ 40; 64 ]) (int_range 0 15))
+      (fun (length, digit) ->
+        try
+          let sha = String.make length "0123456789abcdef".[digit] in
+          let ref_name = "refs/heads/patch" in
+          Option.equal String.equal
+            (Worktree_parser.parse_ls_remote_sha ~ref_name
+               (sha ^ "\t" ^ ref_name ^ "\n"))
+            (Some sha)
+        with _ -> false)
+  in
+  let prop_remote_sha_boundaries =
+    Test.make ~name:"ls-remote malformed or mismatched refs fail closed"
+      ~count:1 Gen.unit (fun () ->
+        let ref_name = "refs/heads/patch" in
+        let sha = String.make 40 'a' in
+        List.for_all
+          [
+            "";
+            sha;
+            sha ^ "\trefs/heads/other";
+            String.make 39 'a' ^ "\t" ^ ref_name;
+            String.make 40 'z' ^ "\t" ^ ref_name;
+            sha ^ "\t" ^ ref_name ^ "\n" ^ sha ^ "\t" ^ ref_name;
+          ]
+          ~f:(fun stdout ->
+            Option.is_none
+              (Worktree_parser.parse_ls_remote_sha ~ref_name stdout)))
+  in
   let suite =
     [
+      prop_remote_sha_total;
+      prop_remote_sha_roundtrip;
+      prop_remote_sha_boundaries;
       prop_empty_input;
       prop_detached_head_skipped;
       prop_repo_root_excluded;

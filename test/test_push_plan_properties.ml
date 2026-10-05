@@ -54,6 +54,8 @@ let safe ~local ~remote ~integrated =
     commits = Some 1;
   }
 
+let label_pattern = Re.compile (Re.Pcre.re {|^[a-z][a-z0-9_]*$|})
+
 let properties =
   [
     Test.make ~name:"publication planner is total and deterministic" ~count:1000
@@ -142,9 +144,12 @@ let properties =
             let accepted = String.equal remote lease.remote_sha in
             if List.exists operations ~f:Fn.id then not accepted
             else accepted && String.equal lease.local_sha local);
-    Test.make ~name:"planner labels are bounded" ~count:1000 gen (fun i ->
+    Test.make ~name:"planner labels are bounded lowercase snake_case"
+      ~count:1000 gen (fun i ->
         let label = PP.short_label (plan i) in
-        (not (String.is_empty label)) && String.length label <= 32);
+        (not (String.is_empty label))
+        && String.length label <= 32
+        && Re.execp label_pattern label);
   ]
 
 let () = List.iter properties ~f:(fun test -> Test.check_exn test)
