@@ -180,6 +180,66 @@ let properties =
           ->
             false);
     Test.make
+      ~name:
+        "unproven protected ancestry stays retryable until observation recovers"
+      ~count:300
+      Gen.(
+        pair (pair string string) (list_size (int_range 1 20) (pair bool bool)))
+      (fun ((local, remote), observations) ->
+        let input =
+          {
+            (safe ~local ~remote ~integrated:false) with
+            preserve_history = true;
+          }
+        in
+        let retryable =
+          List.for_all observations ~f:(fun (unknown, integrated) ->
+              let decision =
+                plan
+                  {
+                    input with
+                    ancestry =
+                      (if unknown then PP.Unknown else PP.No_remote_yet);
+                    integrated;
+                  }
+              in
+              match decision with
+              | PP.Refuse (PP.Remote_not_integrated { remote_sha }) ->
+                  String.equal remote_sha remote
+                  && Option.equal Push_reject_classify.equal_rejection
+                       (PP.to_push_reject_classify_rejection
+                          (PP.Remote_not_integrated { remote_sha }))
+                       (Some Push_reject_classify.Lease_violation)
+              | PP.Push _
+              | PP.Refuse
+                  ( PP.No_commits_ahead_of_base | PP.Worktree_missing
+                  | PP.Branch_ref_missing _ | PP.Branch_switched _
+                  | PP.Local_missing_remote_commits _
+                  | PP.History_would_be_rewritten _ ) ->
+                  false)
+        in
+        retryable
+        &&
+        match plan { input with ancestry = PP.Local_includes_remote } with
+        | PP.Push (PP.Force_push_with_lease publication) ->
+            String.equal publication.local_sha local
+            && String.equal publication.remote_sha remote
+        | PP.Refuse _ | PP.Push (PP.Initial_push _) -> false);
+    Test.make
+      ~name:"permanent protected rewrite refusals require proven divergence"
+      ~count:1000 gen (fun i ->
+        match plan i with
+        | PP.Refuse (PP.History_would_be_rewritten _) ->
+            i.preserve_history
+            && PP.equal_ancestry i.ancestry PP.Local_diverged_from_remote
+        | PP.Push _
+        | PP.Refuse
+            ( PP.No_commits_ahead_of_base | PP.Worktree_missing
+            | PP.Branch_ref_missing _ | PP.Branch_switched _
+            | PP.Local_missing_remote_commits _ | PP.Remote_not_integrated _ )
+          ->
+            true);
+    Test.make
       ~name:"lease remains fixed across fetch and remote-write interleavings"
       ~count:3000
       Gen.(triple string string (list bool))

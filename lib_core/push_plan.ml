@@ -59,13 +59,12 @@ let plan ~preserve_history ~expected_branch ~worktree_path_exists
               | _, None -> Push (Initial_push { local_sha })
               | Local_includes_remote, Some remote_sha ->
                   Push (Force_push_with_lease { local_sha; remote_sha })
-              | ( (Local_diverged_from_remote | No_remote_yet | Unknown),
-                  Some remote_sha )
+              | Local_diverged_from_remote, Some remote_sha
                 when preserve_history ->
                   Refuse (History_would_be_rewritten { local_sha; remote_sha })
               | ( (Local_diverged_from_remote | No_remote_yet | Unknown),
                   Some remote_sha )
-                when remote_changes_included ->
+                when (not preserve_history) && remote_changes_included ->
                   Push (Force_push_with_lease { local_sha; remote_sha })
               | ( (Local_diverged_from_remote | No_remote_yet | Unknown),
                   Some remote_sha ) ->

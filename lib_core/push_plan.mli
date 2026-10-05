@@ -47,16 +47,16 @@ type refusal =
   | Local_missing_remote_commits of { local_sha : sha; remote_sha : sha }
       (** [ancestry = Local_missing_remote] — pushing now would force-push a
           local that is strictly behind remote on real content, wiping commits.
-          [ancestry = Local_diverged_from_remote] is intentionally NOT a refusal
-          here when every remote-only commit is patch-equivalent to a commit
-          reachable from the captured local SHA. *)
+          When [preserve_history = false], divergent history is allowed if every
+          remote-only commit is patch-equivalent to a commit reachable from the
+          captured local SHA. *)
   | History_would_be_rewritten of { local_sha : sha; remote_sha : sha }
-      (** History-preserving publication requires the captured remote tip to
-          remain an ancestor of the captured local tip. Patch equivalence does
+      (** Proven divergence in history-preserving mode: the captured remote tip
+          is not an ancestor of the captured local tip. Patch equivalence does
           not authorize replacing published ancestry. *)
   | Remote_not_integrated of { remote_sha : sha }
-      (** The observed remote commit is absent from both current ancestry and
-          current rewritten history. Retry after incorporating remote work. *)
+      (** Incorporation of the observed remote commit is unproven. Retry after
+          re-observing ancestry or incorporating remote work. *)
 [@@deriving show, eq, sexp_of, compare]
 
 type decision = Push of action | Refuse of refusal
@@ -78,8 +78,10 @@ val plan :
     Divergent history requires [remote_changes_included]: every remote-only
     commit is patch-equivalent to a commit in the captured current history.
     [preserve_history = true] only authorizes updates with
-    [ancestry = Local_includes_remote], regardless of patch equivalence. Unknown
-    ancestry fails closed in the Git handler. *)
+    [ancestry = Local_includes_remote], regardless of patch equivalence.
+    Unproven ancestry with an observed remote tip returns the retryable
+    [Remote_not_integrated] refusal in history-preserving mode. Unknown ancestry
+    fails closed in the Git handler. *)
 
 val short_label : decision -> string
 (** A short, lowercase, snake_case identifier for the planner arm that fired,

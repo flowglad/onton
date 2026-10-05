@@ -669,6 +669,7 @@ let scenario_protected_history env rewrites =
      git commit -q -m feature; git push -q -u origin feat";
   let publish () =
     let before = git_capture ~dir:origin [ "rev-parse"; "refs/heads/feat" ] in
+    let local = git_capture ~dir:managed [ "rev-parse"; "refs/heads/feat" ] in
     let result =
       Worktree.force_push_with_lease ~preserve_history:true ~clock ~process_mgr
         ~path:managed
@@ -679,6 +680,8 @@ let scenario_protected_history env rewrites =
     let after = git_capture ~dir:origin [ "rev-parse"; "refs/heads/feat" ] in
     (match result with
     | Worktree.Push_ok | Worktree.Push_up_to_date ->
+        if not (String.equal after local) then
+          failwith "successful protected publication did not publish local tip";
         if
           Git_env.git_exit_code ~cwd:origin
             [ "merge-base"; "--is-ancestor"; before; after ]

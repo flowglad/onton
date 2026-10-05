@@ -416,12 +416,12 @@ val force_push_with_lease :
     and an explicit remote SHA lease (an absent-ref lease for initial
     publication). Successful initial publication configures the named branch's
     upstream. [preserve_history = true] requires the captured remote tip to be
-    an ancestor of the captured local tip; a divergent or unproven history
-    returns a permanent unsafe-state rejection even if its patches are
-    equivalent. Both modes enforce the captured lease. With
-    [preserve_history = false], divergent publication requires every remote-only
-    commit to be represented by an equivalent patch in the current local
-    history; unproven rewrites are refused. See [Push_plan] and
+    an ancestor of the captured local tip; proven divergence returns a permanent
+    unsafe-state rejection even if its patches are equivalent. Unproven ancestry
+    returns a retryable lease rejection. Both modes enforce the captured lease.
+    With [preserve_history = false], divergent publication requires every
+    remote-only commit to be represented by an equivalent patch in the current
+    local history; unproven rewrites are refused. See [Push_plan] and
     [classify_push_result] for the pure decision logic. *)
 
 val rebase_in_progress : process_mgr:_ Eio.Process.mgr -> path:string -> bool
