@@ -1,6 +1,6 @@
 ---
 name: write-gameplan
-description: Create or update a structured YAML gameplan for a codebase change, including patch sequencing, dependency graph, acceptance criteria, and formal per-patch and final-state specs. Use when the user asks for a gameplan, implementation plan, milestone plan, or structured change plan.
+description: Create or update a structured YAML gameplan for a codebase change, including owned guarantees, derived patch dependencies, acceptance criteria, and formal per-patch and final-state specs. Use when the user asks for a gameplan, implementation plan, milestone plan, or structured change plan.
 ---
 
 # Write Gameplan
@@ -22,7 +22,7 @@ Keep an explicit boundary between requested outcomes, existing constraints, and 
 A gameplan is, by definition, a bundle of work with two non-negotiable properties:
 
 1. **Atomic.** Either every patch lands or the gameplan is reverted as a unit. There are no partial outcomes the team is supposed to evaluate and then decide whether to continue.
-2. **Autonomously parallelizable.** Once the gameplan is approved, an orchestrator (or a swarm of agents) can execute the patches concurrently, respecting only the `dependencyGraph`. No human is in the loop between patches.
+2. **Autonomously parallelizable.** Once the gameplan is approved, an orchestrator (or a swarm of agents) can execute the patches concurrently, respecting the dependency graph Onton derives from owned guarantees and serialization constraints. No human is in the loop between patches.
 
 The following structures are therefore **prohibited inside a single gameplan**:
 
@@ -81,9 +81,9 @@ A gameplan can be **standalone** or part of a **workstream** (a larger project s
 
 **MANDATORY FIRST STEP**: Before writing any YAML, read `references/gameplan-schema.json` (relative to this skill's directory). It is a formal [JSON Schema (draft 2020-12)](https://json-schema.org/draft/2020-12/schema) defining every required field, its type, constraints, and structure. Do NOT generate gameplans from memory — the schema is the sole source of truth for the output shape.
 
-The gameplan is a **YAML mapping** written to `gameplans/<project-name>.yaml`. Every section is a named attribute. The JSON Schema remains the sole shape contract: YAML is decoded to the same objects, arrays, strings, numbers, booleans, and nulls before validation. Existing `.json` gameplans remain supported; preserve the format when editing one unless the user requests conversion.
+For a new gameplan, write a **YAML mapping** to `gameplans/<project-name>.yaml`. When updating an existing plan, edit the supplied file in place and preserve its format unless the user requests conversion. Every section is a named attribute. The JSON Schema remains the sole shape contract: YAML is decoded to the same objects, arrays, strings, numbers, booleans, and nulls before validation.
 
-Use two-space indentation and literal block scalars (`|` or `|-`) for the `spec` / `finalStateSpec` fields. Use folded scalars (`>` or `>-`) to word-wrap prose. For non-empty block scalars, `|` / `>` keep one trailing newline in the decoded string, while `|-` / `>-` strip trailing newlines; `|+` / `>+` keep all trailing newlines. Literal scalars keep internal line breaks; folded scalars turn ordinary line breaks into spaces, but blank and more-indented lines preserve breaks. Choose the style and chomping indicator to match the exact intended string, especially for verbatim `spec` / `finalStateSpec` values. Use `[]` for empty arrays and `null` for absent values. Quote string IDs with leading zeroes or numeric-looking text. Plain `true`, `false`, and `null` have their JSON types; words such as `on`, `off`, and dates remain strings. Use JSON-style decimal numbers. Each file contains one document with unique string mapping keys; tags, anchors, aliases, and merge keys are unsupported.
+Use two-space indentation and literal block scalars (`|` or `|-`) for the `spec` / `finalStateSpec` fields. Use folded scalars (`>` or `>-`) to word-wrap prose. For non-empty block scalars, `|` / `>` keep one trailing newline in the decoded string, while `|-` / `>-` strip trailing newlines; `|+` / `>+` keep all trailing newlines. Literal scalars keep internal line breaks; folded scalars turn ordinary line breaks into spaces, but blank and more-indented lines preserve breaks. Choose the style and chomping indicator to match the exact intended string, especially for verbatim `spec` / `finalStateSpec` values. Use `[]` for empty arrays and `null` for absent values. Quote string IDs with leading zeroes or numeric-looking text. Plain `true`, `false`, and `null` are booleans and null; words such as `on`, `off`, and dates remain strings. Use decimal numbers. Each file contains one document with unique string mapping keys; tags, anchors, aliases, and merge keys are unsupported.
 
 Format YAML before validation to add blank lines between top-level fields and wrap long prose (88 columns by default):
 
@@ -101,6 +101,7 @@ All of these fields are **required** and must be present in every gameplan:
 
 | Field | Type | Description |
 |-------|------|-------------|
+| `formatVersion` | `integer` | `2` — dependencies are derived from functional guarantees and serialization constraints |
 | `projectName` | `string` | Kebab-case, used in branch names and PR titles |
 | `owner` | `string` | Repository owner on the git forge (user, org, group). Non-empty; forge-specific format rules are enforced by the orchestrator at session start. See [One Repo Per Gameplan](#one-repo-per-gameplan) |
 | `repo` | `string` | Repository name on the git forge (paired with `owner`). All file paths in this gameplan are interpreted relative to this repo's root |
@@ -112,15 +113,15 @@ All of these fields are **required** and must be present in every gameplan:
 | `operationalConsiderations` | `object` | `{ externalSystemAccess, crossRuntimeContracts, failureBehavior, concurrencyAndIdempotency, rollbackStrategy }` — see [Operational Considerations](#operational-considerations) |
 | `mergabilityStrategy` | `object` | `{ featureFlagStrategy, featureFlags, patchOrderingStrategy }` |
 | `requiredChanges` | `array` | `[{ file, line, description, signature }]` |
-| `functionalChanges` | `array` | `[{ id, description, ownedBy }]` — exhaustive, every entry assigned to exactly one patch. See [Functional Change Ownership](#functional-change-ownership). |
+| `functionalChanges` | `array` | `[{ id, description, ownedBy, requiredBy, verifiedBy }]` — exhaustive, every entry assigned to exactly one patch. See [Functional Change Ownership](#functional-change-ownership). |
 | `contextResources` | `array` | `[{ id, kind, paths, why, consumedBy }]` — authoritative context specific patches must read before editing. See [Context Resources](#context-resources). |
-| `acceptanceCriteria` | `string[]` | Each is a "done" condition |
+| `acceptanceCriteria` | `array` | `[{ id, description, tracesTo }]` — stable acceptance IDs referencing functional-change IDs |
 | `reachabilityTraces` | `array` | `[{ observable, tracesTo, ownedBy, path, testPath, runtimeReachabilityNote }]` — one live entry→leaf trace per observable. Empty for pure INFRA/refactor. See [Rule 4](#rule-4--ground-efficacy-not-just-existence). |
 | `openQuestions` | `string[]` | Decisions for the team (empty array if none) |
 | `explicitOpinions` | `array` | `[{ opinion, rationale }]` |
 | `patches` | `array` | See Patch Object in schema |
 | `testMap` | `array` | `[{ testName, file, stubPatch, implPatch }]` |
-| `dependencyGraph` | `array` | `[{ patch, classification, dependsOn }]` |
+| `orderingConstraints` | `array` | `[{ before, after, reason }]` — serialization only; capability edges come from functional changes |
 | `mergabilityChecklist` | `object` | boolean fields including `gameplanIsAtomicAndAutonomous` (see schema for full list) |
 | `mergabilityInsight` | `string` | E.g. "X of Y patches are INFRA/GATED…" |
 | `finalStateSpec` | `string` | Formal specification source for the completed gameplan |
@@ -293,34 +294,54 @@ What does **not** go here:
 - File or signature edits (those belong in `requiredChanges`).
 - Internal helper introductions that are not callable from outside the module being changed.
 
-### The mapping
+### Guarantees, consumers and evidence
 
-Each `functionalChange` has `id` (`FC-1`, `FC-2`, …), a single-outcome `description`, and an `ownedBy` patch id. The mapping is:
+Each functional change has:
 
-- **Total**: every functional change has an owner. No orphans.
-- **Single-valued**: exactly one patch owns each change. No shared ownership; co-owning a change is the failure mode this section is designed to prevent.
-- **Not strictly surjective**: an INFRA-only patch that introduces types or test stubs need not own any functional change. Most observable changes land on GATED or BEHAVIOR patches.
+- `id`: stable `FC-N` identifier.
+- `description`: one guarantee, including the meaningful input domain, lifecycle and runtime. State any preconditions explicitly; keep implementation mechanisms in `changes`.
+- `ownedBy`: exactly one patch that establishes the guarantee.
+- `requiredBy`: the patches that consume it; `[]` means no consuming patch. Each consumer depends on the owner. Consumers reference the same guarantee, rather than restating a stronger version elsewhere.
+- `verifiedBy`: producer-owned `testMap` test names, or `{ command, expectation }` compiler/static checks. A consumed guarantee requires evidence here. Choose the strongest appropriate layer: types for representable invariants, public/runtime tests for behavior. A command names an obligation the producer must run; its presence is not evidence that it passed.
 
-If the same behavior is co-implemented by two patches, the change description is too coarse — split it into two changes (one per patch), each describing the slice that patch delivers.
+Include internal capabilities that another patch needs: durable intake, exact artifact lookup, exported types, or a callable API. Infrastructure patches can own these guarantees even without a user-facing feature. Pure internal refactors with no consumer contract need not invent a functional change.
 
-### How it surfaces to the patch agent
+```yaml
+functionalChanges:
+  - id: FC-10
+    description: >-
+      A supplied qualification request survives restart before artifact or
+      credential arrival, without requiring a final execution snapshot.
+    ownedBy: 2
+    requiredBy: [6]
+    verifiedBy:
+      - Qualification intake storage > pending request survives restart
+orderingConstraints: []
+```
 
-Downstream consumers (notably onton's patch prompt renderer) read `functionalChanges` and inject the subset `ownedBy` each patch into that patch's agent prompt as an explicit "Functional Changes You Own" section. The implementing agent therefore sees the precise list of user-visible behaviors it is responsible for delivering, separate from its `changes` implementation steps. This is what closes the loophole — there is no longer prose-only behavior that no patch acknowledges.
+Onton derives edges from owner to consumer, unions them with `orderingConstraints`, deduplicates them, and rejects unknown patches, self-dependencies and cycles in the combined graph. Do not author `dependencyGraph` or patch-level `dependsOn`. A guarantee can name a transitive consumer: retain that semantic reference even when its scheduling edge is transitively redundant. New plans use `formatVersion: 2`; Onton's legacy reader supports existing unversioned plans, but mixed formats are rejected. When editing a legacy plan, migrate each old capability edge to an actual owned guarantee and each genuine serialization edge to a reasoned ordering constraint; never discard the old edges or translate all of them into generic ordering constraints.
 
-### Authoring guidance
+`acceptanceCriteria` entries have `id`, `description` and nonempty `tracesTo` functional-change IDs. Onton routes them to the corresponding producers and consumers. Every behavioral promise in the problem, solution and final spec must have an owner; every prerequisite consumed by a later patch must have a producer or grounded existing implementation.
 
-- Write each entry as the **outcome**, not the mechanism. "Merged patches are skipped instead of queued" is correct; "Add a merged-check branch to disposition" is an implementation step and belongs in `patches[].changes`.
-- Cross-check against `problemStatement`, `solutionSummary`, and `acceptanceCriteria`: every behavioral promise made there must correspond to at least one `functionalChange` entry. If you cannot point at the owning patch for a sentence in the problem statement, the gameplan has a gap.
-- Cross-check against `finalStateSpec`: every behavioral invariant in the spec should map to a functional change that introduces it (the spec says *what is true at the end*; the functional change says *which patch made it true*).
+### Dependency handoff review
+
+Before finalizing the patch decomposition, work backwards from each consuming patch:
+
+1. Enumerate what it must already be able to do, with the actual inputs and runtime it has at that point.
+2. Identify the producer guarantee, or an existing implementation in `contextResources`. For existing capabilities, record the exact supported operation and evidence in `why`, not merely that a module or endpoint exists.
+3. Check that the producer's postcondition satisfies the consumer's precondition without stronger assumptions. Trace asynchronous data through submission, waiting, restart and execution: what is known, what is durably retained, and when final identities can be constructed. Compare bounds across public input, transport and persistence boundaries. Apply this only to lifecycle behavior the user actually requires.
+4. Put the proof at the producer boundary and the final composition proof with its consumer. A test that manually supplies information unavailable in production does not prove the handoff. Check runtime access to the exact operation: current-pointer access does not establish historical-digest lookup.
+5. Confirm the producer's files include every owning-boundary change needed for the guarantee. Resolve a gap by adding the missing guarantee or rescoping its owner before scheduling work.
+
+The producer prompt receives owned guarantees, consumers and verification obligations. The consumer prompt receives the guarantees it requires and their owners. Both receive applicable acceptance criteria; project-wide operational constraints and required signatures remain available in the shared prompt. Inspect the rendered handoff when a plan has substantial cross-patch contracts.
 
 ## Patch Boundaries (Frames and No-Ops)
 
-[Functional Change Ownership](#functional-change-ownership) makes the *behavior* partition correct — every observable change has exactly one owning patch (total and disjoint). The same discipline must hold for the *file* partition, and each patch must make a real change. Two recurring defects come from skipping this: a patch whose change spills into files it never listed, and a patch whose change was already true (a no-op). Both are detectable at authoring time against the grounded code.
+[Functional Change Ownership](#functional-change-ownership) makes the *behavior* partition correct — every observable change has exactly one owning patch (total and disjoint). The same discipline must inform the *file* partition, and each patch must make a real change. Two recurring defects come from skipping this: a patch whose change spills into files it never listed, and a patch whose change was already true (a no-op). Both are detectable at authoring time against the grounded code.
 
-**A patch's `files` array is its frame condition.** In contract terms a routine has not only pre/postconditions but a *frame* — the exclusive set of locations it may write (this is JML's `assignable`/`modifies` clause; separation logic calls the touched region the *footprint*). The `files` list is exactly that: the patch's complete and exclusive write-set. Validate it as one:
+**A patch's `files` array is its planned complete write footprint.** Ground it against the changes and guarantees: include required consumer updates, exports, proxy/backend changes, schemas and migrations. The validator rejects overlapping files in patches that are unordered by the derived graph, and required changes outside every patch's footprint.
 
-- **Complete** — walking the patch's `changes` and `spec` against the grounded code, every file that must be edited to deliver the change is in `files`. If delivering the functional change forces an edit to a consumer, a registry, a barrel export, or a type the patch didn't list, the frame is incomplete — add the file or rescope the patch. The "consumers" axis of [Complete the contract in the spec](#complete-the-contract-in-the-spec) feeds this: every consumer you must update is part of the frame.
-- **Exclusive / disjoint** — no two patches that can run concurrently (no dependency edge between them) may write the same file or symbol. Overlapping frames are the merge collision the isolated-worktree execution model cannot reconcile. If two patches must touch one surface, either serialize them with a `dependencyGraph` edge or route the shared surface through one owning patch (cf. [Rule 3 — shared anchor](#rule-3--give-multi-patch-surfaces-one-shared-anchor)).
+The footprint is not a reason to weaken an assigned guarantee. An implementer may make necessary supporting edits for its assigned outcomes, but must add every touched file to the patch's `files` footprint and repair the plan if those edits create an unordered conflict or cross-patch contract change. Identify the missing guarantee, its owner, the needed files and the smallest repair. Keep capability dependencies in `functionalChanges.requiredBy`; use `orderingConstraints` only for serialization such as migration numbering or a shared file. Do not label a missing capability as an ordering reason.
 
 **Each patch must be non-vacuous.** A patch whose postcondition already holds in the grounded pre-state is a no-op — satisfied *vacuously*, the way "every request is followed by a grant" holds in a system that makes no requests. Mechanical test: remove the patch and check whether its postcondition still holds against the grounded code; if it does, the patch is empty. If the field already exists, the route is already registered, or the type already has the variant, drop the patch or rescope it to the work actually missing.
 
@@ -463,7 +484,7 @@ Order patches to ship non-functional changes early:
 
 **Practical guidance**: If a gameplan requires multiple schema changes, either:
 1. Bundle them into one patch (if they're related), or
-2. Chain the migration-containing patches sequentially in the dependency graph
+2. Chain the migration-containing patches with reasoned `orderingConstraints`
 
 Reserve parallelization for patches that don't touch database schemas/migrations.
 
@@ -539,7 +560,7 @@ Run the validator before finalising:
 python3 scripts/validate.py <path/to/gameplan.yaml>
 ```
 
-YAML validation also checks canonical formatting without rewriting the file. Formatting failures include the command to fix them. If you formatted with a custom width, use the same `--width` when validating; JSON plans are exempt from YAML formatting checks.
+YAML validation also checks canonical formatting without rewriting the file. Formatting failures include the command to fix them. If you formatted with a custom width, use the same `--width` when validating.
 
 It exits 0 on PASS and 1 with explicit error lines on FAIL. Fix every reported error; do not ship a gameplan that has validator failures or WARNs.
 
@@ -549,7 +570,7 @@ Install the Python dependencies with `python3 -m pip install -r scripts/requirem
 - `jsonschema` (pip) — enables JSON Schema shape validation. Without it, only semantic checks run.
 - `pant` 0.22+ — enables Pantagruel spec parsing. Install: `brew tap subsetpark/pantagruel https://github.com/subsetpark/pantagruel && brew install pantagruel`.
 
-The validator covers everything mechanisable: YAML formatting, schema shape, spec parsing, context-routing reciprocity, functional-change ID and ownership integrity, dependency-graph DAG correctness and classification consistency, testMap consistency, reachability-trace integrity (created-node vs creating-patch ordering, and the owning patch editing a node on the path), and repo-relative path safety. See `scripts/validate.py` for the exact set.
+The validator covers everything mechanisable: YAML formatting, schema shape, spec parsing, context-routing reciprocity, functional-change ID and ownership integrity, derived-graph DAG correctness (including mixed requirement/ordering cycles), producer verification and acceptance references, unordered file conflicts, testMap consistency, reachability-trace integrity (created-node vs creating-patch ordering, and the owning patch editing a node on the path), and repo-relative path safety. See `scripts/validate.py` for the exact set.
 
 The rest is human judgement. Walk these before setting the relevant `mergabilityChecklist` booleans to `true`:
 
@@ -567,7 +588,7 @@ The rest is human judgement. Walk these before setting the relevant `mergability
 
 6b. **Efficacy / reachability grounding** — every observable the gameplan promises (an acceptance criterion or functional change asserting a rendered element, reachable route, API response, or flag effect) has a `reachabilityTraces` entry, per [Rule 4](#rule-4--ground-efficacy-not-just-existence). The validator checks structure (created-node ordering, owning patch edits a node on the path); confirm by hand the parts it cannot: (a) each `path` edge is a real call/import/reference edge walked against HEAD, not a plausible-looking pairing; (b) for routable/framework surfaces, runtime reachability was confirmed — no redirect/rewrite/middleware shadows the path (static graphs do not see framework routing). A patch whose edit is off the path it claims is a wrong-lever or dead-surface defect; retarget it.
 
-7. **Patch boundaries** — for each patch, confirm its `files` frame is **complete** (delivers the functional change with no edits spilling into unlisted files) and **exclusive** (no patch that can run concurrently writes the same file/symbol), and that the patch is **non-vacuous** (its postcondition is not already true of the grounded current surface). See [Patch Boundaries (Frames and No-Ops)](#patch-boundaries-frames-and-no-ops).
+7. **Patch boundaries and handoffs** — perform the Dependency handoff review above; confirm each producer supplies its consumers' actual preconditions. Confirm its planned `files` footprint is complete and no concurrently runnable patch writes the same file/symbol, and that the patch is **non-vacuous** (its postcondition is not already true of the grounded current surface). See [Patch Boundaries (Frames and No-Ops)](#patch-boundaries-frames-and-no-ops).
 
 8. **No tombstone enforcement** — for removal work, confirm the gameplan follows the full [Removal Work: No Tombstone Tests](#removal-work-no-tombstone-tests) rule: do not add absence assertions that an object, schema, export, source file, or registry lacks a retired field, string, symbol, or entry; a retired-feature repository scanner or lint rule; a spec that models a deleted concept only to negate it; or a follow-up patch whose sole job is preventing hypothetical reintroduction. Verify surviving behavior and live boundaries instead.
 
@@ -588,7 +609,7 @@ For each open question, in order:
 2. **Propose 2-4 candidate resolutions** with brief tradeoffs. State your own recommendation and why; do not hide behind false neutrality. If you genuinely have no preference, say so.
 3. **Wait for the programmer's decision** before moving on. If they ask for deeper analysis, provide it. If they pick an option you didn't list, accept it. If their resolution conflicts with the spec file or workstream constraints, flag the conflict explicitly and offer to regenerate the gameplan with updated assumptions before proceeding.
 4. **Record the resolution** by:
-   - Editing the gameplan to reflect the chosen path — update affected patches (`changes`, `spec`, `files`, signatures), `acceptanceCriteria`, `finalStateSpec`, `dependencyGraph`, and any other fields the decision touches.
+   - Editing the gameplan to reflect the chosen path — update affected patches (`changes`, `spec`, `files`, signatures), `acceptanceCriteria`, `finalStateSpec`, guarantee consumers, `orderingConstraints`, and any other fields the decision touches.
    - Appending an entry to `explicitOpinions` — an object with non-empty `opinion` (the chosen resolution) and `rationale` (why it was chosen) keys — so the reasoning is preserved in the gameplan itself.
    - Removing the question from `openQuestions`.
 5. **Move to the next question.** Do not batch — questions are presented sequentially because later questions often depend on earlier answers, and batching prevents the programmer from reasoning about each decision in isolation.
@@ -658,7 +679,7 @@ If your project uses a different specification language (TLA+, Alloy, Z, etc.), 
 
 ## Execution
 
-YAML and legacy JSON gameplans are consumed programmatically via the `patches` and `dependencyGraph` arrays. Orchestrators like onton can parse the dependency graph directly to identify parallelizable patches and execute them concurrently in isolated git worktrees.
+YAML gameplans use the versioned contract. Onton derives the dependency graph from `functionalChanges[].ownedBy` / `requiredBy` and `orderingConstraints`, then executes patches in isolated worktrees. Classification is defined once on the patch. A producer's completion is not proof of its guarantees: dependent agents inspect the current implementation and relevant evidence before relying on them.
 
 ## Guidelines
 

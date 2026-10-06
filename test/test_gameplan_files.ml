@@ -4,25 +4,40 @@
 open Onton_core
 
 let () =
-  if Array.length Sys.argv <> 3 then failwith "Expected YAML and JSON fixtures";
-  match
-    ( Gameplan_parser.parse_file Sys.argv.(1),
-      Gameplan_parser.parse_file Sys.argv.(2) )
-  with
-  | Ok yaml, Ok json ->
-      if
-        not
-          (Types.Gameplan.equal yaml.Gameplan_parser.gameplan
-             json.Gameplan_parser.gameplan)
-      then failwith "YAML and JSON fixtures produce different plans";
-      if
-        not
-          (Base.Map.equal
-             (Base.List.equal Types.Patch_id.equal)
-             yaml.Gameplan_parser.dependency_graph
-             json.Gameplan_parser.dependency_graph)
-      then failwith "YAML and JSON fixtures produce different dependency graphs"
-  | Error msg, _ | Ok _, Error msg -> failwith msg
+  if Array.length Sys.argv <> 2 then failwith "Expected YAML fixture";
+  let document =
+    In_channel.with_open_bin Sys.argv.(1) In_channel.input_all
+    |> Gameplan_document.of_string
+  in
+  let json =
+    match document with Ok json -> json | Error msg -> failwith msg
+  in
+  let path = Filename.temp_file "onton-gameplan-compatibility-" ".json" in
+  Fun.protect
+    ~finally:(fun () -> Sys.remove path)
+    (fun () ->
+      Out_channel.with_open_bin path (fun channel ->
+          Yojson.Safe.to_channel channel json);
+      match
+        ( Gameplan_parser.parse_file Sys.argv.(1),
+          Gameplan_parser.parse_file path )
+      with
+      | Ok yaml, Ok json ->
+          if
+            not
+              (Types.Gameplan.equal yaml.Gameplan_parser.gameplan
+                 json.Gameplan_parser.gameplan)
+          then failwith "YAML and JSON fixtures produce different plans";
+          if
+            not
+              (Base.Map.equal
+                 (Base.List.equal Types.Patch_id.equal)
+                 yaml.Gameplan_parser.dependency_graph
+                 json.Gameplan_parser.dependency_graph)
+          then
+            failwith
+              "YAML and JSON fixtures produce different dependency graphs"
+      | Error msg, _ | Ok _, Error msg -> failwith msg)
 
 let () =
   let rejected =

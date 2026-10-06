@@ -4,6 +4,7 @@
 open Base
 
 type disposition = [ `Ok | `Failed | `Retry_push | `No_commits ]
+type prompt = { context : worktree_path:string -> string; turn : string }
 
 type run_result = {
   disposition : disposition;
@@ -153,6 +154,8 @@ module type ENV = sig
 end
 
 module Make (W : Worktree.S) (Env : ENV) = struct
+  let create_prompt ~context ~turn = { context; turn }
+
   type nonrec run_result = run_result
 
   let session_mode = session_mode
@@ -237,6 +240,15 @@ module Make (W : Worktree.S) (Env : ENV) = struct
             (try Unix.unlink wontdo_path
              with Unix.Unix_error (Unix.ENOENT, _, _) -> ());
             let prompt =
+              let context =
+                match resume_session with
+                | None -> prompt.context ~worktree_path
+                | Some _ -> ""
+              in
+              let prompt =
+                Onton_core.Session_prompt.render ~resume_session
+                  (Onton_core.Session_prompt.create ~context ~turn:prompt.turn)
+              in
               if
                 Patch_decision.session_prompt_requires_patch_instructions
                   ~delivery_mode ~kind

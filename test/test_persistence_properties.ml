@@ -42,6 +42,9 @@ let gameplan_for_agent (agent : Onton_core.Patch_agent.t) =
             required_context = [];
           };
         ];
+      operational_considerations = "";
+      required_changes = "";
+      ordering_constraints = [];
       current_state_analysis = "";
       explicit_opinions = "";
       acceptance_criteria = [];
@@ -110,6 +113,57 @@ let gen_snapshot =
 (* ========== Round-trip property tests ========== *)
 
 let () =
+  let metadata_snapshot_roundtrip =
+    QCheck2.Test.make ~name:"snapshot preserves non-default gameplan metadata"
+      ~count:100 gen_patch_agent_fully_populated (fun agent ->
+        try
+          let gameplan = gameplan_for_agent agent in
+          let consumer_id =
+            Patch_id.of_string (Patch_id.to_string agent.patch_id ^ "-consumer")
+          in
+          let patches =
+            match gameplan.patches with
+            | [ producer ] ->
+                [
+                  producer;
+                  {
+                    producer with
+                    id = consumer_id;
+                    branch = Branch.of_string "metadata-consumer";
+                    dependencies = [ producer.id ];
+                  };
+                ]
+            | _ -> assert false
+          in
+          let gameplan =
+            {
+              gameplan with
+              patches;
+              operational_considerations = "Preserve rollout compatibility";
+              required_changes = "lib/public.mli: val capability : unit -> bool";
+              ordering_constraints =
+                [
+                  {
+                    Ordering_constraint.before = agent.patch_id;
+                    after = consumer_id;
+                    reason = "Serialize shared interface edits";
+                  };
+                ];
+            }
+          in
+          let runtime =
+            Onton.Runtime.create ~gameplan
+              ~main_branch:(Branch.of_string "main") ()
+          in
+          let snap = Onton.Runtime.read runtime Fn.id in
+          match
+            Onton.Persistence.snapshot_of_yojson
+              (Onton.Persistence.snapshot_to_yojson snap)
+          with
+          | Ok restored -> snapshots_equal snap restored
+          | Error _ -> false
+        with _ -> false)
+  in
   let snapshot_roundtrip =
     QCheck2.Test.make ~name:"snapshot round-trip (fresh agents)" ~count:200
       gen_snapshot (fun snap ->
@@ -243,6 +297,9 @@ let () =
                 solution_summary = "t";
                 final_state_spec = "";
                 patches = [];
+                operational_considerations = "";
+                required_changes = "";
+                ordering_constraints = [];
                 current_state_analysis = "";
                 explicit_opinions = "";
                 acceptance_criteria = [];
@@ -569,6 +626,9 @@ let () =
                 solution_summary = "";
                 final_state_spec = "";
                 patches = [];
+                operational_considerations = "";
+                required_changes = "";
+                ordering_constraints = [];
                 current_state_analysis = "";
                 explicit_opinions = "";
                 acceptance_criteria = [];
@@ -627,6 +687,9 @@ let () =
                 solution_summary = "";
                 final_state_spec = "";
                 patches = [];
+                operational_considerations = "";
+                required_changes = "";
+                ordering_constraints = [];
                 current_state_analysis = "";
                 explicit_opinions = "";
                 acceptance_criteria = [];
@@ -755,6 +818,7 @@ let () =
         runnable_snapshot;
         intervention_snapshot;
         snapshot_roundtrip;
+        metadata_snapshot_roundtrip;
         legacy_feature_fields_default_false;
         applied_control_ids_decode;
         applied_control_ids_restore_window;

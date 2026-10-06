@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Validate a YAML or JSON gameplan.
+"""Validate a gameplan.
 
 Runs every check enumerated in SKILL.md's Verification section that can be
 mechanised: canonical YAML formatting, JSON Schema shape, Pantagruel spec parsing, context-routing
@@ -105,6 +105,45 @@ def validate_functional_changes(inst: dict, patches_by_id: dict[str, dict], erro
         owner = _pid(fc["ownedBy"])
         if owner not in patches_by_id:
             errors.append(f"functionalChange {fc['id']!r} ownedBy missing patch {owner}")
+    tests = {test["testName"]: test for test in inst.get("testMap", [])}
+    for fc in fcs:
+        owner = _pid(fc["ownedBy"])
+        consumers = [_pid(p) for p in fc.get("requiredBy", [])]
+        if len(consumers) != len(set(consumers)):
+            errors.append(f"{fc['id']}: duplicate requiredBy patch IDs")
+        proofs = fc.get("verifiedBy", [])
+        if consumers and not proofs:
+            errors.append(f"{fc['id']}: consumed guarantee requires verifiedBy evidence")
+        for proof in proofs:
+            if isinstance(proof, dict):
+                command = proof.get("command")
+                expectation = proof.get("expectation")
+                if (not isinstance(command, str) or not isinstance(expectation, str)
+                        or not command.strip() or not expectation.strip()):
+                    errors.append(f"{fc['id']}: check requires non-empty string command and expectation")
+                continue
+            test = tests.get(proof)
+            if test is None:
+                errors.append(f"{fc['id']}: verifiedBy references unknown test {proof!r}")
+            elif _pid(test["implPatch"]) != owner:
+                errors.append(f"{fc['id']}: verification must be implemented by owner patch {owner}")
+            elif owner in patches_by_id and test['file'] not in {
+                f['path'] for f in patches_by_id[owner].get('files', [])
+            }:
+                errors.append(f"{fc['id']}: verification file must be in owner patch {owner}'s files")
+    criteria = []
+    for index, criterion in enumerate(inst.get("acceptanceCriteria", [])):
+        if isinstance(criterion, dict):
+            criteria.append(criterion)
+        elif inst.get("formatVersion") == 2:
+            errors.append(f"acceptanceCriteria[{index}]: formatVersion 2 requires an object")
+    criterion_ids = [criterion["id"] for criterion in criteria]
+    if len(criterion_ids) != len(set(criterion_ids)):
+        errors.append("duplicate acceptance criterion IDs")
+    for criterion in criteria:
+        for reference in criterion.get("tracesTo", []):
+            if reference not in ids:
+                errors.append(f"{criterion['id']}: tracesTo unknown functional change {reference}")
     checklist = inst.get("mergabilityChecklist", {})
     if checklist.get("functionalChangesOwnedByExactlyOnePatch") is True:
         # Every FC having a single ownedBy is structurally enforced by the schema
@@ -119,34 +158,52 @@ def validate_functional_changes(inst: dict, patches_by_id: dict[str, dict], erro
             )
 
 
+def derived_dependencies(inst: dict) -> dict[str, list[str]]:
+    """Planning-time projection; Onton independently derives the execution graph."""
+    if inst.get("formatVersion") != 2:
+        return {_pid(d["patch"]): [_pid(x) for x in d.get("dependsOn", [])]
+                for d in inst.get("dependencyGraph", []) or []}
+    deps: dict[str, set[str]] = {_pid(p["number"]): set() for p in inst.get("patches", [])}
+    for fc in inst.get("functionalChanges", []):
+        for consumer in fc.get("requiredBy", []):
+            deps.setdefault(_pid(consumer), set()).add(_pid(fc["ownedBy"]))
+    for constraint in inst.get("orderingConstraints", []):
+        deps.setdefault(_pid(constraint["after"]), set()).add(_pid(constraint["before"]))
+    return {p: sorted(values) for p, values in deps.items()}
+
+
 def validate_dependency_graph(inst: dict, patches_by_id: dict[str, dict], errors: list[str]) -> None:
-    dg = inst.get("dependencyGraph", []) or []
-    dg_ids = [_pid(d["patch"]) for d in dg]
-    if len(dg_ids) != len(set(dg_ids)):
-        errors.append("duplicate dependencyGraph entries")
-    missing = set(patches_by_id) - set(dg_ids)
-    extra = set(dg_ids) - set(patches_by_id)
-    if missing:
-        errors.append(f"dependencyGraph missing patches: {sorted(missing, key=lambda s: (len(s), s))}")
-    if extra:
-        errors.append(f"dependencyGraph references unknown patches: {sorted(extra)}")
-
-    # classification consistency: dependencyGraph[i].classification == patches[i].classification
-    for d in dg:
-        pid = _pid(d["patch"])
-        if pid in patches_by_id:
-            patch_class = patches_by_id[pid].get("classification")
-            if patch_class != d.get("classification"):
-                errors.append(
-                    f"dependencyGraph patch {pid} classification {d.get('classification')!r} "
-                    f"does not match patch.classification {patch_class!r}"
-                )
-
-    deps = {_pid(d["patch"]): [_pid(x) for x in d.get("dependsOn", [])] for d in dg}
+    if inst.get("formatVersion") == 2:
+        if "dependencyGraph" in inst:
+            errors.append("formatVersion 2 derives dependencies; remove dependencyGraph")
+    else:
+        graph = inst.get("dependencyGraph", []) or []
+        ids = [_pid(entry["patch"]) for entry in graph]
+        if len(ids) != len(set(ids)):
+            errors.append("duplicate dependencyGraph entries")
+        missing = set(patches_by_id) - set(ids)
+        extra = set(ids) - set(patches_by_id)
+        if missing:
+            errors.append(f"dependencyGraph missing patches: {sorted(missing, key=lambda s: (len(s), s))}")
+        if extra:
+            errors.append(f"dependencyGraph references unknown patches: {sorted(extra)}")
+        for entry in graph:
+            pid = _pid(entry["patch"])
+            if pid in patches_by_id and entry.get("classification") != patches_by_id[pid].get("classification"):
+                errors.append(f"dependencyGraph patch {pid} classification {entry.get('classification')!r} "
+                              f"does not match patch.classification {patches_by_id[pid].get('classification')!r}")
+    deps = derived_dependencies(inst)
     for p, ds in deps.items():
+        if p not in patches_by_id:
+            errors.append(f"derived dependency references unknown consumer patch {p}")
         for dep in ds:
             if dep not in patches_by_id:
                 errors.append(f"patch {p} depends on unknown patch {dep}")
+            if dep == p:
+                errors.append(f"patch {p} depends on itself")
+    for constraint in inst.get("orderingConstraints", []):
+        if not constraint.get("reason", "").strip():
+            errors.append("ordering constraint requires a substantive reason")
 
     # DFS cycle detection: cover every node referenced by an edge (not just
     # dg keys) and report every distinct cycle.
@@ -181,8 +238,7 @@ def validate_dependency_graph(inst: dict, patches_by_id: dict[str, dict], errors
 
 def _transitive_deps(inst: dict):
     """Return reach(p) -> set of patch ids p transitively depends on."""
-    dg = inst.get("dependencyGraph", []) or []
-    direct = {_pid(d["patch"]): [_pid(x) for x in d.get("dependsOn", [])] for d in dg}
+    direct = derived_dependencies(inst)
     memo: dict[str, set[str]] = {}
 
     def reach(p: str) -> set[str]:
@@ -268,6 +324,28 @@ def validate_reachability_traces(inst: dict, patches_by_id: dict[str, dict], err
                     f"(files {sorted(frame)}) — its edit is not on the traced path "
                     f"(wrong-lever / dead-surface defect)"
                 )
+
+
+def validate_write_frames(inst: dict, patches_by_id: dict[str, dict], errors: list[str]) -> None:
+    if inst.get("formatVersion") != 2:
+        return
+    reach = _transitive_deps(inst)
+    writers: dict[str, list[str]] = {}
+    for pid, patch in patches_by_id.items():
+        for path in {entry['path'] for entry in patch.get('files', [])}:
+            writers.setdefault(path, []).append(pid)
+    overlaps: dict[tuple[str, str], list[str]] = {}
+    for path, ids in writers.items():
+        for i, a in enumerate(ids):
+            for b in ids[i + 1:]:
+                overlaps.setdefault((a, b), []).append(path)
+    positions = {pid: i for i, pid in enumerate(patches_by_id)}
+    for a, b in sorted(overlaps, key=lambda pair: (positions[pair[0]], positions[pair[1]])):
+        if a not in reach(b) and b not in reach(a):
+            errors.append(f"unordered write conflict between patches {a} and {b}: {sorted(overlaps[a, b])}")
+    for change in inst.get('requiredChanges', []):
+        if change['file'] not in writers:
+            errors.append(f"required change {change['file']!r} is outside every patch's files")
 
 
 def validate_test_map(inst: dict, patches_by_id: dict[str, dict], errors: list[str]) -> None:
@@ -382,7 +460,7 @@ def validate_formatting(path: Path, width: int, errors: list[str]) -> None:
 
 def main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("path", type=Path, help="YAML or JSON gameplan")
+    parser.add_argument("path", type=Path, help="gameplan file path")
     parser.add_argument("--width", type=int, default=88,
                         help="preferred YAML line width (default: 88)")
     args = parser.parse_args(argv[1:])
@@ -417,6 +495,7 @@ def main(argv: list[str]) -> int:
         (validate_functional_changes, (inst, patches_by_id, errors)),
         (validate_dependency_graph, (inst, patches_by_id, errors)),
         (validate_test_map, (inst, patches_by_id, errors)),
+        (validate_write_frames, (inst, patches_by_id, errors)),
         (validate_reachability_traces, (inst, patches_by_id, errors)),
         (validate_path_safety, (inst, errors)),
         (validate_specs, (inst, errors)),

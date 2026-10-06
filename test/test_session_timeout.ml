@@ -7,6 +7,7 @@ open Onton_core.Types
 let head = ref "base"
 let pushes = ref 0
 let base_head = ref "base"
+let recovered_worktree = ref ""
 
 module Fake_worktree : Worktree.S = struct
   let integrate ~root_path:_ ~root_branch:_ ~descendant_branch:_ ~head_sha:_ =
@@ -19,9 +20,9 @@ module Fake_worktree : Worktree.S = struct
   let remove ~discard:_ _ = assert false
   let detect_branch ~path:_ = assert false
   let list_with_branches () = assert false
-  let find_for_branch _ = None
-  let prune_stale_for_branch _ = assert false
-  let ensure_ready ~path:_ ~branch:_ = Ok true
+  let find_for_branch _ = Some !recovered_worktree
+  let prune_stale_for_branch _ = ()
+  let ensure_ready ~path ~branch:_ = Ok (String.equal path !recovered_worktree)
   let run_hook ~clock:_ ~script:_ ~cwd:_ ~env:_ () = assert false
   let fetch_origin ~fetch_lock:_ ~path:_ = assert false
 
@@ -100,6 +101,9 @@ let run_case env ~capture_session ~respond =
             solution_summary = "";
             final_state_spec = "";
             patches = [ patch ];
+            operational_considerations = "";
+            required_changes = "";
+            ordering_constraints = [];
             current_state_analysis = "";
             explicit_opinions = "";
             acceptance_criteria = [];
@@ -111,7 +115,12 @@ let run_case env ~capture_session ~respond =
           }
       in
       let runtime = Runtime.create ~gameplan ~main_branch:main () in
+      recovered_worktree := Stdlib.Filename.concat root "recovered";
       Runtime.update_orchestrator runtime (fun orch ->
+          let orch =
+            Orchestrator.set_worktree_path orch patch_id
+              (Stdlib.Filename.concat root "obsolete")
+          in
           Orchestrator.fire orch (Orchestrator.Start (patch_id, main)));
       if respond then
         Runtime.update_orchestrator runtime (fun orch ->
@@ -151,6 +160,7 @@ let run_case env ~capture_session ~respond =
       end in
       let module SD = Session_driver.Make (Fake_worktree) (Env) in
       let attempt = ref 0 in
+      let context_calls = ref 0 in
       let resumes = ref [] in
       let backend =
         Llm_backend.
@@ -160,14 +170,25 @@ let run_case env ~capture_session ~respond =
               (fun ~project_name:_
                 ~cwd:_
                 ~patch_id:_
-                ~prompt:_
+                ~prompt
                 ~resume_session
                 ~session_uuid:_
                 ~complexity:_
                 ~on_event
               ->
                 Int.incr attempt;
+                assert (!context_calls = if capture_session then 1 else !attempt);
                 resumes := resume_session :: !resumes;
+                assert (
+                  String.is_prefix prompt
+                    ~prefix:
+                      (if Option.is_none resume_session then
+                         "FULL PATCH CONTEXT\nContinue the patch"
+                       else "Continue the patch"));
+                assert (
+                  Bool.equal
+                    (String.is_substring prompt ~substring:"FULL PATCH CONTEXT")
+                    (Option.is_none resume_session));
                 if capture_session && !attempt = 1 then
                   on_event
                     (Stream_event.Session_init
@@ -201,7 +222,14 @@ let run_case env ~capture_session ~respond =
         in
         let result =
           SD.run ~kind:None ~delivery_mode ~patch_id
-            ~prompt:"Continue the patch" ~agent
+            ~prompt:
+              (SD.create_prompt
+                 ~context:(fun ~worktree_path ->
+                   assert (String.equal worktree_path !recovered_worktree);
+                   Int.incr context_calls;
+                   "FULL PATCH CONTEXT\n")
+                 ~turn:"Continue the patch")
+            ~agent
             ~on_pr_detected:(fun _ -> ())
             ~backend ~complexity:None
         in

@@ -19,7 +19,10 @@ val substitute_variables : string -> (string * string) list -> string
       ^ render_turn_layer_<kind>
     ]}
 
-    so prefix-cache hits accumulate at the layer boundaries:
+    The runtime keeps the context layers separate from the turn layer and
+    delivers context only on a fresh session. Resumed sessions receive the turn
+    layer alone. The composed renderers below are also available for previews.
+    Layer stability:
 
     - {!render_gameplan_layer} is byte-identical across every layered prompt in
       a single gameplan run.
@@ -36,12 +39,13 @@ val substitute_variables : string -> (string * string) list -> string
 val render_gameplan_layer : project_name:string -> Gameplan.t -> string
 (** Gameplan-stable prefix. Contains the project heading, problem statement,
     solution summary, optional final state spec / explicit opinions / current
-    state analysis, the patches list, and a pointer to the read-only gameplan
-    copy at [Project_store.gameplan_artifact_path] (published once at startup by
-    {!Project_store.publish_gameplan_artifact}) for agents that need cross-patch
-    context on demand. The pointer path is a pure function of the project name,
-    so the layer stays byte-identical across the run. Ends with a trailing blank
-    line. *)
+    state analysis, operational constraints, required surfaces/signatures,
+    acceptance criteria, the patches list, and a pointer to the read-only
+    gameplan copy at [Project_store.gameplan_artifact_path] (published once at
+    startup by {!Project_store.publish_gameplan_artifact}) for agents that need
+    cross-patch context on demand. The pointer path is a pure function of the
+    project name, so the layer stays byte-identical across the run. Ends with a
+    trailing blank line. *)
 
 val render_patch_layer_of_gameplan :
   project_name:string ->
@@ -52,10 +56,11 @@ val render_patch_layer_of_gameplan :
   string
 (** Patch-stable middle. Contains the patch heading, dependencies, a pointer to
     each ancestor patch's implementation notes (when the patch has ancestors),
-    base-branch note, description, the functional changes the patch owns (if
-    any), the required context resources, changes, files, test stubs,
-    specification (with Pantagruel guide), acceptance criteria, git identifiers,
-    and PR instructions. Ends with a trailing blank line.
+    base-branch note, description, owned and required guarantees with their
+    verification obligations (if any), the required context resources, changes,
+    files, test stubs, specification (with Pantagruel guide), acceptance
+    criteria, git identifiers, and PR instructions. Ends with a trailing blank
+    line.
 
     The functional changes, context resources, and ancestor list are all derived
     from the gameplan here — this is deliberately the only exported way to
@@ -69,6 +74,18 @@ val render_patch_layer_of_gameplan :
     on every unmerged dep having delivered its notes (deps-notes-ready, enforced
     by [Patch_controller.plan_action_for_patch]), so the files exist by the time
     the layer is first read. *)
+
+val render_session_context :
+  project_name:string ->
+  ?pr_number:Pr_number.t ->
+  ?patch:Patch.t ->
+  ?gameplan:Gameplan.t ->
+  ?base_branch:string ->
+  ?agents_md:string ->
+  unit ->
+  string
+(** Complete initial context, including repository instructions. The session
+    driver delivers it only when starting a fresh backend session. *)
 
 val render_turn_layer_start :
   project_name:string -> ?has_existing_changes:bool -> unit -> string
@@ -122,6 +139,24 @@ val render_turn_layer_merge_conflict :
   ?git_status:string ->
   ?git_diff:string ->
   ?conflict_info:Worktree.conflict_info ->
+  unit ->
+  string
+
+val render_turn_layer_findings :
+  project_name:string ->
+  ?pr_number:Pr_number.t ->
+  ?current_head_sha:string ->
+  artifact_dir:string ->
+  Review_service.finding list ->
+  string
+
+val render_turn_layer_root_merge_conflict :
+  project_name:string ->
+  ?pr_number:Pr_number.t ->
+  base_branch:string ->
+  merge_head:string ->
+  git_status:string ->
+  git_diff:string ->
   unit ->
   string
 

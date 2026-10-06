@@ -68,6 +68,9 @@ module Fake_env : Worktree_setup.ENV = struct
           solution_summary = "";
           final_state_spec = "";
           patches = [];
+          operational_considerations = "";
+          required_changes = "";
+          ordering_constraints = [];
           current_state_analysis = "";
           explicit_opinions = "";
           acceptance_criteria = [];
@@ -142,7 +145,7 @@ let _check_narrowed_run :
     kind:Operation_kind.t option ->
     delivery_mode:Patch_decision.delivery_mode ->
     patch_id:Patch_id.t ->
-    prompt:string ->
+    prompt:Session_driver.prompt ->
     agent:Patch_agent.t ->
     on_pr_detected:(Pr_number.t -> unit) ->
     backend:Llm_backend.t ->
@@ -163,6 +166,9 @@ let () =
       solution_summary = "";
       final_state_spec = "";
       patches = [];
+      operational_considerations = "";
+      required_changes = "";
+      ordering_constraints = [];
       current_state_analysis = "";
       explicit_opinions = "";
       acceptance_criteria = [];
@@ -230,7 +236,7 @@ let () =
       kind:Operation_kind.t option ->
       delivery_mode:Patch_decision.delivery_mode ->
       patch_id:Patch_id.t ->
-      prompt:string ->
+      prompt:Session_driver.prompt ->
       agent:Patch_agent.t ->
       on_pr_detected:(Pr_number.t -> unit) ->
       backend:Llm_backend.t ->

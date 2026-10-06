@@ -205,11 +205,10 @@ let gameplan_reference_section ~(project_name : string) ?publication () : string
      description, spec, acceptance criteria, and the functional-change \
      ownership map — is saved at:\n\n\
      `%s`\n\n\
-     Everything your patch needs is already in this prompt, so most sessions \
-     never read it. Consult it only when you genuinely need cross-patch \
-     context — for example, to check a sibling patch's scope before deciding \
-     whether a change belongs to you. Do not edit the file, and do not take on \
-     work owned by sibling patches.\n"
+     Use this reference to check cross-patch contracts and resolve missing or \
+     ambiguous context. Before relying on a dependency, inspect the relevant \
+     guarantee, implementation and verification. Do not edit this frozen plan \
+     or silently take over work owned by another patch.\n"
     (match publication with
     | None -> Project_store.gameplan_artifact_path project_name
     | Some publication -> Gameplan_publication.path publication)
@@ -237,6 +236,15 @@ let render_gameplan_layer ~(project_name : string) (gameplan : Gameplan.t) :
       ( "current_state_section",
         optional_section ~header:"Current State Analysis"
           gameplan.Gameplan.current_state_analysis );
+      ( "operational_considerations_section",
+        optional_section ~header:"Operational Constraints"
+          gameplan.operational_considerations );
+      ( "required_changes_section",
+        optional_section ~header:"Required Surfaces and Signatures"
+          gameplan.required_changes );
+      ( "gameplan_acceptance_section",
+        optional_list_section ~header:"Gameplan Acceptance Criteria"
+          gameplan.acceptance_criteria );
       ("patches_list", patches_list);
       ( "gameplan_reference_section",
         gameplan_reference_section ~project_name
@@ -252,29 +260,68 @@ let render_gameplan_layer ~(project_name : string) (gameplan : Gameplan.t) :
 
 ## Solution Summary
 {{solution_summary}}
-{{final_state_spec_section}}{{explicit_opinions_section}}{{current_state_section}}
+{{final_state_spec_section}}{{explicit_opinions_section}}{{current_state_section}}{{operational_considerations_section}}{{required_changes_section}}{{gameplan_acceptance_section}}
 ## Patches in Gameplan
 {{patches_list}}
 {{gameplan_reference_section}}
 |}
         vars)
 
+let format_verification = function
+  | Verification.Test name -> "Test: " ^ name
+  | Verification.Check { command; expectation } ->
+      Printf.sprintf "Check: `%s` — %s" command expectation
+
+let format_guarantee (fc : Functional_change.t) =
+  let consumers =
+    match fc.required_by with
+    | [] -> "Final outcome (no consuming patch)"
+    | ids ->
+        "Required by patches "
+        ^ String.concat ~sep:", " (List.map ids ~f:Patch_id.to_string)
+  in
+  let evidence =
+    match fc.verified_by with
+    | [] -> "Verification: map the specification to appropriate evidence."
+    | items ->
+        String.concat ~sep:"\n  - " (List.map items ~f:format_verification)
+  in
+  Printf.sprintf "- **%s** (owner: Patch %s) — %s\n  - %s\n  - %s" fc.id
+    (Patch_id.to_string fc.owned_by)
+    fc.description consumers evidence
+
 let format_functional_changes_section (fcs : Functional_change.t list) : string
     =
   if List.is_empty fcs then ""
   else
-    let body =
-      List.map fcs ~f:(fun (fc : Functional_change.t) ->
-          Printf.sprintf "- **%s** — %s" fc.id fc.description)
-      |> String.concat ~sep:"\n"
-    in
-    "\n\
-     ## Functional Changes You Own\n\n\
-     These are the user-visible / behavioural changes assigned to this patch. \
-     Each is your responsibility — do not defer them to another patch, and do \
-     not stop until every one is delivered. The gameplan's enumeration is \
-     exhaustive and each change is owned by exactly one patch, so if a change \
-     appears here, no sibling patch will pick it up.\n\n" ^ body ^ "\n"
+    optional_section ~header:"Functional Changes You Own"
+      ("Deliver each guarantee over its stated input domain, lifecycle and \
+        runtime. "
+     ^ "Downstream patches rely on these capabilities; include their boundary \
+        proofs "
+     ^ "in this patch rather than deferring all verification to final \
+        integration.\n\n"
+      ^ String.concat ~sep:"\n" (List.map fcs ~f:format_guarantee))
+
+let format_required_guarantees fcs =
+  if List.is_empty fcs then ""
+  else
+    optional_section ~header:"Dependency Guarantees You Consume"
+      ("Check these guarantees against the current dependency code and \
+        relevant "
+     ^ "implementation notes before building on them. A completed patch or \
+        passing "
+     ^ "build alone does not prove the prerequisite. Do not replace missing \
+        identity " ^ "facts, authority or durable state with placeholders.\n\n"
+      ^ String.concat ~sep:"\n" (List.map fcs ~f:format_guarantee))
+
+let format_ordering_constraints constraints =
+  optional_list_section ~header:"Serialization Constraints"
+    (List.map constraints ~f:(fun (c : Ordering_constraint.t) ->
+         Printf.sprintf "Patch %s precedes Patch %s: %s"
+           (Patch_id.to_string c.before)
+           (Patch_id.to_string c.after)
+           c.reason))
 
 let format_trace_node (n : Trace_node.t) : string =
   let sym =
@@ -369,17 +416,18 @@ let dependency_notes_section ~(project_name : string) (ancestors : Patch.t list)
        Each patch's agent records implementation notes — key decisions, \
        deviations from plan, gotchas — at:\n\n\
        %s\n\n\
-       Like the gameplan reference, these are read-only, on-demand context: \
-       consult a file only when you need to understand a decision your patch \
-       builds on. Each ancestor's notes are recorded before a dependent patch \
-       starts; in the rare case a file is missing, that ancestor merged before \
-       its notes step ran. Do not edit these files.\n"
+       Read the relevant notes before consuming an ancestor's guarantees, and \
+       confirm them against current code and verification. These files are \
+       read-only context, not proof of correctness. Each ancestor's notes are \
+       recorded before a dependent patch starts; in the rare case a file is \
+       missing, that ancestor merged before its notes step ran. Do not edit \
+       these files.\n"
       entries
 
 let render_patch_layer ~(project_name : string) (patch : Patch.t) ?pr_number
     ?(functional_changes = []) ?(context_resources = [])
-    ?(reachability_traces = []) ?(ancestors = []) ~(base_branch : string) () :
-    string =
+    ?(reachability_traces = []) ?(ancestors = []) ?(required_guarantees = [])
+    ?(ordering_constraints = []) ~(base_branch : string) () : string =
   let patch_id = Patch_id.to_string patch.Patch.id in
   let deps =
     match patch.Patch.dependencies with
@@ -454,6 +502,10 @@ The supervisor opens the draft PR after your first commit lands on the remote, w
       ("files", format_list patch.Patch.files);
       ( "functional_changes_section",
         format_functional_changes_section functional_changes );
+      ( "required_guarantees_section",
+        format_required_guarantees required_guarantees );
+      ( "ordering_constraints_section",
+        format_ordering_constraints ordering_constraints );
       ( "reachability_traces_section",
         format_reachability_traces_section reachability_traces );
       ("context_resources_section", format_context_resources context_resources);
@@ -523,11 +575,23 @@ The supervisor opens the draft PR after your first commit lands on the remote, w
 
 ## Dependencies
 {{dependencies}}
-{{dependency_notes_section}}
+{{required_guarantees_section}}{{ordering_constraints_section}}{{dependency_notes_section}}
 ## Your Task
 
 {{base_branch_note}}{{description}}
 {{functional_changes_section}}{{reachability_traces_section}}{{context_resources_section}}{{changes_section}}{{files_section}}{{precedents_section}}{{test_stubs_introduced_section}}{{test_stubs_implemented_section}}{{spec_section}}{{acceptance_criteria_section}}
+## Scope and Prerequisite Repair
+
+The listed files are the planned footprint. Necessary supporting edits for your assigned
+outcomes are allowed when they do not change another patch's contract or create an
+unordered write conflict. Check the full plan before expanding that footprint.
+If a required guarantee is missing or contradicts the implementation, identify its ID,
+owner, expected versus observed behavior, and the smallest owning-boundary repair.
+Do not weaken the requirement or report the patch complete. Use the pre-commit opt-out
+when available for a blocking dependency or plan repair; otherwise report the blocker
+explicitly for supervisor intervention. Include verification and deviations in your
+implementation notes.
+
 ## Git Instructions
 - Branch: {{branch}}
 - Base branch: {{base_branch}}
@@ -574,14 +638,20 @@ let render_patch_layer_of_gameplan ~project_name ?pr_number (patch : Patch.t)
     ~context_resources:(required_context_resources gameplan patch)
     ~reachability_traces:(owned_reachability_traces gameplan patch)
     ~ancestors:(ancestor_patches gameplan patch)
+    ~required_guarantees:
+      (List.filter gameplan.functional_changes ~f:(fun fc ->
+           List.mem fc.required_by patch.id ~equal:Patch_id.equal))
+    ~ordering_constraints:
+      (List.filter gameplan.ordering_constraints ~f:(fun c ->
+           Patch_id.equal c.before patch.id || Patch_id.equal c.after patch.id))
     ~base_branch ()
 
 (* Compose the stable context that precedes a turn prompt. Repository
    conventions are independent of whether the patch came from a gameplan, so
    retain [AGENTS.md] for ad-hoc PRs even when there is no gameplan+patch prefix
    to render. *)
-let layered_prefix ~project_name ?pr_number ?patch ?gameplan ?base_branch
-    ?agents_md () =
+let render_session_context ~project_name ?pr_number ?patch ?gameplan
+    ?base_branch ?agents_md () =
   let repo_context = agents_md_section agents_md in
   match (patch, gameplan, base_branch) with
   | Some p, Some g, Some b ->
@@ -662,6 +732,9 @@ let%test "render_spec_suffix: both empty" =
       context_resources = [];
       publication = None;
       reachability_traces = [];
+      operational_considerations = "";
+      required_changes = "";
+      ordering_constraints = [];
       current_state_analysis = "";
       explicit_opinions = "";
       acceptance_criteria = [];
@@ -703,6 +776,9 @@ let%test "render_spec_suffix: gameplan spec only" =
       context_resources = [];
       publication = None;
       reachability_traces = [];
+      operational_considerations = "";
+      required_changes = "";
+      ordering_constraints = [];
       current_state_analysis = "";
       explicit_opinions = "";
       acceptance_criteria = [];
@@ -747,6 +823,9 @@ let%test "render_spec_suffix: patch spec only" =
       context_resources = [];
       publication = None;
       reachability_traces = [];
+      operational_considerations = "";
+      required_changes = "";
+      ordering_constraints = [];
       current_state_analysis = "";
       explicit_opinions = "";
       acceptance_criteria = [];
@@ -791,6 +870,9 @@ let%test "render_spec_suffix: both present" =
       context_resources = [];
       publication = None;
       reachability_traces = [];
+      operational_considerations = "";
+      required_changes = "";
+      ordering_constraints = [];
       current_state_analysis = "";
       explicit_opinions = "";
       acceptance_criteria = [];
@@ -1068,7 +1150,7 @@ let render_turn_layer_review ~(project_name : string) ?pr_number
 let render_review_prompt ~(project_name : string) ?agents_md ?pr_number
     ?current_head_sha ?viewer_login ?patch ?gameplan ?base_branch
     ~(artifact_dir : string) (comments : Comment.t list) : string =
-  layered_prefix ~project_name ?pr_number ?patch ?gameplan ?base_branch
+  render_session_context ~project_name ?pr_number ?patch ?gameplan ?base_branch
     ?agents_md ()
   ^ render_turn_layer_review ~project_name ?pr_number ?current_head_sha
       ?viewer_login ~artifact_dir comments
@@ -1157,7 +1239,7 @@ let render_turn_layer_findings ~(project_name : string) ?pr_number
 let render_findings_prompt ~(project_name : string) ?agents_md ?pr_number
     ?current_head_sha ?patch ?gameplan ?base_branch ~artifact_dir
     (findings : Review_service.finding list) : string =
-  layered_prefix ~project_name ?pr_number ?patch ?gameplan ?base_branch
+  render_session_context ~project_name ?pr_number ?patch ?gameplan ?base_branch
     ?agents_md ()
   ^ render_turn_layer_findings ~project_name ?pr_number ?current_head_sha
       ~artifact_dir findings
@@ -1351,14 +1433,14 @@ let render_turn_layer_ci_detailed ~(project_name : string) ?pr_number
 
 let render_ci_failure_prompt ~(project_name : string) ?agents_md ?pr_number
     ?patch ?gameplan ?base_branch (checks : Ci_check.t list) : string =
-  layered_prefix ~project_name ?pr_number ?patch ?gameplan ?base_branch
+  render_session_context ~project_name ?pr_number ?patch ?gameplan ?base_branch
     ?agents_md ()
   ^ render_turn_layer_ci ~project_name ?pr_number checks
 
 let render_ci_failure_prompt_detailed ~(project_name : string) ?agents_md
     ?pr_number ?patch ?gameplan ?base_branch
     (items : (Ci_check.t * ci_check_detail option) list) : string =
-  layered_prefix ~project_name ?pr_number ?patch ?gameplan ?base_branch
+  render_session_context ~project_name ?pr_number ?patch ?gameplan ?base_branch
     ?agents_md ()
   ^ render_turn_layer_ci_detailed ~project_name ?pr_number items
 
@@ -1390,7 +1472,7 @@ let render_turn_layer_ci_unknown ~(project_name : string) ?pr_number () =
 
 let render_ci_failure_unknown_prompt ~(project_name : string) ?agents_md
     ?pr_number ?patch ?gameplan ?base_branch () : string =
-  layered_prefix ~project_name ?pr_number ?patch ?gameplan ?base_branch
+  render_session_context ~project_name ?pr_number ?patch ?gameplan ?base_branch
     ?agents_md ()
   ^ render_turn_layer_ci_unknown ~project_name ?pr_number ()
 
@@ -1440,7 +1522,7 @@ let render_turn_layer_uncommitted_changes ~(project_name : string) ?pr_number
 let render_uncommitted_changes_prompt ~(project_name : string) ?agents_md
     ?pr_number ?patch ?gameplan ?base_branch ~(git_status : string) () : string
     =
-  layered_prefix ~project_name ?pr_number ?patch ?gameplan ?base_branch
+  render_session_context ~project_name ?pr_number ?patch ?gameplan ?base_branch
     ?agents_md ()
   ^ render_turn_layer_uncommitted_changes ~project_name ?pr_number ~git_status
       ()
@@ -1598,7 +1680,7 @@ After resolving all conflicts and completing the rebase, the supervisor will pus
 let render_merge_conflict_prompt ~(project_name : string) ?agents_md ?pr_number
     ?patch ?gameplan ~(base_branch : string) ?(git_status = "") ?(git_diff = "")
     ?conflict_info () : string =
-  layered_prefix ~project_name ?pr_number ?patch ?gameplan
+  render_session_context ~project_name ?pr_number ?patch ?gameplan
     ?base_branch:(Some base_branch) ?agents_md ()
   ^ render_turn_layer_merge_conflict ~project_name ?pr_number ~base_branch
       ~git_status ~git_diff ?conflict_info ()
@@ -1662,7 +1744,7 @@ The supervisor will publish the completed merge with a normal push. Do not run
 let render_root_merge_conflict_prompt ~(project_name : string) ?agents_md
     ?pr_number ?patch ?gameplan ~(base_branch : string) ~(merge_head : string)
     ~(git_status : string) ~(git_diff : string) () : string =
-  layered_prefix ~project_name ?pr_number ?patch ?gameplan
+  render_session_context ~project_name ?pr_number ?patch ?gameplan
     ?base_branch:(Some base_branch) ?agents_md ()
   ^ render_turn_layer_root_merge_conflict ~project_name ?pr_number ~base_branch
       ~merge_head ~git_status ~git_diff ()
@@ -1729,6 +1811,9 @@ let%test "patch prompt includes title and deps" =
         problem_statement = "Port Anton to OCaml.";
         solution_summary = "Use Eio for concurrency.";
         final_state_spec = "";
+        operational_considerations = "";
+        required_changes = "";
+        ordering_constraints = [];
         current_state_analysis = "";
         explicit_opinions = "";
         acceptance_criteria = [];
@@ -1830,6 +1915,9 @@ let%test "patch prompt static prefix is byte-identical across patches" =
         problem_statement = "Prompt cache hit rate is low.\n\n## Patch notes";
         solution_summary = "Move shared prompt content into a stable prefix.";
         final_state_spec = "module HEADLESS_CACHE_TUNING.\n\n## Patch state.";
+        operational_considerations = "";
+        required_changes = "";
+        ordering_constraints = [];
         current_state_analysis =
           "Patch-specific text currently appears first.\n\n## Patch drift.";
         explicit_opinions = "- Use env vars for flags.\n- ## Patch fallback.";
@@ -1887,6 +1975,9 @@ let%test "agents_md content appears in static prefix when Some" =
         problem_statement = "Prompt cache hit rate is low.";
         solution_summary = "Keep shared content in a stable prefix.";
         final_state_spec = "";
+        operational_considerations = "";
+        required_changes = "";
+        ordering_constraints = [];
         current_state_analysis = "";
         explicit_opinions = "";
         acceptance_criteria = [];
@@ -1939,6 +2030,9 @@ let%test "agents_md section is omitted when None" =
         problem_statement = "Prompt cache hit rate is low.";
         solution_summary = "Keep shared content in a stable prefix.";
         final_state_spec = "";
+        operational_considerations = "";
+        required_changes = "";
+        ordering_constraints = [];
         current_state_analysis = "";
         explicit_opinions = "";
         acceptance_criteria = [];
@@ -2040,6 +2134,9 @@ let make_layer_test_fixture () =
         problem_statement = "Prompts mix gameplan, patch, and turn content.";
         solution_summary = "Compose three layers in a fixed order.";
         final_state_spec = "module THREE_LAYERS.";
+        operational_considerations = "";
+        required_changes = "";
+        ordering_constraints = [];
         current_state_analysis = "Today only the Start prompt is layered.";
         explicit_opinions = "- Caching pays off when prefixes repeat.";
         acceptance_criteria = [];
@@ -2053,6 +2150,8 @@ let make_layer_test_fixture () =
                 "Patch A owns a behavior that must stay in the cache-stable \
                  layer.";
               owned_by = patch_a.Patch.id;
+              required_by = [];
+              verified_by = [];
             };
           ];
         context_resources = [];
@@ -2328,11 +2427,15 @@ let%test
             Functional_change.id = "FC-1";
             description = "Behavior owned by patch A only";
             owned_by = patch_a.Patch.id;
+            required_by = [];
+            verified_by = [];
           };
           {
             Functional_change.id = "FC-2";
             description = "Behavior owned by patch B only";
             owned_by = patch_b.Patch.id;
+            required_by = [];
+            verified_by = [];
           };
         ];
     }
@@ -2935,3 +3038,56 @@ let%test "review prompt does not mark file-level comments as outdated" =
   with
   | None -> false
   | Some line -> not (String.is_substring line ~substring:"[outdated]")
+
+let%test
+    "parsed contract prompts retain constraints and route both guarantee sides"
+    =
+  let source =
+    {|{
+    "formatVersion": 2,
+    "projectName": "contract-prompts",
+    "functionalChanges": [
+      {"id":"FC-1","description":"Pending scenarios survive restart before upload.","ownedBy":1,"requiredBy":[2],"verifiedBy":["Ledger > retains request"]},
+      {"id":"FC-2","description":"Reconciliation starts an eligible run.","ownedBy":2,"requiredBy":[],"verifiedBy":[]}
+    ],
+    "orderingConstraints": [{"before":1,"after":2,"reason":"Serialize generated schema metadata"}],
+    "acceptanceCriteria": [{"id":"AC-RESTART","description":"Recover supplied scenarios after restart.","tracesTo":["FC-1"]}],
+    "operationalConsiderations": {"externalSystemAccess":"Trigger uses the proxy without ambient IAM."},
+    "requiredChanges": [{"file":"ledger.ts","description":"Persist unresolved intake","signature":"savePending(request): Receipt"}],
+    "testMap": [{"testName":"Ledger > retains request","file":"ledger.test.ts","stubPatch":1,"implPatch":1}],
+    "patches": [
+      {"number":1,"title":"Ledger","changes":[],"files":[{"path":"ledger.ts"},{"path":"ledger.test.ts"}]},
+      {"number":2,"title":"Reconciler","changes":[],"files":[{"path":"task.ts"}]}
+    ]
+  }|}
+  in
+  match Gameplan_parser.parse_json_string source with
+  | Error _ -> false
+  | Ok parsed -> (
+      match parsed.gameplan.patches with
+      | [ producer; consumer ] ->
+          let render patch =
+            render_patch_prompt ~project_name:"contract-prompt-test" patch
+              parsed.gameplan ~base_branch:"main"
+          in
+          let producer_prompt = render producer in
+          let consumer_prompt = render consumer in
+          let contains text value = String.is_substring text ~substring:value in
+          List.for_all [ producer_prompt; consumer_prompt ] ~f:(fun prompt ->
+              List.for_all
+                [
+                  "Trigger uses the proxy without ambient IAM.";
+                  "savePending(request): Receipt";
+                  "AC-RESTART";
+                  "Ledger > retains request";
+                  "Serialize generated schema metadata";
+                ]
+                ~f:(contains prompt))
+          && contains producer_prompt "Required by patches 2"
+          && contains consumer_prompt "Dependency Guarantees You Consume"
+          && contains consumer_prompt "owner: Patch 1"
+          && contains consumer_prompt "Reconciliation starts an eligible run."
+          && List.equal Patch_id.equal consumer.dependencies [ producer.id ]
+          && List.length producer.acceptance_criteria = 1
+          && List.length consumer.acceptance_criteria = 1
+      | [] | [ _ ] | _ :: _ :: _ :: _ -> false)

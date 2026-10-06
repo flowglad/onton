@@ -1185,6 +1185,28 @@ module Make (Forge : Forge.S) (W : Worktree.S) (Env : Runner_env.S) = struct
                    patch agent")
         | None | Some _ ->
             let backend, _decision = pick_backend ~complexity in
+            let patch =
+              Base.List.find gameplan.Gameplan.patches ~f:(fun (p : Patch.t) ->
+                  Patch_id.equal p.id patch_id)
+            in
+            let base_branch =
+              Base.Option.value agent.Patch_agent.base_branch
+                ~default:
+                  (Runtime.read runtime (fun snap ->
+                       Orchestrator.main_branch snap.Runtime.orchestrator))
+            in
+            let context ~worktree_path =
+              let agents_md =
+                read_optional_file
+                  (Stdlib.Filename.concat worktree_path "AGENTS.md")
+              in
+              Prompt.render_session_context ~project_name
+                ?pr_number:(Patch_agent.pr_number agent)
+                ?patch ~gameplan
+                ~base_branch:(Branch.to_string base_branch)
+                ?agents_md ()
+            in
+            let prompt = Session_driver.create_prompt ~context ~turn:prompt in
             Session_driver.run ~kind ~delivery_mode ~patch_id ~prompt ~agent
               ~on_pr_detected ~backend ~complexity
       in
@@ -1379,11 +1401,6 @@ module Make (Forge : Forge.S) (W : Worktree.S) (Env : Runner_env.S) = struct
                                                 Orchestrator.apply_anchor_events
                                                   orch patch_id
                                                   start_anchor_events));
-                                        let agents_md =
-                                          read_optional_file
-                                            (Stdlib.Filename.concat _wt_path
-                                               "AGENTS.md")
-                                        in
                                         let initial_prompt =
                                           let has_existing_changes =
                                             match
@@ -1404,14 +1421,9 @@ module Make (Forge : Forge.S) (W : Worktree.S) (Env : Runner_env.S) = struct
                                                 | Ok changes -> changes
                                                 | Error error -> failwith error)
                                           in
-                                          Prompt.render_patch_prompt
-                                            ~project_name ?agents_md
-                                            ~has_existing_changes
-                                            ?pr_number:
-                                              (Patch_agent.pr_number agent)
-                                            patch gameplan
-                                            ~base_branch:
-                                              (Branch.to_string base_branch)
+                                          Prompt.render_turn_layer_start
+                                            ~project_name ~has_existing_changes
+                                            ()
                                         in
                                         let prompt, kind =
                                           match
@@ -2223,32 +2235,19 @@ module Make (Forge : Forge.S) (W : Worktree.S) (Env : Runner_env.S) = struct
                                           ~rebase_in_progress:
                                             rebase_still_in_progress ~git_status
                                           ~git_diff;
-                                        let patch =
-                                          Base.List.find
-                                            gameplan.Gameplan.patches
-                                            ~f:(fun (p : Patch.t) ->
-                                              Patch_id.equal p.Patch.id patch_id)
-                                        in
-                                        let agents_md =
-                                          read_optional_file
-                                            (Stdlib.Filename.concat wt_path
-                                               "AGENTS.md")
-                                        in
                                         let prompt =
                                           let raw =
                                             match conflict with
                                             | `Rebase conflict_info ->
                                                 Prompt
-                                                .render_merge_conflict_prompt
-                                                  ~project_name ?agents_md
-                                                  ?pr_number ?patch ~gameplan
+                                                .render_turn_layer_merge_conflict
+                                                  ~project_name ?pr_number
                                                   ~base_branch:base ~git_status
                                                   ~git_diff ?conflict_info ()
                                             | `Merge merge_head ->
                                                 Prompt
-                                                .render_root_merge_conflict_prompt
-                                                  ~project_name ?agents_md
-                                                  ?pr_number ?patch ~gameplan
+                                                .render_turn_layer_root_merge_conflict
+                                                  ~project_name ?pr_number
                                                   ~base_branch:base ~merge_head
                                                   ~git_status ~git_diff ()
                                           in
@@ -2593,31 +2592,15 @@ module Make (Forge : Forge.S) (W : Worktree.S) (Env : Runner_env.S) = struct
                                       let base_changed_prefix =
                                         render_base_changed_prefix base_change
                                       in
-                                      (* Resolve the patch + base branch for
-                                       layered prompt prefixes (Ci, Review).
-                                       Ad-hoc PRs have no gameplan-defined
-                                       patch — [patch_for_layer] is then
-                                       [None] and the renderers omit the
-                                       gameplan+patch prefix. *)
+                                      (* Ad-hoc PRs have no gameplan specification. *)
                                       let patch_for_layer =
                                         Base.List.find gameplan.Gameplan.patches
                                           ~f:(fun (p : Patch.t) ->
                                             Patch_id.equal p.Patch.id patch_id)
                                       in
-                                      let base_branch_for_layer =
-                                        Base.Option.value_map
-                                          agent.Patch_agent.base_branch
-                                          ~default:(Branch.to_string main)
-                                          ~f:Branch.to_string
-                                      in
                                       let wt_path =
                                         WS.resolve_worktree_path ~patch_id
                                           ~agent ()
-                                      in
-                                      let agents_md =
-                                        read_optional_file
-                                          (Stdlib.Filename.concat wt_path
-                                             "AGENTS.md")
                                       in
                                       let review_artifact_dir =
                                         match payload with
@@ -2675,12 +2658,8 @@ module Make (Forge : Forge.S) (W : Worktree.S) (Env : Runner_env.S) = struct
                                           | Patch_decision
                                             .Uncommitted_changes_payload ->
                                               Prompt
-                                              .render_uncommitted_changes_prompt
-                                                ~project_name ?agents_md
-                                                ?pr_number
-                                                ?patch:patch_for_layer ~gameplan
-                                                ~base_branch:
-                                                  base_branch_for_layer
+                                              .render_turn_layer_uncommitted_changes
+                                                ~project_name ?pr_number
                                                 ~git_status:
                                                   (W.git_status ~path:wt_path)
                                                 ()
@@ -2690,13 +2669,8 @@ module Make (Forge : Forge.S) (W : Worktree.S) (Env : Runner_env.S) = struct
                                                 Base.List.is_empty failed_checks
                                               then
                                                 Prompt
-                                                .render_ci_failure_unknown_prompt
-                                                  ~project_name ?agents_md
-                                                  ?pr_number
-                                                  ?patch:patch_for_layer
-                                                  ~gameplan
-                                                  ~base_branch:
-                                                    base_branch_for_layer ()
+                                                .render_turn_layer_ci_unknown
+                                                  ~project_name ?pr_number ()
                                               else
                                                 let fetch_cap = 10 in
                                                 let checks_to_fetch, extra =
@@ -2831,13 +2805,8 @@ module Make (Forge : Forge.S) (W : Worktree.S) (Env : Runner_env.S) = struct
                                                         (check, None))
                                                 in
                                                 Prompt
-                                                .render_ci_failure_prompt_detailed
-                                                  ~project_name ?agents_md
-                                                  ?pr_number
-                                                  ?patch:patch_for_layer
-                                                  ~gameplan
-                                                  ~base_branch:
-                                                    base_branch_for_layer
+                                                .render_turn_layer_ci_detailed
+                                                  ~project_name ?pr_number
                                                   detailed_checks
                                           | Patch_decision.Review_payload
                                               { comments } ->
@@ -2861,14 +2830,11 @@ module Make (Forge : Forge.S) (W : Worktree.S) (Env : Runner_env.S) = struct
                                              replayed as a duplicate reply. *)
                                               Project_store.reset_artifact_dir
                                                 artifact_dir;
-                                              Prompt.render_review_prompt
-                                                ~project_name ?agents_md
-                                                ?pr_number ?current_head_sha
+                                              Prompt.render_turn_layer_review
+                                                ~project_name ?pr_number
+                                                ?current_head_sha
                                                 ?viewer_login:
                                                   (Forge.viewer_login ())
-                                                ?patch:patch_for_layer ~gameplan
-                                                ~base_branch:
-                                                  base_branch_for_layer
                                                 ~artifact_dir comments
                                           | Patch_decision.Findings_payload
                                               { findings } ->
@@ -2884,13 +2850,10 @@ module Make (Forge : Forge.S) (W : Worktree.S) (Env : Runner_env.S) = struct
                                               in
                                               Project_store.reset_artifact_dir
                                                 artifact_dir;
-                                              Prompt.render_findings_prompt
-                                                ~project_name ?agents_md
-                                                ?pr_number ?current_head_sha
-                                                ?patch:patch_for_layer ~gameplan
-                                                ~base_branch:
-                                                  base_branch_for_layer
-                                                ~artifact_dir findings
+                                              Prompt.render_turn_layer_findings
+                                                ~project_name ?pr_number
+                                                ?current_head_sha ~artifact_dir
+                                                findings
                                           | Patch_decision.Human_payload
                                               { messages } ->
                                               Prompt.render_human_message_prompt

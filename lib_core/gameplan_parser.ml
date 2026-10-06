@@ -359,11 +359,274 @@ let json_precedents json =
           | _ -> None)
   | _ -> []
 
+let required_field json key =
+  match Json.field key json with
+  | Some value -> value
+  | None -> raise (Parse_error (key ^ " is required in formatVersion 2"))
+
+let nonempty_string value =
+  let text = to_string value in
+  if String.is_empty (String.strip text) then
+    raise (Parse_error "expected a non-empty string");
+  text
+
+let required_patch_id json key =
+  match patch_id_of_json (required_field json key) with
+  | Some id -> id
+  | None -> raise (Parse_error (key ^ " must be a patch ID"))
+
+let unique_strings label values =
+  if Set.length (Set.of_list (module String) values) <> List.length values then
+    raise (Parse_error ("Duplicate " ^ label))
+
+let derive_dependencies patch_ids functional_changes ordering_constraints =
+  let initial =
+    List.fold patch_ids
+      ~init:(Map.empty (module Types.Patch_id))
+      ~f:(fun graph id -> Map.update graph id ~f:(Option.value ~default:[]))
+  in
+  let add graph before after =
+    Map.update graph after ~f:(fun previous ->
+        before :: Option.value previous ~default:[]
+        |> List.dedup_and_sort ~compare:Types.Patch_id.compare)
+  in
+  let graph =
+    List.fold functional_changes ~init:initial
+      ~f:(fun graph (fc : Types.Functional_change.t) ->
+        List.fold fc.required_by ~init:graph ~f:(fun graph consumer ->
+            add graph fc.owned_by consumer))
+  in
+  List.fold ordering_constraints ~init:graph
+    ~f:(fun graph (order : Types.Ordering_constraint.t) ->
+      add graph order.before order.after)
+
+let parse_ordering_constraints json =
+  required_field json "orderingConstraints"
+  |> to_list
+  |> List.map ~f:(fun obj ->
+      {
+        Types.Ordering_constraint.before = required_patch_id obj "before";
+        after = required_patch_id obj "after";
+        reason = nonempty_string (required_field obj "reason");
+      })
+
+let validate_verification json functional_changes =
+  let tests = required_field json "testMap" |> to_list in
+  let names =
+    List.map tests ~f:(fun test ->
+        nonempty_string (required_field test "testName"))
+  in
+  unique_strings "testMap names" names;
+  List.iter functional_changes ~f:(fun (fc : Types.Functional_change.t) ->
+      if (not (List.is_empty fc.required_by)) && List.is_empty fc.verified_by
+      then
+        raise
+          (Parse_error
+             (fc.id ^ " must verify its consumed guarantee via verifiedBy"));
+      List.iter fc.verified_by ~f:(function
+        | Types.Verification.Check _ -> ()
+        | Types.Verification.Test name -> (
+            match
+              List.find tests ~f:(fun test ->
+                  String.equal (to_string (member "testName" test)) name)
+            with
+            | None ->
+                raise
+                  (Parse_error
+                     (fc.id ^ " verifiedBy references unknown test " ^ name))
+            | Some test -> (
+                if
+                  not
+                    (Types.Patch_id.equal
+                       (required_patch_id test "implPatch")
+                       fc.owned_by)
+                then
+                  raise
+                    (Parse_error
+                       (fc.id ^ " verification must be implemented by its owner"));
+                let file = nonempty_string (required_field test "file") in
+                let owner =
+                  required_field json "patches"
+                  |> to_list
+                  |> List.find ~f:(fun patch ->
+                      Types.Patch_id.equal
+                        (required_patch_id patch "number")
+                        fc.owned_by)
+                in
+                match owner with
+                | None ->
+                    ()
+                    (* Owner validity is checked with all patch references. *)
+                | Some patch ->
+                    let files = required_field patch "files" |> to_list in
+                    if
+                      not
+                        (List.exists files ~f:(fun entry ->
+                             String.equal (to_string (member "path" entry)) file))
+                    then
+                      raise
+                        (Parse_error
+                           (fc.id
+                          ^ " verification file must be in its owner's files")))
+            )))
+
+let parse_acceptance_criteria ~version2 json functional_changes =
+  if not version2 then
+    List.map (json_string_list json "acceptanceCriteria") ~f:(fun text ->
+        (text, []))
+  else
+    let criteria = required_field json "acceptanceCriteria" |> to_list in
+    let ids =
+      List.map criteria ~f:(fun item ->
+          nonempty_string (required_field item "id"))
+    in
+    unique_strings "acceptance criterion IDs" ids;
+    List.map criteria ~f:(fun item ->
+        let id = nonempty_string (required_field item "id") in
+        let description = nonempty_string (required_field item "description") in
+        let references =
+          required_field item "tracesTo"
+          |> to_list
+          |> List.map ~f:nonempty_string
+        in
+        if List.is_empty references then
+          raise (Parse_error (id ^ " requires tracesTo"));
+        unique_strings (id ^ " tracesTo") references;
+        List.iter references ~f:(fun reference ->
+            if
+              not
+                (List.exists functional_changes
+                   ~f:(fun (fc : Types.Functional_change.t) ->
+                     String.equal fc.id reference))
+            then
+              raise
+                (Parse_error
+                   (id ^ " tracesTo unknown functional change " ^ reference)));
+        ( Printf.sprintf "%s — %s (requirements: %s)" id description
+            (String.concat ~sep:", " references),
+          references ))
+
+let operational_context ~version2 json =
+  match
+    if version2 then required_field json "operationalConsiderations"
+    else member "operationalConsiderations" json
+  with
+  | `Null when not version2 -> ""
+  | `Assoc fields ->
+      List.map fields ~f:(fun (key, value) ->
+          "- " ^ key ^ ": " ^ to_string value)
+      |> String.concat ~sep:"\n"
+  | _ -> raise (Parse_error "operationalConsiderations must be an object")
+
+let required_change_context ~version2 json =
+  match
+    if version2 then required_field json "requiredChanges"
+    else member "requiredChanges" json
+  with
+  | `Null when not version2 -> ""
+  | `List changes ->
+      List.map changes ~f:(fun item ->
+          let file = to_string (member "file" item) in
+          let description = to_string (member "description" item) in
+          let signature =
+            match member "signature" item with
+            | `Null -> ""
+            | value -> "\n  Signature: " ^ to_string value
+          in
+          "- " ^ file ^ ": " ^ description ^ signature)
+      |> String.concat ~sep:"\n"
+  | _ -> raise (Parse_error "requiredChanges must be an array")
+
+let validate_write_frames json patches =
+  let graph = Graph.of_patches patches in
+  let frames =
+    required_field json "patches"
+    |> to_list
+    |> List.map ~f:(fun patch ->
+        let id = required_patch_id patch "number" in
+        let files =
+          required_field patch "files"
+          |> to_list
+          |> List.map ~f:(fun file ->
+              nonempty_string (required_field file "path"))
+          |> Set.of_list (module String)
+        in
+        (id, files))
+  in
+  let rec check_pairs = function
+    | [] -> ()
+    | (id, files) :: rest ->
+        List.iter rest ~f:(fun (other, other_files) ->
+            let overlap = Set.inter files other_files in
+            let ordered a b =
+              List.mem
+                (Graph.transitive_ancestors graph a)
+                b ~equal:Types.Patch_id.equal
+            in
+            if
+              (not (Set.is_empty overlap))
+              && not (ordered id other || ordered other id)
+            then
+              raise
+                (Parse_error
+                   (Printf.sprintf
+                      "Unordered write conflict between patches %s and %s: %s"
+                      (Types.Patch_id.to_string id)
+                      (Types.Patch_id.to_string other)
+                      (String.concat ~sep:", " (Set.to_list overlap)))));
+        check_pairs rest
+  in
+  check_pairs frames;
+  let all_files =
+    List.fold frames
+      ~init:(Set.empty (module String))
+      ~f:(fun all (_, files) -> Set.union all files)
+  in
+  match member "requiredChanges" json with
+  | `Null -> ()
+  | changes ->
+      List.iter (to_list changes) ~f:(fun change ->
+          let file = nonempty_string (required_field change "file") in
+          if not (Set.mem all_files file) then
+            raise
+              (Parse_error
+                 ("Required change outside every patch's files: " ^ file)))
+
 let parse_json_string input =
   match Json.of_string input with
   | Error msg -> Error (Printf.sprintf "JSON parse error: %s" msg)
   | Ok json -> (
       try
+        let version2 =
+          match member "formatVersion" json with
+          | `Null -> false
+          | `Int 2 -> true
+          | _ -> raise (Parse_error "Unsupported formatVersion (expected 2)")
+        in
+        if version2 && Option.is_some (Json.field "dependencyGraph" json) then
+          raise
+            (Parse_error
+               "formatVersion 2 derives dependencies; remove dependencyGraph");
+        if
+          (not version2)
+          && (Option.is_some (Json.field "orderingConstraints" json)
+             || List.exists
+                  (match member "functionalChanges" json with
+                  | `List xs -> xs
+                  | _ -> [])
+                  ~f:(fun fc ->
+                    Option.is_some (Json.field "requiredBy" fc)
+                    || Option.is_some (Json.field "verifiedBy" fc)))
+        then
+          raise
+            (Parse_error
+               "requiredBy, verifiedBy and orderingConstraints require \
+                formatVersion 2");
+        let operational_considerations = operational_context ~version2 json in
+        let required_changes = required_change_context ~version2 json in
+        let ordering_constraints =
+          if version2 then parse_ordering_constraints json else []
+        in
         let project_name = member "projectName" json |> to_string in
         let optional_string key =
           match member key json with
@@ -417,7 +680,10 @@ let parse_json_string input =
               |> String.concat ~sep:"\n"
           | _ -> ""
         in
-        let acceptance_criteria = json_string_list json "acceptanceCriteria" in
+        if version2 then
+          ignore
+            (required_field json "functionalChanges" |> to_list
+              : Yojson.Safe.t list);
         let functional_changes =
           match json |> member "functionalChanges" with
           | `Null -> []
@@ -447,11 +713,71 @@ let parse_json_string input =
                              "functionalChanges[].ownedBy must be an integer \
                               or alphanumeric patch id")
                   in
-                  { Types.Functional_change.id; description; owned_by })
+                  let required_by, verified_by =
+                    if version2 then (
+                      let required_by =
+                        required_field obj "requiredBy"
+                        |> to_list
+                        |> List.map ~f:(fun value ->
+                            match patch_id_of_json value with
+                            | Some id -> id
+                            | None ->
+                                raise
+                                  (Parse_error
+                                     "requiredBy must contain patch IDs"))
+                      in
+                      let verified_by =
+                        required_field obj "verifiedBy"
+                        |> to_list
+                        |> List.map ~f:(function
+                          | `String name ->
+                              Types.Verification.Test
+                                (nonempty_string (`String name))
+                          | `Assoc _ as check ->
+                              Types.Verification.Check
+                                {
+                                  command =
+                                    nonempty_string
+                                      (required_field check "command");
+                                  expectation =
+                                    nonempty_string
+                                      (required_field check "expectation");
+                                }
+                          | _ ->
+                              raise
+                                (Parse_error
+                                   "verifiedBy requires test names or \
+                                    command/expectation checks"))
+                      in
+                      unique_strings (id ^ " requiredBy")
+                        (List.map required_by ~f:Types.Patch_id.to_string);
+                      if
+                        List.length
+                          (List.dedup_and_sort verified_by
+                             ~compare:Types.Verification.compare)
+                        <> List.length verified_by
+                      then
+                        raise
+                          (Parse_error (id ^ " has duplicate verifiedBy entries"));
+                      (required_by, verified_by))
+                    else ([], [])
+                  in
+                  {
+                    Types.Functional_change.id;
+                    description;
+                    owned_by;
+                    required_by;
+                    verified_by;
+                  })
           | _ ->
               raise
                 (Parse_error "functionalChanges must be an array of objects")
         in
+        if version2 then validate_verification json functional_changes;
+        let criteria =
+          parse_acceptance_criteria ~version2 json functional_changes
+        in
+        let acceptance_criteria = List.map criteria ~f:fst in
         let context_resources =
           match json |> member "contextResources" with
           | `Null -> []
@@ -584,27 +910,34 @@ let parse_json_string input =
         in
         (* Dependency graph: {patch, classification, dependsOn[]} format *)
         let dep_graph =
-          match json |> member "dependencyGraph" with
-          | `List items ->
-              List.fold items
-                ~init:(Map.empty (module Types.Patch_id))
-                ~f:(fun acc entry ->
-                  let patch_id =
-                    match patch_id_of_json (entry |> member "patch") with
-                    | Some id -> id
-                    | None ->
-                        raise
-                          (Parse_error
-                             "dependencyGraph[].patch must be an integer or \
-                              alphanumeric string")
-                  in
-                  let depends_on =
-                    match entry |> member "dependsOn" with
-                    | `List deps -> List.filter_map deps ~f:patch_id_of_json
-                    | _ -> []
-                  in
-                  Map.set acc ~key:patch_id ~data:depends_on)
-          | _ -> Map.empty (module Types.Patch_id)
+          if version2 then
+            derive_dependencies
+              (required_field json "patches"
+              |> to_list
+              |> List.map ~f:(fun p -> required_patch_id p "number"))
+              functional_changes ordering_constraints
+          else
+            match json |> member "dependencyGraph" with
+            | `List items ->
+                List.fold items
+                  ~init:(Map.empty (module Types.Patch_id))
+                  ~f:(fun acc entry ->
+                    let patch_id =
+                      match patch_id_of_json (entry |> member "patch") with
+                      | Some id -> id
+                      | None ->
+                          raise
+                            (Parse_error
+                               "dependencyGraph[].patch must be an integer or \
+                                alphanumeric string")
+                    in
+                    let depends_on =
+                      match entry |> member "dependsOn" with
+                      | `List deps -> List.filter_map deps ~f:patch_id_of_json
+                      | _ -> []
+                    in
+                    Map.set acc ~key:patch_id ~data:depends_on)
+            | _ -> Map.empty (module Types.Patch_id)
         in
         let slug = slugify project_name in
         let patches =
@@ -619,14 +952,21 @@ let parse_json_string input =
                          "patches[].number must be an integer or alphanumeric \
                           string")
               in
+              if version2 && Option.is_some (Json.field "dependsOn" p) then
+                raise
+                  (Parse_error
+                     "formatVersion 2 derives patch dependencies from \
+                      requirements");
               let title = p |> member "title" |> to_string in
               let changes = json_string_list p "changes" in
               let description =
-                match changes with
-                | [] -> ""
-                | items ->
-                    List.map items ~f:(fun s -> "- " ^ s)
-                    |> String.concat ~sep:"\n"
+                if version2 then ""
+                else
+                  match changes with
+                  | [] -> ""
+                  | items ->
+                      List.map items ~f:(fun s -> "- " ^ s)
+                      |> String.concat ~sep:"\n"
               in
               let branch = Types.Branch.of_string (slug ^ "/patch-" ^ id_str) in
               let dependencies =
@@ -682,7 +1022,17 @@ let parse_json_string input =
                 branch;
                 dependencies;
                 spec;
-                acceptance_criteria = [];
+                acceptance_criteria =
+                  List.filter_map criteria ~f:(fun (text, references) ->
+                      if
+                        List.exists functional_changes ~f:(fun fc ->
+                            List.mem references fc.Types.Functional_change.id
+                              ~equal:String.equal
+                            && (Types.Patch_id.equal fc.owned_by id
+                               || List.mem fc.required_by id
+                                    ~equal:Types.Patch_id.equal))
+                      then Some text
+                      else None);
                 files;
                 classification;
                 changes;
@@ -710,6 +1060,7 @@ let parse_json_string input =
             match validate ~patches ~dep_graph with
             | Error e -> Error e
             | Ok () -> (
+                if version2 then validate_write_frames json patches;
                 match
                   validate_functional_changes ~patches ~functional_changes
                 with
@@ -741,6 +1092,9 @@ let parse_json_string input =
                                     context_resources;
                                     reachability_traces;
                                     publication = None;
+                                    operational_considerations;
+                                    required_changes;
+                                    ordering_constraints;
                                     current_state_analysis;
                                     explicit_opinions;
                                     acceptance_criteria;

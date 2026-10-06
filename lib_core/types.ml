@@ -342,14 +342,32 @@ module Stream_event = struct
   [@@deriving show, eq, sexp_of, compare, yojson]
 end
 
+module Verification = struct
+  type t =
+    | Test of string
+    | Check of { command : string; expectation : string }
+  [@@deriving show, eq, sexp_of, compare, yojson]
+end
+
 module Functional_change = struct
-  type t = { id : string; description : string; owned_by : Patch_id.t }
+  type t = {
+    id : string;
+    description : string;
+    owned_by : Patch_id.t;
+    required_by : Patch_id.t list; [@yojson.default []]
+    verified_by : Verification.t list; [@yojson.default []]
+  }
   [@@deriving show, eq, sexp_of, compare, yojson]
   (** A functional/behavioural change the gameplan introduces. The
       [functional_changes] array on [Gameplan.t] is exhaustive, and the mapping
       via [owned_by] is total and single-valued: every change has exactly one
       owning patch. Surfaced to the patch agent's prompt so the agent knows
       which user-visible behaviors it must deliver. *)
+end
+
+module Ordering_constraint = struct
+  type t = { before : Patch_id.t; after : Patch_id.t; reason : string }
+  [@@deriving show, eq, sexp_of, compare, yojson]
 end
 
 module Trace_node = struct
@@ -396,6 +414,9 @@ module Gameplan = struct
         (** One entry per observable the gameplan promises, tracing the live
             path from entry point to leaf. Defaults to [[]] for legacy gameplans
             and pure INFRA/refactor gameplans with no runtime observable. *)
+    operational_considerations : string; [@yojson.default ""]
+    required_changes : string; [@yojson.default ""]
+    ordering_constraints : Ordering_constraint.t list; [@yojson.default []]
     current_state_analysis : string; [@yojson.default ""]
     explicit_opinions : string; [@yojson.default ""]
     acceptance_criteria : string list; [@yojson.default []]

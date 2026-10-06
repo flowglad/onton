@@ -14,6 +14,7 @@
     place where "run a session for this patch" lives. *)
 
 type disposition = [ `Ok | `Failed | `Retry_push | `No_commits ]
+type prompt
 
 type run_result = {
   disposition : disposition;
@@ -39,11 +40,17 @@ end
 module Make (_ : Worktree.S) (_ : ENV) : sig
   type nonrec run_result = run_result
 
+  val create_prompt :
+    context:(worktree_path:string -> string) -> turn:string -> prompt
+  (** The context renderer receives the ensured worktree path and is called once
+      for a fresh session, including fallback, and never when resuming, giving
+      up, or failing to provision a worktree. *)
+
   val run :
     kind:Types.Operation_kind.t option ->
     delivery_mode:Patch_decision.delivery_mode ->
     patch_id:Types.Patch_id.t ->
-    prompt:string ->
+    prompt:prompt ->
     agent:Patch_agent.t ->
     on_pr_detected:(Types.Pr_number.t -> unit) ->
     backend:Llm_backend.t ->
