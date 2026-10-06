@@ -30,7 +30,7 @@ Three goals, in priority order:
 
 ## Pre-commit opt-out
 
-Every patch turn includes an absolute path to
+Patch starts and automated follow-up turns include an absolute path to
 `artifacts/<patch_id>/WONTDO.md`. Before making any patch commits, a worker
 may write a nonblank reason there and end its turn. The supervisor displays
 that reason in the activity log, completes the running operation, and puts
@@ -42,6 +42,11 @@ A human message or explicit bump clears this pause and restarts the loop; an opt
 A PR or any patch commits make opt-out unavailable. Empty or whitespace-only
 files do not signal opt-out. Each new turn clears the previous file so an
 explicit manual retry cannot accidentally repeat an earlier refusal.
+
+Human follow-up turns pass through the human-message renderer without appended
+branch-mode or opt-out instructions. A patch start carrying human guidance still
+includes the patch instructions. This distinction follows the initiating
+Start/Respond action, whether the backend resumes a session or starts fresh.
 
 ## Principles
 

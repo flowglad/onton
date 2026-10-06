@@ -102,6 +102,12 @@ type start_delivery =
     stable when a Start discovers and associates its PR during the session. *)
 type delivery_mode = Start | Respond [@@deriving show, eq, sexp_of, compare]
 
+val session_prompt_requires_patch_instructions :
+  delivery_mode:delivery_mode -> kind:Types.Operation_kind.t option -> bool
+(** Human follow-ups pass through without branch-mode or opt-out instructions.
+    Starts, including those carrying human guidance, and other Respond kinds
+    retain patch instructions. Independent of backend resume/fresh selection. *)
+
 val start_delivery : Patch_agent.t -> start_delivery
 (** Classify a fired Start action's turn payload. A Start that consumed queued
     human guidance returns it in chronological order; an ordinary Start returns

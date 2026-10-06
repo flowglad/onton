@@ -57,8 +57,10 @@ module Fake_worktree : Worktree.S = struct
   let rebase_in_progress ~path:_ = assert false
 end
 
-let run_case ?(detect_pr = false) ?(advance_base = false) env ~content ~commit
-    ~expect_opt_out =
+let run_case ?(detect_pr = false) ?(advance_base = false)
+    ?(delivery_mode = Onton_core.Patch_decision.Start) ?(kind = None)
+    ?(branch_role = `Mainline) ?resume_session ?(prompt = "Implement the patch")
+    env ~content ~commit ~expect_opt_out =
   head := "base";
   base_head := if advance_base then "advanced-base" else "base";
   pushes := 0;
@@ -94,6 +96,19 @@ let run_case ?(detect_pr = false) ?(advance_base = false) env ~content ~commit
             required_context = [];
           }
       in
+      let patches =
+        match branch_role with
+        | `Mainline | `Integration_root -> [ patch ]
+        | `Feature_descendant ->
+            let root_patch =
+              {
+                patch with
+                id = Patch_id.of_string "root";
+                branch = Branch.of_string "integration-root";
+              }
+            in
+            [ root_patch; { patch with dependencies = [ root_patch.id ] } ]
+      in
       let gameplan =
         Gameplan.
           {
@@ -103,7 +118,7 @@ let run_case ?(detect_pr = false) ?(advance_base = false) env ~content ~commit
             problem_statement = "";
             solution_summary = "";
             final_state_spec = "";
-            patches = [ patch ];
+            patches;
             current_state_analysis = "";
             explicit_opinions = "";
             acceptance_criteria = [];
@@ -116,10 +131,41 @@ let run_case ?(detect_pr = false) ?(advance_base = false) env ~content ~commit
       in
       let runtime = Runtime.create ~gameplan ~main_branch:main () in
       Runtime.update_orchestrator runtime (fun orch ->
+          let mode =
+            match branch_role with
+            | `Mainline -> Onton_core.Execution_mode.mainline
+            | `Integration_root | `Feature_descendant -> (
+                match Onton_core.Execution_mode.infer_gameplan gameplan with
+                | Ok mode -> mode
+                | Error message -> failwith message)
+          in
+          let orch = Orchestrator.set_execution_mode orch mode in
           let orch =
             Orchestrator.send_human_message orch patch_id "Original guidance"
           in
-          Orchestrator.fire orch (Orchestrator.Start (patch_id, main)));
+          let orch =
+            Orchestrator.fire orch (Orchestrator.Start (patch_id, main))
+          in
+          let orch =
+            match (delivery_mode, kind) with
+            | Onton_core.Patch_decision.Respond, Some kind ->
+                let orch = Orchestrator.complete orch patch_id in
+                let orch =
+                  match branch_role with
+                  | `Feature_descendant ->
+                      Orchestrator.mark_branch_published orch patch_id
+                  | `Mainline | `Integration_root ->
+                      Orchestrator.set_pr_number orch patch_id
+                        (Pr_number.of_int 123)
+                in
+                Orchestrator.fire
+                  (Orchestrator.enqueue orch patch_id kind)
+                  (Orchestrator.Respond (patch_id, kind))
+            | Onton_core.Patch_decision.Start, _
+            | Onton_core.Patch_decision.Respond, None ->
+                orch
+          in
+          Orchestrator.set_llm_session_id orch patch_id resume_session);
       let module Env = struct
         let runtime = runtime
         let clock = Eio.Stdenv.clock env
@@ -140,6 +186,7 @@ let run_case ?(detect_pr = false) ?(advance_base = false) env ~content ~commit
         Project_store.wontdo_artifact_path ~project_name:gameplan.project_name
           ~patch_id
       in
+      let delivered = ref None in
       let backend =
         Llm_backend.
           {
@@ -149,14 +196,12 @@ let run_case ?(detect_pr = false) ?(advance_base = false) env ~content ~commit
                 ~cwd:_
                 ~patch_id:_
                 ~prompt
-                ~resume_session:_
+                ~resume_session
                 ~session_uuid:_
                 ~complexity:_
                 ~on_event
               ->
-                assert (String.is_substring prompt ~substring:path);
-                assert (
-                  String.is_substring prompt ~substring:"without committing");
+                delivered := Some (prompt, resume_session);
                 let oc = Stdlib.open_out_bin path in
                 Stdlib.output_string oc content;
                 Stdlib.close_out oc;
@@ -179,6 +224,21 @@ let run_case ?(detect_pr = false) ?(advance_base = false) env ~content ~commit
         Runtime.read runtime (fun snap ->
             Orchestrator.agent snap.orchestrator patch_id)
       in
+      let start_with_human =
+        Onton_core.Patch_decision.equal_delivery_mode delivery_mode Start
+        && Option.equal Operation_kind.equal kind (Some Human)
+      in
+      let prompt =
+        if start_with_human then
+          match Onton_core.Patch_decision.start_delivery agent with
+          | Start_with_human { messages } ->
+              assert (List.equal String.equal messages [ "Original guidance" ]);
+              prompt ^ "\n\n"
+              ^ Prompt.render_human_message_prompt
+                  ~project_name:gameplan.project_name messages
+          | Start_initial -> failwith "Expected queued human guidance at start"
+        else prompt
+      in
       let result =
         Telemetry_dispatch.with_sinks
           ~sinks:
@@ -188,13 +248,43 @@ let run_case ?(detect_pr = false) ?(advance_base = false) env ~content ~commit
                 ();
             ]
           (fun () ->
-            SD.run ~kind:None ~delivery_mode:Onton_core.Patch_decision.Start
-              ~patch_id ~prompt:"Implement the patch" ~agent
+            SD.run ~kind ~delivery_mode ~patch_id ~prompt ~agent
               ~on_pr_detected:(fun pr_number ->
                 Runtime.update_orchestrator runtime (fun orch ->
                     Orchestrator.set_pr_number orch patch_id pr_number))
               ~backend ~complexity:None)
       in
+      let delivered_prompt, delivered_resume =
+        match !delivered with
+        | Some delivered -> delivered
+        | None -> failwith "Backend was not invoked"
+      in
+      assert (Option.equal String.equal delivered_resume resume_session);
+      if start_with_human then
+        assert (
+          String.is_substring delivered_prompt ~substring:"Original guidance");
+      let plain_human_followup =
+        Onton_core.Patch_decision.equal_delivery_mode delivery_mode Respond
+        && Option.equal Operation_kind.equal kind (Some Human)
+      in
+      if plain_human_followup then (
+        assert (String.equal delivered_prompt prompt);
+        assert (Poly.equal result.disposition `Ok))
+      else (
+        assert (String.is_prefix delivered_prompt ~prefix:prompt);
+        assert (String.is_substring delivered_prompt ~substring:path);
+        assert (
+          String.is_substring delivered_prompt ~substring:"without committing");
+        match branch_role with
+        | `Mainline -> ()
+        | `Integration_root ->
+            assert (
+              String.is_substring delivered_prompt
+                ~substring:"Integration root: preserve all published history.")
+        | `Feature_descendant ->
+            assert (
+              String.is_substring delivered_prompt
+                ~substring:"Feature branch construction:"));
       let snapshot = Runtime.read runtime Fn.id in
       let after = Orchestrator.agent snapshot.orchestrator patch_id in
       if detect_pr then (
@@ -353,4 +443,28 @@ let () =
       run_case env ~detect_pr:true ~content:"A PR was detected during this turn"
         ~commit:false ~expect_opt_out:false;
       run_case env ~advance_base:true ~content:"Opt out after base advancement"
-        ~commit:false ~expect_opt_out:true)
+        ~commit:false ~expect_opt_out:true;
+      List.iter [ `Mainline; `Integration_root; `Feature_descendant ]
+        ~f:(fun branch_role ->
+          List.iter [ None; Some "existing-thread" ] ~f:(fun resume_session ->
+              List.iter
+                [
+                  [ "Are both changes compatible with the current design?" ];
+                  [ "Check compatibility."; "Explain any tradeoffs." ];
+                ]
+                ~f:(fun messages ->
+                  let prompt =
+                    Prompt.render_human_message_prompt
+                      ~project_name:"Wontdo test" messages
+                  in
+                  run_case env ~branch_role ?resume_session ~prompt
+                    ~delivery_mode:Onton_core.Patch_decision.Respond
+                    ~kind:(Some Human) ~content:"" ~commit:false
+                    ~expect_opt_out:false);
+              run_case env ~branch_role ?resume_session
+                ~delivery_mode:Onton_core.Patch_decision.Start
+                ~kind:(Some Human) ~content:"" ~commit:true
+                ~expect_opt_out:false;
+              run_case env ~branch_role ?resume_session
+                ~delivery_mode:Onton_core.Patch_decision.Respond ~kind:(Some Ci)
+                ~content:"" ~commit:true ~expect_opt_out:false)))
