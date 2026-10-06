@@ -952,7 +952,7 @@ let force_push_with_lease_unbounded ~on_phase ~preserve_history ~process_mgr
         remote_tracking_sha,
         ancestry,
         remote_changes_included,
-        commits_ahead_of_base ) -> (
+        commits_ahead_of_base ) ->
       let plan rewrite_authority =
         Push_plan.plan ~preserve_history ~expected_branch:branch_str
           ~worktree_path_exists ~worktree_head_branch ~branch_ref_sha
@@ -1080,74 +1080,111 @@ let force_push_with_lease_unbounded ~on_phase ~preserve_history ~process_mgr
             | Push_plan.History_would_be_rewritten _ ) ->
             preliminary
       in
-      match decision with
-      | Refuse Push_plan.Worktree_missing -> Push_worktree_missing
-      | Refuse Push_plan.No_commits_ahead_of_base -> Push_no_commits
-      | Refuse
-          (( Push_plan.Branch_ref_missing _ | Push_plan.Branch_switched _
-           | Push_plan.Local_missing_remote_commits _
-           | Push_plan.Remote_not_integrated _
-           | Push_plan.History_would_be_rewritten _ ) as r) -> (
-          match Push_plan.to_push_reject_classify_rejection r with
-          | Some rej -> Push_rejected rej
-          | None ->
-              (* These refusals all map to Some _ per
+      let outcome =
+        match decision with
+        | Refuse Push_plan.Worktree_missing -> Push_worktree_missing
+        | Refuse Push_plan.No_commits_ahead_of_base -> Push_no_commits
+        | Refuse
+            (( Push_plan.Branch_ref_missing _ | Push_plan.Branch_switched _
+             | Push_plan.Local_missing_remote_commits _
+             | Push_plan.Remote_not_integrated _
+             | Push_plan.History_would_be_rewritten _ ) as r) -> (
+            match Push_plan.to_push_reject_classify_rejection r with
+            | Some rej -> Push_rejected rej
+            | None ->
+                (* These refusals all map to Some _ per
              [to_push_reject_classify_rejection]; fall back conservatively. *)
-              Push_error (Push_plan.short_label (Push_plan.Refuse r)))
-      | Push action -> (
-          let args =
-            match action with
-            | Push_plan.Force_push_with_lease { local_sha; remote_sha } ->
-                [
-                  "git";
-                  "-C";
-                  path;
-                  "push";
-                  "--porcelain";
-                  "--force-with-lease=refs/heads/" ^ branch_str ^ ":"
-                  ^ remote_sha;
-                  "origin";
-                  local_sha ^ ":refs/heads/" ^ branch_str;
-                ]
-            | Push_plan.Initial_push { local_sha } ->
-                [
-                  "git";
-                  "-C";
-                  path;
-                  "push";
-                  "--porcelain";
-                  "--force-with-lease=refs/heads/" ^ branch_str ^ ":";
-                  "origin";
-                  local_sha ^ ":refs/heads/" ^ branch_str;
-                ]
-          in
-          on_phase "git push";
-          let code, stdout, stderr = run_git_exit_code ~process_mgr args in
-          let result = classify_push_result ~code ~stdout ~stderr in
-          match action with
-          | Push_plan.Initial_push _
-            when equal_push_result result Push_ok
-                 || equal_push_result result Push_up_to_date ->
-              (* -u cannot identify a local branch from an immutable SHA refspec.
-             Set the named branch's upstream only after successful publication. *)
-              on_phase "upstream configuration (git branch)";
-              let code, _, stderr =
-                run_git_exit_code ~process_mgr
+                Push_error (Push_plan.short_label (Push_plan.Refuse r)))
+        | Push action -> (
+            let args =
+              match action with
+              | Push_plan.Force_push_with_lease { local_sha; remote_sha } ->
                   [
                     "git";
                     "-C";
                     path;
-                    "branch";
-                    "--set-upstream-to=origin/" ^ branch_str;
-                    branch_str;
+                    "push";
+                    "--porcelain";
+                    "--force-with-lease=refs/heads/" ^ branch_str ^ ":"
+                    ^ remote_sha;
+                    "origin";
+                    local_sha ^ ":refs/heads/" ^ branch_str;
                   ]
-              in
-              if code = 0 then result
-              else
-                Push_error
-                  ("Published branch but failed to set upstream: " ^ stderr)
-          | Push_plan.Initial_push _ | Push_plan.Force_push_with_lease _ ->
-              result))
+              | Push_plan.Initial_push { local_sha } ->
+                  [
+                    "git";
+                    "-C";
+                    path;
+                    "push";
+                    "--porcelain";
+                    "--force-with-lease=refs/heads/" ^ branch_str ^ ":";
+                    "origin";
+                    local_sha ^ ":refs/heads/" ^ branch_str;
+                  ]
+            in
+            on_phase "git push";
+            let code, stdout, stderr = run_git_exit_code ~process_mgr args in
+            let result = classify_push_result ~code ~stdout ~stderr in
+            match action with
+            | Push_plan.Initial_push _
+              when equal_push_result result Push_ok
+                   || equal_push_result result Push_up_to_date ->
+                (* -u cannot identify a local branch from an immutable SHA refspec.
+             Set the named branch's upstream only after successful publication. *)
+                on_phase "upstream configuration (git branch)";
+                let code, _, stderr =
+                  run_git_exit_code ~process_mgr
+                    [
+                      "git";
+                      "-C";
+                      path;
+                      "branch";
+                      "--set-upstream-to=origin/" ^ branch_str;
+                      branch_str;
+                    ]
+                in
+                if code = 0 then result
+                else
+                  Push_error
+                    ("Published branch but failed to set upstream: " ^ stderr)
+            | Push_plan.Initial_push _ | Push_plan.Force_push_with_lease _ ->
+                result)
+      in
+      if
+        equal_push_result outcome
+          (Push_rejected Push_reject_classify.Lease_violation)
+      then
+        match branch_ref_sha with
+        | Some local_sha ->
+            (* A conflict-resolution agent may have already published this exact
+             commit. Its push does not necessarily refresh origin/<branch>, so
+             our captured lease can reject an otherwise completed publication.
+             Confirm the live remote tip before treating that as a failure. *)
+            let remote_ref = "refs/heads/" ^ branch_str in
+            on_phase "remote confirmation (git ls-remote)";
+            let code, stdout, _ =
+              run_git_exit_code ~process_mgr
+                [
+                  "git";
+                  "-C";
+                  path;
+                  "ls-remote";
+                  "--exit-code";
+                  "--refs";
+                  "origin";
+                  remote_ref;
+                ]
+            in
+            if
+              code = 0
+              && Option.equal String.equal
+                   (Worktree_parser.parse_ls_remote_sha ~ref_name:remote_ref
+                      stdout)
+                   (Some local_sha)
+            then Push_up_to_date
+            else outcome
+        | None -> outcome
+      else outcome
 
 let default_push_timeout_seconds = 120.0
 

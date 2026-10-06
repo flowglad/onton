@@ -76,6 +76,37 @@ let setup_seed_clone ~origin_dir ~managed_dir =
   sh ~dir:managed_dir "git commit -q -m 'seed'";
   sh ~dir:managed_dir "git push -q -u origin main"
 
+let scenario_agent_published_with_stale_tracking env =
+  let clock = Eio.Stdenv.clock env in
+  let process_mgr = Eio.Stdenv.process_mgr env in
+  with_temp_dir @@ fun root ->
+  let origin_dir = Stdlib.Filename.concat root "origin.git" in
+  let managed_dir = Stdlib.Filename.concat root "managed" in
+  setup_origin ~origin_dir;
+  setup_seed_clone ~origin_dir ~managed_dir;
+  sh ~dir:managed_dir
+    "git checkout -q -b feat; echo first > work.txt; git add work.txt; git \
+     commit -q -m first; git push -q -u origin feat";
+  let old_sha = git_capture ~dir:managed_dir [ "rev-parse"; "HEAD" ] in
+  sh ~dir:managed_dir
+    "echo resolved >> work.txt; git add work.txt; git commit -q -m resolved";
+  let local_sha = git_capture ~dir:managed_dir [ "rev-parse"; "HEAD" ] in
+  (* The agent publishes its resolution, while Onton's tracking ref retains
+     the tip captured before the session. *)
+  sh ~dir:managed_dir
+    ("git push -q --force-with-lease=refs/heads/feat:" ^ old_sha ^ " origin "
+   ^ local_sha ^ ":refs/heads/feat");
+  sh ~dir:managed_dir ("git update-ref refs/remotes/origin/feat " ^ old_sha);
+  let outcome =
+    Worktree.force_push_with_lease ~clock ~process_mgr ~path:managed_dir
+      ~branch:(Types.Branch.of_string "feat")
+      ~base:(Types.Branch.of_string "main")
+      ()
+  in
+  if not (Worktree.equal_push_result outcome Worktree.Push_up_to_date) then
+    failwith ("agent-published branch: " ^ Worktree.show_push_result outcome);
+  Stdlib.print_endline "  agent_published_with_stale_tracking: OK"
+
 let scenario_lineage_planning_guards env =
   let clock = Eio.Stdenv.clock env in
   with_temp_dir @@ fun root ->
@@ -977,6 +1008,7 @@ let () =
   Eio_main.run @@ fun env ->
   Stdlib.print_endline "Worktree.force_push_with_lease + Push_plan integration:";
   scenario_lineage_planning_guards env;
+  scenario_agent_published_with_stale_tracking env;
   scenario_rewrite_interleavings ~conflict:true ~append_after:true env
     (2, 0, false);
   scenario_rewrite_interleavings ~conflict:true ~drop_remote:true env
