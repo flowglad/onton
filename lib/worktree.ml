@@ -991,7 +991,7 @@ let force_push_with_lease_unbounded ~on_phase ~preserve_history ~process_mgr
                   | Some reflog ->
                       Rewrite_lineage.of_reflog ~branch:branch_str ~local_sha
                         ~remote_sha ~reflog
-                        ~content_oracle:(fun ~remote_sha ~target ~local_sha ->
+                        ~content_oracle:(fun ~remote_sha ~target ~result_sha ->
                           let code, bases, _ =
                             run_git_exit_code ~process_mgr
                               [
@@ -1029,7 +1029,7 @@ let force_push_with_lease_unbounded ~on_phase ~preserve_history ~process_mgr
                               in
                               match
                                 ( changed_paths common remote_sha,
-                                  changed_paths remote_sha local_sha )
+                                  changed_paths remote_sha result_sha )
                               with
                               | ( Some remote_changed_paths,
                                   Some local_changed_paths ) ->

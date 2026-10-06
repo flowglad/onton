@@ -53,7 +53,7 @@ let of_reflog ~branch ~local_sha ~remote_sha ~reflog ~ancestor_oracle
               && ancestor_oracle remote_sha ~descendant:before
               && ancestor_oracle target ~descendant:after
               && (ancestor_oracle remote_sha ~descendant:target
-                 || content_oracle ~remote_sha ~target ~local_sha)
+                 || content_oracle ~remote_sha ~target ~result_sha:after)
             then Some { branch; local_sha; remote_sha }
             else None
         | None ->

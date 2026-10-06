@@ -88,7 +88,7 @@ let trace operations =
       Rewrite_lineage.of_reflog ~branch:"patch" ~local_sha:!local
         ~remote_sha:!tracking
         ~reflog:(raw_reflog (List.rev !reflog))
-        ~content_oracle:(fun ~remote_sha:_ ~target:_ ~local_sha:_ -> false)
+        ~content_oracle:(fun ~remote_sha:_ ~target:_ ~result_sha:_ -> false)
         ~ancestor_oracle:(fun a ~descendant -> ancestor a descendant)
     in
     let ancestry =
@@ -133,7 +133,7 @@ let authority () =
            entry (sha 1) (sha 2) "commit: original";
            finish (sha 2) (sha 3) (sha 2);
          ])
-    ~content_oracle:(fun ~remote_sha:_ ~target:_ ~local_sha:_ -> false)
+    ~content_oracle:(fun ~remote_sha:_ ~target:_ ~result_sha:_ -> false)
     ~ancestor_oracle:(fun a ~descendant ->
       String.equal a descendant
       || String.equal a (sha 1)
@@ -141,6 +141,38 @@ let authority () =
 
 let properties =
   [
+    Test.make
+      ~name:"content evidence belongs to the rebase result before later edits"
+      ~count:500
+      Gen.(pair bool bool)
+      (fun (discard, preserved) ->
+        let authority =
+          Rewrite_lineage.of_reflog ~branch:"patch" ~local_sha:(sha 6)
+            ~remote_sha:(sha 2)
+            ~reflog:
+              (raw_reflog
+                 [
+                   finish (sha 4) (sha 3) (sha 5);
+                   entry (sha 3) (sha 6) "commit: later edit";
+                 ])
+            ~ancestor_oracle:(fun a ~descendant ->
+              String.equal a (sha 3)
+              && String.equal descendant (sha 6)
+              && not discard
+              || (String.equal a (sha 2) && String.equal descendant (sha 4))
+              || (String.equal a (sha 5) && String.equal descendant (sha 3)))
+            ~content_oracle:(fun ~remote_sha ~target ~result_sha ->
+              String.equal remote_sha (sha 2)
+              && String.equal target (sha 5)
+              && String.equal result_sha (sha 3)
+              && preserved)
+        in
+        match authority with
+        | None -> discard || not preserved
+        | Some authority ->
+            (not discard) && preserved
+            && Rewrite_lineage.authorizes authority ~branch:"patch"
+                 ~remote_sha:(sha 2) ~local_sha:(sha 6));
     Test.make ~name:"changed-path preservation decoding is total" ~count:1000
       Gen.(pair string string)
       (fun (remote_changed_paths, local_changed_paths) ->
@@ -194,10 +226,10 @@ let properties =
               && String.equal descendant (sha 4)
               && incorporated
               || (String.equal a (sha 5) && String.equal descendant (sha 3)))
-            ~content_oracle:(fun ~remote_sha ~target ~local_sha ->
+            ~content_oracle:(fun ~remote_sha ~target ~result_sha ->
               String.equal remote_sha (sha 2)
               && String.equal target (sha 5)
-              && String.equal local_sha (sha 3)
+              && String.equal result_sha (sha 3)
               && preserved)
         in
         Bool.equal (Option.is_some result) (incorporated && preserved));
@@ -208,7 +240,8 @@ let properties =
         Option.is_none
           (Rewrite_lineage.of_reflog ~branch:"patch" ~local_sha ~remote_sha
              ~reflog
-             ~content_oracle:(fun ~remote_sha:_ ~target:_ ~local_sha:_ -> false)
+             ~content_oracle:(fun ~remote_sha:_ ~target:_ ~result_sha:_ ->
+               false)
              ~ancestor_oracle:(fun _ ~descendant:_ -> false)));
     Test.make
       ~name:
@@ -253,7 +286,7 @@ let properties =
           (Option.is_some
              (Rewrite_lineage.of_reflog ~branch:"patch" ~local_sha
                 ~remote_sha:(sha 2) ~reflog:(raw_reflog reflog)
-                ~content_oracle:(fun ~remote_sha:_ ~target:_ ~local_sha:_ ->
+                ~content_oracle:(fun ~remote_sha:_ ~target:_ ~result_sha:_ ->
                   false)
                 ~ancestor_oracle:(fun a ~descendant -> ancestor a descendant)))
           incorporates_remote);
@@ -296,7 +329,8 @@ let properties =
                     entry (sha 1) (sha 2) "commit: original";
                     entry (sha 2) (sha 3) message;
                   ])
-             ~content_oracle:(fun ~remote_sha:_ ~target:_ ~local_sha:_ -> false)
+             ~content_oracle:(fun ~remote_sha:_ ~target:_ ~result_sha:_ ->
+               false)
              ~ancestor_oracle:(fun a ~descendant ->
                String.equal a descendant || String.equal a (sha 1))));
     Test.make ~name:"missing reflog or ancestry fails closed" ~count:500
@@ -312,7 +346,8 @@ let properties =
                       entry (sha 1) (sha 2) "commit: original";
                       finish (sha 2) (sha 3) (sha 1);
                     ])
-             ~content_oracle:(fun ~remote_sha:_ ~target:_ ~local_sha:_ -> false)
+             ~content_oracle:(fun ~remote_sha:_ ~target:_ ~result_sha:_ ->
+               false)
              ~ancestor_oracle:(fun _ ~descendant:_ -> false)));
     Test.make
       ~name:
@@ -355,7 +390,8 @@ let properties =
                   ([ entry (sha 1) (sha 2) "commit: original" ]
                   @ gap
                   @ [ finish (sha 4) (sha 3) (sha 1) ]))
-             ~content_oracle:(fun ~remote_sha:_ ~target:_ ~local_sha:_ -> false)
+             ~content_oracle:(fun ~remote_sha:_ ~target:_ ~result_sha:_ ->
+               false)
              ~ancestor_oracle:(fun a ~descendant ->
                String.equal a descendant || String.equal a (sha 1))));
     Test.make
@@ -371,7 +407,7 @@ let properties =
           Rewrite_lineage.of_reflog ~branch:"patch"
             ~local_sha:(if capture_new_tip then sha 4 else sha 3)
             ~remote_sha:(sha 2) ~reflog
-            ~content_oracle:(fun ~remote_sha:_ ~target:_ ~local_sha:_ -> false)
+            ~content_oracle:(fun ~remote_sha:_ ~target:_ ~result_sha:_ -> false)
             ~ancestor_oracle:(fun a ~descendant ->
               String.equal a descendant
               || (String.equal a (sha 2) && String.equal descendant (sha 3)))
@@ -384,7 +420,8 @@ let properties =
              ~remote_sha:(sha 2)
              ~reflog:
                (raw_reflog [ finish (sha 2) (sha 3) (sha 2); "malformed" ])
-             ~content_oracle:(fun ~remote_sha:_ ~target:_ ~local_sha:_ -> false)
+             ~content_oracle:(fun ~remote_sha:_ ~target:_ ~result_sha:_ ->
+               false)
              ~ancestor_oracle:(fun _ ~descendant:_ -> true)));
     Test.make ~name:"an unterminated finish record grants no authority" ~count:1
       Gen.unit (fun () ->
@@ -392,7 +429,8 @@ let properties =
           (Rewrite_lineage.of_reflog ~branch:"patch" ~local_sha:(sha 3)
              ~remote_sha:(sha 2)
              ~reflog:(finish (sha 2) (sha 3) (sha 2))
-             ~content_oracle:(fun ~remote_sha:_ ~target:_ ~local_sha:_ -> false)
+             ~content_oracle:(fun ~remote_sha:_ ~target:_ ~result_sha:_ ->
+               false)
              ~ancestor_oracle:(fun _ ~descendant:_ -> true)));
     Test.make
       ~name:"failed newest rebase checks do not query older reflog ancestry"
@@ -408,7 +446,7 @@ let properties =
           Rewrite_lineage.of_reflog ~branch:"patch" ~local_sha:(sha 3)
             ~remote_sha:(sha 2)
             ~reflog:(raw_reflog (older @ [ finish (sha 4) (sha 3) (sha 5) ]))
-            ~content_oracle:(fun ~remote_sha:_ ~target:_ ~local_sha:_ -> false)
+            ~content_oracle:(fun ~remote_sha:_ ~target:_ ~result_sha:_ -> false)
             ~ancestor_oracle:(fun a ~descendant ->
               Int.incr calls;
               String.equal a (sha 2)

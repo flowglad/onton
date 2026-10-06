@@ -16,9 +16,10 @@ val changes_preserved :
   remote_changed_paths:string -> local_changed_paths:string -> bool
 (** Compare complete NUL-terminated Git path lists. [remote_changed_paths] is
     the diff from the unique merge base of remote and target to remote;
-    [local_changed_paths] is the diff from remote to the captured local commit.
-    Disjoint lists prove every remote-changed path retains its exact remote tree
-    entry, including deletions and modes. Malformed lists fail closed. *)
+    [local_changed_paths] is the diff from remote to the completed rebase
+    result. Disjoint lists prove every remote-changed path retains its exact
+    remote tree entry, including deletions and modes. Malformed lists fail
+    closed. *)
 
 val of_reflog :
   branch:string ->
@@ -27,7 +28,7 @@ val of_reflog :
   reflog:string ->
   ancestor_oracle:(string -> descendant:string -> bool) ->
   content_oracle:
-    (remote_sha:string -> target:string -> local_sha:string -> bool) ->
+    (remote_sha:string -> target:string -> result_sha:string -> bool) ->
   t option
 (** Decode oldest-first raw branch reflog records, including their before/after
     SHAs. Only newline-terminated records are accepted; an unterminated tail
@@ -35,7 +36,7 @@ val of_reflog :
     disconnected transitions, and unavailable ancestry fail closed. The newest
     completed rebase must incorporate remote in its pre-rebase history and have
     a target ancestral to its result. If the target omits remote, the content
-    oracle must prove exact preservation of remote-changed paths in the captured
-    local commit. Older history cannot rescue a failed check. Only
+    oracle must prove exact preservation of remote-changed paths at the
+    completed rebase result. Older history cannot rescue a failed check. Only
     [rebase (finish): refs/heads/<branch> onto <sha>] grants rewrite authority;
     aborted/in-progress rebases and arbitrary resets do not. *)

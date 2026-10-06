@@ -375,7 +375,7 @@ let scenario_happy_path env =
    independent writer either before planning (and a background fetch), or in
    Git's pre-push hook after the planner has captured its immutable lease. *)
 let scenario_rewrite_interleavings ?(conflict = false) ?(drop_remote = false)
-    env (commits, race, preserve_history) =
+    ?(append_after = false) env (commits, race, preserve_history) =
   let process_mgr = Eio.Stdenv.process_mgr env in
   let clock = Eio.Stdenv.clock env in
   with_temp_dir @@ fun root ->
@@ -464,6 +464,10 @@ let scenario_rewrite_interleavings ?(conflict = false) ?(drop_remote = false)
       failwith "conflict resolution did not change patch identity")
   else
     sh ~dir:worktree (Printf.sprintf "git rebase -q --onto origin/main %s" base);
+  if append_after then
+    sh ~dir:worktree
+      "echo follow-up >> patch.txt; git add patch.txt; git commit -q -m \
+       follow-up";
   let rewritten = git_capture ~dir:worktree [ "rev-parse"; "HEAD" ] in
   if conflict then
     List.iter [ "origin/main"; rewritten ] ~f:(fun descendant ->
@@ -538,7 +542,7 @@ let scenario_rewrite_interleavings ?(conflict = false) ?(drop_remote = false)
     in
     if
       List.length (String.split_lines contents)
-      <> commits + if conflict then 1 else 0
+      <> commits + (if conflict then 1 else 0) + if append_after then 1 else 0
     then failwith "patch commits lost";
     if conflict then (
       let retained =
@@ -950,6 +954,8 @@ let () =
   Eio_main.run @@ fun env ->
   Stdlib.print_endline "Worktree.force_push_with_lease + Push_plan integration:";
   scenario_lineage_planning_guards env;
+  scenario_rewrite_interleavings ~conflict:true ~append_after:true env
+    (2, 0, false);
   scenario_rewrite_interleavings ~conflict:true ~drop_remote:true env
     (2, 0, false);
   scenario_branch_switched env;
