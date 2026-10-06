@@ -925,6 +925,18 @@ let gather_push_plan_inputs ~on_phase ~process_mgr ~path ~branch_str ~base_str =
         remote_changes_included,
         commits_ahead_of_base ))
 
+let read_file_opt path =
+  try
+    let ic = Stdlib.open_in path in
+    Stdlib.Fun.protect
+      ~finally:(fun () -> Stdlib.close_in_noerr ic)
+      (fun () ->
+        let len = Stdlib.in_channel_length ic in
+        let buf = Bytes.create len in
+        Stdlib.really_input ic buf 0 len;
+        Some (Bytes.to_string buf))
+  with _ -> None
+
 let force_push_with_lease_unbounded ~on_phase ~preserve_history ~process_mgr
     ~path ~branch ~base =
   let branch_str = Types.Branch.to_string branch in
@@ -941,11 +953,132 @@ let force_push_with_lease_unbounded ~on_phase ~preserve_history ~process_mgr
         ancestry,
         remote_changes_included,
         commits_ahead_of_base ) -> (
-      let decision =
+      let plan rewrite_authority =
         Push_plan.plan ~preserve_history ~expected_branch:branch_str
           ~worktree_path_exists ~worktree_head_branch ~branch_ref_sha
           ~remote_tracking_sha ~ancestry ~remote_changes_included
-          ~commits_ahead_of_base
+          ~rewrite_authority ~commits_ahead_of_base
+      in
+      let preliminary = plan None in
+      let decision =
+        match preliminary with
+        | Refuse (Push_plan.Remote_not_integrated _) ->
+            let rewrite_authority =
+              match (branch_ref_sha, remote_tracking_sha, ancestry) with
+              | ( Some local_sha,
+                  Some remote_sha,
+                  Push_plan.Local_diverged_from_remote )
+                when (not preserve_history)
+                     && (not remote_changes_included)
+                     && not (rebase_in_progress_raw ~process_mgr ~path) -> (
+                  let code, reflog, _ =
+                    run_git_exit_code ~process_mgr
+                      [
+                        "git";
+                        "-C";
+                        path;
+                        "rev-parse";
+                        "--path-format=absolute";
+                        "--git-path";
+                        "logs/refs/heads/" ^ branch_str;
+                      ]
+                  in
+                  match
+                    if code = 0 then read_file_opt (String.strip reflog)
+                    else None
+                  with
+                  | None -> None
+                  | Some reflog ->
+                      Rewrite_lineage.of_reflog ~branch:branch_str ~local_sha
+                        ~remote_sha ~reflog
+                        ~content_oracle:(fun ~remote_sha ~target ~result_sha ->
+                          let code, bases, _ =
+                            run_git_exit_code ~process_mgr
+                              [
+                                "git";
+                                "-C";
+                                path;
+                                "merge-base";
+                                "--all";
+                                remote_sha;
+                                target;
+                              ]
+                          in
+                          match (code, String.split_lines bases) with
+                          | 0, [ common ] when not (String.is_empty common) -> (
+                              let changed_paths ?(deletions_only = false) before
+                                  after =
+                                let code, paths, _ =
+                                  run_git_exit_code ~process_mgr
+                                    [
+                                      "git";
+                                      "-C";
+                                      path;
+                                      "diff";
+                                      "--no-ext-diff";
+                                      "--no-textconv";
+                                      "--no-renames";
+                                      "--ignore-submodules=none";
+                                      "--name-only";
+                                      "-z";
+                                      (if deletions_only then "--diff-filter=D"
+                                       else "--diff-filter=ACDMRTUXB");
+                                      before;
+                                      after;
+                                      "--";
+                                    ]
+                                in
+                                if code = 0 then Some paths else None
+                              in
+                              match
+                                ( changed_paths common remote_sha,
+                                  changed_paths remote_sha result_sha,
+                                  changed_paths ~deletions_only:true common
+                                    target,
+                                  changed_paths ~deletions_only:true remote_sha
+                                    result_sha )
+                              with
+                              | ( Some remote_changed_paths,
+                                  Some local_changed_paths,
+                                  Some target_deleted_paths,
+                                  Some local_deleted_paths ) ->
+                                  Rewrite_lineage.changes_preserved
+                                    ~remote_changed_paths ~local_changed_paths
+                                    ~target_deleted_paths ~local_deleted_paths
+                              | _ -> false)
+                          | _ -> false)
+                        ~ancestor_oracle:(fun sha ~descendant ->
+                          let code, _, _ =
+                            run_git_exit_code ~process_mgr
+                              [
+                                "git";
+                                "-C";
+                                path;
+                                "merge-base";
+                                "--is-ancestor";
+                                sha;
+                                descendant;
+                              ]
+                          in
+                          code = 0))
+              | ( _,
+                  _,
+                  ( Push_plan.Local_includes_remote
+                  | Push_plan.Local_missing_remote | Push_plan.No_remote_yet
+                  | Push_plan.Unknown ) )
+              | None, _, Push_plan.Local_diverged_from_remote
+              | _, None, Push_plan.Local_diverged_from_remote
+              | Some _, Some _, Push_plan.Local_diverged_from_remote ->
+                  None
+            in
+            plan rewrite_authority
+        | Push _
+        | Refuse
+            ( Push_plan.Worktree_missing | Push_plan.No_commits_ahead_of_base
+            | Push_plan.Branch_ref_missing _ | Push_plan.Branch_switched _
+            | Push_plan.Local_missing_remote_commits _
+            | Push_plan.History_would_be_rewritten _ ) ->
+            preliminary
       in
       match decision with
       | Refuse Push_plan.Worktree_missing -> Push_worktree_missing
@@ -1039,18 +1172,6 @@ let force_push_with_lease ?(preserve_history = false)
 
 let rebase_in_progress ~process_mgr ~path =
   rebase_in_progress_raw ~process_mgr ~path
-
-let read_file_opt path =
-  try
-    let ic = Stdlib.open_in path in
-    Stdlib.Fun.protect
-      ~finally:(fun () -> Stdlib.close_in_noerr ic)
-      (fun () ->
-        let len = Stdlib.in_channel_length ic in
-        let buf = Bytes.create len in
-        Stdlib.really_input ic buf 0 len;
-        Some (Bytes.to_string buf))
-  with _ -> None
 
 (** Effectful: reconstruct [conflict_info] when a rebase is already in progress
     in the worktree (the orchestrator restarts mid-rebase, or a previous run

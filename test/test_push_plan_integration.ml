@@ -46,6 +46,20 @@ let with_temp_dir f =
 let sh ?(dir = ".") cmd = Git_env.sh ~dir cmd
 let git_capture ?(dir = ".") args = Git_env.git_capture ~cwd:dir args
 
+(* Observe runtime Git requests while forwarding every command to real Git. *)
+let observing_mgr (type tag) (mgr : tag Eio.Process.mgr_ty Eio.Resource.t)
+    on_spawn =
+  let (Eio.Resource.T (state, ops)) = mgr in
+  let module Original = (val Eio.Resource.get ops Eio.Process.Pi.Mgr) in
+  let module Observed = struct
+    include Original
+
+    let spawn t ~sw ?cwd ?stdin ?stdout ?stderr ?env ?executable args =
+      on_spawn args;
+      Original.spawn t ~sw ?cwd ?stdin ?stdout ?stderr ?env ?executable args
+  end in
+  Eio.Resource.T (state, Eio.Process.Pi.mgr (module Observed))
+
 let setup_origin ~origin_dir =
   Unix.mkdir origin_dir 0o755;
   sh ~dir:origin_dir "git init -q --bare --initial-branch=main"
@@ -61,6 +75,57 @@ let setup_seed_clone ~origin_dir ~managed_dir =
   sh ~dir:managed_dir "git add seed.txt";
   sh ~dir:managed_dir "git commit -q -m 'seed'";
   sh ~dir:managed_dir "git push -q -u origin main"
+
+let scenario_lineage_planning_guards env =
+  let clock = Eio.Stdenv.clock env in
+  with_temp_dir @@ fun root ->
+  let origin_dir = Stdlib.Filename.concat root "origin.git" in
+  let managed_dir = Stdlib.Filename.concat root "managed" in
+  setup_origin ~origin_dir;
+  setup_seed_clone ~origin_dir ~managed_dir;
+  sh ~dir:managed_dir
+    "git checkout -q -b feat; echo remote > remote.txt; git add remote.txt; \
+     git commit -q -m remote; git push -q -u origin feat; git reset -q --hard \
+     main; echo local > local.txt; git add local.txt; git commit -q -m local";
+  let reflog_reads = ref 0 in
+  let process_mgr =
+    observing_mgr (Eio.Stdenv.process_mgr env) (fun args ->
+        if List.mem args "logs/refs/heads/feat" ~equal:String.equal then
+          Int.incr reflog_reads)
+  in
+  let check ~path ~base ~preserve_history expected ~reads =
+    reflog_reads := 0;
+    let actual =
+      Worktree.force_push_with_lease ~clock ~process_mgr ~path
+        ~branch:(Types.Branch.of_string "feat")
+        ~base:(Types.Branch.of_string base)
+        ~preserve_history ()
+    in
+    if not (Worktree.equal_push_result actual expected) then
+      failwith ("planning guard: " ^ Worktree.show_push_result actual);
+    if !reflog_reads <> reads then
+      failwith "planning guard performed unnecessary lineage validation"
+  in
+  check
+    ~path:(Stdlib.Filename.concat root "missing")
+    ~base:"main" ~preserve_history:false Worktree.Push_worktree_missing ~reads:0;
+  sh ~dir:managed_dir "git checkout -q -b recovery";
+  check ~path:managed_dir ~base:"main" ~preserve_history:false
+    (Worktree.Push_rejected
+       (Push_reject_classify.Local_state_unsafe
+          { reason = "refuse_branch_switched" }))
+    ~reads:0;
+  sh ~dir:managed_dir "git checkout -q feat";
+  check ~path:managed_dir ~base:"feat" ~preserve_history:false
+    Worktree.Push_no_commits ~reads:0;
+  check ~path:managed_dir ~base:"main" ~preserve_history:true
+    (Worktree.Push_rejected
+       (Push_reject_classify.Local_state_unsafe
+          { reason = "refuse_history_rewrite" }))
+    ~reads:0;
+  check ~path:managed_dir ~base:"main" ~preserve_history:false
+    (Worktree.Push_rejected Push_reject_classify.Lease_violation) ~reads:1;
+  Stdlib.print_endline "  lineage_planning_guards: OK"
 
 let scenario_branch_switched env =
   let process_mgr = Eio.Stdenv.process_mgr env in
@@ -309,7 +374,9 @@ let scenario_happy_path env =
 (* Reproduce the fresh-clone/rewrite path with a real remote. Interleave an
    independent writer either before planning (and a background fetch), or in
    Git's pre-push hook after the planner has captured its immutable lease. *)
-let scenario_rewrite_interleavings env (commits, race, preserve_history) =
+let scenario_rewrite_interleavings ?(conflict = false) ?(drop_remote = false)
+    ?(append_after = false) ?(target_deletion = false)
+    ?(recreate_deleted = false) env (commits, race, preserve_history) =
   let process_mgr = Eio.Stdenv.process_mgr env in
   let clock = Eio.Stdenv.clock env in
   with_temp_dir @@ fun root ->
@@ -319,8 +386,23 @@ let scenario_rewrite_interleavings env (commits, race, preserve_history) =
   let worktree = Stdlib.Filename.concat root "worktree" in
   setup_origin ~origin_dir:origin;
   setup_seed_clone ~origin_dir:origin ~managed_dir:seed;
+  if conflict then
+    sh ~dir:seed
+      "printf 'v0.64\n\
+       ' > patch.txt; git add patch.txt; git commit -q -m version; git push -q \
+       origin main";
+  if target_deletion then
+    sh ~dir:seed
+      "echo original > dialog.txt; git add dialog.txt; git commit -q -m \
+       dialog; git push -q origin main";
   let base = git_capture ~dir:seed [ "rev-parse"; "HEAD" ] in
   sh ~dir:seed "git checkout -q -b feat";
+  if target_deletion then
+    sh ~dir:seed "echo labels > dialog.txt; git add dialog.txt";
+  if conflict then
+    sh ~dir:seed
+      "printf 'v0.66\n\
+       ' > patch.txt; echo retained > remote-only.txt; git add remote-only.txt";
   for n = 1 to commits do
     sh ~dir:seed
       (Printf.sprintf
@@ -335,6 +417,15 @@ let scenario_rewrite_interleavings env (commits, race, preserve_history) =
   sh ~dir:seed
     "git checkout -q main; echo advanced > advanced.txt; git add advanced.txt; \
      git commit -q -m advanced; git push -q origin main";
+  if conflict then
+    sh ~dir:seed
+      "printf 'v0.65\n\
+       ' > patch.txt; git add patch.txt; git commit -q -m version; git push -q \
+       origin main";
+  if target_deletion then
+    sh ~dir:seed
+      "git rm -q dialog.txt; git commit -q -m remove-dialog; git push -q \
+       origin main";
   sh
     (Printf.sprintf "git clone -q --branch main %s %s"
        (Stdlib.Filename.quote origin)
@@ -351,8 +442,55 @@ let scenario_rewrite_interleavings env (commits, race, preserve_history) =
        stale tip remains in the branch reflog when the remote later advances. *)
     sh ~dir:worktree ("git reset -q --hard " ^ writer);
     sh ~dir:worktree ("git reset -q --hard " ^ old_remote));
-  sh ~dir:worktree (Printf.sprintf "git rebase -q --onto origin/main %s" base);
+  if conflict then (
+    let result =
+      Worktree.rebase_onto ~upstream:base ~process_mgr ~path:worktree
+        ~target:(Types.Branch.of_string "origin/main")
+        ~project_name:"test" ~ancestor_ids:[] ()
+    in
+    (match result with
+    | Worktree.Conflict _ -> ()
+    | Worktree.Ok | Worktree.Noop | Worktree.Merge_conflict _
+    | Worktree.Uncommitted_changes _ | Worktree.Error _ ->
+        failwith
+          ("expected real version conflict: "
+          ^ Worktree.show_rebase_result result));
+    if target_deletion then (
+      sh ~dir:worktree "git rm -q -f dialog.txt";
+      if recreate_deleted then
+        sh ~dir:worktree "echo unrelated > dialog.txt; git add dialog.txt");
+    if drop_remote then sh ~dir:worktree "git rm -q -f remote-only.txt";
+    sh ~dir:worktree
+      "printf 'v0.66\n\
+       1\n\
+       ' > patch.txt; git add patch.txt; GIT_EDITOR=true git rebase --continue";
+    let unmatched =
+      git_capture ~dir:worktree
+        [
+          "rev-list";
+          "--cherry-pick";
+          "--right-only";
+          "--count";
+          "HEAD..." ^ old_remote;
+          "--";
+        ]
+    in
+    if String.equal unmatched "0" then
+      failwith "conflict resolution did not change patch identity")
+  else
+    sh ~dir:worktree (Printf.sprintf "git rebase -q --onto origin/main %s" base);
+  if append_after then
+    sh ~dir:worktree
+      "echo follow-up >> patch.txt; git add patch.txt; git commit -q -m \
+       follow-up";
   let rewritten = git_capture ~dir:worktree [ "rev-parse"; "HEAD" ] in
+  if conflict then
+    List.iter [ "origin/main"; rewritten ] ~f:(fun descendant ->
+        if
+          Git_env.git_exit_code ~cwd:worktree
+            [ "merge-base"; "--is-ancestor"; old_remote; descendant ]
+          <> 1
+        then failwith "precondition: rebase target/result must omit remote");
   let publish_writer =
     Printf.sprintf "git --git-dir=%s update-ref refs/heads/feat %s %s"
       (Stdlib.Filename.quote origin)
@@ -395,6 +533,18 @@ let scenario_rewrite_interleavings env (commits, race, preserve_history) =
         failwith
           ("protected rewrite was not refused: "
           ^ Worktree.show_push_result outcome))
+  else if drop_remote || recreate_deleted then (
+    (* A completed conflict rebase is insufficient if resolution drops remote
+       content without a target deletion, or changes a target-deleted file
+       instead of retaining the deletion. *)
+    if not (String.equal remote old_remote) then
+      failwith "unproven conflict rewrite changed remote";
+    match outcome with
+    | Worktree.Push_rejected Push_reject_classify.Lease_violation -> ()
+    | _ ->
+        failwith
+          ("conflict rewrite dropping remote content was not refused: "
+          ^ Worktree.show_push_result outcome))
   else if race = 0 then (
     if
       (not (Worktree.equal_push_result outcome Worktree.Push_ok))
@@ -406,8 +556,36 @@ let scenario_rewrite_interleavings env (commits, race, preserve_history) =
     let contents =
       git_capture ~dir:seed [ "--git-dir=" ^ origin; "show"; "feat:patch.txt" ]
     in
-    if List.length (String.split_lines contents) <> commits then
-      failwith "patch commits lost")
+    if
+      List.length (String.split_lines contents)
+      <> commits + (if conflict then 1 else 0) + if append_after then 1 else 0
+    then failwith "patch commits lost";
+    (if target_deletion then
+       let files =
+         git_capture ~dir:seed
+           [ "--git-dir=" ^ origin; "ls-tree"; "feat"; "--"; "dialog.txt" ]
+       in
+       if not (String.is_empty files) then
+         failwith "target deletion was not retained on remote");
+    if conflict then (
+      let retained =
+        git_capture ~dir:seed
+          [ "--git-dir=" ^ origin; "show"; "feat:remote-only.txt" ]
+      in
+      if not (String.equal retained "retained") then
+        failwith "remote-only content lost";
+      let retry =
+        Worktree.force_push_with_lease ~preserve_history ~clock ~process_mgr
+          ~path:worktree
+          ~branch:(Types.Branch.of_string "feat")
+          ~base:(Types.Branch.of_string "main")
+          ()
+      in
+      match retry with
+      | Worktree.Push_ok | Worktree.Push_up_to_date -> ()
+      | _ ->
+          failwith
+            ("publication retry failed: " ^ Worktree.show_push_result retry)))
   else (
     if not (String.equal remote writer) then
       failwith "concurrent writer was overwritten";
@@ -798,6 +976,15 @@ let to_rejection_partition =
 let () =
   Eio_main.run @@ fun env ->
   Stdlib.print_endline "Worktree.force_push_with_lease + Push_plan integration:";
+  scenario_lineage_planning_guards env;
+  scenario_rewrite_interleavings ~conflict:true ~append_after:true env
+    (2, 0, false);
+  scenario_rewrite_interleavings ~conflict:true ~drop_remote:true env
+    (2, 0, false);
+  scenario_rewrite_interleavings ~conflict:true ~target_deletion:true
+    ~drop_remote:true env (2, 0, false);
+  scenario_rewrite_interleavings ~conflict:true ~target_deletion:true
+    ~recreate_deleted:true env (2, 0, false);
   scenario_branch_switched env;
   scenario_local_missing_remote env;
   scenario_happy_path env;
@@ -809,7 +996,12 @@ let () =
       List.iter [ false; true ] ~f:(fun race ->
           scenario_initial_publication env ~preserve_history ~race);
       List.iter [ 0; 1; 2; 3 ] ~f:(fun race ->
-          scenario_rewrite_interleavings env (2, race, preserve_history)));
+          scenario_rewrite_interleavings env (2, race, preserve_history);
+          scenario_rewrite_interleavings ~conflict:true env
+            (2, race, preserve_history);
+          scenario_rewrite_interleavings ~conflict:true ~target_deletion:true
+            env
+            (2, race, preserve_history)));
   scenario_protected_history env [ false; true; false; true ];
   QCheck2.Test.check_exn
     (QCheck2.Test.make
@@ -836,6 +1028,19 @@ let () =
        (fun input ->
          try
            scenario_rewrite_interleavings env input;
+           true
+         with _ -> false));
+  QCheck2.Test.check_exn
+    (QCheck2.Test.make
+       ~name:"conflict-resolved rewrites preserve concurrent remote work"
+       ~count:16
+       ~print:(fun (commits, race, preserve_history) ->
+         Printf.sprintf "commits=%d race=%d preserve_history=%b" commits race
+           preserve_history)
+       QCheck2.Gen.(triple (int_range 1 4) (int_range 0 3) bool)
+       (fun input ->
+         try
+           scenario_rewrite_interleavings ~conflict:true env input;
            true
          with _ -> false));
   QCheck2.Test.check_exn to_rejection_partition;

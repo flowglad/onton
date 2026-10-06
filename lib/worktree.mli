@@ -421,8 +421,11 @@ val force_push_with_lease :
     returns a retryable lease rejection. Both modes enforce the captured lease.
     With [preserve_history = false], divergent publication requires every
     remote-only commit to be represented by an equivalent patch in the current
-    local history; unproven rewrites are refused. See [Push_plan] and
-    [classify_push_result] for the pure decision logic. *)
+    local history, or belong to a completed rebase lineage of the named branch
+    that incorporates the captured remote tip. That evidence is bound to both
+    captured SHAs; discarded history, missing records, and in-progress rebases
+    cannot authorize a rewrite. Unproven rewrites are refused. See [Push_plan]
+    and [classify_push_result] for the pure decision logic. *)
 
 val rebase_in_progress : process_mgr:_ Eio.Process.mgr -> path:string -> bool
 (** Returns [true] if there is a rebase currently in progress in the worktree at

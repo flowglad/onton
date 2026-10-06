@@ -33,7 +33,7 @@ type decision = Push of action | Refuse of refusal
 
 let plan ~preserve_history ~expected_branch ~worktree_path_exists
     ~worktree_head_branch ~branch_ref_sha ~remote_tracking_sha ~ancestry
-    ~remote_changes_included ~commits_ahead_of_base =
+    ~remote_changes_included ~rewrite_authority ~commits_ahead_of_base =
   if not worktree_path_exists then Refuse Worktree_missing
   else
     let head_matches =
@@ -64,7 +64,14 @@ let plan ~preserve_history ~expected_branch ~worktree_path_exists
                   Refuse (History_would_be_rewritten { local_sha; remote_sha })
               | ( (Local_diverged_from_remote | No_remote_yet | Unknown),
                   Some remote_sha )
-                when (not preserve_history) && remote_changes_included ->
+                when (not preserve_history)
+                     && (remote_changes_included
+                        || equal_ancestry ancestry Local_diverged_from_remote
+                           && Option.value_map rewrite_authority ~default:false
+                                ~f:(fun authority ->
+                                  Rewrite_lineage.authorizes authority
+                                    ~branch:expected_branch ~local_sha
+                                    ~remote_sha)) ->
                   Push (Force_push_with_lease { local_sha; remote_sha })
               | ( (Local_diverged_from_remote | No_remote_yet | Unknown),
                   Some remote_sha ) ->
