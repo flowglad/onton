@@ -79,11 +79,12 @@ let tests =
         let tradeoffs = "Tradeoff: " ^ tradeoffs in
         List.for_all
           [
-            (fun basis -> Architecture_design.Engineer_approved basis);
-            (fun basis -> Architecture_design.Constrained basis);
-            (fun basis -> Architecture_design.Delegated basis);
+            ( "engineer_approved",
+              fun basis -> Architecture_design.Engineer_approved basis );
+            ("constrained", fun basis -> Architecture_design.Constrained basis);
+            ("delegated", fun basis -> Architecture_design.Delegated basis);
           ]
-          ~f:(fun resolve ->
+          ~f:(fun (kind, resolve) ->
             let basis =
               Architecture_design.{ evidence; rationale = "One write owner" }
             in
@@ -121,11 +122,12 @@ let tests =
                 "Who owns admission?";
                 choice;
                 evidence;
+                "Resolution: " ^ kind ^ " — " ^ evidence;
                 "One write owner";
                 "Worker admission";
                 tradeoffs;
-              ] ~f:(fun expected ->
-                String.is_substring body ~substring:expected)));
+              ]
+              ~f:(fun expected -> String.is_substring body ~substring:expected)));
     property "feature PR refresh preserves architectural design once" G.string
       (fun design ->
         let design = "Resolved architecture: " ^ design in
