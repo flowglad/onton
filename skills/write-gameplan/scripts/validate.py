@@ -298,17 +298,21 @@ def validate_reachability_traces(inst: dict, patches_by_id: dict[str, dict], err
 
 def validate_write_frames(inst: dict, patches_by_id: dict[str, dict], errors: list[str]) -> None:
     reach = _transitive_deps(inst)
-    files = {pid: {entry['path'] for entry in patch.get('files', [])}
-             for pid, patch in patches_by_id.items()}
-    ids = list(files)
-    for i, a in enumerate(ids):
-        for b in ids[i + 1:]:
-            overlap = files[a] & files[b]
-            if overlap and a not in reach(b) and b not in reach(a):
-                errors.append(f"unordered write conflict between patches {a} and {b}: {sorted(overlap)}")
-    all_files = set().union(*files.values()) if files else set()
+    writers: dict[str, list[str]] = {}
+    for pid, patch in patches_by_id.items():
+        for path in {entry['path'] for entry in patch.get('files', [])}:
+            writers.setdefault(path, []).append(pid)
+    overlaps: dict[tuple[str, str], list[str]] = {}
+    for path, ids in writers.items():
+        for i, a in enumerate(ids):
+            for b in ids[i + 1:]:
+                overlaps.setdefault((a, b), []).append(path)
+    positions = {pid: i for i, pid in enumerate(patches_by_id)}
+    for a, b in sorted(overlaps, key=lambda pair: (positions[pair[0]], positions[pair[1]])):
+        if a not in reach(b) and b not in reach(a):
+            errors.append(f"unordered write conflict between patches {a} and {b}: {sorted(overlaps[a, b])}")
     for change in inst.get('requiredChanges', []):
-        if change['file'] not in all_files:
+        if change['file'] not in writers:
             errors.append(f"required change {change['file']!r} is outside every patch's files")
 
 

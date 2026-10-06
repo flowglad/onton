@@ -252,7 +252,7 @@ let run_case ?(detect_pr = false) ?(advance_base = false)
             ]
           (fun () ->
             SD.run ~kind ~delivery_mode ~patch_id
-              ~prompt:(Onton_core.Session_prompt.create ~context:"" ~turn:prompt)
+              ~prompt:(SD.create_prompt ~context:(fun () -> "") ~turn:prompt)
               ~agent
               ~on_pr_detected:(fun pr_number ->
                 Runtime.update_orchestrator runtime (fun orch ->
@@ -416,7 +416,8 @@ let run_case ?(detect_pr = false) ?(advance_base = false)
           SD.run ~kind:(Some Human)
             ~delivery_mode:Onton_core.Patch_decision.Start ~patch_id
             ~prompt:
-              (Onton_core.Session_prompt.create ~context:"FULL PATCH CONTEXT\n"
+              (SD.create_prompt
+                 ~context:(fun () -> "FULL PATCH CONTEXT\n")
                  ~turn:"Implement revised scope")
             ~agent:resumed
             ~on_pr_detected:(fun _ -> assert false)

@@ -1195,22 +1195,20 @@ module Make (Forge : Forge.S) (W : Worktree.S) (Env : Runner_env.S) = struct
                   (Runtime.read runtime (fun snap ->
                        Orchestrator.main_branch snap.Runtime.orchestrator))
             in
-            let agents_md =
-              read_optional_file
-                (Stdlib.Filename.concat
-                   (WS.resolve_worktree_path ~patch_id ~agent ())
-                   "AGENTS.md")
-            in
-            let context =
+            let context () =
+              let agents_md =
+                read_optional_file
+                  (Stdlib.Filename.concat
+                     (WS.resolve_worktree_path ~patch_id ~agent ())
+                     "AGENTS.md")
+              in
               Prompt.render_session_context ~project_name
                 ?pr_number:(Patch_agent.pr_number agent)
                 ?patch ~gameplan
                 ~base_branch:(Branch.to_string base_branch)
                 ?agents_md ()
             in
-            let prompt =
-              Onton_core.Session_prompt.create ~context ~turn:prompt
-            in
+            let prompt = Session_driver.create_prompt ~context ~turn:prompt in
             Session_driver.run ~kind ~delivery_mode ~patch_id ~prompt ~agent
               ~on_pr_detected ~backend ~complexity
       in

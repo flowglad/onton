@@ -97,6 +97,30 @@ class ContractValidation(unittest.TestCase):
         self.plan["functionalChanges"][-1]["requiredBy"] = []
         self.validate(1, "unordered write conflict")
 
+    def test_shared_paths_are_reported_together_once(self):
+        for change in self.plan["functionalChanges"]:
+            if change["ownedBy"] == 3:
+                change["requiredBy"] = []
+        self.plan["patches"][3]["files"].extend([
+            {"path": "lib/dune", "action": "modify", "description": "Shared manifest"},
+            {"path": "lib/patch_decision.mli", "action": "modify", "description": "Shared interface"},
+            {"path": "lib/dune", "action": "modify", "description": "Repeated entry"},
+        ])
+        self.validate(1, "unordered write conflict between patches 1 and 4: ['lib/dune', 'lib/patch_decision.mli']")
+
+    def test_transitive_order_allows_multiple_shared_paths(self):
+        for change in self.plan["functionalChanges"]:
+            if change["ownedBy"] == 3:
+                change["requiredBy"] = []
+        self.plan["patches"][3]["files"].extend([
+            {"path": "lib/dune", "action": "modify", "description": "Shared manifest"},
+            {"path": "lib/patch_decision.mli", "action": "modify", "description": "Shared interface"},
+        ])
+        self.plan["orderingConstraints"] = [
+            {"before": 3, "after": 4, "reason": "Consumer follows implementation"}
+        ]
+        self.validate()
+
     def test_unowned_required_change(self):
         self.plan["requiredChanges"][0]["file"] = "unowned.ml"
         self.validate(1, "outside every patch's files")

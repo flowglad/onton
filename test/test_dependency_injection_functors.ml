@@ -145,7 +145,7 @@ let _check_narrowed_run :
     kind:Operation_kind.t option ->
     delivery_mode:Patch_decision.delivery_mode ->
     patch_id:Patch_id.t ->
-    prompt:Onton_core.Session_prompt.t ->
+    prompt:Session_driver.prompt ->
     agent:Patch_agent.t ->
     on_pr_detected:(Pr_number.t -> unit) ->
     backend:Llm_backend.t ->
@@ -236,7 +236,7 @@ let () =
       kind:Operation_kind.t option ->
       delivery_mode:Patch_decision.delivery_mode ->
       patch_id:Patch_id.t ->
-      prompt:Onton_core.Session_prompt.t ->
+      prompt:Session_driver.prompt ->
       agent:Patch_agent.t ->
       on_pr_detected:(Pr_number.t -> unit) ->
       backend:Llm_backend.t ->

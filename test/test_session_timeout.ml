@@ -154,6 +154,7 @@ let run_case env ~capture_session ~respond =
       end in
       let module SD = Session_driver.Make (Fake_worktree) (Env) in
       let attempt = ref 0 in
+      let context_calls = ref 0 in
       let resumes = ref [] in
       let backend =
         Llm_backend.
@@ -170,6 +171,7 @@ let run_case env ~capture_session ~respond =
                 ~on_event
               ->
                 Int.incr attempt;
+                assert (!context_calls = if capture_session then 1 else !attempt);
                 resumes := resume_session :: !resumes;
                 assert (
                   String.is_prefix prompt
@@ -215,7 +217,10 @@ let run_case env ~capture_session ~respond =
         let result =
           SD.run ~kind:None ~delivery_mode ~patch_id
             ~prompt:
-              (Onton_core.Session_prompt.create ~context:"FULL PATCH CONTEXT\n"
+              (SD.create_prompt
+                 ~context:(fun () ->
+                   Int.incr context_calls;
+                   "FULL PATCH CONTEXT\n")
                  ~turn:"Continue the patch")
             ~agent
             ~on_pr_detected:(fun _ -> ())
