@@ -78,6 +78,7 @@ let discovery_intents orch =
   |> List.filter_map ~f:(fun (agent : Patch_agent.t) ->
       if
         agent.has_session
+        && Option.is_none agent.wontdo_reason
         && (not (Patch_agent.has_pr agent))
         && (not (Orchestrator.is_feature_descendant orch agent.patch_id))
         && not agent.merged
@@ -601,7 +602,11 @@ let plan_action_for_patch t ~branch_map:_ patch_id =
              (Graph.open_pr_deps (Orchestrator.graph t) patch_id ~has_merged)
              ~f:(fun dep -> open_dep_review_ready t dep)
   in
-  if agent.automerge_inflight || native_stack_base_mismatch t patch_id then None
+  if
+    Option.is_some agent.wontdo_reason
+    || agent.automerge_inflight
+    || native_stack_base_mismatch t patch_id
+  then None
   else if
     (not (Patch_agent.has_pr agent || agent.branch_published))
     && (not agent.Patch_agent.busy)

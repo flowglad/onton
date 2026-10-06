@@ -66,7 +66,9 @@ let needs_intervention fields =
   Patch_agent.needs_intervention_of_fields
     ~merged:(bool_member fields "merged")
     ~has_pr:(has_change fields) ~is_pr_missing:(is_pr_missing fields)
-    ~session_given_up:(session_given_up fields) ~human_pending
+    ~session_given_up:(session_given_up fields)
+    ~wontdo_reason:(string_member fields "wontdo_reason")
+    ~human_pending
     ~ci_failure_count:
       (Option.value (int_member fields "ci_failure_count") ~default:0)
     ~max_ci_failures:
@@ -107,6 +109,8 @@ let display_status_of_agent_json ~main_branch json =
   let ctx =
     State.Patch_ctx.empty
     |> State.Patch_ctx.set_merged ~patch_id ~value:(bool_member fields "merged")
+    |> State.Patch_ctx.set_wontdo ~patch_id
+         ~value:(Option.is_some (string_member fields "wontdo_reason"))
     |> State.Patch_ctx.set_needs_intervention ~patch_id
          ~value:
            (needs_intervention fields || bool_member fields "branch_blocked")

@@ -194,6 +194,9 @@ let patch_agent_to_yojson (a : Patch_agent.t) =
       ("max_ci_failures", `Int a.max_ci_failures);
       ( "session_fallback",
         Patch_agent.yojson_of_session_fallback a.session_fallback );
+      ( "wontdo_reason",
+        Option.value_map a.wontdo_reason ~default:`Null ~f:(fun s -> `String s)
+      );
       ( "human_messages",
         `List (List.map a.human_messages ~f:(fun s -> `String s)) );
       ( "inflight_human_messages",
@@ -383,7 +386,9 @@ let patch_agent_of_yojson ~gameplan json =
          (Option.value
             (int_member_opt "max_ci_failures" json)
             ~default:Patch_agent.default_max_ci_failures)
-       ~session_fallback ~human_messages ~inflight_human_messages ~ci_checks
+       ~session_fallback
+       ~wontdo_reason:(string_member_opt "wontdo_reason" json)
+       ~human_messages ~inflight_human_messages ~ci_checks
        ~merge_ready:(bool_member "merge_ready" json)
        ~head_oid:(string_member_opt "head_oid" json)
        ~expected_remote_head_oid:

@@ -10,6 +10,61 @@ let agent id =
 let tests =
   [
     QCheck2.Test.make
+      ~name:"WONTDO normalizes arbitrary reasons and is idempotent" ~count:500
+      QCheck2.Gen.string (fun reason ->
+        let a = agent "patch" in
+        let refused = Patch_agent.set_wontdo a reason in
+        let trimmed = String.strip reason in
+        let expected = if String.is_empty trimmed then None else Some trimmed in
+        Option.equal String.equal refused.Patch_agent.wontdo_reason expected
+        && Bool.equal
+             (Patch_agent.needs_intervention refused)
+             (Option.is_some expected)
+        && Patch_agent.equal refused (Patch_agent.set_wontdo refused reason));
+    QCheck2.Test.make
+      ~name:"WONTDO pause survives automatic work until explicit reset"
+      ~count:500
+      QCheck2.Gen.(list (int_range 0 6))
+      (fun operations ->
+        let _, _, valid =
+          List.fold operations
+            ~init:(agent "patch", false, true)
+            ~f:(fun (a, paused, valid) op ->
+              let a, paused =
+                match op with
+                | 0 -> (Patch_agent.set_wontdo a "Needs prerequisite", true)
+                | 1 -> (Patch_agent.reset_intervention_state a, false)
+                | 2 -> (Patch_agent.enqueue a Operation_kind.Human, paused)
+                | 3 ->
+                    (Patch_agent.add_human_message a "Queued guidance", paused)
+                | 4 -> (Patch_agent.clear_session_fallback a, paused)
+                | 5 -> (Patch_agent.set_ci_checks a [], paused)
+                | _ ->
+                    let active =
+                      Patch_agent.start a ~base_branch:(Branch.of_string "main")
+                    in
+                    (Patch_agent.complete active, paused)
+              in
+              ( a,
+                paused,
+                valid
+                && Bool.equal
+                     (Option.is_some a.Patch_agent.wontdo_reason)
+                     paused
+                && ((not paused)
+                   || Patch_agent.needs_intervention a
+                      && Patch_decision.equal_disposition
+                           (Patch_decision.disposition a)
+                           Patch_decision.Blocked) ))
+        in
+        valid);
+    QCheck2.Test.make ~name:"blank WONTDO does not clear an existing refusal"
+      ~count:50
+      QCheck2.Gen.(oneof_list [ ""; " "; "\n\t " ])
+      (fun reason ->
+        let a = Patch_agent.set_wontdo (agent "patch") "Prerequisite missing" in
+        Patch_agent.equal a (Patch_agent.set_wontdo a reason));
+    QCheck2.Test.make
       ~name:"publication settles only its captured refresh across interleavings"
       ~count:500
       QCheck2.Gen.(list (int_range 0 3))

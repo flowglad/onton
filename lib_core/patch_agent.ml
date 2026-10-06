@@ -35,6 +35,9 @@ type t = {
   ci_failure_count : int;
   max_ci_failures : int;
   session_fallback : session_fallback;
+  wontdo_reason : string option;
+      (** A pre-commit opt-out explanation. Pauses automatic work until human
+          guidance or an explicit intervention reset clears it. *)
   human_messages : string list;
   inflight_human_messages : string list;
   ci_checks : Ci_check.t list;
@@ -166,11 +169,13 @@ let default_max_ci_failures = 3
    event log so operators can grep for "why is this patch stuck?" by
    reason. *)
 let intervention_reason_of_fields ~merged ~has_pr ~is_pr_missing
-    ~session_given_up ~human_pending ~ci_failure_count ~max_ci_failures
-    ~start_attempts_without_pr ~conflict_noop_count ~no_commits_push_count
-    ~context_exhaustion_count ~push_failure_count ~rebase_failure_count
-    ~pr_body_artifact_miss_count ~review_unresolved_cycle_count =
+    ~session_given_up ~wontdo_reason ~human_pending ~ci_failure_count
+    ~max_ci_failures ~start_attempts_without_pr ~conflict_noop_count
+    ~no_commits_push_count ~context_exhaustion_count ~push_failure_count
+    ~rebase_failure_count ~pr_body_artifact_miss_count
+    ~review_unresolved_cycle_count =
   if merged then None
+  else if Option.is_some wontdo_reason then Some "wontdo"
   else if session_given_up then Some "session_fallback=given_up"
   else if is_pr_missing then Some "pr_missing"
     (* The Human exemption lets a newly-arrived human message be delivered
@@ -215,8 +220,8 @@ let intervention_reason t =
     ~has_pr:(has_pr t || t.branch_published)
     ~is_pr_missing:(is_pr_missing t)
     ~session_given_up:(equal_session_fallback t.session_fallback Given_up)
-    ~human_pending ~ci_failure_count:t.ci_failure_count
-    ~max_ci_failures:t.max_ci_failures
+    ~wontdo_reason:t.wontdo_reason ~human_pending
+    ~ci_failure_count:t.ci_failure_count ~max_ci_failures:t.max_ci_failures
     ~start_attempts_without_pr:t.start_attempts_without_pr
     ~conflict_noop_count:t.conflict_noop_count
     ~no_commits_push_count:t.no_commits_push_count
@@ -229,16 +234,18 @@ let intervention_reason t =
 let needs_intervention t = Option.is_some (intervention_reason t)
 
 let needs_intervention_of_fields ~merged ~has_pr ~is_pr_missing
-    ~session_given_up ~human_pending ~ci_failure_count ~max_ci_failures
-    ~start_attempts_without_pr ~conflict_noop_count ~no_commits_push_count
-    ~context_exhaustion_count ~push_failure_count ~rebase_failure_count
-    ~pr_body_artifact_miss_count ~review_unresolved_cycle_count =
+    ~session_given_up ~wontdo_reason ~human_pending ~ci_failure_count
+    ~max_ci_failures ~start_attempts_without_pr ~conflict_noop_count
+    ~no_commits_push_count ~context_exhaustion_count ~push_failure_count
+    ~rebase_failure_count ~pr_body_artifact_miss_count
+    ~review_unresolved_cycle_count =
   Option.is_some
     (intervention_reason_of_fields ~merged ~has_pr ~is_pr_missing
-       ~session_given_up ~human_pending ~ci_failure_count ~max_ci_failures
-       ~start_attempts_without_pr ~conflict_noop_count ~no_commits_push_count
-       ~context_exhaustion_count ~push_failure_count ~rebase_failure_count
-       ~pr_body_artifact_miss_count ~review_unresolved_cycle_count)
+       ~session_given_up ~wontdo_reason ~human_pending ~ci_failure_count
+       ~max_ci_failures ~start_attempts_without_pr ~conflict_noop_count
+       ~no_commits_push_count ~context_exhaustion_count ~push_failure_count
+       ~rebase_failure_count ~pr_body_artifact_miss_count
+       ~review_unresolved_cycle_count)
 
 let create ~branch ?(max_ci_failures = default_max_ci_failures) patch_id =
   {
@@ -259,6 +266,7 @@ let create ~branch ?(max_ci_failures = default_max_ci_failures) patch_id =
     ci_failure_count = 0;
     max_ci_failures;
     session_fallback = Fresh_available;
+    wontdo_reason = None;
     human_messages = [];
     inflight_human_messages = [];
     ci_checks = [];
@@ -327,6 +335,7 @@ let create_adhoc ~complexity ~patch_id ~branch ~pr_number ~max_ci_failures =
     ci_failure_count = 0;
     max_ci_failures;
     session_fallback = Fresh_available;
+    wontdo_reason = None;
     human_messages = [];
     inflight_human_messages = [];
     ci_checks = [];
@@ -391,6 +400,16 @@ let add_human_message t msg =
 
 let add_human_messages t msgs =
   { t with human_messages = List.append t.human_messages msgs }
+
+let normalize_wontdo_reason reason =
+  Option.bind reason ~f:(fun text ->
+      let text = String.strip text in
+      if String.is_empty text then None else Some text)
+
+let set_wontdo t reason =
+  match normalize_wontdo_reason (Some reason) with
+  | None -> t
+  | Some _ as wontdo_reason -> { t with wontdo_reason }
 
 let set_session_failed t =
   match t.session_fallback with
@@ -676,6 +695,7 @@ let reset_intervention_state t =
   {
     t with
     session_fallback = Fresh_available;
+    wontdo_reason = None;
     ci_failure_count = 0;
     start_attempts_without_pr = 0;
     conflict_noop_count = 0;
@@ -693,8 +713,8 @@ let restore ?(branch_published = false) ~patch_id ~branch ~pr_status
     ?(complexity = None) ~has_session ~busy ~merged ~queue ~satisfies ~changed
     ~has_conflict ~base_branch ~notified_base_branch ~ci_failure_count
     ?(max_ci_failures = default_max_ci_failures) ~session_fallback
-    ~human_messages ~inflight_human_messages ~ci_checks ~merge_ready
-    ?(head_oid = None) ?(expected_remote_head_oid = None)
+    ?(wontdo_reason = None) ~human_messages ~inflight_human_messages ~ci_checks
+    ~merge_ready ?(head_oid = None) ?(expected_remote_head_oid = None)
     ?(review_decision = None) ?(unresolved_comment_count = 0)
     ~mergeability_unknown ~merge_queue_required ~merge_queue_entry
     ?(native_stack = false) ?(native_stack_absent_polls = 0) ~merge_commit_sha
@@ -727,6 +747,7 @@ let restore ?(branch_published = false) ~patch_id ~branch ~pr_status
     ci_failure_count;
     max_ci_failures;
     session_fallback;
+    wontdo_reason = normalize_wontdo_reason wontdo_reason;
     human_messages;
     inflight_human_messages;
     ci_checks;

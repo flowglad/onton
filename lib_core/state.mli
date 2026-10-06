@@ -35,6 +35,8 @@ module Patch_ctx : sig
   val set_has_session : t -> patch_id:Patch_id.t -> value:bool -> t
   val needs_intervention : t -> patch_id:Patch_id.t -> bool
   val set_needs_intervention : t -> patch_id:Patch_id.t -> value:bool -> t
+  val is_wontdo : t -> patch_id:Patch_id.t -> bool
+  val set_wontdo : t -> patch_id:Patch_id.t -> value:bool -> t
   val is_merged : t -> patch_id:Patch_id.t -> bool
   val set_merged : t -> patch_id:Patch_id.t -> value:bool -> t
   val is_approved : t -> patch_id:Patch_id.t -> bool

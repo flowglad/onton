@@ -29,6 +29,7 @@ module Patch_ctx = struct
     has_pr : bool Map.M(Patch_id).t;
     has_session : bool Map.M(Patch_id).t;
     needs_intervention : bool Map.M(Patch_id).t;
+    wontdo : bool Map.M(Patch_id).t;
     merged : bool Map.M(Patch_id).t;
     approved : bool Map.M(Patch_id).t;
     enqueued : bool Map.M(Patch_id).t;
@@ -44,6 +45,7 @@ module Patch_ctx = struct
       has_pr = Map.empty (module Patch_id);
       has_session = Map.empty (module Patch_id);
       needs_intervention = Map.empty (module Patch_id);
+      wontdo = Map.empty (module Patch_id);
       merged = Map.empty (module Patch_id);
       approved = Map.empty (module Patch_id);
       enqueued = Map.empty (module Patch_id);
@@ -84,6 +86,12 @@ module Patch_ctx = struct
       needs_intervention =
         Map.set t.needs_intervention ~key:patch_id ~data:value;
     }
+
+  let is_wontdo t ~patch_id =
+    Map.find t.wontdo patch_id |> Option.value ~default:false
+
+  let set_wontdo t ~patch_id ~value =
+    { t with wontdo = Map.set t.wontdo ~key:patch_id ~data:value }
 
   let is_merged t ~patch_id =
     Map.find t.merged patch_id |> Option.value ~default:false
@@ -128,6 +136,7 @@ module Patch_ctx = struct
         Map.keys t.has_pr;
         Map.keys t.has_session;
         Map.keys t.needs_intervention;
+        Map.keys t.wontdo;
         Map.keys t.merged;
         Map.keys t.approved;
         Map.keys t.enqueued;

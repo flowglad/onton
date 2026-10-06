@@ -14,6 +14,7 @@ open Types
 
 type t =
   | Merged
+  | Wontdo
   | Needs_help
   | In_merge_queue
   | Approved_idle
@@ -64,6 +65,7 @@ let is_on_main ctx ~patch_id ~main_branch =
 let derive (ctx : State.Patch_ctx.t) ~patch_id
     ~(current_op : Operation_kind.t option) ~(main_branch : Branch.t) =
   if State.Patch_ctx.is_merged ctx ~patch_id then Merged
+  else if State.Patch_ctx.is_wontdo ctx ~patch_id then Wontdo
   else if State.Patch_ctx.needs_intervention ctx ~patch_id then Needs_help
   else if State.Patch_ctx.is_enqueued ctx ~patch_id then In_merge_queue
   else if State.Patch_ctx.is_approved ctx ~patch_id then

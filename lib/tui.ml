@@ -12,6 +12,7 @@ open Types
 
 type display_status = Display_status.t =
   | Merged
+  | Wontdo
   | Needs_help
   | In_merge_queue
   | Approved_idle
@@ -40,6 +41,7 @@ type status_display = { label : string; color : string }
 
 let label = function
   | Merged -> "merged"
+  | Wontdo -> "wont-do"
   | Needs_help -> "needs-help"
   | In_merge_queue -> "in-merge-queue"
   | Approved_idle -> "approved"
@@ -64,6 +66,7 @@ let label = function
 
 let color = function
   | Merged -> Term.Sgr.fg_green
+  | Wontdo -> Term.Sgr.fg_yellow
   | Needs_help -> Term.Sgr.fg_red
   | In_merge_queue -> Term.Sgr.fg_cyan
   | Approved_idle -> Term.Sgr.fg_green
@@ -161,6 +164,7 @@ let%test "scroll_indicators no scroll needed" =
 
 let status_style = function
   | Merged -> [ Term.Sgr.fg_green; Term.Sgr.bold ]
+  | Wontdo -> [ Term.Sgr.fg_yellow; Term.Sgr.bold ]
   | Needs_help -> [ Term.Sgr.fg_red; Term.Sgr.bold ]
   | In_merge_queue -> [ Term.Sgr.fg_cyan; Term.Sgr.bold ]
   | Approved_idle -> [ Term.Sgr.fg_green ]
@@ -178,6 +182,7 @@ let status_style = function
 
 let status_indicator = function
   | Merged -> "✓"
+  | Wontdo -> "!"
   | Needs_help -> "!"
   | In_merge_queue -> "⇥"
   | Approved_idle -> "✓"
@@ -332,6 +337,7 @@ type patch_view = {
   base_branch : Branch.t option;
   worktree_path : string option;
   intervention_reason : string option;
+  wontdo_reason : string option;
   automerge_enabled : bool;
   automerge_deadline : float option;
   automerge_failure_count : int;
@@ -361,6 +367,9 @@ let human_intervention_reason (agent : Patch_agent.t) =
   else
     Option.map (Patch_agent.intervention_reason agent) ~f:(fun code ->
         match code with
+        | "wontdo" ->
+            "Patch opted out - inspect WONTDO below; send a human message to \
+             restart"
         | "session_fallback=given_up" ->
             "Agent gave up after repeated session failures \xe2\x80\x94 needs \
              manual fix or restart"
@@ -431,6 +440,8 @@ let patch_view_of_agent (agent : Patch_agent.t)
   let ctx =
     ( State.Patch_ctx.empty
     |> State.Patch_ctx.set_merged ~patch_id ~value:agent.merged
+    |> State.Patch_ctx.set_wontdo ~patch_id
+         ~value:(Option.is_some agent.wontdo_reason)
     |> State.Patch_ctx.set_needs_intervention ~patch_id
          ~value:needs_intervention
     |> State.Patch_ctx.set_busy ~patch_id ~value:agent.busy
@@ -465,6 +476,8 @@ let patch_view_of_agent (agent : Patch_agent.t)
                 ( State.Patch_ctx.empty
                 |> State.Patch_ctx.set_merged ~patch_id:dep_id
                      ~value:dep_agent.merged
+                |> State.Patch_ctx.set_wontdo ~patch_id:dep_id
+                     ~value:(Option.is_some dep_agent.wontdo_reason)
                 |> State.Patch_ctx.set_needs_intervention ~patch_id:dep_id
                      ~value:dep_needs_intervention
                 |> State.Patch_ctx.set_busy ~patch_id:dep_id
@@ -521,6 +534,7 @@ let patch_view_of_agent (agent : Patch_agent.t)
     base_branch = agent.base_branch;
     worktree_path = agent.worktree_path;
     intervention_reason = human_intervention_reason agent;
+    wontdo_reason = agent.wontdo_reason;
     automerge_enabled = agent.automerge_enabled;
     automerge_deadline = agent.automerge_deadline;
     automerge_failure_count = agent.automerge_failure_count;
@@ -567,7 +581,7 @@ let is_running_status = function
   | Responding_to_human | Writing_pr_body | Cleaning_worktree | Rebasing
   | Starting | Updating | Approved_running ->
       true
-  | Merged | Needs_help | In_merge_queue | Approved_idle | Ci_queued
+  | Merged | Wontdo | Needs_help | In_merge_queue | Approved_idle | Ci_queued
   | Review_queued | Findings_queued | Cleanup_queued | Awaiting_feedback
   | Blocked_by_dep | Pending ->
       false
@@ -830,10 +844,10 @@ let render_ci_check_row ~indent (c : Ci_check.t) =
     of the check count. *)
 let max_inline_ci_checks = 8
 
-(** Build the info rows for a detail view. Shared between [render_detail] and
-    [detail_info_height] to keep them in sync. [~now] is the wall-clock time the
-    frame is rendered against — threaded in rather than read from
-    [Unix.gettimeofday] so the function stays pure and testable. *)
+(** Split detail metadata into pinned and scrollable rows. Shared between
+    [render_detail] and [detail_info_height] to keep them in sync. [~now] is the
+    wall-clock time the frame is rendered against — threaded in rather than read
+    from [Unix.gettimeofday] so the function stays pure and testable. *)
 let detail_info_rows (pv : patch_view) ~width ~now =
   let fit_value prefix value =
     prefix ^ Term.fit_width (Int.max 1 (width - String.length prefix)) value
@@ -963,10 +977,24 @@ let detail_info_rows (pv : patch_view) ~width ~now =
       in
       ci_header @ ci_rows @ overflow
   in
-  lines @ op_line @ intervention @ ci_section
+  let rows = lines @ op_line @ intervention @ ci_section in
+  (* A refusal can be several pages long. Keep the title and status pinned,
+     and let the existing metadata scroll with the explanation so short
+     terminals still have space to inspect it. *)
+  match pv.wontdo_reason with
+  | None -> (rows, [])
+  | Some _ -> (List.take rows 3, List.drop rows 3)
 
 let render_detail (pv : patch_view) ~width ~scroll ~now ?(transcript = "") () =
-  let info = detail_info_rows pv ~width ~now in
+  let info, metadata = detail_info_rows pv ~width ~now in
+  let content_label, transcript =
+    match pv.wontdo_reason with
+    | None -> ("Transcript", transcript)
+    | Some reason ->
+        ( "WONTDO",
+          String.concat ~sep:"\n"
+            (List.map (String.split_lines reason) ~f:sanitize_text) )
+  in
   let transcript_content =
     if String.is_empty transcript then []
     else
@@ -992,6 +1020,14 @@ let render_detail (pv : patch_view) ~width ~scroll ~now ?(transcript = "") () =
           wrap_line content_width line
           |> List.map ~f:(fun chunk -> "    " ^ chunk))
   in
+  let transcript_content =
+    match metadata with
+    | [] -> transcript_content
+    | _ ->
+        transcript_content
+        @ [ ""; Term.styled [ Term.Sgr.bold ] "  Metadata" ]
+        @ metadata
+  in
   let total = List.length transcript_content in
   if total = 0 || scroll.visible = 0 then (info, [], false, 0)
   else
@@ -1005,11 +1041,11 @@ let render_detail (pv : patch_view) ~width ~scroll ~now ?(transcript = "") () =
     let transcript_hdr =
       if vis_count > 0 then
         Term.styled [ Term.Sgr.bold ]
-          (Printf.sprintf "  ── Transcript (line %d–%d of %d) ──" first last
-             total)
+          (Printf.sprintf "  ── %s (line %d–%d of %d) ──" content_label first
+             last total)
       else
         Term.styled [ Term.Sgr.bold ]
-          (Printf.sprintf "  ── Transcript (%d lines) ──" total)
+          (Printf.sprintf "  ── %s (%d lines) ──" content_label total)
     in
     let remaining = scroll_max s - s.offset in
     let top_ind =
@@ -1360,7 +1396,8 @@ let render_checks_overlay ~width ~height ~scroll_offset (pv : patch_view) =
     enough to wrap, thread [~now] and the real terminal width through
     [detail_info_height] instead of passing placeholders. *)
 let detail_info_height (pv : patch_view) =
-  List.length (detail_info_rows pv ~width:80 ~now:0.0)
+  let pinned, _ = detail_info_rows pv ~width:80 ~now:0.0 in
+  List.length pinned
 
 (** {1 Public API} *)
 

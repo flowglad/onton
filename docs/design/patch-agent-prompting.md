@@ -34,7 +34,11 @@ Every patch turn includes an absolute path to
 `artifacts/<patch_id>/WONTDO.md`. Before making any patch commits, a worker
 may write a nonblank reason there and end its turn. The supervisor displays
 that reason in the activity log, completes the running operation, and puts
-the patch into intervention without pushing, creating a PR, or retrying.
+the patch into a distinct `wont-do` state without pushing, creating a PR, or
+retrying. The full explanation is persisted and shown in the scrollable
+patch detail view in place of the transcript while the patch is opted out.
+Metadata scrolls with the explanation so short terminals can inspect it.
+A human message or explicit bump clears this pause and restarts the loop; an opted-out patch does not count as completed.
 A PR or any patch commits make opt-out unavailable. Empty or whitespace-only
 files do not signal opt-out. Each new turn clears the previous file so an
 explicit manual retry cannot accidentally repeat an earlier refusal.

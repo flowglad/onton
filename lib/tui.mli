@@ -11,6 +11,7 @@ open Types
 
 type display_status = Display_status.t =
   | Merged
+  | Wontdo
   | Needs_help
   | In_merge_queue
   | Approved_idle
@@ -116,6 +117,9 @@ type patch_view = {
   base_branch : Branch.t option;
   worktree_path : string option;
   intervention_reason : string option;
+  wontdo_reason : string option;
+      (** Full opt-out contents, rendered in the scrollable detail pane while
+          the patch waits for a human reprompt. *)
   automerge_enabled : bool;
   automerge_deadline : float option;
   automerge_failure_count : int;

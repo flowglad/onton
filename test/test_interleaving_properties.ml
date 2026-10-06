@@ -2631,7 +2631,8 @@ let respond_outcome_of session_result =
   | Orchestrator.Session_no_commits -> Orchestrator.Respond_no_commits
   | Orchestrator.Session_process_error _ | Orchestrator.Session_no_resume
   | Orchestrator.Session_timed_out _ | Orchestrator.Session_failed _
-  | Orchestrator.Session_give_up | Orchestrator.Session_worktree_missing
+  | Orchestrator.Session_wontdo _ | Orchestrator.Session_give_up
+  | Orchestrator.Session_worktree_missing
   | Orchestrator.Session_context_exhausted ->
       Orchestrator.Respond_failed
 
@@ -2940,8 +2941,8 @@ let () =
               true
           | Orchestrator.Session_timed_out _ | Orchestrator.Session_failed _
           | Orchestrator.Session_process_error _
-          | Orchestrator.Session_no_resume | Orchestrator.Session_give_up
-          | Orchestrator.Session_worktree_missing
+          | Orchestrator.Session_no_resume | Orchestrator.Session_wontdo _
+          | Orchestrator.Session_give_up | Orchestrator.Session_worktree_missing
           | Orchestrator.Session_context_exhausted ->
               false
         in

@@ -39,6 +39,7 @@ let gen_op =
 (* Build a Patch_ctx by replaying setter calls — reaches every reachable state
    shape without poking at private fields. *)
 type flag =
+  | Set_wontdo of bool
   | Set_merged of bool
   | Set_needs_intervention of bool
   | Set_approved of bool
@@ -54,6 +55,7 @@ let gen_flag =
   let open QCheck2.Gen in
   oneof
     [
+      map (fun b -> Set_wontdo b) gen_bool;
       map (fun b -> Set_merged b) gen_bool;
       map (fun b -> Set_needs_intervention b) gen_bool;
       map (fun b -> Set_approved b) gen_bool;
@@ -67,6 +69,7 @@ let gen_flag =
     ]
 
 let apply_flag ctx = function
+  | Set_wontdo value -> State.Patch_ctx.set_wontdo ctx ~patch_id ~value
   | Set_merged value -> State.Patch_ctx.set_merged ctx ~patch_id ~value
   | Set_needs_intervention value ->
       State.Patch_ctx.set_needs_intervention ctx ~patch_id ~value
@@ -114,6 +117,16 @@ let prop_merged_dominates =
       Display_status.equal Merged
         (Display_status.derive ctx ~patch_id ~current_op ~main_branch))
 
+let prop_wontdo_dominates =
+  QCheck2.Test.make ~name:"WONTDO dominates every unmerged display state"
+    ~count:500
+    QCheck2.Gen.(pair gen_ctx gen_op)
+    (fun (ctx, current_op) ->
+      let ctx = State.Patch_ctx.set_merged ctx ~patch_id ~value:false in
+      let ctx = State.Patch_ctx.set_wontdo ctx ~patch_id ~value:true in
+      Display_status.equal Wontdo
+        (Display_status.derive ctx ~patch_id ~current_op ~main_branch))
+
 let prop_needs_help_beats_approved =
   QCheck2.Test.make
     ~name:"needs_intervention=true ⇒ Needs_help even when approved + busy + ..."
@@ -122,6 +135,7 @@ let prop_needs_help_beats_approved =
     (fun (ctx, current_op) ->
       (* needs_intervention beats every flag except merged. *)
       let ctx = State.Patch_ctx.set_merged ctx ~patch_id ~value:false in
+      let ctx = State.Patch_ctx.set_wontdo ctx ~patch_id ~value:false in
       let ctx = State.Patch_ctx.set_enqueued ctx ~patch_id ~value:false in
       let ctx =
         State.Patch_ctx.set_needs_intervention ctx ~patch_id ~value:true
@@ -140,6 +154,7 @@ let prop_enqueued_beats_approved =
       (* In_merge_queue sits below merged/needs_intervention and above
          approved/busy/queued — pin the two that dominate it to false. *)
       let ctx = State.Patch_ctx.set_merged ctx ~patch_id ~value:false in
+      let ctx = State.Patch_ctx.set_wontdo ctx ~patch_id ~value:false in
       let ctx =
         State.Patch_ctx.set_needs_intervention ctx ~patch_id ~value:false
       in
@@ -204,6 +219,7 @@ let gen_status : Display_status.t QCheck2.Gen.t =
     Display_status.
       [
         Merged;
+        Wontdo;
         Needs_help;
         In_merge_queue;
         Approved_idle;
@@ -246,6 +262,7 @@ let () =
     [
       prop_total;
       prop_merged_dominates;
+      prop_wontdo_dominates;
       prop_needs_help_beats_approved;
       prop_enqueued_beats_approved;
       prop_approved_busy_is_running;

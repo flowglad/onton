@@ -52,6 +52,9 @@ type t = private {
           {!Orchestrator.set_max_ci_failures}) from the [--max-ci-failures] flag
           / stored project config; defaults to {!default_max_ci_failures}. *)
   session_fallback : session_fallback;
+  wontdo_reason : string option;
+      (** A pre-commit opt-out explanation. Pauses automatic work until human
+          guidance or an explicit intervention reset clears it. *)
   human_messages : string list;
   inflight_human_messages : string list;
   ci_checks : Types.Ci_check.t list;
@@ -250,6 +253,7 @@ val intervention_reason_of_fields :
   has_pr:bool ->
   is_pr_missing:bool ->
   session_given_up:bool ->
+  wontdo_reason:string option ->
   human_pending:bool ->
   ci_failure_count:int ->
   max_ci_failures:int ->
@@ -270,6 +274,7 @@ val intervention_reason_of_fields :
 val needs_intervention : t -> bool
 (** [Option.is_some (intervention_reason t)]. Derived predicate. True iff the
     agent is not [merged] AND any of:
+    - [wontdo_reason <> None] (bypasses the Human exemption)
     - [session_fallback = Given_up] (bypasses the Human exemption)
     - [is_pr_missing t] (PR vanished from the remote — bypasses the Human
       exemption; queued Human entries are deferred until [Missing → Present]
@@ -287,6 +292,7 @@ val needs_intervention_of_fields :
   has_pr:bool ->
   is_pr_missing:bool ->
   session_given_up:bool ->
+  wontdo_reason:string option ->
   human_pending:bool ->
   ci_failure_count:int ->
   max_ci_failures:int ->
@@ -346,6 +352,11 @@ val add_human_message : t -> string -> t
 
 val add_human_messages : t -> string list -> t
 (** Prepend multiple messages to the pending list, preserving their order. *)
+
+val set_wontdo : t -> string -> t
+(** Record a trimmed nonblank opt-out explanation. Blank reasons are ignored.
+    The pause bypasses the Human exemption in {!needs_intervention}; human
+    guidance must explicitly reset it before scheduling resumes. *)
 
 val set_session_failed : t -> t
 (** Mark session fallback as [Given_up]. *)
@@ -592,11 +603,12 @@ val set_max_ci_failures : t -> max_ci_failures:int -> t
     startup does not invalidate in-flight outbox messages. *)
 
 val reset_intervention_state : t -> t
-(** Reset [session_fallback] to [Fresh_available], [ci_failure_count] to 0,
-    [start_attempts_without_pr] to 0, [conflict_noop_count] to 0,
-    [no_commits_push_count] to 0, [context_exhaustion_count] to 0,
-    [push_failure_count] to 0, [rebase_failure_count] to 0, and
-    [pr_body_artifact_miss_count] to 0. Used after manual resolution (e.g.,
+(** Clear [wontdo_reason], reset [session_fallback] to [Fresh_available],
+    [ci_failure_count] to 0, [start_attempts_without_pr] to 0,
+    [conflict_noop_count] to 0, [no_commits_push_count] to 0,
+    [context_exhaustion_count] to 0, [push_failure_count] to 0,
+    [rebase_failure_count] to 0, [pr_body_artifact_miss_count] to 0, and
+    [review_unresolved_cycle_count] to 0. Used after manual resolution (e.g.,
     sending a human message) to give the patch a fresh start. *)
 
 val set_branch_blocked : t -> t
@@ -752,6 +764,7 @@ val restore :
   ci_failure_count:int ->
   ?max_ci_failures:int ->
   session_fallback:session_fallback ->
+  ?wontdo_reason:string option ->
   human_messages:string list ->
   inflight_human_messages:string list ->
   ci_checks:Types.Ci_check.t list ->
