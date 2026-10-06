@@ -76,6 +76,87 @@ let setup_seed_clone ~origin_dir ~managed_dir =
   sh ~dir:managed_dir "git commit -q -m 'seed'";
   sh ~dir:managed_dir "git push -q -u origin main"
 
+let scenario_agent_published_with_stale_tracking env =
+  let clock = Eio.Stdenv.clock env in
+  let process_mgr = Eio.Stdenv.process_mgr env in
+  with_temp_dir @@ fun root ->
+  let origin_dir = Stdlib.Filename.concat root "origin.git" in
+  let managed_dir = Stdlib.Filename.concat root "managed" in
+  setup_origin ~origin_dir;
+  setup_seed_clone ~origin_dir ~managed_dir;
+  sh ~dir:managed_dir
+    "git checkout -q -b feat; echo first > work.txt; git add work.txt; git \
+     commit -q -m first; git push -q -u origin feat";
+  let old_sha = git_capture ~dir:managed_dir [ "rev-parse"; "HEAD" ] in
+  sh ~dir:managed_dir
+    "echo resolved >> work.txt; git add work.txt; git commit -q -m resolved";
+  let local_sha = git_capture ~dir:managed_dir [ "rev-parse"; "HEAD" ] in
+  (* The agent publishes its resolution, while Onton's tracking ref retains
+     the tip captured before the session. *)
+  sh ~dir:managed_dir
+    ("git push -q --force-with-lease=refs/heads/feat:" ^ old_sha ^ " origin "
+   ^ local_sha ^ ":refs/heads/feat");
+  sh ~dir:managed_dir ("git update-ref refs/remotes/origin/feat " ^ old_sha);
+  let outcome =
+    Worktree.force_push_with_lease ~clock ~process_mgr ~path:managed_dir
+      ~branch:(Types.Branch.of_string "feat")
+      ~base:(Types.Branch.of_string "main")
+      ()
+  in
+  if not (Worktree.equal_push_result outcome Worktree.Push_up_to_date) then
+    failwith ("agent-published branch: " ^ Worktree.show_push_result outcome);
+  Stdlib.print_endline "  agent_published_with_stale_tracking: OK"
+
+let scenario_pushurl_differs_from_fetch env ~multiple =
+  let clock = Eio.Stdenv.clock env in
+  let process_mgr = Eio.Stdenv.process_mgr env in
+  with_temp_dir @@ fun root ->
+  let origin_dir = Stdlib.Filename.concat root "origin.git" in
+  let push_dir = Stdlib.Filename.concat root "push.git" in
+  let managed_dir = Stdlib.Filename.concat root "managed" in
+  setup_origin ~origin_dir;
+  setup_origin ~origin_dir:push_dir;
+  setup_seed_clone ~origin_dir ~managed_dir;
+  sh ~dir:managed_dir
+    "git checkout -q -b feat; echo first > work.txt; git add work.txt; git \
+     commit -q -m first; git push -q origin feat";
+  let old_sha = git_capture ~dir:managed_dir [ "rev-parse"; "HEAD" ] in
+  sh ~dir:managed_dir
+    ("git push -q "
+    ^ Stdlib.Filename.quote push_dir
+    ^ " " ^ old_sha ^ ":refs/heads/feat");
+  sh ~dir:managed_dir
+    "echo second >> work.txt; git add work.txt; git commit -q -m second; git \
+     push -q origin feat";
+  let local_sha = git_capture ~dir:managed_dir [ "rev-parse"; "HEAD" ] in
+  sh ~dir:managed_dir ("git update-ref refs/remotes/origin/feat " ^ local_sha);
+  sh ~dir:managed_dir
+    ("git config --add remote.origin.pushurl " ^ Stdlib.Filename.quote push_dir);
+  if multiple then
+    sh ~dir:managed_dir
+      ("git config --add remote.origin.pushurl "
+      ^ Stdlib.Filename.quote origin_dir);
+  let outcome =
+    Worktree.force_push_with_lease ~clock ~process_mgr ~path:managed_dir
+      ~branch:(Types.Branch.of_string "feat")
+      ~base:(Types.Branch.of_string "main")
+      ()
+  in
+  (match outcome with
+  | Worktree.Push_rejected Push_reject_classify.Lease_violation -> ()
+  | _ ->
+      failwith
+        ("divergent push URL was accepted: " ^ Worktree.show_push_result outcome));
+  let push_sha =
+    git_capture ~dir:managed_dir [ "ls-remote"; push_dir; "refs/heads/feat" ]
+    |> fun value -> String.prefix value 40
+  in
+  if not (String.equal push_sha old_sha) then
+    failwith "divergent push destination was overwritten";
+  Stdlib.print_endline
+    (if multiple then "  multiple_pushurls: OK"
+     else "  pushurl_differs_from_fetch: OK")
+
 let scenario_lineage_planning_guards env =
   let clock = Eio.Stdenv.clock env in
   with_temp_dir @@ fun root ->
@@ -977,6 +1058,9 @@ let () =
   Eio_main.run @@ fun env ->
   Stdlib.print_endline "Worktree.force_push_with_lease + Push_plan integration:";
   scenario_lineage_planning_guards env;
+  scenario_agent_published_with_stale_tracking env;
+  scenario_pushurl_differs_from_fetch env ~multiple:false;
+  scenario_pushurl_differs_from_fetch env ~multiple:true;
   scenario_rewrite_interleavings ~conflict:true ~append_after:true env
     (2, 0, false);
   scenario_rewrite_interleavings ~conflict:true ~drop_remote:true env
