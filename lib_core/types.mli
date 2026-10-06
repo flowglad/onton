@@ -296,6 +296,13 @@ module Stream_event : sig
   [@@deriving show, eq, sexp_of, compare]
 end
 
+module Verification : sig
+  type t =
+    | Test of string
+    | Check of { command : string; expectation : string }
+  [@@deriving show, eq, sexp_of, compare, yojson]
+end
+
 module Functional_change : sig
   type t = {
     id : string;
@@ -306,6 +313,12 @@ module Functional_change : sig
         *)
     owned_by : Patch_id.t;
         (** The single patch responsible for delivering this change. *)
+    required_by : Patch_id.t list; [@yojson.default []]
+        (** Consumers of this guarantee. Each induces a dependency on the owner.
+        *)
+    verified_by : Verification.t list; [@yojson.default []]
+        (** Producer-owned testMap references or compiler/static check
+            obligations. *)
   }
   [@@deriving show, eq, sexp_of, compare, yojson]
   (** A functional/behavioural change the gameplan introduces. The
@@ -314,6 +327,11 @@ module Functional_change : sig
       owning patch, no shared ownership. Surfaced to the patch agent's prompt so
       the agent knows which user-visible behaviors it must deliver and cannot
       defer them to a sibling patch. *)
+end
+
+module Ordering_constraint : sig
+  type t = { before : Patch_id.t; after : Patch_id.t; reason : string }
+  [@@deriving show, eq, sexp_of, compare, yojson]
 end
 
 module Trace_node : sig
@@ -391,6 +409,9 @@ module Gameplan : sig
             path from entry point to leaf. Surfaced per-patch to the owning
             patch's prompt. Defaults to [[]] for legacy gameplans and pure
             INFRA/refactor gameplans with no runtime observable. *)
+    operational_considerations : string; [@yojson.default ""]
+    required_changes : string; [@yojson.default ""]
+    ordering_constraints : Ordering_constraint.t list; [@yojson.default []]
     current_state_analysis : string; [@yojson.default ""]
     explicit_opinions : string; [@yojson.default ""]
     acceptance_criteria : string list; [@yojson.default []]

@@ -119,6 +119,9 @@ let run_case ?(detect_pr = false) ?(advance_base = false)
             solution_summary = "";
             final_state_spec = "";
             patches;
+            operational_considerations = "";
+            required_changes = "";
+            ordering_constraints = [];
             current_state_analysis = "";
             explicit_opinions = "";
             acceptance_criteria = [];
@@ -248,7 +251,9 @@ let run_case ?(detect_pr = false) ?(advance_base = false)
                 ();
             ]
           (fun () ->
-            SD.run ~kind ~delivery_mode ~patch_id ~prompt ~agent
+            SD.run ~kind ~delivery_mode ~patch_id
+              ~prompt:(Onton_core.Session_prompt.create ~context:"" ~turn:prompt)
+              ~agent
               ~on_pr_detected:(fun pr_number ->
                 Runtime.update_orchestrator runtime (fun orch ->
                     Orchestrator.set_pr_number orch patch_id pr_number))
@@ -410,7 +415,10 @@ let run_case ?(detect_pr = false) ?(advance_base = false)
         let retried =
           SD.run ~kind:(Some Human)
             ~delivery_mode:Onton_core.Patch_decision.Start ~patch_id
-            ~prompt:"Implement revised scope" ~agent:resumed
+            ~prompt:
+              (Onton_core.Session_prompt.create ~context:"FULL PATCH CONTEXT\n"
+                 ~turn:"Implement revised scope")
+            ~agent:resumed
             ~on_pr_detected:(fun _ -> assert false)
             ~backend:retry_backend ~complexity:None
         in

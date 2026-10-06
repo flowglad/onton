@@ -100,6 +100,9 @@ let run_case env ~capture_session ~respond =
             solution_summary = "";
             final_state_spec = "";
             patches = [ patch ];
+            operational_considerations = "";
+            required_changes = "";
+            ordering_constraints = [];
             current_state_analysis = "";
             explicit_opinions = "";
             acceptance_criteria = [];
@@ -160,7 +163,7 @@ let run_case env ~capture_session ~respond =
               (fun ~project_name:_
                 ~cwd:_
                 ~patch_id:_
-                ~prompt:_
+                ~prompt
                 ~resume_session
                 ~session_uuid:_
                 ~complexity:_
@@ -168,6 +171,16 @@ let run_case env ~capture_session ~respond =
               ->
                 Int.incr attempt;
                 resumes := resume_session :: !resumes;
+                assert (
+                  String.is_prefix prompt
+                    ~prefix:
+                      (if Option.is_none resume_session then
+                         "FULL PATCH CONTEXT\nContinue the patch"
+                       else "Continue the patch"));
+                assert (
+                  Bool.equal
+                    (String.is_substring prompt ~substring:"FULL PATCH CONTEXT")
+                    (Option.is_none resume_session));
                 if capture_session && !attempt = 1 then
                   on_event
                     (Stream_event.Session_init
@@ -201,7 +214,10 @@ let run_case env ~capture_session ~respond =
         in
         let result =
           SD.run ~kind:None ~delivery_mode ~patch_id
-            ~prompt:"Continue the patch" ~agent
+            ~prompt:
+              (Onton_core.Session_prompt.create ~context:"FULL PATCH CONTEXT\n"
+                 ~turn:"Continue the patch")
+            ~agent
             ~on_pr_detected:(fun _ -> ())
             ~backend ~complexity:None
         in

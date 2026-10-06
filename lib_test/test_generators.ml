@@ -291,6 +291,9 @@ let gen_gameplan =
             solution_summary = "test solution";
             final_state_spec = "";
             patches;
+            operational_considerations = "";
+            required_changes = "";
+            ordering_constraints = [];
             current_state_analysis = "";
             explicit_opinions = "";
             acceptance_criteria = [];
@@ -808,6 +811,9 @@ let make_test_gameplan patches =
       solution_summary = "";
       final_state_spec = "";
       patches;
+      operational_considerations = "";
+      required_changes = "";
+      ordering_constraints = [];
       current_state_analysis = "";
       explicit_opinions = "";
       acceptance_criteria = [];

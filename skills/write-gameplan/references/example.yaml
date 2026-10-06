@@ -1,3 +1,5 @@
+formatVersion: 2
+
 projectName: extract-patch-decision
 
 owner: flowglad
@@ -97,24 +99,77 @@ functionalChanges:
       functions can be exercised in isolation without instantiating a runner fiber or
       any Eio I/O.
     ownedBy: 3
+    requiredBy:
+      - 4
+    verifiedBy:
+      - Patch_decision > merged patch is always skipped
+      - Patch_decision > busy patch is never delivered
+      - Patch_decision > CI failure cap at 3
   - id: FC-2
     description: >-
       Merged patches are skipped (disposition = Skip) regardless of busy/ci-failure
       state.
     ownedBy: 3
+    requiredBy:
+      - 4
+    verifiedBy:
+      - Patch_decision > merged patch is always skipped
+      - Patch_decision > busy patch is never delivered
+      - Patch_decision > CI failure cap at 3
   - id: FC-3
     description: Busy patches are never delivered (disposition is Skip or Queue, never Deliver).
     ownedBy: 3
+    requiredBy:
+      - 4
+    verifiedBy:
+      - Patch_decision > merged patch is always skipped
+      - Patch_decision > busy patch is never delivered
+      - Patch_decision > CI failure cap at 3
   - id: FC-4
     description: >-
       Patches with ci_failure_count ≥ 3 require human intervention (needs_intervention =
       true).
     ownedBy: 3
+    requiredBy:
+      - 4
+    verifiedBy:
+      - Patch_decision > merged patch is always skipped
+      - Patch_decision > busy patch is never delivered
+      - Patch_decision > CI failure cap at 3
   - id: FC-5
     description: >-
       main.ml runner_fiber delegates every patch-lifecycle decision to Patch_decision —
       no inline merged/busy/CI-failure checks remain in I/O code paths.
     ownedBy: 4
+    requiredBy: []
+    verifiedBy:
+      - command: dune build && dune runtest
+        expectation: Production callers type-check and existing runtime behavior tests pass.
+  - id: FC-6
+    description: >-
+      The exported decision input/output types and callable signatures are available to
+      the property harness and decision implementation.
+    ownedBy: 1
+    requiredBy:
+      - 2
+      - 3
+    verifiedBy:
+      - command: dune build @check
+        expectation: >-
+          The decision module and public interface type-check with the declared input
+          and output types.
+  - id: FC-7
+    description: >-
+      The decision property test executable compiles against the exported interface and
+      exposes the named pending properties for implementation.
+    ownedBy: 2
+    requiredBy:
+      - 3
+    verifiedBy:
+      - command: dune build test/test_patch_decision.exe
+        expectation: >-
+          The property harness compiles against the producer interface; behavioral
+          proofs remain assigned to Patch 3.
 
 contextResources:
   - id: current-runner-fiber-decisions
@@ -140,13 +195,43 @@ contextResources:
       - 3
 
 acceptanceCriteria:
-  - Patch_decision module exists with pure functions for all decision points
-  - All decision functions are covered by QCheck2 property tests
-  - Properties are derived from the formal spec, not from the current OCaml behavior
-  - main.ml runner_fiber calls Patch_decision instead of inlining logic
-  - No change to observable behavior — same decisions, same outcomes
-  - All existing tests pass
-  - dune build produces no warnings
+  - id: AC-1
+    description: Patch_decision module exists with pure functions for all decision points
+    tracesTo:
+      - FC-1
+      - FC-2
+      - FC-3
+      - FC-4
+  - id: AC-2
+    description: All decision functions are covered by QCheck2 property tests
+    tracesTo:
+      - FC-1
+      - FC-2
+      - FC-3
+      - FC-4
+  - id: AC-3
+    description: Properties are derived from the formal spec, not from the current OCaml behavior
+    tracesTo:
+      - FC-1
+      - FC-2
+      - FC-3
+      - FC-4
+  - id: AC-4
+    description: main.ml runner_fiber calls Patch_decision instead of inlining logic
+    tracesTo:
+      - FC-5
+  - id: AC-5
+    description: No change to observable behavior — same decisions, same outcomes
+    tracesTo:
+      - FC-5
+  - id: AC-6
+    description: All existing tests pass
+    tracesTo:
+      - FC-5
+  - id: AC-7
+    description: dune build produces no warnings
+    tracesTo:
+      - FC-5
 
 reachabilityTraces:
   - observable: >-
@@ -371,24 +456,6 @@ testMap:
     stubPatch: 2
     implPatch: 3
 
-dependencyGraph:
-  - patch: 1
-    classification: INFRA
-    dependsOn: []
-  - patch: 2
-    classification: INFRA
-    dependsOn:
-      - 1
-  - patch: 3
-    classification: INFRA
-    dependsOn:
-      - 1
-      - 2
-  - patch: 4
-    classification: BEHAVIOR
-    dependsOn:
-      - 3
-
 mergabilityChecklist:
   featureFlagStrategyDocumented: true
   earlyPatchesNonFunctional: true
@@ -397,12 +464,12 @@ mergabilityChecklist:
   testMapComplete: true
   testMapImplPatchMatchesCode: true
   behaviorPatchesMinimal: true
-  dependencyGraphOrdered: true
   behaviorPatchesJustified: true
   functionalChangesOwnedByExactlyOnePatch: true
   operationalConsiderationsSubstantive: true
   observableReachabilityTraced: true
   gameplanIsAtomicAndAutonomous: true
+  derivedDependenciesValid: true
 
 mergabilityInsight: >-
   3 of 4 patches are INFRA and can ship without changing observable behavior. Only Patch
@@ -452,3 +519,5 @@ finalStateSpec: |
   inline-decisions rf: RunnerFiber, p: Patch => Nat0.
   ---
   all rf: RunnerFiber, p: Patch | inline-decisions rf p = 0.
+
+orderingConstraints: []

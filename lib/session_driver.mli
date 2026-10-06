@@ -43,7 +43,7 @@ module Make (_ : Worktree.S) (_ : ENV) : sig
     kind:Types.Operation_kind.t option ->
     delivery_mode:Patch_decision.delivery_mode ->
     patch_id:Types.Patch_id.t ->
-    prompt:string ->
+    prompt:Onton_core.Session_prompt.t ->
     agent:Patch_agent.t ->
     on_pr_detected:(Types.Pr_number.t -> unit) ->
     backend:Llm_backend.t ->

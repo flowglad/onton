@@ -1,30 +1,28 @@
 {
+  "formatVersion": 2,
   "projectName": "extract-patch-decision",
-
   "owner": "flowglad",
   "repo": "onton",
-
   "specFile": "spec/onton.pant",
-
   "workstream": {
     "name": "onton-completeness",
     "milestone": "onton-completeness-pt-5",
-    "priorMilestones": ["onton-port", "onton-complete", "onton-completeness", "onton-completeness-pt-4"],
+    "priorMilestones": [
+      "onton-port",
+      "onton-complete",
+      "onton-completeness",
+      "onton-completeness-pt-4"
+    ],
     "unlocks": "Testable decision logic decoupled from I/O; property tests for all patch lifecycle transitions"
   },
-
   "problemStatement": "Decision logic for patch lifecycle (should we deliver an operation? skip it? queue it?) is tangled with I/O in main.ml's 231-line runner_fiber. This makes it impossible to property-test the decision rules that the formal spec defines. The decision logic should be extracted into a pure module.",
-
   "solutionSummary": "Extract a pure Patch_decision module with functions like `disposition` (algebraic return) and `needs_intervention` (predicate). Each mirrors how the spec models its invariant: actions as domains, cap conditions as predicates. Wire main.ml to call these functions instead of inlining the logic. Add QCheck2 property tests derived from the formal spec's preconditions and postconditions.",
-
   "mergabilityStrategy": {
     "featureFlagStrategy": "No feature flag needed. This is a refactoring of internal decision logic. External behavior is unchanged — the same decisions are made, just in a different module.",
     "featureFlags": [],
     "patchOrderingStrategy": "Patches 1-3 are INFRA (types, test stubs, pure logic). Patch 4 is BEHAVIOR (wires into main.ml)."
   },
-
   "currentStateAnalysis": "main.ml contains runner_fiber (lines 941-1171) which mixes Eio I/O with pure decision logic: checking if a patch is merged, busy, has conflicts, CI failures, etc. The same patterns repeat across on_poll_result, on_human_message, and on_ci_status handlers. There is no pure decision module — decisions are inline pattern matches inside effectful code.",
-
   "operationalConsiderations": {
     "externalSystemAccess": "Not applicable. This refactor moves decision logic between in-process OCaml modules; no new external system is introduced. The decision functions consume record fields (merged, busy, ci_failure_count) that runner_fiber already populates from its existing inputs.",
     "crossRuntimeContracts": "Not applicable. Patch_decision is internal to the onton binary — its functions are not called from another runtime, its types are not serialized to disk or wire, and its results are consumed within the same OCaml process that invokes them.",
@@ -32,7 +30,6 @@
     "concurrencyAndIdempotency": "Not applicable. Patch_decision is a pure module — its functions have no side effects and no shared state. Concurrent or repeated invocation returns identical results for identical inputs. The wiring patch does not change runner_fiber's Eio concurrency structure.",
     "rollbackStrategy": "Not applicable. No stateful changes are made — no DB schema, no data writes, no external mutations. Rolling back means reverting the commits; runner_fiber returns to its previous inline-decision form with no data consequences."
   },
-
   "requiredChanges": [
     {
       "file": "lib/patch_decision.ml",
@@ -59,78 +56,210 @@
       "signature": null
     }
   ],
-
   "functionalChanges": [
     {
       "id": "FC-1",
       "description": "Patch_decision is callable as a pure module from outside main.ml — its decision functions can be exercised in isolation without instantiating a runner fiber or any Eio I/O.",
-      "ownedBy": 3
+      "ownedBy": 3,
+      "requiredBy": [
+        4
+      ],
+      "verifiedBy": [
+        "Patch_decision > merged patch is always skipped",
+        "Patch_decision > busy patch is never delivered",
+        "Patch_decision > CI failure cap at 3"
+      ]
     },
     {
       "id": "FC-2",
       "description": "Merged patches are skipped (disposition = Skip) regardless of busy/ci-failure state.",
-      "ownedBy": 3
+      "ownedBy": 3,
+      "requiredBy": [
+        4
+      ],
+      "verifiedBy": [
+        "Patch_decision > merged patch is always skipped",
+        "Patch_decision > busy patch is never delivered",
+        "Patch_decision > CI failure cap at 3"
+      ]
     },
     {
       "id": "FC-3",
       "description": "Busy patches are never delivered (disposition is Skip or Queue, never Deliver).",
-      "ownedBy": 3
+      "ownedBy": 3,
+      "requiredBy": [
+        4
+      ],
+      "verifiedBy": [
+        "Patch_decision > merged patch is always skipped",
+        "Patch_decision > busy patch is never delivered",
+        "Patch_decision > CI failure cap at 3"
+      ]
     },
     {
       "id": "FC-4",
       "description": "Patches with ci_failure_count ≥ 3 require human intervention (needs_intervention = true).",
-      "ownedBy": 3
+      "ownedBy": 3,
+      "requiredBy": [
+        4
+      ],
+      "verifiedBy": [
+        "Patch_decision > merged patch is always skipped",
+        "Patch_decision > busy patch is never delivered",
+        "Patch_decision > CI failure cap at 3"
+      ]
     },
     {
       "id": "FC-5",
       "description": "main.ml runner_fiber delegates every patch-lifecycle decision to Patch_decision — no inline merged/busy/CI-failure checks remain in I/O code paths.",
-      "ownedBy": 4
+      "ownedBy": 4,
+      "requiredBy": [],
+      "verifiedBy": [
+        {
+          "command": "dune build && dune runtest",
+          "expectation": "Production callers type-check and existing runtime behavior tests pass."
+        }
+      ]
+    },
+    {
+      "id": "FC-6",
+      "description": "The exported decision input/output types and callable signatures are available to the property harness and decision implementation.",
+      "ownedBy": 1,
+      "requiredBy": [
+        2,
+        3
+      ],
+      "verifiedBy": [
+        {
+          "command": "dune build @check",
+          "expectation": "The decision module and public interface type-check with the declared input and output types."
+        }
+      ]
+    },
+    {
+      "id": "FC-7",
+      "description": "The decision property test executable compiles against the exported interface and exposes the named pending properties for implementation.",
+      "ownedBy": 2,
+      "requiredBy": [
+        3
+      ],
+      "verifiedBy": [
+        {
+          "command": "dune build test/test_patch_decision.exe",
+          "expectation": "The property harness compiles against the producer interface; behavioral proofs remain assigned to Patch 3."
+        }
+      ]
     }
   ],
-
   "contextResources": [
     {
       "id": "current-runner-fiber-decisions",
       "kind": "existing-implementation",
-      "paths": ["bin/main.ml"],
+      "paths": [
+        "bin/main.ml"
+      ],
       "why": "runner_fiber currently contains the inline lifecycle decisions that Patch_decision must preserve and Patch 4 must replace.",
-      "consumedBy": [3, 4]
+      "consumedBy": [
+        3,
+        4
+      ]
     },
     {
       "id": "patch-decision-property-contract",
       "kind": "contract",
-      "paths": ["spec/onton.pant", "test/test_patch_decision.ml"],
+      "paths": [
+        "spec/onton.pant",
+        "test/test_patch_decision.ml"
+      ],
       "why": "The formal spec and property tests define the decision invariants that Patch 3 implements.",
-      "consumedBy": [2, 3]
+      "consumedBy": [
+        2,
+        3
+      ]
     }
   ],
-
   "acceptanceCriteria": [
-    "Patch_decision module exists with pure functions for all decision points",
-    "All decision functions are covered by QCheck2 property tests",
-    "Properties are derived from the formal spec, not from the current OCaml behavior",
-    "main.ml runner_fiber calls Patch_decision instead of inlining logic",
-    "No change to observable behavior — same decisions, same outcomes",
-    "All existing tests pass",
-    "dune build produces no warnings"
+    {
+      "id": "AC-1",
+      "description": "Patch_decision module exists with pure functions for all decision points",
+      "tracesTo": [
+        "FC-1",
+        "FC-2",
+        "FC-3",
+        "FC-4"
+      ]
+    },
+    {
+      "id": "AC-2",
+      "description": "All decision functions are covered by QCheck2 property tests",
+      "tracesTo": [
+        "FC-1",
+        "FC-2",
+        "FC-3",
+        "FC-4"
+      ]
+    },
+    {
+      "id": "AC-3",
+      "description": "Properties are derived from the formal spec, not from the current OCaml behavior",
+      "tracesTo": [
+        "FC-1",
+        "FC-2",
+        "FC-3",
+        "FC-4"
+      ]
+    },
+    {
+      "id": "AC-4",
+      "description": "main.ml runner_fiber calls Patch_decision instead of inlining logic",
+      "tracesTo": [
+        "FC-5"
+      ]
+    },
+    {
+      "id": "AC-5",
+      "description": "No change to observable behavior — same decisions, same outcomes",
+      "tracesTo": [
+        "FC-5"
+      ]
+    },
+    {
+      "id": "AC-6",
+      "description": "All existing tests pass",
+      "tracesTo": [
+        "FC-5"
+      ]
+    },
+    {
+      "id": "AC-7",
+      "description": "dune build produces no warnings",
+      "tracesTo": [
+        "FC-5"
+      ]
+    }
   ],
-
   "reachabilityTraces": [
     {
       "observable": "main.ml's runner_fiber produces patch-lifecycle decisions by calling Patch_decision rather than inlining them",
       "tracesTo": "FC-5",
       "ownedBy": 4,
       "path": [
-        { "file": "bin/main.ml", "symbol": "runner_fiber", "status": "existing" },
-        { "file": "lib/patch_decision.ml", "symbol": "disposition", "status": "created" }
+        {
+          "file": "bin/main.ml",
+          "symbol": "runner_fiber",
+          "status": "existing"
+        },
+        {
+          "file": "lib/patch_decision.ml",
+          "symbol": "disposition",
+          "status": "created"
+        }
       ],
       "testPath": null,
       "runtimeReachabilityNote": null
     }
   ],
-
   "openQuestions": [],
-
   "explicitOpinions": [
     {
       "opinion": "Return algebraic types, not booleans",
@@ -141,7 +270,6 @@
       "rationale": "The spec is the source of truth. If the code disagrees with the spec, the code is wrong. Testing against current behavior would just lock in bugs."
     }
   ],
-
   "patches": [
     {
       "number": 1,
@@ -197,7 +325,9 @@
         "Add pending test: busy patch is never delivered (spec: busy? p -> disposition p ~= deliver)",
         "Add pending test: CI failure count >= 3 requires intervention (spec: ci-failure-count p >= 3 -> needs-intervention? p)"
       ],
-      "requiredContext": ["patch-decision-property-contract"],
+      "requiredContext": [
+        "patch-decision-property-contract"
+      ],
       "testStubsIntroduced": [
         "Patch_decision > merged patch is always skipped",
         "Patch_decision > busy patch is never delivered",
@@ -242,7 +372,10 @@
         "Implement needs_intervention: ci_failure_count >= 3 -> true, else -> false",
         "Enable all QCheck2 tests from Patch 2"
       ],
-      "requiredContext": ["current-runner-fiber-decisions", "patch-decision-property-contract"],
+      "requiredContext": [
+        "current-runner-fiber-decisions",
+        "patch-decision-property-contract"
+      ],
       "testStubsIntroduced": null,
       "testStubsImplemented": [
         "Patch_decision > merged patch is always skipped",
@@ -268,13 +401,14 @@
         "In CI failure handler (~line 1050): replace inline ci_failure_count >= 3 check with Patch_decision.needs_intervention",
         "Remove now-dead local helper functions that duplicated decision logic"
       ],
-      "requiredContext": ["current-runner-fiber-decisions"],
+      "requiredContext": [
+        "current-runner-fiber-decisions"
+      ],
       "testStubsIntroduced": null,
       "testStubsImplemented": null,
       "spec": "module EXTRACT_DECISION_PATCH_4.\n\n> Patch 4 wires the pure decision module into main.ml.\n> The behavioral invariant: main.ml delegates all lifecycle\n> decisions to Patch_decision — no inline decision logic remains.\n\nPatch.\nRunnerFiber.\ninline-decisions rf: RunnerFiber, p: Patch => Nat0.\n---\n> All decision points in runner_fiber use Patch_decision.\nall rf: RunnerFiber, p: Patch | inline-decisions rf p = 0.\n"
     }
   ],
-
   "testMap": [
     {
       "testName": "Patch_decision > merged patch is always skipped",
@@ -295,14 +429,6 @@
       "implPatch": 3
     }
   ],
-
-  "dependencyGraph": [
-    { "patch": 1, "classification": "INFRA", "dependsOn": [] },
-    { "patch": 2, "classification": "INFRA", "dependsOn": [1] },
-    { "patch": 3, "classification": "INFRA", "dependsOn": [1, 2] },
-    { "patch": 4, "classification": "BEHAVIOR", "dependsOn": [3] }
-  ],
-
   "mergabilityChecklist": {
     "featureFlagStrategyDocumented": true,
     "earlyPatchesNonFunctional": true,
@@ -311,15 +437,14 @@
     "testMapComplete": true,
     "testMapImplPatchMatchesCode": true,
     "behaviorPatchesMinimal": true,
-    "dependencyGraphOrdered": true,
     "behaviorPatchesJustified": true,
     "functionalChangesOwnedByExactlyOnePatch": true,
     "operationalConsiderationsSubstantive": true,
     "observableReachabilityTraced": true,
-    "gameplanIsAtomicAndAutonomous": true
+    "gameplanIsAtomicAndAutonomous": true,
+    "derivedDependenciesValid": true
   },
-
   "mergabilityInsight": "3 of 4 patches are INFRA and can ship without changing observable behavior. Only Patch 4 changes behavior (wiring).",
-
-  "finalStateSpec": "module EXTRACT_DECISION.\n\n> ══════════════════════════════════════════\n> THE GUARANTEE\n> ══════════════════════════════════════════\n> After this gameplan, all patch lifecycle decisions are made\n> by the pure Patch_decision module. Decision logic is fully\n> testable via QCheck2 properties derived from the spec.\n\nPatch.\nDisposition.\nskip => Disposition.\nqueue => Disposition.\ndeliver => Disposition.\n\nmerged? p: Patch => Bool.\nbusy? p: Patch => Bool.\nci-failure-count p: Patch => Nat0.\nneeds-intervention? p: Patch => Bool.\n\ndisposition p: Patch => Disposition.\n---\n> Merged patches are always skipped.\nall p: Patch, merged? p | disposition p = skip.\n\n> Busy patches are never delivered.\nall p: Patch, busy? p | disposition p ~= deliver.\n\n> CI failure cap triggers intervention.\nall p: Patch, ci-failure-count p >= 3 | needs-intervention? p.\n\nwhere\n\n> ══════════════════════════════════════════\n> SEPARATION OF CONCERNS\n> ══════════════════════════════════════════\n> main.ml delegates all decisions to Patch_decision.\n> No inline decision logic remains in I/O code.\n\nRunnerFiber.\ninline-decisions rf: RunnerFiber, p: Patch => Nat0.\n---\nall rf: RunnerFiber, p: Patch | inline-decisions rf p = 0.\n"
+  "finalStateSpec": "module EXTRACT_DECISION.\n\n> ══════════════════════════════════════════\n> THE GUARANTEE\n> ══════════════════════════════════════════\n> After this gameplan, all patch lifecycle decisions are made\n> by the pure Patch_decision module. Decision logic is fully\n> testable via QCheck2 properties derived from the spec.\n\nPatch.\nDisposition.\nskip => Disposition.\nqueue => Disposition.\ndeliver => Disposition.\n\nmerged? p: Patch => Bool.\nbusy? p: Patch => Bool.\nci-failure-count p: Patch => Nat0.\nneeds-intervention? p: Patch => Bool.\n\ndisposition p: Patch => Disposition.\n---\n> Merged patches are always skipped.\nall p: Patch, merged? p | disposition p = skip.\n\n> Busy patches are never delivered.\nall p: Patch, busy? p | disposition p ~= deliver.\n\n> CI failure cap triggers intervention.\nall p: Patch, ci-failure-count p >= 3 | needs-intervention? p.\n\nwhere\n\n> ══════════════════════════════════════════\n> SEPARATION OF CONCERNS\n> ══════════════════════════════════════════\n> main.ml delegates all decisions to Patch_decision.\n> No inline decision logic remains in I/O code.\n\nRunnerFiber.\ninline-decisions rf: RunnerFiber, p: Patch => Nat0.\n---\nall rf: RunnerFiber, p: Patch | inline-decisions rf p = 0.\n",
+  "orderingConstraints": []
 }

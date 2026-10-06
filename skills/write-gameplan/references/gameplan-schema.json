@@ -4,6 +4,7 @@
   "description": "A structured plan for a complex codebase change, broken into mergeable patches.",
   "type": "object",
   "required": [
+    "formatVersion",
     "projectName",
     "owner",
     "repo",
@@ -23,12 +24,16 @@
     "explicitOpinions",
     "patches",
     "testMap",
-    "dependencyGraph",
+    "orderingConstraints",
     "mergabilityChecklist",
     "mergabilityInsight",
     "finalStateSpec"
   ],
   "properties": {
+    "formatVersion": {
+      "const": 2,
+      "description": "Onton derives scheduling from functional guarantees and serialization constraints."
+    },
     "projectName": {
       "type": "string",
       "pattern": "^[a-z0-9]+(-[a-z0-9]+)*$",
@@ -45,11 +50,21 @@
       "description": "Repository name on the git forge (paired with owner). All patches[].files[].path and requiredChanges[].file paths in this gameplan are interpreted relative to this repo's root; paths escaping the root (e.g. '../other-repo/x.ts') are disallowed."
     },
     "specFile": {
-      "type": ["string", "null"],
+      "type": [
+        "string",
+        "null"
+      ],
       "description": "Path to the specification file the user provided, if any."
     },
     "workstream": {
-      "oneOf": [{ "$ref": "#/$defs/workstream" }, { "type": "null" }],
+      "oneOf": [
+        {
+          "$ref": "#/$defs/workstream"
+        },
+        {
+          "type": "null"
+        }
+      ],
       "description": "The workstream and milestone this gameplan belongs to, if any."
     },
     "problemStatement": {
@@ -72,49 +87,62 @@
     },
     "requiredChanges": {
       "type": "array",
-      "items": { "$ref": "#/$defs/requiredChange" }
+      "items": {
+        "$ref": "#/$defs/requiredChange"
+      }
     },
     "functionalChanges": {
       "type": "array",
-      "items": { "$ref": "#/$defs/functionalChange" },
-      "description": "Exhaustive enumeration of the functional/behavioural changes this gameplan introduces, each assigned to exactly one owning patch. Use this to defeat the failure mode where a change is described prose-only in the problem/solution narrative and every patch implementer assumes some other patch owns it. The mapping is total on changes: every entry has an `ownedBy` patch. Multiple changes may map to the same patch; INFRA-only patches that introduce no observable change need not appear here. Downstream consumers (e.g. onton's patch prompt renderer) MUST surface the subset of functionalChanges ownedBy each patch in that patch's agent prompt, so the implementing agent knows exactly which user-visible behaviors are its responsibility."
+      "items": {
+        "$ref": "#/$defs/functionalChange"
+      },
+      "description": "Exhaustive owned behavioral guarantees, including internal APIs, persistence capabilities and runtime access required by another patch. Each has one producer and explicit consumers; Onton projects the execution graph and both sides of the prompt from these declarations."
     },
     "contextResources": {
       "type": "array",
-      "items": { "$ref": "#/$defs/contextResource" },
+      "items": {
+        "$ref": "#/$defs/contextResource"
+      },
       "description": "Authoritative existing implementations, contracts, predecessor surfaces, reference docs, tests/static checks, or external references that specific patches must read before editing. Attach resources only to patches that consume them: each resource's consumedBy list must match those patches' requiredContext arrays."
     },
     "acceptanceCriteria": {
       "type": "array",
-      "items": { "type": "string" },
-      "description": "Each item is a 'done' condition."
+      "items": {
+        "$ref": "#/$defs/acceptanceCriterion"
+      },
+      "description": "Stable IDs and functional-change references route acceptance obligations to producers and consumers."
     },
     "reachabilityTraces": {
       "type": "array",
-      "items": { "$ref": "#/$defs/reachabilityTrace" },
+      "items": {
+        "$ref": "#/$defs/reachabilityTrace"
+      },
       "description": "For every observable the gameplan promises (a rendered element, reachable route, API response, or flag effect), the live path from the entry point that emits it to the leaf the owning patch edits — established by tracing real call/import/reference edges against HEAD, not from memory. Defeats the wrong-lever / dead-surface failure where a patch edits a symbol that exists but is not on the path producing the behavior. Empty only when the gameplan introduces no runtime observable (e.g. pure INFRA/refactor). See SKILL.md 'Rule 4 — Ground efficacy, not just existence'."
     },
     "openQuestions": {
       "type": "array",
-      "items": { "type": "string" },
+      "items": {
+        "type": "string"
+      },
       "description": "Decisions for the team."
     },
     "explicitOpinions": {
       "type": "array",
-      "items": { "$ref": "#/$defs/explicitOpinion" }
+      "items": {
+        "$ref": "#/$defs/explicitOpinion"
+      }
     },
     "patches": {
       "type": "array",
-      "items": { "$ref": "#/$defs/patch" }
+      "items": {
+        "$ref": "#/$defs/patch"
+      }
     },
     "testMap": {
       "type": "array",
-      "items": { "$ref": "#/$defs/testMapEntry" }
-    },
-    "dependencyGraph": {
-      "type": "array",
-      "items": { "$ref": "#/$defs/dependencyGraphEntry" },
-      "description": "Must be a valid DAG. dependsOn: [] means no dependencies. Used to identify which patches can be executed in parallel."
+      "items": {
+        "$ref": "#/$defs/testMapEntry"
+      }
     },
     "mergabilityChecklist": {
       "$ref": "#/$defs/mergabilityChecklist"
@@ -126,21 +154,41 @@
     "finalStateSpec": {
       "type": "string",
       "description": "Formal specification source describing what must be true when ALL patches are complete. This is the union of all patch specs plus any cross-cutting invariants. Should be reviewable independently — a reader should understand the end state without reading individual patches."
+    },
+    "orderingConstraints": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/orderingConstraint"
+      },
+      "description": "Only serialization requirements (shared file ownership, migration order). Capability dependencies are derived from functionalChanges.requiredBy."
     }
   },
   "additionalProperties": false,
   "$defs": {
     "workstream": {
       "type": "object",
-      "required": ["name", "milestone", "priorMilestones", "unlocks"],
+      "required": [
+        "name",
+        "milestone",
+        "priorMilestones",
+        "unlocks"
+      ],
       "properties": {
-        "name": { "type": "string" },
-        "milestone": { "type": "string" },
+        "name": {
+          "type": "string"
+        },
+        "milestone": {
+          "type": "string"
+        },
         "priorMilestones": {
           "type": "array",
-          "items": { "type": "string" }
+          "items": {
+            "type": "string"
+          }
         },
-        "unlocks": { "type": "string" }
+        "unlocks": {
+          "type": "string"
+        }
       },
       "additionalProperties": false
     },
@@ -180,7 +228,11 @@
     },
     "mergabilityStrategy": {
       "type": "object",
-      "required": ["featureFlagStrategy", "featureFlags", "patchOrderingStrategy"],
+      "required": [
+        "featureFlagStrategy",
+        "featureFlags",
+        "patchOrderingStrategy"
+      ],
       "properties": {
         "featureFlagStrategy": {
           "type": "string",
@@ -188,7 +240,9 @@
         },
         "featureFlags": {
           "type": "array",
-          "items": { "$ref": "#/$defs/featureFlag" }
+          "items": {
+            "$ref": "#/$defs/featureFlag"
+          }
         },
         "patchOrderingStrategy": {
           "type": "string",
@@ -198,13 +252,27 @@
       "additionalProperties": false
     },
     "featureFlag": {
-      "oneOf": [{ "$ref": "#/$defs/environmentVariableFlag" }, { "$ref": "#/$defs/serviceManagedFlag" }]
+      "oneOf": [
+        {
+          "$ref": "#/$defs/environmentVariableFlag"
+        },
+        {
+          "$ref": "#/$defs/serviceManagedFlag"
+        }
+      ]
     },
     "environmentVariableFlag": {
       "type": "object",
-      "required": ["type", "name", "introducedInPatch", "activatedInPatch"],
+      "required": [
+        "type",
+        "name",
+        "introducedInPatch",
+        "activatedInPatch"
+      ],
       "properties": {
-        "type": { "const": "environment-variable" },
+        "type": {
+          "const": "environment-variable"
+        },
         "name": {
           "type": "string",
           "description": "e.g. ENABLE_MY_FEATURE"
@@ -220,16 +288,27 @@
     },
     "serviceManagedFlag": {
       "type": "object",
-      "required": ["type", "flagName", "rolloutStrategy", "introducedInPatch", "activatedInPatch"],
+      "required": [
+        "type",
+        "flagName",
+        "rolloutStrategy",
+        "introducedInPatch",
+        "activatedInPatch"
+      ],
       "properties": {
-        "type": { "const": "service-managed" },
+        "type": {
+          "const": "service-managed"
+        },
         "flagName": {
           "type": "string",
           "description": "Flag identifier in the feature flag service."
         },
         "rolloutStrategy": {
           "type": "string",
-          "enum": ["percentage", "allowlist"]
+          "enum": [
+            "percentage",
+            "allowlist"
+          ]
         },
         "introducedInPatch": {
           "$ref": "#/$defs/patchId"
@@ -242,7 +321,13 @@
     },
     "functionalChange": {
       "type": "object",
-      "required": ["id", "description", "ownedBy"],
+      "required": [
+        "id",
+        "description",
+        "ownedBy",
+        "requiredBy",
+        "verifiedBy"
+      ],
       "properties": {
         "id": {
           "type": "string",
@@ -256,26 +341,77 @@
         "ownedBy": {
           "$ref": "#/$defs/patchId",
           "description": "The single patch responsible for delivering this change. Exactly one owner — no shared ownership, no orphans. The owning patch's agent prompt will list this change explicitly so the implementing agent cannot defer it to another patch."
+        },
+        "requiredBy": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/patchId"
+          },
+          "description": "Patches that require this guarantee. Each consumer depends on ownedBy. No self-consumption; use [] for a final outcome without consumers."
+        },
+        "verifiedBy": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "oneOf": [
+              {
+                "type": "string",
+                "minLength": 1,
+                "description": "A testMap testName implemented by ownedBy, with its test file in the owner frame."
+              },
+              {
+                "type": "object",
+                "required": [
+                  "command",
+                  "expectation"
+                ],
+                "properties": {
+                  "command": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "expectation": {
+                    "type": "string",
+                    "minLength": 1
+                  }
+                },
+                "additionalProperties": false
+              }
+            ]
+          },
+          "description": "Proof at the producer boundary: testMap references or compiler/static checks with explicit expected results. Required to be nonempty for consumed guarantees. Never defer their proof to the final consumer."
         }
       },
       "additionalProperties": false
     },
     "requiredChange": {
       "type": "object",
-      "required": ["file", "description"],
+      "required": [
+        "file",
+        "description"
+      ],
       "properties": {
         "file": {
           "type": "string",
           "description": "File path."
         },
         "line": {
-          "type": ["integer", "null"],
+          "type": [
+            "integer",
+            "null"
+          ],
           "minimum": 1,
           "description": "Approximate line number."
         },
-        "description": { "type": "string" },
+        "description": {
+          "type": "string"
+        },
         "signature": {
-          "type": ["string", "null"],
+          "type": [
+            "string",
+            "null"
+          ],
           "description": "Function signature in the project's language, if applicable."
         }
       },
@@ -283,7 +419,10 @@
     },
     "explicitOpinion": {
       "type": "object",
-      "required": ["opinion", "rationale"],
+      "required": [
+        "opinion",
+        "rationale"
+      ],
       "properties": {
         "opinion": {
           "type": "string",
@@ -298,7 +437,16 @@
     },
     "patch": {
       "type": "object",
-      "required": ["number", "classification", "complexity", "title", "files", "changes", "requiredContext", "spec"],
+      "required": [
+        "number",
+        "classification",
+        "complexity",
+        "title",
+        "files",
+        "changes",
+        "requiredContext",
+        "spec"
+      ],
       "properties": {
         "number": {
           "$ref": "#/$defs/patchId"
@@ -315,26 +463,44 @@
         },
         "files": {
           "type": "array",
-          "items": { "$ref": "#/$defs/patchFile" }
+          "items": {
+            "$ref": "#/$defs/patchFile"
+          },
+          "description": "Planned complete write footprint. Include producer APIs, consumers, exports, proxy/backend and migrations needed for the guarantee. Supporting edits may be discovered during implementation; cross-patch ownership or ordering changes require plan repair."
         },
         "changes": {
           "type": "array",
-          "items": { "type": "string" },
+          "items": {
+            "type": "string"
+          },
           "description": "Each item is a specific change to make."
         },
         "requiredContext": {
           "type": "array",
-          "items": { "type": "string", "minLength": 1 },
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
           "description": "IDs from top-level contextResources this patch must read before editing. Use an empty array when the patch has no authoritative context beyond the patch prose. Must match contextResources[].consumedBy routing."
         },
         "testStubsIntroduced": {
-          "type": ["array", "null"],
-          "items": { "type": "string" },
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "string"
+          },
           "description": "Test names from testMap where stubPatch = this patch."
         },
         "testStubsImplemented": {
-          "type": ["array", "null"],
-          "items": { "type": "string" },
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "string"
+          },
           "description": "Test names from testMap where implPatch = this patch."
         },
         "spec": {
@@ -342,8 +508,13 @@
           "description": "Formal specification source — invariants that hold after this patch. Focus on the delta — only what this patch introduces or changes. Each patch spec is self-contained — redeclare any domains/rules from prior patches that this patch references. For INFRA patches that only add types, the spec may declare domains and rules with no body propositions (the types themselves are the contribution). For BEHAVIOR patches, include invariants about the new behavior. Keep specs minimal — only what this patch guarantees, not the entire system."
         },
         "precedents": {
-          "type": ["array", "null"],
-          "items": { "$ref": "#/$defs/precedent" },
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "$ref": "#/$defs/precedent"
+          },
           "description": "Established prior art (libraries, algorithms, patterns, papers, RFCs, canonical docs) that informs this patch. Cite concrete proven techniques the implementing agent should adopt rather than rolling its own. Null or omitted means no specific precedent applies (e.g. the patch is bespoke project glue). See SKILL.md's 'Leveraging Established Precedents' section for when and how to populate this."
         }
       },
@@ -351,7 +522,13 @@
     },
     "contextResource": {
       "type": "object",
-      "required": ["id", "kind", "paths", "why", "consumedBy"],
+      "required": [
+        "id",
+        "kind",
+        "paths",
+        "why",
+        "consumedBy"
+      ],
       "properties": {
         "id": {
           "type": "string",
@@ -360,12 +537,22 @@
         },
         "kind": {
           "type": "string",
-          "enum": ["existing-implementation", "contract", "predecessor", "reference-doc", "test-or-static-check", "external-reference"],
+          "enum": [
+            "existing-implementation",
+            "contract",
+            "predecessor",
+            "reference-doc",
+            "test-or-static-check",
+            "external-reference"
+          ],
           "description": "Why this resource is authoritative."
         },
         "paths": {
           "type": "array",
-          "items": { "type": "string", "minLength": 1 },
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
           "description": "Repo-relative paths or external references the patch agent should read. For external references, use stable URLs or canonical identifiers."
         },
         "why": {
@@ -374,7 +561,9 @@
         },
         "consumedBy": {
           "type": "array",
-          "items": { "$ref": "#/$defs/patchId" },
+          "items": {
+            "$ref": "#/$defs/patchId"
+          },
           "description": "Patch IDs that consume this resource. Must match each consuming patch's requiredContext array."
         }
       },
@@ -382,14 +571,26 @@
     },
     "reachabilityTrace": {
       "type": "object",
-      "required": ["observable", "ownedBy", "path"],
+      "required": [
+        "observable",
+        "ownedBy",
+        "path"
+      ],
       "properties": {
         "observable": {
           "type": "string",
           "description": "The observable behavior this trace grounds, phrased as the acceptance criterion does (e.g. 'Yooz appears in the integrations catalog')."
         },
         "tracesTo": {
-          "oneOf": [{ "type": "string", "pattern": "^FC-[0-9]+$" }, { "type": "null" }],
+          "oneOf": [
+            {
+              "type": "string",
+              "pattern": "^FC-[0-9]+$"
+            },
+            {
+              "type": "null"
+            }
+          ],
           "description": "functionalChange id this observable corresponds to, or null. If set, its ownedBy must equal this trace's ownedBy."
         },
         "ownedBy": {
@@ -399,16 +600,26 @@
         "path": {
           "type": "array",
           "minItems": 1,
-          "items": { "$ref": "#/$defs/traceNode" },
+          "items": {
+            "$ref": "#/$defs/traceNode"
+          },
           "description": "Ordered entry-point -> leaf. The first node is the entry point that emits the observable (route handler, rendering component, RPC); the last node is the leaf that does the work. Each hop is a real call/import/reference edge, walked against HEAD. The owning patch must edit at least one node here."
         },
         "testPath": {
-          "type": ["array", "null"],
-          "items": { "$ref": "#/$defs/traceNode" },
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "$ref": "#/$defs/traceNode"
+          },
           "description": "Optional parallel trace through the test seam — where production adapters are swapped for in-memory/test ones — per the production-vs-test seams discipline. Null when not applicable."
         },
         "runtimeReachabilityNote": {
-          "type": ["string", "null"],
+          "type": [
+            "string",
+            "null"
+          ],
           "description": "For routable or framework-dispatched surfaces: how runtime reachability was confirmed — that no redirect, rewrite, middleware, or routing convention shadows the path. Null when the surface is not framework-routed. Static call/import graphs do not see framework routing; this records the runtime check."
         }
       },
@@ -416,19 +627,28 @@
     },
     "traceNode": {
       "type": "object",
-      "required": ["file", "status"],
+      "required": [
+        "file",
+        "status"
+      ],
       "properties": {
         "file": {
           "type": "string",
           "description": "Repo-relative path of this node's file."
         },
         "symbol": {
-          "type": ["string", "null"],
+          "type": [
+            "string",
+            "null"
+          ],
           "description": "The function, component, or export at this node, if applicable."
         },
         "status": {
           "type": "string",
-          "enum": ["existing", "created"],
+          "enum": [
+            "existing",
+            "created"
+          ],
           "description": "'existing' = present on disk at HEAD (resolve per Rule 1). 'created' = introduced by a patch in THIS gameplan; not expected on disk — it must be declared action:create by some patch, and the trace's owning patch must transitively depend on that creator."
         }
       },
@@ -436,26 +656,47 @@
     },
     "precedent": {
       "type": "object",
-      "required": ["kind", "name", "whyApplicable"],
+      "required": [
+        "kind",
+        "name",
+        "whyApplicable"
+      ],
       "allOf": [
         {
           "if": {
             "properties": {
               "kind": {
-                "enum": ["paper", "rfc-spec", "documentation", "blog-post"]
+                "enum": [
+                  "paper",
+                  "rfc-spec",
+                  "documentation",
+                  "blog-post"
+                ]
               }
             },
-            "required": ["kind"]
+            "required": [
+              "kind"
+            ]
           },
           "then": {
-            "required": ["url"]
+            "required": [
+              "url"
+            ]
           }
         }
       ],
       "properties": {
         "kind": {
           "type": "string",
-          "enum": ["library", "algorithm", "pattern", "paper", "rfc-spec", "documentation", "blog-post"],
+          "enum": [
+            "library",
+            "algorithm",
+            "pattern",
+            "paper",
+            "rfc-spec",
+            "documentation",
+            "blog-post"
+          ],
           "description": "What kind of precedent this is. 'library' = an existing dependency to adopt directly; 'algorithm' = a named algorithm (e.g. Tarjan SCC, Hindley-Milner Algorithm W); 'pattern' = a well-known design pattern (e.g. outbox pattern, expand-contract migration); 'paper' = academic literature; 'rfc-spec' = standards (RFC, ECMA, NIST); 'documentation' = canonical vendor/maintainer docs; 'blog-post' = a respected practitioner write-up."
         },
         "name": {
@@ -463,7 +704,10 @@
           "description": "The most specific identifier the implementing agent will recognise (e.g. 'Bindlib', 'Tarjan 1972 strongly connected components', 'RFC 7519 JSON Web Tokens'). Avoid vague labels like 'a graph algorithm'."
         },
         "url": {
-          "type": ["string", "null"],
+          "type": [
+            "string",
+            "null"
+          ],
           "description": "Canonical link to the precedent (library homepage / repo, paper DOI or arXiv URL, RFC URL, official docs page). Required for 'paper', 'rfc-spec', 'documentation', and 'blog-post' kinds where the URL is the durable reference. Omit only if no stable URL exists. Do not guess URLs — fetch the real one or leave it null."
         },
         "whyApplicable": {
@@ -474,26 +718,52 @@
       "additionalProperties": false
     },
     "patchId": {
-      "oneOf": [{ "type": "integer", "minimum": 1 }, { "type": "string" }],
+      "oneOf": [
+        {
+          "type": "integer",
+          "minimum": 1
+        },
+        {
+          "type": "string"
+        }
+      ],
       "description": "Patch identifier. Usually a 1-indexed integer, but may be a string (e.g. '3b') for sub-patches."
     },
     "patchClassification": {
       "type": "string",
-      "enum": ["INFRA", "GATED", "BEHAVIOR"]
+      "enum": [
+        "INFRA",
+        "GATED",
+        "BEHAVIOR"
+      ]
     },
     "patchComplexity": {
       "type": "integer",
-      "enum": [1, 2, 3],
+      "enum": [
+        1,
+        2,
+        3
+      ],
       "description": "Conservative estimate of how hard this patch is to implement correctly. 1 = mechanical / shallow / well-precedented; 2 = moderate — requires reading the surrounding code, designing a small abstraction, or writing non-trivial tests; 3 = deep — requires reasoning about subtle invariants, concurrency, distributed state, novel algorithms, or unfamiliar third-party APIs. When in doubt, choose the higher value. Used by orchestrators (e.g. onton --model auto) to pick a model strong enough for the task."
     },
     "patchFile": {
       "type": "object",
-      "required": ["path", "action", "description"],
+      "required": [
+        "path",
+        "action",
+        "description"
+      ],
       "properties": {
-        "path": { "type": "string" },
+        "path": {
+          "type": "string"
+        },
         "action": {
           "type": "string",
-          "enum": ["create", "modify", "delete"]
+          "enum": [
+            "create",
+            "modify",
+            "delete"
+          ]
         },
         "description": {
           "type": "string",
@@ -504,7 +774,12 @@
     },
     "testMapEntry": {
       "type": "object",
-      "required": ["testName", "file", "stubPatch", "implPatch"],
+      "required": [
+        "testName",
+        "file",
+        "stubPatch",
+        "implPatch"
+      ],
       "properties": {
         "testName": {
           "type": "string",
@@ -518,25 +793,12 @@
           "$ref": "#/$defs/patchId"
         },
         "implPatch": {
-          "allOf": [{ "$ref": "#/$defs/patchId" }],
+          "allOf": [
+            {
+              "$ref": "#/$defs/patchId"
+            }
+          ],
           "description": "Must match the patch that implements the code being tested (not just the patch that unskips the test)."
-        }
-      },
-      "additionalProperties": false
-    },
-    "dependencyGraphEntry": {
-      "type": "object",
-      "required": ["patch", "classification", "dependsOn"],
-      "properties": {
-        "patch": {
-          "$ref": "#/$defs/patchId"
-        },
-        "classification": {
-          "$ref": "#/$defs/patchClassification"
-        },
-        "dependsOn": {
-          "type": "array",
-          "items": { "$ref": "#/$defs/patchId" }
         }
       },
       "additionalProperties": false
@@ -551,7 +813,7 @@
         "testMapComplete",
         "testMapImplPatchMatchesCode",
         "behaviorPatchesMinimal",
-        "dependencyGraphOrdered",
+        "derivedDependenciesValid",
         "behaviorPatchesJustified",
         "functionalChangesOwnedByExactlyOnePatch",
         "operationalConsiderationsSubstantive",
@@ -559,15 +821,30 @@
         "gameplanIsAtomicAndAutonomous"
       ],
       "properties": {
-        "featureFlagStrategyDocumented": { "type": "boolean" },
-        "earlyPatchesNonFunctional": { "type": "boolean" },
-        "testStubsInInfraPatches": { "type": "boolean" },
-        "testImplsColocated": { "type": "boolean" },
-        "testMapComplete": { "type": "boolean" },
-        "testMapImplPatchMatchesCode": { "type": "boolean" },
-        "behaviorPatchesMinimal": { "type": "boolean" },
-        "dependencyGraphOrdered": { "type": "boolean" },
-        "behaviorPatchesJustified": { "type": "boolean" },
+        "featureFlagStrategyDocumented": {
+          "type": "boolean"
+        },
+        "earlyPatchesNonFunctional": {
+          "type": "boolean"
+        },
+        "testStubsInInfraPatches": {
+          "type": "boolean"
+        },
+        "testImplsColocated": {
+          "type": "boolean"
+        },
+        "testMapComplete": {
+          "type": "boolean"
+        },
+        "testMapImplPatchMatchesCode": {
+          "type": "boolean"
+        },
+        "behaviorPatchesMinimal": {
+          "type": "boolean"
+        },
+        "behaviorPatchesJustified": {
+          "type": "boolean"
+        },
         "functionalChangesOwnedByExactlyOnePatch": {
           "type": "boolean",
           "description": "Every entry in functionalChanges has exactly one ownedBy patch, that patch exists, and the union of described behaviors covers every observable change implied by problemStatement/solutionSummary/acceptanceCriteria. No behavioral outcome is described in prose without a single named owner."
@@ -582,7 +859,60 @@
         },
         "gameplanIsAtomicAndAutonomous": {
           "type": "boolean",
-          "description": "The gameplan can be executed end-to-end by an autonomous orchestrator with no human pause and no run-time decision between patches. Specifically: (a) no patch is conditional on the outcome (testing result, metric, judgement call) of any other patch — every patch is committed to before execution begins; (b) no patch's changes or description requires a human to act between patches — flip a flag, run a one-time script, copy a value out of a dashboard, or otherwise intervene; (c) no patch description implies an observation, soak, or evaluation window before the next patch may run. If any of those would be needed, the work is a multi-milestone workstream — see write-workstream — not a single gameplan, and the boundary belongs between milestones (with operator instructions), not inside this gameplan. Set to true only when every patch could be executed back-to-back in arbitrary parallel order permitted by dependencyGraph with zero human intervention."
+          "description": "The gameplan can be executed end-to-end by an autonomous orchestrator with no human pause and no run-time decision between patches. Specifically: (a) no patch is conditional on the outcome (testing result, metric, judgement call) of any other patch — every patch is committed to before execution begins; (b) no patch's changes or description requires a human to act between patches — flip a flag, run a one-time script, copy a value out of a dashboard, or otherwise intervene; (c) no patch description implies an observation, soak, or evaluation window before the next patch may run. If any of those would be needed, the work is a multi-milestone workstream — see write-workstream — not a single gameplan, and the boundary belongs between milestones (with operator instructions), not inside this gameplan. Set to true only when every patch could be executed back-to-back in arbitrary parallel order permitted by the derived dependency graph with zero human intervention."
+        },
+        "derivedDependenciesValid": {
+          "type": "boolean",
+          "description": "The union of requirement and ordering edges is acyclic, references valid patches, and orders all overlapping write frames. Consumer preconditions are supplied by their producer guarantees."
+        }
+      },
+      "additionalProperties": false
+    },
+    "orderingConstraint": {
+      "type": "object",
+      "required": [
+        "before",
+        "after",
+        "reason"
+      ],
+      "properties": {
+        "before": {
+          "$ref": "#/$defs/patchId"
+        },
+        "after": {
+          "$ref": "#/$defs/patchId"
+        },
+        "reason": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "additionalProperties": false
+    },
+    "acceptanceCriterion": {
+      "type": "object",
+      "required": [
+        "id",
+        "description",
+        "tracesTo"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "description": {
+          "type": "string",
+          "minLength": 1
+        },
+        "tracesTo": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "pattern": "^FC-[0-9]+$"
+          }
         }
       },
       "additionalProperties": false

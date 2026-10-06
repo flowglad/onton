@@ -237,6 +237,9 @@ module Make (W : Worktree.S) (Env : ENV) = struct
             (try Unix.unlink wontdo_path
              with Unix.Unix_error (Unix.ENOENT, _, _) -> ());
             let prompt =
+              let prompt =
+                Onton_core.Session_prompt.render ~resume_session prompt
+              in
               if
                 Patch_decision.session_prompt_requires_patch_instructions
                   ~delivery_mode ~kind

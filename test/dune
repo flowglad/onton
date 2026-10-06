@@ -809,3 +809,14 @@
  (name test_patch_agent_properties)
  (modules test_patch_agent_properties)
  (libraries onton_core base qcheck-core qcheck-core.runner))
+
+(test
+ (name test_gameplan_parser_properties)
+ (modules test_gameplan_parser_properties)
+ (flags (:standard -w -40-42))
+ (libraries onton_core base yojson qcheck-core qcheck-core.runner))
+
+(test
+ (name test_session_prompt_properties)
+ (modules test_session_prompt_properties)
+ (libraries onton_core qcheck-core qcheck-core.runner))

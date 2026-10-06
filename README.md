@@ -616,6 +616,21 @@ keys and JSON scalar types; tags, anchors, aliases, and merge keys are unsupport
 Install the authoring skill's Python dependencies from `skills/write-gameplan/scripts/requirements.txt`;
 the validator also checks canonical YAML formatting.
 
+New plans use `formatVersion: 2`. Each functional change declares one `ownedBy`
+patch, its `requiredBy` consumers, and `verifiedBy` producer evidence (named
+`testMap` tests or checks with a command and expected result). Onton derives each
+consumer's prerequisites from these declarations. `orderingConstraints` adds
+reasoned serialization requirements; validation rejects cycles across both kinds
+of edges and unordered overlapping file writes. Acceptance criteria have stable
+IDs and `tracesTo` references to functional changes. Unversioned legacy plans
+with `dependencyGraph` still load; new plans must not mix the two representations.
+
+Patch sessions receive the plan constraints, owned and required guarantees,
+producer evidence, routed acceptance criteria, and repository instructions when
+starting fresh. Onton selects this context using the actual backend resume ID:
+an existing ID receives only the current turn; a fresh fallback gets the full
+context again.
+
 ### Claude backend session management
 
 Claude is invoked via `-p` (prompt mode, not `--print`) which saves sessions,
