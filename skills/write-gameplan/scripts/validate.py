@@ -128,8 +128,12 @@ def validate_functional_changes(inst: dict, patches_by_id: dict[str, dict], erro
                 f['path'] for f in patches_by_id[owner].get('files', [])
             }:
                 errors.append(f"{fc['id']}: verification file must be in owner patch {owner}'s files")
-    criteria = [criterion for criterion in inst.get("acceptanceCriteria", [])
-                if isinstance(criterion, dict)]
+    criteria = []
+    for index, criterion in enumerate(inst.get("acceptanceCriteria", [])):
+        if isinstance(criterion, dict):
+            criteria.append(criterion)
+        elif inst.get("formatVersion") == 2:
+            errors.append(f"acceptanceCriteria[{index}]: formatVersion 2 requires an object")
     criterion_ids = [criterion["id"] for criterion in criteria]
     if len(criterion_ids) != len(set(criterion_ids)):
         errors.append("duplicate acceptance criterion IDs")

@@ -130,6 +130,20 @@ class ContractValidation(unittest.TestCase):
         self.plan["acceptanceCriteria"][0]["tracesTo"] = ["FC-999"]
         self.validate(1, "tracesTo unknown functional change")
 
+    def test_v2_non_object_criteria_without_jsonschema(self):
+        for criterion in ["String criterion", None, 42, True, []]:
+            with self.subTest(criterion=criterion):
+                self.plan["acceptanceCriteria"] = [criterion]
+                self.validate(1, "acceptanceCriteria[0]: formatVersion 2 requires an object",
+                              without_schema=True)
+
+    def test_v2_invalid_entries_do_not_stop_object_checks(self):
+        self.plan["acceptanceCriteria"][0]["tracesTo"] = ["FC-999"]
+        self.plan["acceptanceCriteria"].insert(0, "String criterion")
+        output = self.validate(1, "acceptanceCriteria[0]: formatVersion 2 requires an object",
+                               without_schema=True)
+        self.assertIn("tracesTo unknown functional change", output)
+
     def test_duplicate_acceptance_id(self):
         self.plan["acceptanceCriteria"].append(copy.deepcopy(self.plan["acceptanceCriteria"][0]))
         self.validate(1, "duplicate acceptance criterion IDs")
