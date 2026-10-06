@@ -1159,30 +1159,70 @@ let force_push_with_lease_unbounded ~on_phase ~preserve_history ~process_mgr
             (* A conflict-resolution agent may have already published this exact
              commit. Its push does not necessarily refresh origin/<branch>, so
              our captured lease can reject an otherwise completed publication.
-             Confirm the live remote tip before treating that as a failure. *)
+             Confirm every push destination before treating that as a success. *)
             let remote_ref = "refs/heads/" ^ branch_str in
-            on_phase "remote confirmation (git ls-remote)";
-            let code, stdout, _ =
+            on_phase "push destination resolution (git remote get-url)";
+            let code, stdout, stderr =
               run_git_exit_code ~process_mgr
                 [
                   "git";
                   "-C";
                   path;
-                  "ls-remote";
-                  "--exit-code";
-                  "--refs";
+                  "remote";
+                  "get-url";
+                  "--push";
+                  "--all";
                   "origin";
-                  remote_ref;
                 ]
             in
-            if
-              code = 0
-              && Option.equal String.equal
-                   (Worktree_parser.parse_ls_remote_sha ~ref_name:remote_ref
-                      stdout)
-                   (Some local_sha)
-            then Push_up_to_date
-            else outcome
+            let push_urls = String.split_lines stdout in
+            if code <> 0 || List.is_empty push_urls then (
+              Eio.traceln
+                "Cannot confirm rejected push: push destination resolution \
+                 failed (exit %d): %s"
+                code (String.strip stderr);
+              outcome)
+            else
+              let confirmed =
+                List.for_all push_urls ~f:(fun push_url ->
+                    on_phase "remote confirmation (git ls-remote push URL)";
+                    let code, stdout, stderr =
+                      run_git_exit_code ~process_mgr
+                        [
+                          "git";
+                          "-C";
+                          path;
+                          "ls-remote";
+                          "--exit-code";
+                          "--refs";
+                          push_url;
+                          remote_ref;
+                        ]
+                    in
+                    if code <> 0 then (
+                      Eio.traceln
+                        "Cannot confirm rejected push: push destination probe \
+                         failed (exit %d): %s"
+                        code (String.strip stderr);
+                      false)
+                    else
+                      match
+                        Worktree_parser.parse_ls_remote_sha ~ref_name:remote_ref
+                          stdout
+                      with
+                      | None ->
+                          Eio.traceln
+                            "Cannot confirm rejected push: malformed \
+                             destination response";
+                          false
+                      | Some sha when String.equal sha local_sha -> true
+                      | Some _ ->
+                          Eio.traceln
+                            "Rejected push confirmed: destination tip differs \
+                             from local commit";
+                          false)
+              in
+              if confirmed then Push_up_to_date else outcome
         | None -> outcome
       else outcome
 
