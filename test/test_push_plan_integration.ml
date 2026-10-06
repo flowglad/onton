@@ -375,7 +375,8 @@ let scenario_happy_path env =
    independent writer either before planning (and a background fetch), or in
    Git's pre-push hook after the planner has captured its immutable lease. *)
 let scenario_rewrite_interleavings ?(conflict = false) ?(drop_remote = false)
-    ?(append_after = false) env (commits, race, preserve_history) =
+    ?(append_after = false) ?(target_deletion = false)
+    ?(recreate_deleted = false) env (commits, race, preserve_history) =
   let process_mgr = Eio.Stdenv.process_mgr env in
   let clock = Eio.Stdenv.clock env in
   with_temp_dir @@ fun root ->
@@ -390,8 +391,14 @@ let scenario_rewrite_interleavings ?(conflict = false) ?(drop_remote = false)
       "printf 'v0.64\n\
        ' > patch.txt; git add patch.txt; git commit -q -m version; git push -q \
        origin main";
+  if target_deletion then
+    sh ~dir:seed
+      "echo original > dialog.txt; git add dialog.txt; git commit -q -m \
+       dialog; git push -q origin main";
   let base = git_capture ~dir:seed [ "rev-parse"; "HEAD" ] in
   sh ~dir:seed "git checkout -q -b feat";
+  if target_deletion then
+    sh ~dir:seed "echo labels > dialog.txt; git add dialog.txt";
   if conflict then
     sh ~dir:seed
       "printf 'v0.66\n\
@@ -414,6 +421,10 @@ let scenario_rewrite_interleavings ?(conflict = false) ?(drop_remote = false)
     sh ~dir:seed
       "printf 'v0.65\n\
        ' > patch.txt; git add patch.txt; git commit -q -m version; git push -q \
+       origin main";
+  if target_deletion then
+    sh ~dir:seed
+      "git rm -q dialog.txt; git commit -q -m remove-dialog; git push -q \
        origin main";
   sh
     (Printf.sprintf "git clone -q --branch main %s %s"
@@ -444,6 +455,10 @@ let scenario_rewrite_interleavings ?(conflict = false) ?(drop_remote = false)
         failwith
           ("expected real version conflict: "
           ^ Worktree.show_rebase_result result));
+    if target_deletion then (
+      sh ~dir:worktree "git rm -q -f dialog.txt";
+      if recreate_deleted then
+        sh ~dir:worktree "echo unrelated > dialog.txt; git add dialog.txt");
     if drop_remote then sh ~dir:worktree "git rm -q -f remote-only.txt";
     sh ~dir:worktree
       "printf 'v0.66\n\
@@ -518,9 +533,10 @@ let scenario_rewrite_interleavings ?(conflict = false) ?(drop_remote = false)
         failwith
           ("protected rewrite was not refused: "
           ^ Worktree.show_push_result outcome))
-  else if drop_remote then (
-    (* A completed conflict rebase is insufficient if resolution dropped a
-       remote-changed path, even with an unchanged remote and valid reflog. *)
+  else if drop_remote || recreate_deleted then (
+    (* A completed conflict rebase is insufficient if resolution drops remote
+       content without a target deletion, or changes a target-deleted file
+       instead of retaining the deletion. *)
     if not (String.equal remote old_remote) then
       failwith "unproven conflict rewrite changed remote";
     match outcome with
@@ -544,6 +560,13 @@ let scenario_rewrite_interleavings ?(conflict = false) ?(drop_remote = false)
       List.length (String.split_lines contents)
       <> commits + (if conflict then 1 else 0) + if append_after then 1 else 0
     then failwith "patch commits lost";
+    (if target_deletion then
+       let files =
+         git_capture ~dir:seed
+           [ "--git-dir=" ^ origin; "ls-tree"; "feat"; "--"; "dialog.txt" ]
+       in
+       if not (String.is_empty files) then
+         failwith "target deletion was not retained on remote");
     if conflict then (
       let retained =
         git_capture ~dir:seed
@@ -958,6 +981,10 @@ let () =
     (2, 0, false);
   scenario_rewrite_interleavings ~conflict:true ~drop_remote:true env
     (2, 0, false);
+  scenario_rewrite_interleavings ~conflict:true ~target_deletion:true
+    ~drop_remote:true env (2, 0, false);
+  scenario_rewrite_interleavings ~conflict:true ~target_deletion:true
+    ~recreate_deleted:true env (2, 0, false);
   scenario_branch_switched env;
   scenario_local_missing_remote env;
   scenario_happy_path env;
@@ -971,6 +998,9 @@ let () =
       List.iter [ 0; 1; 2; 3 ] ~f:(fun race ->
           scenario_rewrite_interleavings env (2, race, preserve_history);
           scenario_rewrite_interleavings ~conflict:true env
+            (2, race, preserve_history);
+          scenario_rewrite_interleavings ~conflict:true ~target_deletion:true
+            env
             (2, race, preserve_history)));
   scenario_protected_history env [ false; true; false; true ];
   QCheck2.Test.check_exn

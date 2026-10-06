@@ -174,43 +174,93 @@ let properties =
             && Rewrite_lineage.authorizes authority ~branch:"patch"
                  ~remote_sha:(sha 2) ~local_sha:(sha 6));
     Test.make ~name:"changed-path preservation decoding is total" ~count:1000
-      Gen.(pair string string)
-      (fun (remote_changed_paths, local_changed_paths) ->
+      Gen.(pair (pair string string) (pair string string))
+      (fun ( (remote_changed_paths, local_changed_paths),
+             (target_deleted_paths, local_deleted_paths) )
+         ->
         try
           ignore
             (Rewrite_lineage.changes_preserved ~remote_changed_paths
-               ~local_changed_paths);
+               ~local_changed_paths ~target_deleted_paths ~local_deleted_paths);
           true
         with _ -> false);
     Test.make
       ~name:
-        "remote-changed paths must match local exactly regardless of order or \
-         duplicates"
+        "remote changes survive unless target and local both delete the path"
       ~count:1000
-      Gen.(pair paths_gen paths_gen)
-      (fun (remote, local) ->
+      Gen.(pair (pair paths_gen paths_gen) (pair paths_gen paths_gen))
+      (fun ((remote, local), (target_deleted, local_deleted)) ->
+        let contains paths path = List.mem paths path ~equal:String.equal in
         let expected =
-          not
-            (List.exists remote ~f:(fun path ->
-                 List.mem local path ~equal:String.equal))
+          List.for_all remote ~f:(fun path ->
+              (not (contains local path))
+              || (contains target_deleted path && contains local_deleted path))
         in
-        List.for_all
-          [ remote; List.rev remote; remote @ remote ]
-          ~f:(fun remote ->
-            Bool.equal
-              (Rewrite_lineage.changes_preserved
-                 ~remote_changed_paths:(nul_paths remote)
-                 ~local_changed_paths:(nul_paths local))
-              expected));
+        let check remote local target_deleted local_deleted =
+          Bool.equal
+            (Rewrite_lineage.changes_preserved
+               ~remote_changed_paths:(nul_paths remote)
+               ~local_changed_paths:(nul_paths local)
+               ~target_deleted_paths:(nul_paths target_deleted)
+               ~local_deleted_paths:(nul_paths local_deleted))
+            expected
+        in
+        check remote local target_deleted local_deleted
+        && check (List.rev remote) (List.rev local) (List.rev target_deleted)
+             (List.rev local_deleted)
+        && check (remote @ remote) (local @ local)
+             (target_deleted @ target_deleted)
+             (local_deleted @ local_deleted));
+    Test.make
+      ~name:"changed remote paths require deletion evidence from both commits"
+      ~count:500
+      Gen.(pair paths_gen (pair bool bool))
+      (fun (paths, (target_deletes, local_deletes)) ->
+        let paths = "shared" :: paths in
+        Bool.equal
+          (Rewrite_lineage.changes_preserved
+             ~remote_changed_paths:(nul_paths paths)
+             ~local_changed_paths:(nul_paths paths)
+             ~target_deleted_paths:
+               (if target_deletes then nul_paths paths else "")
+             ~local_deleted_paths:
+               (if local_deletes then nul_paths paths else ""))
+          (target_deletes && local_deletes));
     Test.make ~name:"malformed path lists fail closed" ~count:1 Gen.unit
       (fun () ->
         List.for_all [ "path"; "\000"; "path\000\000" ] ~f:(fun malformed ->
-            (not
-               (Rewrite_lineage.changes_preserved
-                  ~remote_changed_paths:malformed ~local_changed_paths:""))
-            && not
-                 (Rewrite_lineage.changes_preserved ~remote_changed_paths:""
-                    ~local_changed_paths:malformed)));
+            List.for_all
+              [
+                (malformed, "", "", "");
+                ("", malformed, "", "");
+                ("", "", malformed, "");
+                ("", "", "", malformed);
+              ]
+              ~f:(fun
+                  ( remote_changed_paths,
+                    local_changed_paths,
+                    target_deleted_paths,
+                    local_deleted_paths )
+                ->
+                not
+                  (Rewrite_lineage.changes_preserved ~remote_changed_paths
+                     ~local_changed_paths ~target_deleted_paths
+                     ~local_deleted_paths))));
+    Test.make
+      ~name:"target absence alone cannot authorize deletion of remote additions"
+      ~count:1 Gen.unit (fun () ->
+        not
+          (Rewrite_lineage.changes_preserved
+             ~remote_changed_paths:"addition\000"
+             ~local_changed_paths:"addition\000" ~target_deleted_paths:""
+             ~local_deleted_paths:"addition\000"));
+    Test.make
+      ~name:"target deletion cannot authorize altered or resurrected content"
+      ~count:1 Gen.unit (fun () ->
+        not
+          (Rewrite_lineage.changes_preserved ~remote_changed_paths:"dialog\000"
+             ~local_changed_paths:"dialog\000"
+             ~target_deleted_paths:"dialog\000" ~local_deleted_paths:""));
     Test.make
       ~name:
         "completed rewrites need both incorporated source and preserved content"

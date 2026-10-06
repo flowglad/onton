@@ -1006,7 +1006,8 @@ let force_push_with_lease_unbounded ~on_phase ~preserve_history ~process_mgr
                           in
                           match (code, String.split_lines bases) with
                           | 0, [ common ] when not (String.is_empty common) -> (
-                              let changed_paths before after =
+                              let changed_paths ?(deletions_only = false) before
+                                  after =
                                 let code, paths, _ =
                                   run_git_exit_code ~process_mgr
                                     [
@@ -1020,6 +1021,8 @@ let force_push_with_lease_unbounded ~on_phase ~preserve_history ~process_mgr
                                       "--ignore-submodules=none";
                                       "--name-only";
                                       "-z";
+                                      (if deletions_only then "--diff-filter=D"
+                                       else "--diff-filter=ACDMRTUXB");
                                       before;
                                       after;
                                       "--";
@@ -1029,12 +1032,19 @@ let force_push_with_lease_unbounded ~on_phase ~preserve_history ~process_mgr
                               in
                               match
                                 ( changed_paths common remote_sha,
-                                  changed_paths remote_sha result_sha )
+                                  changed_paths remote_sha result_sha,
+                                  changed_paths ~deletions_only:true common
+                                    target,
+                                  changed_paths ~deletions_only:true remote_sha
+                                    result_sha )
                               with
                               | ( Some remote_changed_paths,
-                                  Some local_changed_paths ) ->
+                                  Some local_changed_paths,
+                                  Some target_deleted_paths,
+                                  Some local_deleted_paths ) ->
                                   Rewrite_lineage.changes_preserved
                                     ~remote_changed_paths ~local_changed_paths
+                                    ~target_deleted_paths ~local_deleted_paths
                               | _ -> false)
                           | _ -> false)
                         ~ancestor_oracle:(fun sha ~descendant ->

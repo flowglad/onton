@@ -16,7 +16,8 @@ let valid_sha s =
     | '0' .. '9' | 'a' .. 'f' -> true
     | _ -> false)
 
-let changes_preserved ~remote_changed_paths ~local_changed_paths =
+let changes_preserved ~remote_changed_paths ~local_changed_paths
+    ~target_deleted_paths ~local_deleted_paths =
   let decode paths =
     if String.is_empty paths then Some (Set.empty (module String))
     else
@@ -26,8 +27,15 @@ let changes_preserved ~remote_changed_paths ~local_changed_paths =
             Some (Set.of_list (module String) paths)
           else None)
   in
-  match (decode remote_changed_paths, decode local_changed_paths) with
-  | Some remote, Some local -> Set.is_empty (Set.inter remote local)
+  match
+    ( decode remote_changed_paths,
+      decode local_changed_paths,
+      decode target_deleted_paths,
+      decode local_deleted_paths )
+  with
+  | Some remote, Some local, Some target_deleted, Some local_deleted ->
+      let retained_deletions = Set.inter target_deleted local_deleted in
+      Set.is_empty (Set.diff (Set.inter remote local) retained_deletions)
   | _ -> false
 
 let of_reflog ~branch ~local_sha ~remote_sha ~reflog ~ancestor_oracle
