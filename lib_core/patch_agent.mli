@@ -607,9 +607,9 @@ val reset_intervention_state : t -> t
     [ci_failure_count] to 0, [start_attempts_without_pr] to 0,
     [conflict_noop_count] to 0, [no_commits_push_count] to 0,
     [context_exhaustion_count] to 0, [push_failure_count] to 0,
-    [rebase_failure_count] to 0, and [pr_body_artifact_miss_count] to 0. Used
-    after manual resolution (e.g., sending a human message) to give the patch a
-    fresh start. *)
+    [rebase_failure_count] to 0, [pr_body_artifact_miss_count] to 0, and
+    [review_unresolved_cycle_count] to 0. Used after manual resolution (e.g.,
+    sending a human message) to give the patch a fresh start. *)
 
 val set_branch_blocked : t -> t
 (** Set the branch-blocked flag (branch is checked out in repo root). *)

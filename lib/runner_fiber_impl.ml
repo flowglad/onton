@@ -1484,7 +1484,10 @@ module Make (Forge : Forge.S) (W : Worktree.S) (Env : Runner_env.S) = struct
                                       Orchestrator.agent
                                         snap.Runtime.orchestrator patch_id)
                                 in
-                                if Patch_agent.needs_intervention agent then
+                                if
+                                  Patch_agent.needs_intervention agent
+                                  && Option.is_none agent.wontdo_reason
+                                then
                                   set_status ~level:Tui.Error
                                     ~text:
                                       (Printf.sprintf

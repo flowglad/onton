@@ -1263,7 +1263,9 @@ let apply_session_result t patch_id result =
       let t =
         update_agent t patch_id ~f:(fun a -> Patch_agent.set_wontdo a reason)
       in
-      complete_failed t patch_id
+      (* An explicit refusal answers the inflight guidance. Complete it without
+         restoring that guidance to the inbox for a later manual bump. *)
+      complete t patch_id
   | Session_give_up ->
       let t = set_session_failed t patch_id in
       let t = set_tried_fresh t patch_id in

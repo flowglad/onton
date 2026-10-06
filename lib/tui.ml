@@ -990,7 +990,10 @@ let render_detail (pv : patch_view) ~width ~scroll ~now ?(transcript = "") () =
   let content_label, transcript =
     match pv.wontdo_reason with
     | None -> ("Transcript", transcript)
-    | Some reason -> ("WONTDO", reason)
+    | Some reason ->
+        ( "WONTDO",
+          String.concat ~sep:"\n"
+            (List.map (String.split_lines reason) ~f:sanitize_text) )
   in
   let transcript_content =
     if String.is_empty transcript then []
@@ -1021,9 +1024,9 @@ let render_detail (pv : patch_view) ~width ~scroll ~now ?(transcript = "") () =
     match metadata with
     | [] -> transcript_content
     | _ ->
-        metadata
-        @ [ ""; Term.styled [ Term.Sgr.bold ] "  WONTDO" ]
-        @ transcript_content
+        transcript_content
+        @ [ ""; Term.styled [ Term.Sgr.bold ] "  Metadata" ]
+        @ metadata
   in
   let total = List.length transcript_content in
   if total = 0 || scroll.visible = 0 then (info, [], false, 0)

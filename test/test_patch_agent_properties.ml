@@ -39,7 +39,11 @@ let tests =
                     (Patch_agent.add_human_message a "Queued guidance", paused)
                 | 4 -> (Patch_agent.clear_session_fallback a, paused)
                 | 5 -> (Patch_agent.set_ci_checks a [], paused)
-                | _ -> (Patch_agent.complete a, paused)
+                | _ ->
+                    let active =
+                      Patch_agent.start a ~base_branch:(Branch.of_string "main")
+                    in
+                    (Patch_agent.complete active, paused)
               in
               ( a,
                 paused,

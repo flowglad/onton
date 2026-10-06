@@ -116,6 +116,9 @@ let run_case ?(detect_pr = false) ?(advance_base = false) env ~content ~commit
       in
       let runtime = Runtime.create ~gameplan ~main_branch:main () in
       Runtime.update_orchestrator runtime (fun orch ->
+          let orch =
+            Orchestrator.send_human_message orch patch_id "Original guidance"
+          in
           Orchestrator.fire orch (Orchestrator.Start (patch_id, main)));
       let module Env = struct
         let runtime = runtime
@@ -201,6 +204,9 @@ let run_case ?(detect_pr = false) ?(advance_base = false) env ~content ~commit
         assert (Poly.equal result.disposition `Failed);
         assert (!pushes = 0);
         assert (not after.busy);
+        assert (List.is_empty after.inflight_human_messages);
+        assert (List.is_empty after.human_messages);
+        assert (List.is_empty after.queue);
         assert (Onton_core.Patch_agent.needs_intervention after);
         assert (
           Option.equal String.equal after.wontdo_reason
@@ -251,6 +257,9 @@ let run_case ?(detect_pr = false) ?(advance_base = false) env ~content ~commit
           Onton_core.Patch_agent.needs_intervention
             (Orchestrator.agent orch patch_id));
         let bumped = Orchestrator.reset_intervention_state orch patch_id in
+        let bumped_agent = Orchestrator.agent bumped patch_id in
+        assert (List.is_empty bumped_agent.human_messages);
+        assert (List.is_empty bumped_agent.queue);
         assert (
           not
             (Onton_core.Patch_agent.needs_intervention
