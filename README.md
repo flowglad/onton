@@ -617,7 +617,8 @@ Install the authoring skill's Python dependencies from `skills/write-gameplan/sc
 the validator also checks canonical YAML formatting.
 
 New plans use `formatVersion: 2`. Each functional change declares one `ownedBy`
-patch, its `requiredBy` consumers, and `verifiedBy` producer evidence (named
+patch and its `requiredBy` consumers. Consumed guarantees also require
+`verifiedBy` producer evidence (named
 `testMap` tests or checks with a command and expected result). Onton derives each
 consumer's prerequisites from these declarations. `orderingConstraints` adds
 reasoned serialization requirements; validation rejects cycles across both kinds

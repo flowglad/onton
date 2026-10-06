@@ -4,7 +4,7 @@
 open Base
 
 type disposition = [ `Ok | `Failed | `Retry_push | `No_commits ]
-type prompt = { context : unit -> string; turn : string }
+type prompt = { context : worktree_path:string -> string; turn : string }
 
 type run_result = {
   disposition : disposition;
@@ -242,7 +242,7 @@ module Make (W : Worktree.S) (Env : ENV) = struct
             let prompt =
               let context =
                 match resume_session with
-                | None -> prompt.context ()
+                | None -> prompt.context ~worktree_path
                 | Some _ -> ""
               in
               let prompt =

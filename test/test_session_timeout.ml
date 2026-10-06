@@ -7,6 +7,7 @@ open Onton_core.Types
 let head = ref "base"
 let pushes = ref 0
 let base_head = ref "base"
+let recovered_worktree = ref ""
 
 module Fake_worktree : Worktree.S = struct
   let integrate ~root_path:_ ~root_branch:_ ~descendant_branch:_ ~head_sha:_ =
@@ -19,9 +20,9 @@ module Fake_worktree : Worktree.S = struct
   let remove ~discard:_ _ = assert false
   let detect_branch ~path:_ = assert false
   let list_with_branches () = assert false
-  let find_for_branch _ = None
-  let prune_stale_for_branch _ = assert false
-  let ensure_ready ~path:_ ~branch:_ = Ok true
+  let find_for_branch _ = Some !recovered_worktree
+  let prune_stale_for_branch _ = ()
+  let ensure_ready ~path ~branch:_ = Ok (String.equal path !recovered_worktree)
   let run_hook ~clock:_ ~script:_ ~cwd:_ ~env:_ () = assert false
   let fetch_origin ~fetch_lock:_ ~path:_ = assert false
 
@@ -114,7 +115,12 @@ let run_case env ~capture_session ~respond =
           }
       in
       let runtime = Runtime.create ~gameplan ~main_branch:main () in
+      recovered_worktree := Stdlib.Filename.concat root "recovered";
       Runtime.update_orchestrator runtime (fun orch ->
+          let orch =
+            Orchestrator.set_worktree_path orch patch_id
+              (Stdlib.Filename.concat root "obsolete")
+          in
           Orchestrator.fire orch (Orchestrator.Start (patch_id, main)));
       if respond then
         Runtime.update_orchestrator runtime (fun orch ->
@@ -218,7 +224,8 @@ let run_case env ~capture_session ~respond =
           SD.run ~kind:None ~delivery_mode ~patch_id
             ~prompt:
               (SD.create_prompt
-                 ~context:(fun () ->
+                 ~context:(fun ~worktree_path ->
+                   assert (String.equal worktree_path !recovered_worktree);
                    Int.incr context_calls;
                    "FULL PATCH CONTEXT\n")
                  ~turn:"Continue the patch")

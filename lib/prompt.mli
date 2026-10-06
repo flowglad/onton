@@ -22,7 +22,7 @@ val substitute_variables : string -> (string * string) list -> string
     The runtime keeps the context layers separate from the turn layer and
     delivers context only on a fresh session. Resumed sessions receive the turn
     layer alone. The composed renderers below are also available for previews.
-    Within the context:
+    Layer stability:
 
     - {!render_gameplan_layer} is byte-identical across every layered prompt in
       a single gameplan run.

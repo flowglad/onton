@@ -54,6 +54,12 @@
       "line": 960,
       "description": "Replace inline decision logic in runner_fiber with Patch_decision calls",
       "signature": null
+    },
+    {
+      "file": "scripts/check-runner-decision-boundary.py",
+      "line": null,
+      "description": "Executable structural audit and self-test fixtures for production decision delegation",
+      "signature": null
     }
   ],
   "functionalChanges": [
@@ -65,9 +71,9 @@
         4
       ],
       "verifiedBy": [
-        "Patch_decision > merged patch is always skipped",
-        "Patch_decision > busy patch is never delivered",
-        "Patch_decision > CI failure cap at 3"
+        "disposition: merged -> Skip",
+        "disposition: busy -> Busy",
+        "on_ci_failure: count >= 3 -> Cap_reached"
       ]
     },
     {
@@ -78,9 +84,9 @@
         4
       ],
       "verifiedBy": [
-        "Patch_decision > merged patch is always skipped",
-        "Patch_decision > busy patch is never delivered",
-        "Patch_decision > CI failure cap at 3"
+        "disposition: merged -> Skip",
+        "disposition: busy -> Busy",
+        "on_ci_failure: count >= 3 -> Cap_reached"
       ]
     },
     {
@@ -91,9 +97,9 @@
         4
       ],
       "verifiedBy": [
-        "Patch_decision > merged patch is always skipped",
-        "Patch_decision > busy patch is never delivered",
-        "Patch_decision > CI failure cap at 3"
+        "disposition: merged -> Skip",
+        "disposition: busy -> Busy",
+        "on_ci_failure: count >= 3 -> Cap_reached"
       ]
     },
     {
@@ -104,9 +110,9 @@
         4
       ],
       "verifiedBy": [
-        "Patch_decision > merged patch is always skipped",
-        "Patch_decision > busy patch is never delivered",
-        "Patch_decision > CI failure cap at 3"
+        "disposition: merged -> Skip",
+        "disposition: busy -> Busy",
+        "on_ci_failure: count >= 3 -> Cap_reached"
       ]
     },
     {
@@ -118,6 +124,10 @@
         {
           "command": "dune build && dune runtest",
           "expectation": "Production callers type-check and existing runtime behavior tests pass."
+        },
+        {
+          "command": "python3 scripts/check-runner-decision-boundary.py --self-test && python3 scripts/check-runner-decision-boundary.py bin/main.ml",
+          "expectation": "The structural audit identifies lifecycle decision sites in runner_fiber and requires delegation to Patch_decision. Its fixtures accept delegated decisions and reject inline merged, busy, and CI-cap policy, including local helper indirection."
         }
       ]
     },
@@ -329,9 +339,9 @@
         "patch-decision-property-contract"
       ],
       "testStubsIntroduced": [
-        "Patch_decision > merged patch is always skipped",
-        "Patch_decision > busy patch is never delivered",
-        "Patch_decision > CI failure cap at 3"
+        "disposition: merged -> Skip",
+        "disposition: busy -> Busy",
+        "on_ci_failure: count >= 3 -> Cap_reached"
       ],
       "testStubsImplemented": null,
       "spec": "module EXTRACT_DECISION_PATCH_2.\n\n> Patch 2 introduces test stubs only. No new invariants are\n> declared — stubs are pending markers implemented in Patch 3.\n> Redeclare Patch 1's types here so the module is self-contained.\n\nDisposition.\nskip => Disposition.\nqueue => Disposition.\ndeliver => Disposition.\n---\ntrue.\n",
@@ -378,9 +388,9 @@
       ],
       "testStubsIntroduced": null,
       "testStubsImplemented": [
-        "Patch_decision > merged patch is always skipped",
-        "Patch_decision > busy patch is never delivered",
-        "Patch_decision > CI failure cap at 3"
+        "disposition: merged -> Skip",
+        "disposition: busy -> Busy",
+        "on_ci_failure: count >= 3 -> Cap_reached"
       ],
       "spec": "module EXTRACT_DECISION_PATCH_3.\n\n> Patch 3 implements the pure decision logic.\n> These invariants are derived from the Pantagruel spec.\n\nPatch.\nDisposition.\nskip => Disposition.\nqueue => Disposition.\ndeliver => Disposition.\n\nmerged? p: Patch => Bool.\nbusy? p: Patch => Bool.\nci-failure-count p: Patch => Nat0.\nneeds-intervention? p: Patch => Bool.\n\ndisposition p: Patch => Disposition.\n---\n> Merged patches are always skipped.\nall p: Patch, merged? p | disposition p = skip.\n\n> Busy patches are never delivered.\nall p: Patch, busy? p | disposition p ~= deliver.\n\n> CI failure cap triggers intervention.\nall p: Patch, ci-failure-count p >= 3 | needs-intervention? p.\n"
     },
@@ -394,12 +404,18 @@
           "path": "bin/main.ml",
           "action": "modify",
           "description": "Replace inline decision logic with Patch_decision function calls"
+        },
+        {
+          "path": "scripts/check-runner-decision-boundary.py",
+          "action": "create",
+          "description": "Structural audit of lifecycle decision ownership with accepted/rejected source fixtures"
         }
       ],
       "changes": [
         "In runner_fiber poll handler (~line 960): replace inline merged/busy checks with Patch_decision.disposition",
         "In CI failure handler (~line 1050): replace inline ci_failure_count >= 3 check with Patch_decision.needs_intervention",
-        "Remove now-dead local helper functions that duplicated decision logic"
+        "Remove now-dead local helper functions that duplicated decision logic",
+        "Create the structural audit and self-test fixtures declared by FC-5; validate each lifecycle decision site delegates to Patch_decision and reject inline policy or local helper indirection. Run the audit against runner_fiber as well as the behavior tests."
       ],
       "requiredContext": [
         "current-runner-fiber-decisions"
@@ -411,19 +427,19 @@
   ],
   "testMap": [
     {
-      "testName": "Patch_decision > merged patch is always skipped",
+      "testName": "disposition: merged -> Skip",
       "file": "test/test_patch_decision.ml",
       "stubPatch": 2,
       "implPatch": 3
     },
     {
-      "testName": "Patch_decision > busy patch is never delivered",
+      "testName": "disposition: busy -> Busy",
       "file": "test/test_patch_decision.ml",
       "stubPatch": 2,
       "implPatch": 3
     },
     {
-      "testName": "Patch_decision > CI failure cap at 3",
+      "testName": "on_ci_failure: count >= 3 -> Cap_reached",
       "file": "test/test_patch_decision.ml",
       "stubPatch": 2,
       "implPatch": 3

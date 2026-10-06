@@ -40,10 +40,11 @@ end
 module Make (_ : Worktree.S) (_ : ENV) : sig
   type nonrec run_result = run_result
 
-  val create_prompt : context:(unit -> string) -> turn:string -> prompt
-  (** The context renderer is called once for a fresh session, including
-      fallback, and never when resuming, giving up, or failing to provision a
-      worktree. *)
+  val create_prompt :
+    context:(worktree_path:string -> string) -> turn:string -> prompt
+  (** The context renderer receives the ensured worktree path and is called once
+      for a fresh session, including fallback, and never when resuming, giving
+      up, or failing to provision a worktree. *)
 
   val run :
     kind:Types.Operation_kind.t option ->

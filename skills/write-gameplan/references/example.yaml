@@ -91,6 +91,12 @@ requiredChanges:
     line: 960
     description: Replace inline decision logic in runner_fiber with Patch_decision calls
     signature:
+  - file: scripts/check-runner-decision-boundary.py
+    line:
+    description: >-
+      Executable structural audit and self-test fixtures for production decision
+      delegation
+    signature:
 
 functionalChanges:
   - id: FC-1
@@ -102,9 +108,9 @@ functionalChanges:
     requiredBy:
       - 4
     verifiedBy:
-      - Patch_decision > merged patch is always skipped
-      - Patch_decision > busy patch is never delivered
-      - Patch_decision > CI failure cap at 3
+      - 'disposition: merged -> Skip'
+      - 'disposition: busy -> Busy'
+      - 'on_ci_failure: count >= 3 -> Cap_reached'
   - id: FC-2
     description: >-
       Merged patches are skipped (disposition = Skip) regardless of busy/ci-failure
@@ -113,18 +119,18 @@ functionalChanges:
     requiredBy:
       - 4
     verifiedBy:
-      - Patch_decision > merged patch is always skipped
-      - Patch_decision > busy patch is never delivered
-      - Patch_decision > CI failure cap at 3
+      - 'disposition: merged -> Skip'
+      - 'disposition: busy -> Busy'
+      - 'on_ci_failure: count >= 3 -> Cap_reached'
   - id: FC-3
     description: Busy patches are never delivered (disposition is Skip or Queue, never Deliver).
     ownedBy: 3
     requiredBy:
       - 4
     verifiedBy:
-      - Patch_decision > merged patch is always skipped
-      - Patch_decision > busy patch is never delivered
-      - Patch_decision > CI failure cap at 3
+      - 'disposition: merged -> Skip'
+      - 'disposition: busy -> Busy'
+      - 'on_ci_failure: count >= 3 -> Cap_reached'
   - id: FC-4
     description: >-
       Patches with ci_failure_count ≥ 3 require human intervention (needs_intervention =
@@ -133,9 +139,9 @@ functionalChanges:
     requiredBy:
       - 4
     verifiedBy:
-      - Patch_decision > merged patch is always skipped
-      - Patch_decision > busy patch is never delivered
-      - Patch_decision > CI failure cap at 3
+      - 'disposition: merged -> Skip'
+      - 'disposition: busy -> Busy'
+      - 'on_ci_failure: count >= 3 -> Cap_reached'
   - id: FC-5
     description: >-
       main.ml runner_fiber delegates every patch-lifecycle decision to Patch_decision —
@@ -145,6 +151,14 @@ functionalChanges:
     verifiedBy:
       - command: dune build && dune runtest
         expectation: Production callers type-check and existing runtime behavior tests pass.
+      - command: >-
+          python3 scripts/check-runner-decision-boundary.py --self-test && python3
+          scripts/check-runner-decision-boundary.py bin/main.ml
+        expectation: >-
+          The structural audit identifies lifecycle decision sites in runner_fiber and
+          requires delegation to Patch_decision. Its fixtures accept delegated decisions
+          and reject inline merged, busy, and CI-cap policy, including local helper
+          indirection.
   - id: FC-6
     description: >-
       The exported decision input/output types and callable signatures are available to
@@ -324,9 +338,9 @@ patches:
     requiredContext:
       - patch-decision-property-contract
     testStubsIntroduced:
-      - Patch_decision > merged patch is always skipped
-      - Patch_decision > busy patch is never delivered
-      - Patch_decision > CI failure cap at 3
+      - 'disposition: merged -> Skip'
+      - 'disposition: busy -> Busy'
+      - 'on_ci_failure: count >= 3 -> Cap_reached'
     testStubsImplemented:
     spec: |
       module EXTRACT_DECISION_PATCH_2.
@@ -378,9 +392,9 @@ patches:
       - patch-decision-property-contract
     testStubsIntroduced:
     testStubsImplemented:
-      - Patch_decision > merged patch is always skipped
-      - Patch_decision > busy patch is never delivered
-      - Patch_decision > CI failure cap at 3
+      - 'disposition: merged -> Skip'
+      - 'disposition: busy -> Busy'
+      - 'on_ci_failure: count >= 3 -> Cap_reached'
     spec: |
       module EXTRACT_DECISION_PATCH_3.
 
@@ -416,6 +430,11 @@ patches:
       - path: bin/main.ml
         action: modify
         description: Replace inline decision logic with Patch_decision function calls
+      - path: scripts/check-runner-decision-boundary.py
+        action: create
+        description: >-
+          Structural audit of lifecycle decision ownership with accepted/rejected source
+          fixtures
     changes:
       - >-
         In runner_fiber poll handler (~line 960): replace inline merged/busy checks with
@@ -424,6 +443,11 @@ patches:
         In CI failure handler (~line 1050): replace inline ci_failure_count >= 3 check
         with Patch_decision.needs_intervention
       - Remove now-dead local helper functions that duplicated decision logic
+      - >-
+        Create the structural audit and self-test fixtures declared by FC-5; validate
+        each lifecycle decision site delegates to Patch_decision and reject inline
+        policy or local helper indirection. Run the audit against runner_fiber as well
+        as the behavior tests.
     requiredContext:
       - current-runner-fiber-decisions
     testStubsIntroduced:
@@ -443,15 +467,15 @@ patches:
       all rf: RunnerFiber, p: Patch | inline-decisions rf p = 0.
 
 testMap:
-  - testName: Patch_decision > merged patch is always skipped
+  - testName: 'disposition: merged -> Skip'
     file: test/test_patch_decision.ml
     stubPatch: 2
     implPatch: 3
-  - testName: Patch_decision > busy patch is never delivered
+  - testName: 'disposition: busy -> Busy'
     file: test/test_patch_decision.ml
     stubPatch: 2
     implPatch: 3
-  - testName: Patch_decision > CI failure cap at 3
+  - testName: 'on_ci_failure: count >= 3 -> Cap_reached'
     file: test/test_patch_decision.ml
     stubPatch: 2
     implPatch: 3

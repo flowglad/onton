@@ -280,8 +280,19 @@ let gen_patch_list_unique =
 
 let gen_gameplan =
   QCheck2.Gen.(
-    map
-      (fun patches ->
+    map2
+      (fun with_metadata patches ->
+        let ordering_constraints =
+          if not with_metadata then []
+          else
+            List.concat_map patches ~f:(fun (patch : Patch.t) ->
+                List.map patch.Patch.dependencies ~f:(fun before ->
+                    {
+                      Ordering_constraint.before;
+                      after = patch.Patch.id;
+                      reason = "Serialize shared interface edits";
+                    }))
+        in
         Gameplan.
           {
             project_name = "test-project";
@@ -291,9 +302,12 @@ let gen_gameplan =
             solution_summary = "test solution";
             final_state_spec = "";
             patches;
-            operational_considerations = "";
-            required_changes = "";
-            ordering_constraints = [];
+            operational_considerations =
+              (if with_metadata then "Preserve rollout compatibility" else "");
+            required_changes =
+              (if with_metadata then "Public signatures remain compatible"
+               else "");
+            ordering_constraints;
             current_state_analysis = "";
             explicit_opinions = "";
             acceptance_criteria = [];
@@ -303,7 +317,7 @@ let gen_gameplan =
             publication = None;
             reachability_traces = [];
           })
-      gen_patch_list_unique)
+      bool gen_patch_list_unique)
 
 let gen_graph =
   QCheck2.Gen.(map Onton_core.Graph.of_patches gen_patch_list_unique)

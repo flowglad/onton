@@ -1195,12 +1195,10 @@ module Make (Forge : Forge.S) (W : Worktree.S) (Env : Runner_env.S) = struct
                   (Runtime.read runtime (fun snap ->
                        Orchestrator.main_branch snap.Runtime.orchestrator))
             in
-            let context () =
+            let context ~worktree_path =
               let agents_md =
                 read_optional_file
-                  (Stdlib.Filename.concat
-                     (WS.resolve_worktree_path ~patch_id ~agent ())
-                     "AGENTS.md")
+                  (Stdlib.Filename.concat worktree_path "AGENTS.md")
               in
               Prompt.render_session_context ~project_name
                 ?pr_number:(Patch_agent.pr_number agent)
