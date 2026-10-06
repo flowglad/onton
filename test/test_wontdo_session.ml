@@ -224,6 +224,21 @@ let run_case ?(detect_pr = false) ?(advance_base = false)
         Runtime.read runtime (fun snap ->
             Orchestrator.agent snap.orchestrator patch_id)
       in
+      let start_with_human =
+        Onton_core.Patch_decision.equal_delivery_mode delivery_mode Start
+        && Option.equal Operation_kind.equal kind (Some Human)
+      in
+      let prompt =
+        if start_with_human then
+          match Onton_core.Patch_decision.start_delivery agent with
+          | Start_with_human { messages } ->
+              assert (List.equal String.equal messages [ "Original guidance" ]);
+              prompt ^ "\n\n"
+              ^ Prompt.render_human_message_prompt
+                  ~project_name:gameplan.project_name messages
+          | Start_initial -> failwith "Expected queued human guidance at start"
+        else prompt
+      in
       let result =
         Telemetry_dispatch.with_sinks
           ~sinks:
@@ -245,6 +260,9 @@ let run_case ?(detect_pr = false) ?(advance_base = false)
         | None -> failwith "Backend was not invoked"
       in
       assert (Option.equal String.equal delivered_resume resume_session);
+      if start_with_human then
+        assert (
+          String.is_substring delivered_prompt ~substring:"Original guidance");
       let plain_human_followup =
         Onton_core.Patch_decision.equal_delivery_mode delivery_mode Respond
         && Option.equal Operation_kind.equal kind (Some Human)
