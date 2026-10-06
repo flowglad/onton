@@ -126,6 +126,25 @@ class ContractValidation(unittest.TestCase):
         self.plan["functionalChanges"][0]["verifiedBy"] = ["Unknown proof"]
         self.validate(1, "unknown test")
 
+    def test_malformed_verification_checks_without_jsonschema(self):
+        for field in ["command", "expectation"]:
+            for value in [7, None, True, [], {}, "", " \t "]:
+                with self.subTest(field=field, value=value):
+                    check = {"command": "dune build", "expectation": "Build succeeds"}
+                    check[field] = value
+                    self.plan["functionalChanges"][0]["verifiedBy"] = [check, "Unknown proof"]
+                    output = self.validate(1, "check requires non-empty string command and expectation",
+                                           without_schema=True)
+                    self.assertIn("unknown test", output)
+                    self.assertNotIn("Traceback", output)
+
+    def test_missing_verification_check_fields_without_jsonschema(self):
+        for check in [{}, {"command": "dune build"}, {"expectation": "Build succeeds"}]:
+            with self.subTest(check=check):
+                self.plan["functionalChanges"][0]["verifiedBy"] = [check]
+                self.validate(1, "check requires non-empty string command and expectation",
+                              without_schema=True)
+
     def test_verification_owned_by_consumer(self):
         self.plan["testMap"][0]["implPatch"] = 4
         self.validate(1, "verification must be implemented by owner")

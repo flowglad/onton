@@ -116,8 +116,11 @@ def validate_functional_changes(inst: dict, patches_by_id: dict[str, dict], erro
             errors.append(f"{fc['id']}: consumed guarantee requires verifiedBy evidence")
         for proof in proofs:
             if isinstance(proof, dict):
-                if not proof.get("command", "").strip() or not proof.get("expectation", "").strip():
-                    errors.append(f"{fc['id']}: check requires command and expectation")
+                command = proof.get("command")
+                expectation = proof.get("expectation")
+                if (not isinstance(command, str) or not isinstance(expectation, str)
+                        or not command.strip() or not expectation.strip()):
+                    errors.append(f"{fc['id']}: check requires non-empty string command and expectation")
                 continue
             test = tests.get(proof)
             if test is None:
