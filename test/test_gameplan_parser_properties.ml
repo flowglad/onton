@@ -371,6 +371,64 @@ let () =
                          .architecture_design
                  | _ -> false)));
       Test.make
+        ~name:
+          "legacy snapshot design text survives typed decoding and \
+           reserialization"
+        ~count:300 Gen.string
+        (safely (fun text ->
+             let json =
+               `Assoc
+                 [
+                   ("project_name", `String "legacy-snapshot");
+                   ("problem_statement", `String "Problem");
+                   ("solution_summary", `String "Solution");
+                   ("patches", `List []);
+                   ("architecture_design", `String text);
+                 ]
+             in
+             let restored = Gameplan.t_of_yojson json in
+             let blank = String.is_empty (String.strip text) in
+             let preserved =
+               match restored.architecture_design with
+               | None -> blank
+               | Some design ->
+                   (not blank)
+                   && String.equal design.summary text
+                   && List.is_empty design.decisions
+             in
+             let encoded = Gameplan.yojson_of_t restored in
+             let typed =
+               match encoded with
+               | `Assoc fields -> (
+                   match
+                     List.Assoc.find fields ~equal:String.equal
+                       "architecture_design"
+                   with
+                   | Some `Null -> blank
+                   | Some (`Assoc _) -> not blank
+                   | _ -> false)
+               | _ -> false
+             in
+             preserved && typed
+             && Gameplan.equal (Gameplan.t_of_yojson encoded) restored));
+      Test.make
+        ~name:"legacy empty and whitespace snapshot designs decode as absent"
+        ~count:1 Gen.unit
+        (safely (fun () ->
+             List.for_all [ ""; " "; "\n\t\r " ] ~f:(fun text ->
+                 let restored =
+                   Gameplan.t_of_yojson
+                     (`Assoc
+                        [
+                          ("project_name", `String "legacy-snapshot");
+                          ("problem_statement", `String "Problem");
+                          ("solution_summary", `String "Solution");
+                          ("patches", `List []);
+                          ("architecture_design", `String text);
+                        ])
+                 in
+                 Option.is_none restored.architecture_design)));
+      Test.make
         ~name:"architecture routine plan admits an empty decision inventory"
         ~count:1 Gen.unit
         (safely (fun () ->

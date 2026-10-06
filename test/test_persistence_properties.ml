@@ -175,6 +175,40 @@ let () =
           | Error _msg -> false
         with _ -> false)
   in
+  let legacy_architecture_snapshot =
+    QCheck2.Test.make
+      ~name:"legacy string architecture resumes without losing snapshot state"
+      ~count:100
+      QCheck2.Gen.(
+        pair gen_snapshot (oneof [ return ""; return " \n\t"; string ]))
+      (fun (snap, text) ->
+        try
+          let json =
+            match Onton.Persistence.snapshot_to_yojson snap with
+            | `Assoc fields ->
+                `Assoc
+                  (List.map fields ~f:(function
+                    | "gameplan", `Assoc fields ->
+                        ( "gameplan",
+                          `Assoc
+                            (("architecture_design", `String text)
+                            :: List.Assoc.remove fields ~equal:String.equal
+                                 "architecture_design") )
+                    | field -> field))
+            | _ -> assert false
+          in
+          let architecture_design =
+            if String.is_empty (String.strip text) then None
+            else Some Architecture_design.{ summary = text; decisions = [] }
+          in
+          let expected =
+            { snap with gameplan = { snap.gameplan with architecture_design } }
+          in
+          match Onton.Persistence.snapshot_of_yojson json with
+          | Error _ -> false
+          | Ok restored -> snapshots_equal expected restored
+        with _ -> false)
+  in
   let legacy_feature_fields_default_false =
     QCheck2.Test.make
       ~name:"legacy snapshots without feature fields resume with false"
@@ -823,6 +857,7 @@ let () =
         intervention_snapshot;
         snapshot_roundtrip;
         metadata_snapshot_roundtrip;
+        legacy_architecture_snapshot;
         legacy_feature_fields_default_false;
         applied_control_ids_decode;
         applied_control_ids_restore_window;

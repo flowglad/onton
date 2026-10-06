@@ -457,7 +457,8 @@ module Gameplan = struct
     solution_summary : string;
     architecture_design : Architecture_design.t option; [@yojson.default None]
         (** Admitted architectural design; unresolved resolutions are excluded
-            from its type. Absent for legacy plans. *)
+            from its type. Legacy snapshot text is retained as a summary with no
+            structured decisions; blank text and missing designs are absent. *)
     final_state_spec : string; [@yojson.default ""]
     patches : Patch.t list;
     publication : Gameplan_publication.persisted; [@yojson.default None]
@@ -476,6 +477,28 @@ module Gameplan = struct
     open_questions : string list; [@yojson.default []]
   }
   [@@deriving show, eq, sexp_of, compare, yojson]
+
+  (* Older snapshots stored rendered design text. Preserve that text as the
+     summary without inventing structured decisions or approval evidence.
+     Keep the generated encoder so subsequent snapshots use object-or-null. *)
+  let t_of_yojson json =
+    let json =
+      match json with
+      | `Assoc fields ->
+          `Assoc
+            (List.map fields ~f:(function
+              | "architecture_design", `String text ->
+                  let design =
+                    if String.is_empty (String.strip text) then `Null
+                    else
+                      Architecture_design.yojson_of_t
+                        { summary = text; decisions = [] }
+                  in
+                  ("architecture_design", design)
+              | field -> field))
+      | _ -> json
+    in
+    t_of_yojson json
 
   (* Canonical project-name → branch-prefix slug. Shared with
      [Gameplan_parser] (which aliases this) so the branch a runtime-added patch

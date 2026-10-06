@@ -422,7 +422,9 @@ module Gameplan : sig
     solution_summary : string;
     architecture_design : Architecture_design.t option; [@yojson.default None]
         (** Admitted architectural design; unresolved resolutions are excluded
-            from its type. Absent for legacy plans. *)
+            from its type. Legacy snapshot text is retained as a summary with no
+            structured decisions; blank text and missing designs are absent.
+            Decoding accepts legacy strings; encoding uses object-or-null. *)
     final_state_spec : string; [@yojson.default ""]
     patches : Patch.t list;
     publication : Gameplan_publication.persisted; [@yojson.default None]
