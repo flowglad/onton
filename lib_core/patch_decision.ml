@@ -115,6 +115,20 @@ type start_delivery =
 
 type delivery_mode = Start | Respond [@@deriving show, eq, sexp_of, compare]
 
+let session_prompt_requires_patch_instructions ~delivery_mode ~kind =
+  match delivery_mode with
+  | Start -> true
+  | Respond -> (
+      match kind with
+      | Some Operation_kind.Human -> false
+      | None
+      | Some
+          ( Operation_kind.Uncommitted_changes | Operation_kind.Rebase
+          | Operation_kind.Merge_conflict | Operation_kind.Ci
+          | Operation_kind.Review_comments | Operation_kind.Pr_body
+          | Operation_kind.Findings ) ->
+          true)
+
 let start_delivery (agent : Patch_agent.t) : start_delivery =
   if
     Option.equal Operation_kind.equal agent.current_op

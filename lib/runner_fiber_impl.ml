@@ -1069,24 +1069,6 @@ module Make (Forge : Forge.S) (W : Worktree.S) (Env : Runner_env.S) = struct
     let fetch_mutex = Env.fetch_mutex in
     let run_llm_session ~kind ~delivery_mode ~patch_id ~prompt ~agent
         ~on_pr_detected ~complexity =
-      let mode_instructions =
-        Runtime.read runtime (fun snap ->
-            let orch = snap.Runtime.orchestrator in
-            if Orchestrator.is_feature_descendant orch patch_id then
-              "\n\
-               Feature branch construction: this patch publishes a branch \
-               only. Do not create or modify a pull request or PR body. Commit \
-               locally; the supervisor pushes and integrates after branch HEAD \
-               checks pass.\n"
-            else if Orchestrator.is_integration_root orch patch_id then
-              "\n\
-               Integration root: preserve all published history. Never rebase, \
-               reset, or force-push this branch. Incorporate upstream changes \
-               with git merge; the supervisor uses normal pushes.\n"
-            else "")
-      in
-      let prompt = prompt ^ mode_instructions in
-
       let gameplan = Runtime.read runtime (fun snap -> snap.Runtime.gameplan) in
       let session_result =
         match gameplan.Gameplan.publication with

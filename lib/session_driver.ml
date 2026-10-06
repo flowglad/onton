@@ -237,16 +237,39 @@ module Make (W : Worktree.S) (Env : ENV) = struct
             (try Unix.unlink wontdo_path
              with Unix.Unix_error (Unix.ENOENT, _, _) -> ());
             let prompt =
-              prompt
-              ^ Printf.sprintf
-                  "\n\n\
-                   Before making your first commit, you may opt out of this \
-                   patch. If you decide the work should not proceed, write \
-                   your reason to `%s` and end your turn without committing. \
-                   The supervisor will surface that message and stop this \
-                   patch without pushing or opening a PR. This option is \
-                   unavailable after any patch commit or PR exists."
-                  wontdo_path
+              if
+                Patch_decision.session_prompt_requires_patch_instructions
+                  ~delivery_mode ~kind
+              then
+                let mode_instructions =
+                  Runtime.read runtime (fun snap ->
+                      let orch = snap.Runtime.orchestrator in
+                      if Orchestrator.is_feature_descendant orch patch_id then
+                        "\n\
+                         Feature branch construction: this patch publishes a \
+                         branch only. Do not create or modify a pull request \
+                         or PR body. Commit locally; the supervisor pushes and \
+                         integrates after branch HEAD checks pass.\n"
+                      else if Orchestrator.is_integration_root orch patch_id
+                      then
+                        "\n\
+                         Integration root: preserve all published history. \
+                         Never rebase, reset, or force-push this branch. \
+                         Incorporate upstream changes with git merge; the \
+                         supervisor uses normal pushes.\n"
+                      else "")
+                in
+                prompt ^ mode_instructions
+                ^ Printf.sprintf
+                    "\n\n\
+                     Before making your first commit, you may opt out of this \
+                     patch. If you decide the work should not proceed, write \
+                     your reason to `%s` and end your turn without committing. \
+                     The supervisor will surface that message and stop this \
+                     patch without pushing or opening a PR. This option is \
+                     unavailable after any patch commit or PR exists."
+                    wontdo_path
+              else prompt
             in
             (* Read once at session start so the per-event callback below can
              persist the session id to the crash-recovery sidecar without
