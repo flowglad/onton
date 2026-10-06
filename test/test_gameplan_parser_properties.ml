@@ -66,6 +66,38 @@ let field json key value =
 let rejected json = Result.is_error (parse json)
 let safely f x = try f x with _ -> false
 
+let architecture_decision kind =
+  `Assoc
+    [
+      ("id", `String "AD-1");
+      ("topic", `String "ownership");
+      ("question", `String "Who owns admission?");
+      ("choice", `String "Application service owns admission");
+      ( "alternatives",
+        `List
+          [
+            `Assoc
+              [
+                ("choice", `String "Worker owns admission");
+                ("tradeoffs", `String "Requires a second authority boundary");
+              ];
+          ] );
+      ( "resolution",
+        `Assoc
+          [
+            ("kind", `String kind);
+            ("evidence", `String "Engineer selected the application boundary");
+            ("rationale", `String "One write owner controls admission");
+          ] );
+    ]
+
+let architecture decisions =
+  `Assoc
+    [
+      ("summary", `String "Application owns admission; tasks execute work");
+      ("decisions", `List decisions);
+    ]
+
 let () =
   let open QCheck2 in
   let dag =
@@ -87,8 +119,322 @@ let () =
     in
     plan n requirements orders
   in
+  let rec json_value depth =
+    let scalar =
+      Gen.(
+        oneof
+          [
+            return `Null;
+            map (fun s -> `String s) string;
+            map (fun n -> `Int n) int;
+            map (fun b -> `Bool b) bool;
+          ])
+    in
+    if depth = 0 then scalar
+    else
+      Gen.(
+        oneof
+          [
+            scalar;
+            map
+              (fun xs -> `List xs)
+              (list_size (int_range 0 4) (json_value (depth - 1)));
+            map
+              (fun xs -> `Assoc xs)
+              (list_size (int_range 0 4)
+                 (pair
+                    (oneof_list
+                       [
+                         "summary";
+                         "decisions";
+                         "kind";
+                         "evidence";
+                         "rationale";
+                         "choice";
+                         "tradeoffs";
+                       ])
+                    (json_value (depth - 1))));
+          ])
+  in
   let tests =
     [
+      Test.make
+        ~name:
+          "v3 admission requires architectural design while v2 remains \
+           compatible"
+        ~count:1 Gen.unit
+        (safely (fun () ->
+             let old = plan 1 [] [] in
+             let current = field old "formatVersion" (`Int 3) in
+             Result.is_ok (parse old)
+             && rejected current
+             && rejected (field current "architectureDesign" `Null)
+             && Result.is_ok
+                  (parse (field current "architectureDesign" (architecture [])))
+             && Result.is_ok
+                  (parse
+                     (field current "architectureDesign"
+                        (architecture
+                           [ architecture_decision "engineer_approved" ])))));
+      Test.make
+        ~name:
+          "v3 retains prerequisite derivation and rejects legacy dependency \
+           fields"
+        ~count:1 Gen.unit
+        (safely (fun () ->
+             let current =
+               field
+                 (field
+                    (plan 2 [ requirement 1 1 [ 2 ] ] [])
+                    "formatVersion" (`Int 3))
+                 "architectureDesign" (architecture [])
+             in
+             match parse current with
+             | Error _ -> false
+             | Ok parsed ->
+                 List.equal Patch_id.equal
+                   (Map.find parsed.dependency_graph (pid 2)
+                   |> Option.value ~default:[])
+                   [ pid 1 ]
+                 && rejected (field current "dependencyGraph" (`List []))));
+      Test.make
+        ~name:"architecture admission is total over generated structured values"
+        ~count:500
+        Gen.(pair (int_range 0 3) (json_value 2))
+        (safely (fun (layer, value) ->
+             let decision = architecture_decision "constrained" in
+             let design =
+               match layer with
+               | 0 -> value
+               | 1 -> architecture [ value ]
+               | 2 -> architecture [ field decision "resolution" value ]
+               | _ ->
+                   architecture
+                     [ field decision "alternatives" (`List [ value ]) ]
+             in
+             ignore
+               (parse (field (plan 1 [] []) "architectureDesign" design)
+                 : (Gameplan_parser.t, string) Result.t);
+             true));
+      Test.make ~name:"architecture non-object resolution reports its shape"
+        ~count:100
+        Gen.(
+          oneof
+            [
+              map (fun n -> `Int n) int;
+              map (fun s -> `String s) string;
+              return `Null;
+              return (`List []);
+            ])
+        (safely (fun resolution ->
+             let decision =
+               field
+                 (architecture_decision "constrained")
+                 "resolution" resolution
+             in
+             match
+               parse
+                 (field (plan 1 [] []) "architectureDesign"
+                    (architecture [ decision ]))
+             with
+             | Ok _ -> false
+             | Error message ->
+                 String.is_substring message
+                   ~substring:"resolution must be an object"));
+      Test.make
+        ~name:"architecture resolutions retain context through persistence"
+        ~count:1 Gen.unit
+        (safely (fun () ->
+             List.for_all [ "engineer_approved"; "constrained"; "delegated" ]
+               ~f:(fun kind ->
+                 match
+                   parse
+                     (field (plan 1 [] []) "architectureDesign"
+                        (architecture [ architecture_decision kind ]))
+                 with
+                 | Error _ -> false
+                 | Ok parsed ->
+                     let structural_match =
+                       match parsed.gameplan.Gameplan.architecture_design with
+                       | None -> false
+                       | Some design -> (
+                           String.equal design.summary
+                             "Application owns admission; tasks execute work"
+                           &&
+                           match design.decisions with
+                           | [ decision ] ->
+                               String.equal decision.id "AD-1"
+                               && String.equal decision.topic "ownership"
+                               && String.equal decision.question
+                                    "Who owns admission?"
+                               && String.equal decision.choice
+                                    "Application service owns admission"
+                               && (match decision.alternatives with
+                                 | [ alternative ] ->
+                                     String.equal alternative.alternative_choice
+                                       "Worker owns admission"
+                                     && String.equal alternative.tradeoffs
+                                          "Requires a second authority boundary"
+                                 | _ -> false)
+                               &&
+                               let actual_kind, basis =
+                                 match decision.resolution with
+                                 | Architecture_design.Engineer_approved basis
+                                   ->
+                                     ("engineer_approved", basis)
+                                 | Architecture_design.Constrained basis ->
+                                     ("constrained", basis)
+                                 | Architecture_design.Delegated basis ->
+                                     ("delegated", basis)
+                               in
+                               String.equal actual_kind kind
+                               && String.equal basis.evidence
+                                    "Engineer selected the application boundary"
+                               && String.equal basis.rationale
+                                    "One write owner controls admission"
+                           | _ -> false)
+                     in
+                     structural_match
+                     && Gameplan.equal
+                          (Gameplan.t_of_yojson
+                             (Gameplan.yojson_of_t parsed.gameplan))
+                          parsed.gameplan)));
+      Test.make
+        ~name:
+          "architecture unresolved rejects independent of format and \
+           openQuestions"
+        ~count:1 Gen.unit
+        (safely (fun () ->
+             List.for_all [ Some 2; Some 3; None ] ~f:(fun version ->
+                 let json = plan 1 [] [] in
+                 let json =
+                   match version with
+                   | Some n -> field json "formatVersion" (`Int n)
+                   | None -> (
+                       match json with
+                       | `Assoc fields ->
+                           `Assoc
+                             (List.Assoc.remove fields ~equal:String.equal
+                                "formatVersion")
+                       | _ -> json)
+                 in
+                 rejected
+                   (field
+                      (field json "openQuestions" (`List []))
+                      "architectureDesign"
+                      (architecture [ architecture_decision "unresolved" ])))));
+      Test.make ~name:"architecture malformed and duplicate decisions reject"
+        ~count:1 Gen.unit
+        (safely (fun () ->
+             List.for_all
+               [
+                 `Null;
+                 `String "design";
+                 `List [];
+                 architecture [ architecture_decision "unknown" ];
+                 architecture
+                   [
+                     architecture_decision "constrained";
+                     architecture_decision "constrained";
+                   ];
+                 architecture
+                   [
+                     field
+                       (architecture_decision "constrained")
+                       "resolution"
+                       (`Assoc
+                          [
+                            ("kind", `String "constrained");
+                            ("evidence", `String " ");
+                            ("rationale", `String "Reason");
+                          ]);
+                   ];
+               ]
+               ~f:(fun design ->
+                 rejected (field (plan 1 [] []) "architectureDesign" design))));
+      Test.make
+        ~name:"architecture absence supports previous plans and snapshots"
+        ~count:1 Gen.unit
+        (safely (fun () ->
+             match parse (plan 1 [] []) with
+             | Error _ -> false
+             | Ok parsed -> (
+                 Option.is_none parsed.gameplan.architecture_design
+                 &&
+                 match Gameplan.yojson_of_t parsed.gameplan with
+                 | `Assoc fields ->
+                     Option.is_none
+                       (Gameplan.t_of_yojson
+                          (`Assoc
+                             (List.Assoc.remove fields ~equal:String.equal
+                                "architecture_design")))
+                         .architecture_design
+                 | _ -> false)));
+      Test.make
+        ~name:
+          "legacy snapshot design text survives typed decoding and \
+           reserialization"
+        ~count:300 Gen.string
+        (safely (fun text ->
+             let json =
+               `Assoc
+                 [
+                   ("project_name", `String "legacy-snapshot");
+                   ("problem_statement", `String "Problem");
+                   ("solution_summary", `String "Solution");
+                   ("patches", `List []);
+                   ("architecture_design", `String text);
+                 ]
+             in
+             let restored = Gameplan.t_of_yojson json in
+             let blank = String.is_empty (String.strip text) in
+             let preserved =
+               match restored.architecture_design with
+               | None -> blank
+               | Some design ->
+                   (not blank)
+                   && String.equal design.summary text
+                   && List.is_empty design.decisions
+             in
+             let encoded = Gameplan.yojson_of_t restored in
+             let typed =
+               match encoded with
+               | `Assoc fields -> (
+                   match
+                     List.Assoc.find fields ~equal:String.equal
+                       "architecture_design"
+                   with
+                   | Some `Null -> blank
+                   | Some (`Assoc _) -> not blank
+                   | _ -> false)
+               | _ -> false
+             in
+             preserved && typed
+             && Gameplan.equal (Gameplan.t_of_yojson encoded) restored));
+      Test.make
+        ~name:"legacy empty and whitespace snapshot designs decode as absent"
+        ~count:1 Gen.unit
+        (safely (fun () ->
+             List.for_all [ ""; " "; "\n\t\r " ] ~f:(fun text ->
+                 let restored =
+                   Gameplan.t_of_yojson
+                     (`Assoc
+                        [
+                          ("project_name", `String "legacy-snapshot");
+                          ("problem_statement", `String "Problem");
+                          ("solution_summary", `String "Solution");
+                          ("patches", `List []);
+                          ("architecture_design", `String text);
+                        ])
+                 in
+                 Option.is_none restored.architecture_design)));
+      Test.make
+        ~name:"architecture routine plan admits an empty decision inventory"
+        ~count:1 Gen.unit
+        (safely (fun () ->
+             Result.is_ok
+               (parse
+                  (field (plan 1 [] []) "architectureDesign" (architecture [])))));
       Test.make ~name:"v2 requires operational and required-change fields"
         ~count:1 Gen.unit
         (safely (fun () ->

@@ -38,14 +38,15 @@ val substitute_variables : string -> (string * string) list -> string
 
 val render_gameplan_layer : project_name:string -> Gameplan.t -> string
 (** Gameplan-stable prefix. Contains the project heading, problem statement,
-    solution summary, optional final state spec / explicit opinions / current
-    state analysis, operational constraints, required surfaces/signatures,
-    acceptance criteria, the patches list, and a pointer to the read-only
-    gameplan copy at [Project_store.gameplan_artifact_path] (published once at
-    startup by {!Project_store.publish_gameplan_artifact}) for agents that need
-    cross-patch context on demand. The pointer path is a pure function of the
-    project name, so the layer stays byte-identical across the run. Ends with a
-    trailing blank line. *)
+    solution summary, resolved architecture and its execution boundary, optional
+    final state spec / explicit opinions / current state analysis, operational
+    constraints, required surfaces/signatures, acceptance criteria, the patches
+    list, and a pointer to the read-only gameplan copy at
+    [Project_store.gameplan_artifact_path] (published once at startup by
+    {!Project_store.publish_gameplan_artifact}) for agents that need cross-patch
+    context on demand. The pointer path is a pure function of the project name,
+    so the layer stays byte-identical across the run. Ends with a trailing blank
+    line. *)
 
 val render_patch_layer_of_gameplan :
   project_name:string ->
@@ -184,6 +185,8 @@ val render_patch_prompt :
 
 val render_pr_description :
   project_name:string -> Patch.t -> Gameplan.t -> string
+(** Gameplan-derived patch description, including resolved architectural design.
+*)
 
 (** Pure: choose between the agent-authored PR body artifact and a deterministic
     fallback (typically the gameplan-derived body). Returns [fallback] when

@@ -398,6 +398,56 @@ module Reachability_trace = struct
       than a plausibly-named one off it. *)
 end
 
+module Architecture_design = struct
+  type resolution_basis = { evidence : string; rationale : string }
+  [@@deriving show, eq, sexp_of, compare, yojson]
+
+  type resolution =
+    | Engineer_approved of resolution_basis
+    | Constrained of resolution_basis
+    | Delegated of resolution_basis
+  [@@deriving show, eq, sexp_of, compare, yojson]
+
+  type alternative = { alternative_choice : string; tradeoffs : string }
+  [@@deriving show, eq, sexp_of, compare, yojson]
+
+  type decision = {
+    id : string;
+    topic : string;
+    question : string;
+    choice : string;
+    alternatives : alternative list;
+    resolution : resolution;
+  }
+  [@@deriving show, eq, sexp_of, compare, yojson]
+
+  type t = { summary : string; decisions : decision list }
+  [@@deriving show, eq, sexp_of, compare, yojson]
+
+  let render design =
+    let render_decision decision =
+      let kind, basis =
+        match decision.resolution with
+        | Engineer_approved basis -> ("engineer_approved", basis)
+        | Constrained basis -> ("constrained", basis)
+        | Delegated basis -> ("delegated", basis)
+      in
+      String.concat ~sep:"\n"
+        ([
+           "- " ^ decision.id ^ " (" ^ decision.topic ^ "): "
+           ^ decision.question;
+           "  Choice: " ^ decision.choice;
+           "  Resolution: " ^ kind ^ " — " ^ basis.evidence;
+           "  Rationale: " ^ basis.rationale;
+         ]
+        @ List.map decision.alternatives ~f:(fun alternative ->
+            "  - Alternative: " ^ alternative.alternative_choice ^ " — "
+            ^ alternative.tradeoffs))
+    in
+    String.concat ~sep:"\n"
+      (design.summary :: List.map design.decisions ~f:render_decision)
+end
+
 module Gameplan = struct
   type t = {
     project_name : string;
@@ -405,6 +455,10 @@ module Gameplan = struct
     repo_name : string; [@yojson.default ""]
     problem_statement : string;
     solution_summary : string;
+    architecture_design : Architecture_design.t option; [@yojson.default None]
+        (** Admitted architectural design; unresolved resolutions are excluded
+            from its type. Legacy snapshot text is retained as a summary with no
+            structured decisions; blank text and missing designs are absent. *)
     final_state_spec : string; [@yojson.default ""]
     patches : Patch.t list;
     publication : Gameplan_publication.persisted; [@yojson.default None]
@@ -423,6 +477,28 @@ module Gameplan = struct
     open_questions : string list; [@yojson.default []]
   }
   [@@deriving show, eq, sexp_of, compare, yojson]
+
+  (* Older snapshots stored rendered design text. Preserve that text as the
+     summary without inventing structured decisions or approval evidence.
+     Keep the generated encoder so subsequent snapshots use object-or-null. *)
+  let t_of_yojson json =
+    let json =
+      match json with
+      | `Assoc fields ->
+          `Assoc
+            (List.map fields ~f:(function
+              | "architecture_design", `String text ->
+                  let design =
+                    if String.is_empty (String.strip text) then `Null
+                    else
+                      Architecture_design.yojson_of_t
+                        { summary = text; decisions = [] }
+                  in
+                  ("architecture_design", design)
+              | field -> field))
+      | _ -> json
+    in
+    t_of_yojson json
 
   (* Canonical project-name → branch-prefix slug. Shared with
      [Gameplan_parser] (which aliases this) so the branch a runtime-added patch

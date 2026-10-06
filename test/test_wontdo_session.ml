@@ -116,6 +116,7 @@ let run_case ?(detect_pr = false) ?(advance_base = false)
             repo_owner = "test";
             repo_name = "test";
             problem_statement = "";
+            architecture_design = None;
             solution_summary = "";
             final_state_spec = "";
             patches;

@@ -9,7 +9,8 @@ val render_contribution : patch:Patch.t -> notes:string option -> contribution
     representation when present, otherwise falling back to its description. *)
 
 val render_contributions : gameplan:Gameplan.t -> contribution list -> string
-(** Assemble cached contributions in the supplied patch order. *)
+(** Assemble cached contributions in the supplied patch order, including the
+    resolved gameplan architecture once. *)
 
 val render :
   gameplan:Gameplan.t ->

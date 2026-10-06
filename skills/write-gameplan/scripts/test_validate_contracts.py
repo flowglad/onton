@@ -42,8 +42,62 @@ class ContractValidation(unittest.TestCase):
         self.assertNotIn("cannot check malformed structure", output)
         return output
 
+    def test_architecture_requires_section_for_new_authoring(self):
+        self.plan.pop("architectureDesign")
+        self.validate(1, "architectureDesign", without_schema=True)
+
+    def test_architecture_unresolved_blocks_empty_open_questions(self):
+        self.plan["architectureDesign"]["decisions"][0]["resolution"] = {
+            "kind": "unresolved", "reason": "Awaiting the engineer's ownership choice"
+        }
+        self.plan["openQuestions"] = []
+        self.validate(1, "is unresolved", without_schema=True)
+
+    def test_architecture_resolution_modes(self):
+        for kind in ["engineer_approved", "constrained", "delegated"]:
+            with self.subTest(kind=kind):
+                self.plan["architectureDesign"]["decisions"][0]["resolution"]["kind"] = kind
+                self.validate()
+
+    def test_architecture_malformed_without_jsonschema(self):
+        original = copy.deepcopy(self.plan["architectureDesign"])
+        for value in [None, [], "design", {"summary": "Design", "decisions": None}]:
+            with self.subTest(value=value):
+                self.plan["architectureDesign"] = value
+                self.validate(1, "architectureDesign", without_schema=True)
+        self.plan["architectureDesign"] = original
+        self.plan["architectureDesign"]["decisions"][0]["resolution"]["evidence"] = "  "
+        self.validate(1, "evidence", without_schema=True)
+
+    def test_architecture_unknown_resolution_identifies_decision(self):
+        decision = self.plan["architectureDesign"]["decisions"][0]
+        decision["resolution"]["kind"] = "todo"
+        for identifier, tag in [("AD-1", "AD-1"), ([], "<invalid-decision-id>")]:
+            for without_schema in [False, True]:
+                with self.subTest(identifier=identifier, without_schema=without_schema):
+                    decision["id"] = identifier
+                    self.validate(1, f"architectureDesign {tag} has unknown resolution kind 'todo'",
+                                  without_schema=without_schema)
+
+    def test_architecture_duplicate_ids(self):
+        decisions = self.plan["architectureDesign"]["decisions"]
+        decisions.append(copy.deepcopy(decisions[0]))
+        self.validate(1, "duplicate decision ID")
+
+    def test_architecture_routine_plan(self):
+        self.plan["architectureDesign"]["decisions"] = []
+        self.validate()
+
+    def test_authoring_rejects_version_downgrade_without_jsonschema(self):
+        self.plan.pop("architectureDesign")
+        for version in [2, 1, 4, None, "3", True]:
+            with self.subTest(version=version):
+                self.plan["formatVersion"] = version
+                self.validate(1, "require formatVersion 3", without_schema=True)
+
     def legacy_plan(self):
         self.plan.pop("formatVersion")
+        self.plan.pop("architectureDesign", None)
         self.plan.pop("orderingConstraints", None)
         self.plan["acceptanceCriteria"] = ["Legacy observable behavior"]
         for change in self.plan["functionalChanges"]:
@@ -99,7 +153,7 @@ class ContractValidation(unittest.TestCase):
 
     def test_legacy_graph_and_string_criteria_without_jsonschema(self):
         self.legacy_plan()
-        self.validate(without_schema=True)
+        self.validate(1, "require formatVersion 3", without_schema=True)
 
     def test_legacy_graph_integrity_without_jsonschema(self):
         self.legacy_plan()
@@ -161,17 +215,17 @@ class ContractValidation(unittest.TestCase):
         self.plan["acceptanceCriteria"][0]["tracesTo"] = ["FC-999"]
         self.validate(1, "tracesTo unknown functional change")
 
-    def test_v2_non_object_criteria_without_jsonschema(self):
+    def test_v3_non_object_criteria_without_jsonschema(self):
         for criterion in ["String criterion", None, 42, True, []]:
             with self.subTest(criterion=criterion):
                 self.plan["acceptanceCriteria"] = [criterion]
-                self.validate(1, "acceptanceCriteria[0]: formatVersion 2 requires an object",
+                self.validate(1, "acceptanceCriteria[0]: formatVersion 3 requires an object",
                               without_schema=True)
 
     def test_v2_invalid_entries_do_not_stop_object_checks(self):
         self.plan["acceptanceCriteria"][0]["tracesTo"] = ["FC-999"]
         self.plan["acceptanceCriteria"].insert(0, "String criterion")
-        output = self.validate(1, "acceptanceCriteria[0]: formatVersion 2 requires an object",
+        output = self.validate(1, "acceptanceCriteria[0]: formatVersion 3 requires an object",
                                without_schema=True)
         self.assertIn("tracesTo unknown functional change", output)
 
@@ -192,19 +246,19 @@ class ContractValidation(unittest.TestCase):
             if change["ownedBy"] == 3:
                 change["requiredBy"] = []
         self.plan["patches"][3]["files"].extend([
-            {"path": "lib/dune", "action": "modify", "description": "Shared manifest"},
-            {"path": "lib/patch_decision.mli", "action": "modify", "description": "Shared interface"},
-            {"path": "lib/dune", "action": "modify", "description": "Repeated entry"},
+            {"path": "lib_core/dune", "action": "modify", "description": "Shared manifest"},
+            {"path": "lib_core/patch_decision.mli", "action": "modify", "description": "Shared interface"},
+            {"path": "lib_core/dune", "action": "modify", "description": "Repeated entry"},
         ])
-        self.validate(1, "unordered write conflict between patches 1 and 4: ['lib/dune', 'lib/patch_decision.mli']")
+        self.validate(1, "unordered write conflict between patches 1 and 4: ['lib_core/dune', 'lib_core/patch_decision.mli']")
 
     def test_transitive_order_allows_multiple_shared_paths(self):
         for change in self.plan["functionalChanges"]:
             if change["ownedBy"] == 3:
                 change["requiredBy"] = []
         self.plan["patches"][3]["files"].extend([
-            {"path": "lib/dune", "action": "modify", "description": "Shared manifest"},
-            {"path": "lib/patch_decision.mli", "action": "modify", "description": "Shared interface"},
+            {"path": "lib_core/dune", "action": "modify", "description": "Shared manifest"},
+            {"path": "lib_core/patch_decision.mli", "action": "modify", "description": "Shared interface"},
         ])
         self.plan["orderingConstraints"] = [
             {"before": 3, "after": 4, "reason": "Consumer follows implementation"}

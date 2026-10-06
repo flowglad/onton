@@ -1,4 +1,4 @@
-formatVersion: 2
+formatVersion: 3
 
 projectName: extract-patch-decision
 
@@ -32,6 +32,26 @@ solutionSummary: >-
   invariant: actions as domains, cap conditions as predicates. Wire main.ml to call
   these functions instead of inlining the logic. Add QCheck2 property tests derived from
   the formal spec's preconditions and postconditions.
+
+architectureDesign:
+  summary: >-
+    Pure lifecycle decisions belong to onton_core. The effectful runner supplies current
+    state and executes the returned disposition. Existing state ownership, persistence
+    and scheduling remain unchanged.
+  decisions:
+    - id: AD-1
+      topic: ownership
+      question: Where should lifecycle decision rules run?
+      choice: A pure decision module in onton_core, called by the effectful runner.
+      alternatives: []
+      resolution:
+        kind: constrained
+        evidence: >-
+          This example requires pure property-testable rules; repository guidance places
+          pure logic in lib_core and effects in lib.
+        rationale: >-
+          Keeping effects in the runner is required by the pure testing boundary; module
+          names and helper decomposition remain implementation choices.
 
 mergabilityStrategy:
   featureFlagStrategy: >-
@@ -75,11 +95,11 @@ operationalConsiderations:
     to its previous inline-decision form with no data consequences.
 
 requiredChanges:
-  - file: lib/patch_decision.ml
+  - file: lib_core/patch_decision.ml
     line:
     description: 'New module: pure decision functions for patch lifecycle'
     signature: 'val disposition : merged:bool -> busy:bool -> disposition'
-  - file: lib/patch_decision.mli
+  - file: lib_core/patch_decision.mli
     line:
     description: Interface for Patch_decision exposing decision types and functions
     signature:
@@ -258,7 +278,7 @@ reachabilityTraces:
       - file: bin/main.ml
         symbol: runner_fiber
         status: existing
-      - file: lib/patch_decision.ml
+      - file: lib_core/patch_decision.ml
         symbol: disposition
         status: created
     testPath:
@@ -282,15 +302,15 @@ patches:
     complexity: 1
     title: Add Patch_decision types and module skeleton
     files:
-      - path: lib/patch_decision.ml
+      - path: lib_core/patch_decision.ml
         action: create
         description: >-
           Module with type definitions and placeholder functions that raise
           Not_implemented
-      - path: lib/patch_decision.mli
+      - path: lib_core/patch_decision.mli
         action: create
         description: Public interface exposing decision types and function signatures
-      - path: lib/dune
+      - path: lib_core/dune
         action: modify
         description: Add patch_decision to modules list
     changes:
@@ -379,7 +399,7 @@ patches:
     complexity: 2
     title: Implement decision functions and enable tests
     files:
-      - path: lib/patch_decision.ml
+      - path: lib_core/patch_decision.ml
         action: modify
         description: Replace placeholders with real decision logic
       - path: test/test_patch_decision.ml

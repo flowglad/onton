@@ -299,6 +299,40 @@ let gen_gameplan =
             repo_owner = "";
             repo_name = "";
             problem_statement = "test problem";
+            architecture_design =
+              (if not with_metadata then None
+               else
+                 Some
+                   Architecture_design.
+                     {
+                       summary =
+                         "Application owns decisions; runner executes effects";
+                       decisions =
+                         [
+                           {
+                             id = "AD-1";
+                             topic = "ownership";
+                             question = "Who owns lifecycle decisions?";
+                             choice = "Pure core";
+                             alternatives =
+                               [
+                                 {
+                                   tradeoffs =
+                                     "Cannot property-test decisions \
+                                      independently";
+                                   alternative_choice = "Effectful runner";
+                                 };
+                               ];
+                             resolution =
+                               Constrained
+                                 {
+                                   evidence =
+                                     "Repository requires pure decisions";
+                                   rationale = "Effects stay in the runner";
+                                 };
+                           };
+                         ];
+                     });
             solution_summary = "test solution";
             final_state_spec = "";
             patches;
@@ -822,6 +856,7 @@ let make_test_gameplan patches =
       repo_owner = "";
       repo_name = "";
       problem_statement = "";
+      architecture_design = None;
       solution_summary = "";
       final_state_spec = "";
       patches;

@@ -616,7 +616,7 @@ keys and typed scalars; tags, anchors, aliases, and merge keys are unsupported.
 Install the authoring skill's Python dependencies from `skills/write-gameplan/scripts/requirements.txt`;
 the validator also checks canonical YAML formatting.
 
-New plans use `formatVersion: 2`. Each functional change declares one `ownedBy`
+New plans use `formatVersion: 3`. Each functional change declares one `ownedBy`
 patch and its `requiredBy` consumers. Consumed guarantees also require
 `verifiedBy` producer evidence (named
 `testMap` tests or checks with a command and expected result). Onton derives each
@@ -625,6 +625,16 @@ reasoned serialization requirements; validation rejects cycles across both kinds
 of edges and unordered overlapping file writes. Acceptance criteria have stable
 IDs and `tracesTo` references to functional changes. Unversioned legacy plans
 with `dependencyGraph` still load; new plans must not mix the two representations.
+
+Format v3 requires `architectureDesign` at both authoring validation and
+execution admission: a system outline and consequential decisions with
+alternatives and resolution evidence. Engineers resolve meaningful
+architectural choices before patch decomposition; agents choose implementation
+mechanics autonomously within that design. Onton rejects malformed or
+unresolved design decisions and carries admitted design into patch context and
+patch/feature PR descriptions. Existing v2 and unversioned plans without this
+section still load; authoring validation requires migration to v3. Resolution
+evidence is a declaration, not proof of consultation.
 
 Patch sessions receive the plan constraints, owned and required guarantees,
 producer evidence, routed acceptance criteria, and repository instructions when

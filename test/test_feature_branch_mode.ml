@@ -42,6 +42,7 @@ let gp =
       repo_owner = "test";
       repo_name = "test";
       problem_statement = "";
+      architecture_design = None;
       solution_summary = "";
       final_state_spec = "";
       patches;
