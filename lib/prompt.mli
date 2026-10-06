@@ -38,14 +38,14 @@ val substitute_variables : string -> (string * string) list -> string
 
 val render_gameplan_layer : project_name:string -> Gameplan.t -> string
 (** Gameplan-stable prefix. Contains the project heading, problem statement,
-    solution summary, operational constraints, required surfaces/signatures,
-    acceptance criteria, optional final state spec / explicit opinions / current
-    state analysis, the patches list, and a pointer to the read-only gameplan
-    copy at [Project_store.gameplan_artifact_path] (published once at startup by
-    {!Project_store.publish_gameplan_artifact}) for agents that need cross-patch
-    context on demand. The pointer path is a pure function of the project name,
-    so the layer stays byte-identical across the run. Ends with a trailing blank
-    line. *)
+    solution summary, optional final state spec / explicit opinions / current
+    state analysis, operational constraints, required surfaces/signatures,
+    acceptance criteria, the patches list, and a pointer to the read-only
+    gameplan copy at [Project_store.gameplan_artifact_path] (published once at
+    startup by {!Project_store.publish_gameplan_artifact}) for agents that need
+    cross-patch context on demand. The pointer path is a pure function of the
+    project name, so the layer stays byte-identical across the run. Ends with a
+    trailing blank line. *)
 
 val render_patch_layer_of_gameplan :
   project_name:string ->
@@ -56,10 +56,11 @@ val render_patch_layer_of_gameplan :
   string
 (** Patch-stable middle. Contains the patch heading, dependencies, a pointer to
     each ancestor patch's implementation notes (when the patch has ancestors),
-    base-branch note, description, owned and required guarantees with proof (if
-    any), the required context resources, changes, files, test stubs,
-    specification (with Pantagruel guide), acceptance criteria, git identifiers,
-    and PR instructions. Ends with a trailing blank line.
+    base-branch note, description, owned and required guarantees with their
+    verification obligations (if any), the required context resources, changes,
+    files, test stubs, specification (with Pantagruel guide), acceptance
+    criteria, git identifiers, and PR instructions. Ends with a trailing blank
+    line.
 
     The functional changes, context resources, and ancestor list are all derived
     from the gameplan here — this is deliberately the only exported way to

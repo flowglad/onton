@@ -128,7 +128,8 @@ def validate_functional_changes(inst: dict, patches_by_id: dict[str, dict], erro
                 f['path'] for f in patches_by_id[owner].get('files', [])
             }:
                 errors.append(f"{fc['id']}: verification file must be in owner patch {owner}'s files")
-    criteria = inst.get("acceptanceCriteria", [])
+    criteria = [criterion for criterion in inst.get("acceptanceCriteria", [])
+                if isinstance(criterion, dict)]
     criterion_ids = [criterion["id"] for criterion in criteria]
     if len(criterion_ids) != len(set(criterion_ids)):
         errors.append("duplicate acceptance criterion IDs")
@@ -152,6 +153,9 @@ def validate_functional_changes(inst: dict, patches_by_id: dict[str, dict], erro
 
 def derived_dependencies(inst: dict) -> dict[str, list[str]]:
     """Planning-time projection; Onton independently derives the execution graph."""
+    if inst.get("formatVersion") != 2:
+        return {_pid(d["patch"]): [_pid(x) for x in d.get("dependsOn", [])]
+                for d in inst.get("dependencyGraph", []) or []}
     deps: dict[str, set[str]] = {_pid(p["number"]): set() for p in inst.get("patches", [])}
     for fc in inst.get("functionalChanges", []):
         for consumer in fc.get("requiredBy", []):
@@ -162,6 +166,25 @@ def derived_dependencies(inst: dict) -> dict[str, list[str]]:
 
 
 def validate_dependency_graph(inst: dict, patches_by_id: dict[str, dict], errors: list[str]) -> None:
+    if inst.get("formatVersion") == 2:
+        if "dependencyGraph" in inst:
+            errors.append("formatVersion 2 derives dependencies; remove dependencyGraph")
+    else:
+        graph = inst.get("dependencyGraph", []) or []
+        ids = [_pid(entry["patch"]) for entry in graph]
+        if len(ids) != len(set(ids)):
+            errors.append("duplicate dependencyGraph entries")
+        missing = set(patches_by_id) - set(ids)
+        extra = set(ids) - set(patches_by_id)
+        if missing:
+            errors.append(f"dependencyGraph missing patches: {sorted(missing, key=lambda s: (len(s), s))}")
+        if extra:
+            errors.append(f"dependencyGraph references unknown patches: {sorted(extra)}")
+        for entry in graph:
+            pid = _pid(entry["patch"])
+            if pid in patches_by_id and entry.get("classification") != patches_by_id[pid].get("classification"):
+                errors.append(f"dependencyGraph patch {pid} classification {entry.get('classification')!r} "
+                              f"does not match patch.classification {patches_by_id[pid].get('classification')!r}")
     deps = derived_dependencies(inst)
     for p, ds in deps.items():
         if p not in patches_by_id:
@@ -297,6 +320,8 @@ def validate_reachability_traces(inst: dict, patches_by_id: dict[str, dict], err
 
 
 def validate_write_frames(inst: dict, patches_by_id: dict[str, dict], errors: list[str]) -> None:
+    if inst.get("formatVersion") != 2:
+        return
     reach = _transitive_deps(inst)
     writers: dict[str, list[str]] = {}
     for pid, patch in patches_by_id.items():

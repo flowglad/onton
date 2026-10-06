@@ -506,18 +506,24 @@ let parse_acceptance_criteria ~version2 json functional_changes =
             (String.concat ~sep:", " references),
           references ))
 
-let operational_context json =
-  match member "operationalConsiderations" json with
-  | `Null -> ""
+let operational_context ~version2 json =
+  match
+    if version2 then required_field json "operationalConsiderations"
+    else member "operationalConsiderations" json
+  with
+  | `Null when not version2 -> ""
   | `Assoc fields ->
       List.map fields ~f:(fun (key, value) ->
           "- " ^ key ^ ": " ^ to_string value)
       |> String.concat ~sep:"\n"
   | _ -> raise (Parse_error "operationalConsiderations must be an object")
 
-let required_change_context json =
-  match member "requiredChanges" json with
-  | `Null -> ""
+let required_change_context ~version2 json =
+  match
+    if version2 then required_field json "requiredChanges"
+    else member "requiredChanges" json
+  with
+  | `Null when not version2 -> ""
   | `List changes ->
       List.map changes ~f:(fun item ->
           let file = to_string (member "file" item) in
@@ -616,8 +622,8 @@ let parse_json_string input =
             (Parse_error
                "requiredBy, verifiedBy and orderingConstraints require \
                 formatVersion 2");
-        let operational_considerations = operational_context json in
-        let required_changes = required_change_context json in
+        let operational_considerations = operational_context ~version2 json in
+        let required_changes = required_change_context ~version2 json in
         let ordering_constraints =
           if version2 then parse_ordering_constraints json else []
         in

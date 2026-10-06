@@ -15,18 +15,34 @@ class ContractValidation(unittest.TestCase):
     def setUp(self):
         self.plan = json.loads(EXAMPLE.read_text())
 
-    def validate(self, expected=0, message=None):
+    def validate(self, expected=0, message=None, without_schema=False):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "plan.json"
             path.write_text(json.dumps(self.plan))
             result = subprocess.run(
-                [sys.executable, str(SCRIPTS / "validate.py"), str(path)],
+                [sys.executable, *(["-S"] if without_schema else []), str(SCRIPTS / "validate.py"), str(path)],
                 stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=30,
             )
         output = result.stdout + result.stderr
         self.assertEqual(result.returncode, expected, output)
         if message:
             self.assertIn(message, output)
+        self.assertNotIn("cannot check malformed structure", output)
+        return output
+
+    def legacy_plan(self):
+        self.plan.pop("formatVersion")
+        self.plan.pop("orderingConstraints", None)
+        self.plan["acceptanceCriteria"] = ["Legacy observable behavior"]
+        for change in self.plan["functionalChanges"]:
+            change.pop("requiredBy")
+            change.pop("verifiedBy")
+        deps = {1: [], 2: [1], 3: [1, 2], 4: [3]}
+        self.plan["dependencyGraph"] = [
+            {"patch": p["number"], "classification": p["classification"],
+             "dependsOn": deps[p["number"]]}
+            for p in self.plan["patches"]
+        ]
 
     def test_valid_guarantees_and_serialization(self):
         self.plan["orderingConstraints"] = [
@@ -64,6 +80,35 @@ class ContractValidation(unittest.TestCase):
     def test_mixed_format(self):
         self.plan["dependencyGraph"] = []
         self.validate(1, "Additional properties")
+
+    def test_mixed_format_without_jsonschema(self):
+        self.plan["dependencyGraph"] = []
+        self.validate(1, "remove dependencyGraph", without_schema=True)
+
+    def test_legacy_graph_and_string_criteria_without_jsonschema(self):
+        self.legacy_plan()
+        self.validate(without_schema=True)
+
+    def test_legacy_graph_integrity_without_jsonschema(self):
+        self.legacy_plan()
+        self.plan["dependencyGraph"].pop()
+        self.plan["dependencyGraph"][0]["classification"] = "wrong"
+        self.plan["dependencyGraph"].append({"patch": 99, "dependsOn": []})
+        output = self.validate(1, "dependencyGraph missing patches", without_schema=True)
+        self.assertIn("dependencyGraph references unknown patches", output)
+        self.assertIn("does not match patch.classification", output)
+
+    def test_legacy_string_criteria_do_not_stop_other_checks(self):
+        self.legacy_plan()
+        self.plan["functionalChanges"][0]["ownedBy"] = 99
+        self.validate(1, "ownedBy missing patch 99", without_schema=True)
+
+    def test_legacy_duplicate_and_cyclic_graph(self):
+        self.legacy_plan()
+        self.plan["dependencyGraph"][0]["dependsOn"] = [4]
+        self.plan["dependencyGraph"].append(copy.deepcopy(self.plan["dependencyGraph"][0]))
+        output = self.validate(1, "duplicate dependencyGraph entries", without_schema=True)
+        self.assertIn("dependency cycle", output)
 
     def test_unknown_verification(self):
         self.plan["functionalChanges"][0]["verifiedBy"] = ["Unknown proof"]

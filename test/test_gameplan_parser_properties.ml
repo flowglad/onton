@@ -36,6 +36,8 @@ let plan n requirements orders =
   `Assoc
     [
       ("formatVersion", `Int 2);
+      ("operationalConsiderations", `Assoc []);
+      ("requiredChanges", `List []);
       ("projectName", `String "contracts");
       ("functionalChanges", `List requirements);
       ("orderingConstraints", `List orders);
@@ -87,6 +89,35 @@ let () =
   in
   let tests =
     [
+      Test.make ~name:"v2 requires operational and required-change fields"
+        ~count:1 Gen.unit
+        (safely (fun () ->
+             List.for_all [ "operationalConsiderations"; "requiredChanges" ]
+               ~f:(fun key ->
+                 List.for_all [ true; false ] ~f:(fun omit ->
+                     let json = plan 1 [] [] in
+                     let invalid =
+                       if omit then
+                         match json with
+                         | `Assoc fields ->
+                             `Assoc
+                               (List.Assoc.remove fields ~equal:String.equal key)
+                         | _ -> assert false
+                       else field json key `Null
+                     in
+                     rejected invalid))));
+      Test.make ~name:"legacy metadata omission keeps empty defaults" ~count:1
+        Gen.unit
+        (safely (fun () ->
+             match
+               parse
+                 (`Assoc
+                    [ ("projectName", `String "legacy"); ("patches", `List []) ])
+             with
+             | Error _ -> false
+             | Ok parsed ->
+                 String.is_empty parsed.gameplan.operational_considerations
+                 && String.is_empty parsed.gameplan.required_changes));
       Test.make
         ~name:
           "contracts: derived graph equals declared requirement and ordering \

@@ -101,7 +101,7 @@ All of these fields are **required** and must be present in every gameplan:
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `formatVersion` | `2` | Dependencies are derived from functional guarantees and serialization constraints |
+| `formatVersion` | `integer` | `2` — dependencies are derived from functional guarantees and serialization constraints |
 | `projectName` | `string` | Kebab-case, used in branch names and PR titles |
 | `owner` | `string` | Repository owner on the git forge (user, org, group). Non-empty; forge-specific format rules are enforced by the orchestrator at session start. See [One Repo Per Gameplan](#one-repo-per-gameplan) |
 | `repo` | `string` | Repository name on the git forge (paired with `owner`). All file paths in this gameplan are interpreted relative to this repo's root |
@@ -341,7 +341,7 @@ The producer prompt receives owned guarantees, consumers and verification obliga
 
 **A patch's `files` array is its planned complete write footprint.** Ground it against the changes and guarantees: include required consumer updates, exports, proxy/backend changes, schemas and migrations. The validator rejects overlapping files in patches that are unordered by the derived graph, and required changes outside every patch's footprint.
 
-The footprint is not a reason to weaken an assigned guarantee. An implementer may make necessary supporting edits for its assigned outcomes when they neither change another patch's contract nor introduce an unordered write conflict. Cross-patch ownership or ordering changes require a plan repair: identify the missing guarantee, its owner, the needed files and the smallest repair. Keep capability dependencies in `functionalChanges.requiredBy`; use `orderingConstraints` only for serialization such as migration numbering or a shared file. Do not label a missing capability as an ordering reason.
+The footprint is not a reason to weaken an assigned guarantee. An implementer may make necessary supporting edits for its assigned outcomes, but must add every touched file to the patch's `files` footprint and repair the plan if those edits create an unordered conflict or cross-patch contract change. Identify the missing guarantee, its owner, the needed files and the smallest repair. Keep capability dependencies in `functionalChanges.requiredBy`; use `orderingConstraints` only for serialization such as migration numbering or a shared file. Do not label a missing capability as an ordering reason.
 
 **Each patch must be non-vacuous.** A patch whose postcondition already holds in the grounded pre-state is a no-op — satisfied *vacuously*, the way "every request is followed by a grant" holds in a system that makes no requests. Mechanical test: remove the patch and check whether its postcondition still holds against the grounded code; if it does, the patch is empty. If the field already exists, the route is already registered, or the type already has the variant, drop the patch or rescope it to the work actually missing.
 
