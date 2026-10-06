@@ -5,8 +5,9 @@ type t
 (** Publication evidence from the named branch's completed Git rebase history.
     Old tips alone grant no authority: every transition from an incorporated
     remote tip to the captured local tip must preserve history or be a completed
-    rebase onto an ancestor of its result. Discarded or missing history breaks
-    the chain. The resulting evidence is bound to both immutable commits. *)
+    rebase onto a target incorporating the captured remote tip and ancestral to
+    its result. Discarded or missing history breaks the chain. The resulting
+    evidence is bound to both immutable commits. *)
 
 val authorizes :
   t -> branch:string -> local_sha:string -> remote_sha:string -> bool

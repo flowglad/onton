@@ -37,7 +37,9 @@ let of_reflog ~branch ~local_sha ~remote_sha ~reflog ~ancestor_oracle =
           let rebase_target = String.chop_prefix message ~prefix in
           let completed_rebase =
             Option.value_map rebase_target ~default:false ~f:(fun target ->
-                valid_sha target && ancestor_oracle target ~descendant:after)
+                valid_sha target
+                && ancestor_oracle remote_sha ~descendant:target
+                && ancestor_oracle target ~descendant:after)
           in
           if completed_rebase || ancestor_oracle before ~descendant:after then
             walk ~expected:before

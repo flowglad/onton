@@ -14,22 +14,32 @@ let entry before after message =
 let finish before after target =
   entry before after ("rebase (finish): refs/heads/patch onto " ^ target)
 
-type operation = Rebase | Append | Discard | Remote_write | Fetch | Publish
+type operation =
+  | Rebase
+  | Rebase_without_remote
+  | Append
+  | Discard
+  | Remote_write
+  | Fetch
+  | Publish
 
 let show_operation = function
   | Rebase -> "rebase"
+  | Rebase_without_remote -> "rebase-without-remote"
   | Append -> "append"
   | Discard -> "discard"
   | Remote_write -> "remote-write"
   | Fetch -> "fetch"
   | Publish -> "publish"
 
-let operations = [ Rebase; Append; Discard; Remote_write; Fetch; Publish ]
+let operations =
+  [
+    Rebase; Rebase_without_remote; Append; Discard; Remote_write; Fetch; Publish;
+  ]
 
-(* Independent commit graph and write-owner model. A completed rewrite retains
-   the histories it intentionally replaces; a discard forgets that authority.
-   Fetches update only tracking. Publication is checked against this model at
-   every step, including retries with no additional commits. *)
+(* Independent commit graph: rebases either incorporate the observed remote in
+   their target or discard it. Fetches update only tracking. Publication must
+   preserve the remote history at every step, including retries. *)
 let trace operations =
   let graph = ref [ (sha 1, []); (sha 2, [ sha 1 ]) ] in
   let rec ancestor a b =
@@ -50,11 +60,15 @@ let trace operations =
   let local = ref (sha 2) in
   let remote = ref (sha 2) in
   let tracking = ref (sha 2) in
-  let roots = ref [] in
   let reflog = ref [ entry (sha 0) !local "branch: Created from HEAD" ] in
   let update message commit =
     reflog := entry !local commit message :: !reflog;
     local := commit
+  in
+  let rebase parent =
+    let target = create [ parent ] in
+    let result = create [ target ] in
+    update ("rebase (finish): refs/heads/patch onto " ^ target) result
   in
   let inspect () =
     let authority =
@@ -68,9 +82,6 @@ let trace operations =
       else if ancestor !local !tracking then Push_plan.Local_missing_remote
       else Push_plan.Local_diverged_from_remote
     in
-    let authorized_rewrite =
-      List.exists !roots ~f:(fun root -> ancestor !tracking root)
-    in
     List.for_all [ false; true ] ~f:(fun preserve_history ->
         let decision =
           Push_plan.plan ~preserve_history ~expected_branch:"patch"
@@ -79,12 +90,7 @@ let trace operations =
             ~ancestry ~remote_changes_included:false
             ~rewrite_authority:authority ~commits_ahead_of_base:(Some 1)
         in
-        let expected =
-          ancestor !tracking !local
-          || (not preserve_history)
-             && (not (ancestor !local !tracking))
-             && authorized_rewrite
-        in
+        let expected = ancestor !tracking !local in
         match decision with
         | Push_plan.Refuse _ -> not expected
         | Push_plan.Push (Push_plan.Initial_push _) -> false
@@ -95,15 +101,10 @@ let trace operations =
   in
   List.for_all operations ~f:(fun operation ->
       (match operation with
-      | Rebase ->
-          roots := !local :: !roots;
-          let target = create [ sha 1 ] in
-          let result = create [ target ] in
-          update ("rebase (finish): refs/heads/patch onto " ^ target) result
+      | Rebase -> rebase !tracking
+      | Rebase_without_remote -> rebase (sha 1)
       | Append -> update "commit: work" (create [ !local ])
-      | Discard ->
-          roots := [];
-          update "reset: moving to unrelated" (create [ sha 1 ])
+      | Discard -> update "reset: moving to unrelated" (create [ sha 1 ])
       | Remote_write -> remote := create [ !remote ]
       | Fetch -> tracking := !remote
       | Publish -> ());
@@ -116,10 +117,12 @@ let authority () =
       (String.concat ~sep:"\n"
          [
            entry (sha 1) (sha 2) "commit: original";
-           finish (sha 2) (sha 3) (sha 1);
+           finish (sha 2) (sha 3) (sha 2);
          ])
     ~ancestor_oracle:(fun a ~descendant ->
-      String.equal a descendant || String.equal a (sha 1))
+      String.equal a descendant
+      || String.equal a (sha 1)
+      || (String.equal a (sha 2) && String.equal descendant (sha 3)))
 
 let properties =
   [
@@ -131,12 +134,50 @@ let properties =
           (Rewrite_lineage.of_reflog ~branch:"patch" ~local_sha ~remote_sha
              ~reflog ~ancestor_oracle:(fun _ ~descendant:_ -> false)));
     Test.make
-      ~name:"completed conflict rewrites publish across Git event interleavings"
+      ~name:
+        "rebases preserve remote incorporation across Git event interleavings"
       ~count:3000
       ~print:(fun ops ->
         String.concat ~sep:", " (List.map ops ~f:show_operation))
       Gen.(list_size (int_range 1 80) (oneof_list operations))
       trace;
+    Test.make
+      ~name:
+        "an incorporated old tip cannot authorize a rebase that drops remote"
+      ~count:500
+      Gen.(pair bool bool)
+      (fun (incorporates_remote, append) ->
+        let target = sha 5 in
+        let result = sha 3 in
+        let local_sha = if append then sha 6 else result in
+        let graph =
+          [
+            (sha 1, []);
+            (sha 2, [ sha 1 ]);
+            (sha 4, [ sha 2 ]);
+            (target, [ (if incorporates_remote then sha 2 else sha 1) ]);
+            (result, [ target ]);
+            (sha 6, [ result ]);
+          ]
+        in
+        let rec ancestor a b =
+          String.equal a b
+          || List.exists
+               (Option.value
+                  (List.Assoc.find graph b ~equal:String.equal)
+                  ~default:[])
+               ~f:(ancestor a)
+        in
+        let reflog =
+          [ finish (sha 4) result target ]
+          @ if append then [ entry result local_sha "commit: work" ] else []
+        in
+        Bool.equal
+          (Option.is_some
+             (Rewrite_lineage.of_reflog ~branch:"patch" ~local_sha
+                ~remote_sha:(sha 2) ~reflog:(String.concat ~sep:"\n" reflog)
+                ~ancestor_oracle:(fun a ~descendant -> ancestor a descendant)))
+          incorporates_remote);
     Test.make ~name:"rebase authority binds both captured publication commits"
       ~count:500
       Gen.(triple bool bool bool)

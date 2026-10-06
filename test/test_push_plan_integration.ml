@@ -396,6 +396,13 @@ let scenario_rewrite_interleavings ?(conflict = false) env
   else
     sh ~dir:worktree (Printf.sprintf "git rebase -q --onto origin/main %s" base);
   let rewritten = git_capture ~dir:worktree [ "rev-parse"; "HEAD" ] in
+  if conflict then
+    List.iter [ "origin/main"; rewritten ] ~f:(fun descendant ->
+        if
+          Git_env.git_exit_code ~cwd:worktree
+            [ "merge-base"; "--is-ancestor"; old_remote; descendant ]
+          <> 1
+        then failwith "precondition: rebase target/result must omit remote");
   let publish_writer =
     Printf.sprintf "git --git-dir=%s update-ref refs/heads/feat %s %s"
       (Stdlib.Filename.quote origin)
@@ -437,6 +444,19 @@ let scenario_rewrite_interleavings ?(conflict = false) env
     | _ ->
         failwith
           ("protected rewrite was not refused: "
+          ^ Worktree.show_push_result outcome))
+  else if conflict && (race = 0 || race = 2) then (
+    (* The old branch contains remote, but neither the rebase target nor the
+       conflict-resolved result does. A finish record cannot prove incorporation
+       when conflict resolution also changed the remote patch's identity. The
+       pre-push writer (race 2) never runs because planning refuses the push. *)
+    if not (String.equal remote old_remote) then
+      failwith "unproven conflict rewrite changed remote";
+    match outcome with
+    | Worktree.Push_rejected Push_reject_classify.Lease_violation -> ()
+    | _ ->
+        failwith
+          ("unproven conflict rewrite was not refused: "
           ^ Worktree.show_push_result outcome))
   else if race = 0 then (
     if
