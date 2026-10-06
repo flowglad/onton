@@ -5,10 +5,12 @@
     the exact local commit and incorporated remote commit it authorizes. Reading
     a newer tracking ref alone cannot authorize overwriting it: its commit must
     be reachable from the captured local commit or have its changes represented
-    in that commit's rewritten history. The push uses an explicit SHA lease, so
-    later fetches cannot change the authority and concurrent remote writes are
-    rejected by Git. History-preserving publication additionally requires the
-    captured remote commit to be an ancestor of the captured local commit. *)
+    in that commit's rewritten history, or be the incorporated source of a
+    completed rebase lineage bound to both commits. The push uses an explicit
+    SHA lease, so later fetches cannot change the authority and concurrent
+    remote writes are rejected by Git. History-preserving publication
+    additionally requires the captured remote commit to be an ancestor of the
+    captured local commit. *)
 
 type sha = string [@@deriving show, eq, sexp_of, compare]
 
@@ -49,7 +51,7 @@ type refusal =
           local that is strictly behind remote on real content, wiping commits.
           When [preserve_history = false], divergent history is allowed if every
           remote-only commit is patch-equivalent to a commit reachable from the
-          captured local SHA. *)
+          captured local SHA or authorized by its completed rebase lineage. *)
   | History_would_be_rewritten of { local_sha : sha; remote_sha : sha }
       (** Proven divergence in history-preserving mode: the captured remote tip
           is not an ancestor of the captured local tip. Patch equivalence does
@@ -71,17 +73,18 @@ val plan :
   remote_tracking_sha:sha option ->
   ancestry:ancestry ->
   remote_changes_included:bool ->
+  rewrite_authority:Rewrite_lineage.t option ->
   commits_ahead_of_base:int option ->
   decision
 (** Total and deterministic. Missing worktrees, switched/missing branches, empty
     patches, and strictly-behind branches are refused before publication.
-    Divergent history requires [remote_changes_included]: every remote-only
-    commit is patch-equivalent to a commit in the captured current history.
-    [preserve_history = true] only authorizes updates with
-    [ancestry = Local_includes_remote], regardless of patch equivalence.
-    Unproven ancestry with an observed remote tip returns the retryable
-    [Remote_not_integrated] refusal in history-preserving mode. Unknown ancestry
-    fails closed in the Git handler. *)
+    Divergent history requires patch equivalence or completed rebase authority
+    for the exact captured local and remote commits. A changed remote or local
+    commit invalidates that authority. [preserve_history = true] only authorizes
+    updates with [ancestry = Local_includes_remote], regardless of patch
+    equivalence. Unproven ancestry with an observed remote tip returns the
+    retryable [Remote_not_integrated] refusal in history-preserving mode.
+    Unknown ancestry fails closed in the Git handler. *)
 
 val short_label : decision -> string
 (** A short, lowercase, snake_case identifier for the planner arm that fired,
