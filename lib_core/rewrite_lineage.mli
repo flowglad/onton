@@ -5,12 +5,20 @@ type t
 (** Publication evidence from the named branch's completed Git rebase history.
     Old tips alone grant no authority: every transition from an incorporated
     remote tip to the captured local tip must preserve history or be a completed
-    rebase onto a target incorporating the captured remote tip and ancestral to
-    its result. Discarded or missing history breaks the chain. The resulting
-    evidence is bound to both immutable commits. *)
+    rebase whose result incorporates the captured remote tip by ancestry or
+    exact preservation of its changed paths. Discarded or missing history breaks
+    the chain. The resulting evidence is bound to both immutable commits. *)
 
 val authorizes :
   t -> branch:string -> local_sha:string -> remote_sha:string -> bool
+
+val changes_preserved :
+  remote_changed_paths:string -> local_changed_paths:string -> bool
+(** Compare complete NUL-terminated Git path lists. [remote_changed_paths] is
+    the diff from the unique merge base of remote and target to remote;
+    [local_changed_paths] is the diff from remote to the captured local commit.
+    Disjoint lists prove every remote-changed path retains its exact remote tree
+    entry, including deletions and modes. Malformed lists fail closed. *)
 
 val of_reflog :
   branch:string ->
@@ -18,12 +26,16 @@ val of_reflog :
   remote_sha:string ->
   reflog:string ->
   ancestor_oracle:(string -> descendant:string -> bool) ->
+  content_oracle:
+    (remote_sha:string -> target:string -> local_sha:string -> bool) ->
   t option
 (** Decode oldest-first raw branch reflog records, including their before/after
     SHAs. Only newline-terminated records are accepted; an unterminated tail
     from a concurrent append is ignored. Missing or malformed complete entries,
     disconnected transitions, and unavailable ancestry fail closed. The newest
-    completed rebase must incorporate the remote tip in both its target and
-    pre-rebase history; older history cannot rescue a failed check. Only
+    completed rebase must incorporate remote in its pre-rebase history and have
+    a target ancestral to its result. If the target omits remote, the content
+    oracle must prove exact preservation of remote-changed paths in the captured
+    local commit. Older history cannot rescue a failed check. Only
     [rebase (finish): refs/heads/<branch> onto <sha>] grants rewrite authority;
     aborted/in-progress rebases and arbitrary resets do not. *)

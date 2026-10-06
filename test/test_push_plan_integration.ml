@@ -374,8 +374,8 @@ let scenario_happy_path env =
 (* Reproduce the fresh-clone/rewrite path with a real remote. Interleave an
    independent writer either before planning (and a background fetch), or in
    Git's pre-push hook after the planner has captured its immutable lease. *)
-let scenario_rewrite_interleavings ?(conflict = false) env
-    (commits, race, preserve_history) =
+let scenario_rewrite_interleavings ?(conflict = false) ?(drop_remote = false)
+    env (commits, race, preserve_history) =
   let process_mgr = Eio.Stdenv.process_mgr env in
   let clock = Eio.Stdenv.clock env in
   with_temp_dir @@ fun root ->
@@ -392,7 +392,10 @@ let scenario_rewrite_interleavings ?(conflict = false) env
        origin main";
   let base = git_capture ~dir:seed [ "rev-parse"; "HEAD" ] in
   sh ~dir:seed "git checkout -q -b feat";
-  if conflict then sh ~dir:seed "printf 'v0.66\n' > patch.txt";
+  if conflict then
+    sh ~dir:seed
+      "printf 'v0.66\n\
+       ' > patch.txt; echo retained > remote-only.txt; git add remote-only.txt";
   for n = 1 to commits do
     sh ~dir:seed
       (Printf.sprintf
@@ -441,6 +444,7 @@ let scenario_rewrite_interleavings ?(conflict = false) env
         failwith
           ("expected real version conflict: "
           ^ Worktree.show_rebase_result result));
+    if drop_remote then sh ~dir:worktree "git rm -q -f remote-only.txt";
     sh ~dir:worktree
       "printf 'v0.66\n\
        1\n\
@@ -510,18 +514,16 @@ let scenario_rewrite_interleavings ?(conflict = false) env
         failwith
           ("protected rewrite was not refused: "
           ^ Worktree.show_push_result outcome))
-  else if conflict && (race = 0 || race = 2) then (
-    (* The old branch contains remote, but neither the rebase target nor the
-       conflict-resolved result does. A finish record cannot prove incorporation
-       when conflict resolution also changed the remote patch's identity. The
-       pre-push writer (race 2) never runs because planning refuses the push. *)
+  else if drop_remote then (
+    (* A completed conflict rebase is insufficient if resolution dropped a
+       remote-changed path, even with an unchanged remote and valid reflog. *)
     if not (String.equal remote old_remote) then
       failwith "unproven conflict rewrite changed remote";
     match outcome with
     | Worktree.Push_rejected Push_reject_classify.Lease_violation -> ()
     | _ ->
         failwith
-          ("unproven conflict rewrite was not refused: "
+          ("conflict rewrite dropping remote content was not refused: "
           ^ Worktree.show_push_result outcome))
   else if race = 0 then (
     if
@@ -537,7 +539,26 @@ let scenario_rewrite_interleavings ?(conflict = false) env
     if
       List.length (String.split_lines contents)
       <> commits + if conflict then 1 else 0
-    then failwith "patch commits lost")
+    then failwith "patch commits lost";
+    if conflict then (
+      let retained =
+        git_capture ~dir:seed
+          [ "--git-dir=" ^ origin; "show"; "feat:remote-only.txt" ]
+      in
+      if not (String.equal retained "retained") then
+        failwith "remote-only content lost";
+      let retry =
+        Worktree.force_push_with_lease ~preserve_history ~clock ~process_mgr
+          ~path:worktree
+          ~branch:(Types.Branch.of_string "feat")
+          ~base:(Types.Branch.of_string "main")
+          ()
+      in
+      match retry with
+      | Worktree.Push_ok | Worktree.Push_up_to_date -> ()
+      | _ ->
+          failwith
+            ("publication retry failed: " ^ Worktree.show_push_result retry)))
   else (
     if not (String.equal remote writer) then
       failwith "concurrent writer was overwritten";
@@ -929,6 +950,8 @@ let () =
   Eio_main.run @@ fun env ->
   Stdlib.print_endline "Worktree.force_push_with_lease + Push_plan integration:";
   scenario_lineage_planning_guards env;
+  scenario_rewrite_interleavings ~conflict:true ~drop_remote:true env
+    (2, 0, false);
   scenario_branch_switched env;
   scenario_local_missing_remote env;
   scenario_happy_path env;

@@ -16,7 +16,22 @@ let valid_sha s =
     | '0' .. '9' | 'a' .. 'f' -> true
     | _ -> false)
 
-let of_reflog ~branch ~local_sha ~remote_sha ~reflog ~ancestor_oracle =
+let changes_preserved ~remote_changed_paths ~local_changed_paths =
+  let decode paths =
+    if String.is_empty paths then Some (Set.empty (module String))
+    else
+      Option.bind (String.chop_suffix paths ~suffix:"\000") ~f:(fun paths ->
+          let paths = String.split paths ~on:'\000' in
+          if List.for_all paths ~f:(fun path -> not (String.is_empty path)) then
+            Some (Set.of_list (module String) paths)
+          else None)
+  in
+  match (decode remote_changed_paths, decode local_changed_paths) with
+  | Some remote, Some local -> Set.is_empty (Set.inter remote local)
+  | _ -> false
+
+let of_reflog ~branch ~local_sha ~remote_sha ~reflog ~ancestor_oracle
+    ~content_oracle =
   let parse line =
     match String.lsplit2 line ~on:'\t' with
     | Some (metadata, message) -> (
@@ -35,9 +50,10 @@ let of_reflog ~branch ~local_sha ~remote_sha ~reflog ~ancestor_oracle =
         | Some target ->
             if
               valid_sha target
-              && ancestor_oracle remote_sha ~descendant:target
-              && ancestor_oracle target ~descendant:after
               && ancestor_oracle remote_sha ~descendant:before
+              && ancestor_oracle target ~descendant:after
+              && (ancestor_oracle remote_sha ~descendant:target
+                 || content_oracle ~remote_sha ~target ~local_sha)
             then Some { branch; local_sha; remote_sha }
             else None
         | None ->

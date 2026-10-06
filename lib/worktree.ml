@@ -991,6 +991,52 @@ let force_push_with_lease_unbounded ~on_phase ~preserve_history ~process_mgr
                   | Some reflog ->
                       Rewrite_lineage.of_reflog ~branch:branch_str ~local_sha
                         ~remote_sha ~reflog
+                        ~content_oracle:(fun ~remote_sha ~target ~local_sha ->
+                          let code, bases, _ =
+                            run_git_exit_code ~process_mgr
+                              [
+                                "git";
+                                "-C";
+                                path;
+                                "merge-base";
+                                "--all";
+                                remote_sha;
+                                target;
+                              ]
+                          in
+                          match (code, String.split_lines bases) with
+                          | 0, [ common ] when not (String.is_empty common) -> (
+                              let changed_paths before after =
+                                let code, paths, _ =
+                                  run_git_exit_code ~process_mgr
+                                    [
+                                      "git";
+                                      "-C";
+                                      path;
+                                      "diff";
+                                      "--no-ext-diff";
+                                      "--no-textconv";
+                                      "--no-renames";
+                                      "--ignore-submodules=none";
+                                      "--name-only";
+                                      "-z";
+                                      before;
+                                      after;
+                                      "--";
+                                    ]
+                                in
+                                if code = 0 then Some paths else None
+                              in
+                              match
+                                ( changed_paths common remote_sha,
+                                  changed_paths remote_sha local_sha )
+                              with
+                              | ( Some remote_changed_paths,
+                                  Some local_changed_paths ) ->
+                                  Rewrite_lineage.changes_preserved
+                                    ~remote_changed_paths ~local_changed_paths
+                              | _ -> false)
+                          | _ -> false)
                         ~ancestor_oracle:(fun sha ~descendant ->
                           let code, _, _ =
                             run_git_exit_code ~process_mgr
