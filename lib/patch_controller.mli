@@ -29,8 +29,8 @@ type poll_observation = {
 
 val discovery_intents : Orchestrator.t -> (Patch_id.t * Branch.t) list
 (** Patches that have run at least once ([has_session]) but lack a PR and are
-    not merged. Returns [(patch_id, branch)] pairs for tick-based PR discovery
-    in the poller. *)
+    not merged or opted out. Returns [(patch_id, branch)] pairs for tick-based
+    PR discovery in the poller. *)
 
 val reconcile_patch :
   Orchestrator.t ->

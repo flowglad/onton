@@ -36,6 +36,7 @@ let make_view ~id ~title =
     base_branch = None;
     worktree_path = None;
     intervention_reason = None;
+    wontdo_reason = None;
     automerge_enabled = false;
     automerge_deadline = None;
     automerge_failure_count = 0;
@@ -431,3 +432,61 @@ let () =
          ignore Markdown_render.style_tool_marker;
          true));
   Stdlib.print_endline "PASS: tui render_frame short-height tests"
+
+let () =
+  let open Tui in
+  let reason =
+    String.concat ~sep:"\n\n"
+      [
+        "First WONTDO paragraph"; String.make 2000 'x'; "Final WONTDO paragraph";
+      ]
+  in
+  let pv =
+    {
+      (make_view ~id:"1" ~title:"Refused patch") with
+      status = Tui.Wontdo;
+      needs_intervention = true;
+      wontdo_reason = Some reason;
+      intervention_reason =
+        Some "Patch opted out; send a human message to restart";
+    }
+  in
+  let render_detail offset =
+    Tui.render_frame ~width:80 ~height:40 ~selected:0 ~scroll_offset:offset
+      ~view_mode:(Tui.Detail_view pv.patch_id) ~activity:[] ~project_name:"demo"
+      ~backend_name:"claude" ~version:"test" ~show_help:false ~show_checks:false
+      ~checks_scroll:0 ~show_manage:false ~now:0.0 ~transcript:"Old transcript"
+      [ pv ]
+  in
+  let first = plain_lines (render_detail 0) in
+  assert (line_contains first "wont-do");
+  assert (line_contains first "WONTDO");
+  assert (line_contains first "First WONTDO paragraph");
+  let last = plain_lines (render_detail Int.max_value) in
+  assert (line_contains last "Final WONTDO paragraph");
+  let short =
+    Tui.render_frame ~width:80 ~height:24 ~selected:0
+      ~scroll_offset:Int.max_value ~view_mode:(Tui.Detail_view pv.patch_id)
+      ~activity:[] ~project_name:"demo" ~backend_name:"claude" ~version:"test"
+      ~show_help:false ~show_checks:false ~checks_scroll:0 ~show_manage:false
+      ~now:0.0 [ pv ]
+  in
+  assert (line_contains (plain_lines short) "Final WONTDO paragraph");
+  assert (line_contains first "Branch:");
+  let active =
+    {
+      pv with
+      status = Tui.Pending;
+      wontdo_reason = None;
+      needs_intervention = false;
+      intervention_reason = None;
+    }
+  in
+  let frame =
+    Tui.render_frame ~width:80 ~height:40 ~selected:0 ~scroll_offset:0
+      ~view_mode:(Tui.Detail_view pv.patch_id) ~activity:[] ~project_name:"demo"
+      ~backend_name:"claude" ~version:"test" ~show_help:false ~show_checks:false
+      ~checks_scroll:0 ~show_manage:false ~now:0.0 ~transcript:"Old transcript"
+      [ active ]
+  in
+  assert (line_contains (plain_lines frame) "Old transcript")

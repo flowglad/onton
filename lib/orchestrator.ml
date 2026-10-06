@@ -1137,6 +1137,9 @@ type session_result =
           captured by this attempt, or its resumed ID; [None] clears any stale
           ID from a previous failed attempt. *)
   | Session_failed of { is_fresh : bool; detail : string option }
+  | Session_wontdo of string
+      (** Explicit pre-commit opt-out. Retains the explanation and pauses work
+          until a human reprompt or intervention reset. *)
   | Session_give_up
   | Session_worktree_missing
   | Session_push_failed of Push_reject_classify.rejection option
@@ -1256,6 +1259,11 @@ let apply_session_result t patch_id result =
   | Session_failed { is_fresh; _ } ->
       let t = on_session_failure t patch_id ~is_fresh in
       complete_failed t patch_id
+  | Session_wontdo reason ->
+      let t =
+        update_agent t patch_id ~f:(fun a -> Patch_agent.set_wontdo a reason)
+      in
+      complete_failed t patch_id
   | Session_give_up ->
       let t = set_session_failed t patch_id in
       let t = set_tried_fresh t patch_id in
@@ -1352,9 +1360,9 @@ let combine_session_and_push ~delivery_mode ~branch_changed
               Session_worktree_missing
               (* unreachable — outer match catches this *))
       | Session_process_error _ | Session_no_resume | Session_timed_out _
-      | Session_failed _ | Session_give_up | Session_worktree_missing
-      | Session_push_failed _ | Session_no_commits | Session_context_exhausted
-        ->
+      | Session_failed _ | Session_wontdo _ | Session_give_up
+      | Session_worktree_missing | Session_push_failed _ | Session_no_commits
+      | Session_context_exhausted ->
           session)
 
 type start_outcome = Start_ok | Start_failed | Start_stale

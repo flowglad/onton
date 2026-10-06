@@ -750,6 +750,22 @@ module Make (W : Worktree.S) (Env : ENV) = struct
                         let agent_after = Orchestrator.agent orch patch_id in
                         (orch, (agent_before, agent_after)))
                   in
+                  let subkind =
+                    match final_session_result with
+                    | Orchestrator.Session_wontdo _ ->
+                        Failure_subkind.Other "wontdo"
+                    | Orchestrator.Session_ok
+                    | Orchestrator.Session_process_error _
+                    | Orchestrator.Session_no_resume
+                    | Orchestrator.Session_timed_out _
+                    | Orchestrator.Session_failed _
+                    | Orchestrator.Session_give_up
+                    | Orchestrator.Session_worktree_missing
+                    | Orchestrator.Session_push_failed _
+                    | Orchestrator.Session_no_commits
+                    | Orchestrator.Session_context_exhausted ->
+                        subkind
+                  in
                   Telemetry_dispatch.emit
                     (Telemetry.Event.Complete
                        {
@@ -814,7 +830,7 @@ module Make (W : Worktree.S) (Env : ENV) = struct
                     log_event runtime ~patch_id ("Patch opted out — " ^ message);
                     ignore
                       (apply_result_and_emit_complete
-                         Orchestrator.Session_give_up);
+                         (Orchestrator.Session_wontdo message));
                     make_run_result ~turn_accepted:!backend_accepted_turn
                       `Failed (List.rev !tool_failures)
                 | None ->
@@ -942,6 +958,7 @@ module Make (W : Worktree.S) (Env : ENV) = struct
                       | Orchestrator.Session_no_resume
                       | Orchestrator.Session_timed_out _
                       | Orchestrator.Session_failed _
+                      | Orchestrator.Session_wontdo _
                       | Orchestrator.Session_give_up
                       | Orchestrator.Session_worktree_missing
                       | Orchestrator.Session_push_failed _
@@ -962,6 +979,7 @@ module Make (W : Worktree.S) (Env : ENV) = struct
                       | Orchestrator.Session_no_resume
                       | Orchestrator.Session_timed_out _
                       | Orchestrator.Session_failed _
+                      | Orchestrator.Session_wontdo _
                       | Orchestrator.Session_give_up
                       | Orchestrator.Session_worktree_missing
                       | Orchestrator.Session_context_exhausted ->

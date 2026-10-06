@@ -203,6 +203,41 @@ let run_case ?(detect_pr = false) ?(advance_base = false) env ~content ~commit
         assert (not after.busy);
         assert (Onton_core.Patch_agent.needs_intervention after);
         assert (
+          Option.equal String.equal after.wontdo_reason
+            (Some (String.strip content)));
+        assert (
+          Onton_core.Patch_agent.equal_session_fallback after.session_fallback
+            Fresh_available);
+        assert (after.start_attempts_without_pr = 0);
+        assert (after.no_commits_push_count = 0);
+        assert (not after.merged);
+        assert (
+          List.exists
+            (Onton_core.Activity_log.recent_transitions snapshot.activity_log
+               ~limit:100) ~f:(fun entry ->
+              Onton_core.Display_status.equal entry.to_status Wontdo));
+        let restored =
+          match
+            Persistence.snapshot_of_yojson
+              (Persistence.snapshot_to_yojson snapshot)
+          with
+          | Ok snapshot -> snapshot
+          | Error message -> failwith message
+        in
+        let restored_agent =
+          Orchestrator.agent restored.orchestrator patch_id
+        in
+        assert (
+          Option.equal String.equal restored_agent.wontdo_reason
+            after.wontdo_reason);
+        let stopped, effects, stopped_messages =
+          Patch_controller.plan_tick_messages restored.orchestrator
+            ~project_name:gameplan.project_name ~gameplan
+        in
+        assert (List.is_empty effects);
+        assert (List.is_empty (Patch_controller.discovery_intents stopped));
+        assert (List.is_empty stopped_messages);
+        assert (
           List.exists
             (Onton_core.Activity_log.recent_events snapshot.activity_log
                ~limit:100) ~f:(fun event ->
@@ -214,8 +249,80 @@ let run_case ?(detect_pr = false) ?(advance_base = false) env ~content ~commit
         in
         assert (
           Onton_core.Patch_agent.needs_intervention
-            (Orchestrator.agent orch patch_id)))
+            (Orchestrator.agent orch patch_id));
+        let bumped = Orchestrator.reset_intervention_state orch patch_id in
+        assert (
+          not
+            (Onton_core.Patch_agent.needs_intervention
+               (Orchestrator.agent bumped patch_id)));
+        let reprompted =
+          Orchestrator.send_human_message orch patch_id
+            "Implement revised scope"
+        in
+        let reprompted_agent = Orchestrator.agent reprompted patch_id in
+        assert (Option.is_none reprompted_agent.wontdo_reason);
+        assert (not (Onton_core.Patch_agent.needs_intervention reprompted_agent));
+        let ready, _, messages =
+          Patch_controller.plan_tick_messages reprompted
+            ~project_name:gameplan.project_name ~gameplan
+        in
+        let message =
+          match messages with [ message ] -> message | _ -> assert false
+        in
+        Runtime.update_orchestrator runtime (fun _ ->
+            let accepted, action =
+              Orchestrator.accept_message ready message.message_id
+            in
+            assert (Option.is_some action);
+            accepted);
+        let resumed =
+          Runtime.read runtime (fun snap ->
+              Orchestrator.agent snap.orchestrator patch_id)
+        in
+        assert (
+          Onton_core.Patch_decision.equal_start_delivery
+            (Onton_core.Patch_decision.start_delivery resumed)
+            (Start_with_human { messages = [ "Implement revised scope" ] }));
+        let retry_backend =
+          {
+            backend with
+            Llm_backend.run_streaming =
+              (fun ~project_name:_
+                ~cwd:_
+                ~patch_id:_
+                ~prompt:_
+                ~resume_session:_
+                ~session_uuid:_
+                ~complexity:_
+                ~on_event:_
+              ->
+                assert (not (Stdlib.Sys.file_exists path));
+                head := "commit";
+                {
+                  Llm_backend.exit_code = 0;
+                  stdout = "";
+                  stderr = "";
+                  got_events = true;
+                  saw_final_result = true;
+                  timed_out = false;
+                });
+          }
+        in
+        let retried =
+          SD.run ~kind:(Some Human)
+            ~delivery_mode:Onton_core.Patch_decision.Start ~patch_id
+            ~prompt:"Implement revised scope" ~agent:resumed
+            ~on_pr_detected:(fun _ -> assert false)
+            ~backend:retry_backend ~complexity:None
+        in
+        assert (Poly.equal retried.disposition `Ok);
+        assert (!pushes = 1);
+        assert (
+          Option.is_none
+            (Runtime.read runtime (fun snap ->
+                 (Orchestrator.agent snap.orchestrator patch_id).wontdo_reason))))
       else (
+        assert (Option.is_none after.wontdo_reason);
         assert (!pushes = 1);
         if commit then (
           assert (Poly.equal result.disposition `Ok);
@@ -227,8 +334,10 @@ let run_case ?(detect_pr = false) ?(advance_base = false) env ~content ~commit
 
 let () =
   Eio_main.run (fun env ->
-      run_case env ~content:"  This patch is unnecessary.\n" ~commit:false
-        ~expect_opt_out:true;
+      run_case env
+        ~content:
+          "  # WONTDO\n\nThis patch is unnecessary.\n\nPrerequisite missing.\n"
+        ~commit:false ~expect_opt_out:true;
       run_case env ~content:" \n\t " ~commit:false ~expect_opt_out:false;
       run_case env ~content:"Too late to opt out" ~commit:true
         ~expect_opt_out:false;

@@ -457,6 +457,7 @@ let gen_patch_agent_fully_populated =
     let* ops = gen_operation_kind_queue in
     let* ci_checks = list_small gen_ci_check in
     let* fallback = gen_session_fallback in
+    let* wontdo_reason = option (string_size ~gen:printable (int_range 1 80)) in
     let* pr_number = option gen_pr_number in
     let* merge_ready = bool in
     let* mergeability_unknown = bool in
@@ -508,6 +509,10 @@ let gen_patch_agent_fully_populated =
       Onton_core.Patch_agent.set_mergeability_unknown a mergeability_unknown
     in
     let a = Onton_core.Patch_agent.set_checks_passing a checks_passing in
+    let a =
+      Option.value_map wontdo_reason ~default:a
+        ~f:(Onton_core.Patch_agent.set_wontdo a)
+    in
     return a)
 
 (* -- Reconciler -- *)
@@ -593,6 +598,7 @@ let all_display_statuses : Onton.Tui.display_status list =
   let open Onton.Tui in
   let id = function
     | Merged -> Merged
+    | Wontdo -> Wontdo
     | Needs_help -> Needs_help
     | In_merge_queue -> In_merge_queue
     | Approved_idle -> Approved_idle
@@ -618,6 +624,7 @@ let all_display_statuses : Onton.Tui.display_status list =
   List.map ~f:id
     [
       Merged;
+      Wontdo;
       Needs_help;
       In_merge_queue;
       Approved_idle;

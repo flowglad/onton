@@ -127,6 +127,7 @@ let failure_subkind_of_session_result (result : Orchestrator.session_result) =
          detailed Failure_subkind.classify_session_failed classification.
          Keep the subkind structured and put raw detail only in the payload. *)
       Failure_subkind.Other "session_failed"
+  | Session_wontdo _ -> Failure_subkind.Other "wontdo"
   | Session_give_up -> Failure_subkind.Other "session_give_up"
   | Session_worktree_missing -> Failure_subkind.Process_error
   | Session_push_failed _ -> Failure_subkind.Process_error

@@ -89,7 +89,8 @@ val remove_agent : t -> Patch_id.t -> t
 
 val send_human_message : t -> Patch_id.t -> string -> t
 (** Append a human message to the agent's [human_messages] queue, reset
-    intervention state, and enqueue [Operation_kind.Human]. *)
+    intervention state (including WONTDO), and enqueue [Operation_kind.Human].
+*)
 
 val set_pr_number : t -> Patch_id.t -> Pr_number.t -> t
 val clear_pr : t -> Patch_id.t -> t
@@ -277,6 +278,9 @@ type session_result =
           captured by this attempt, or its resumed ID; [None] clears any stale
           ID from a previous failed attempt. *)
   | Session_failed of { is_fresh : bool; detail : string option }
+  | Session_wontdo of string
+      (** Explicit pre-commit opt-out. Retains the explanation and pauses work
+          until a human reprompt or intervention reset. *)
   | Session_give_up
   | Session_worktree_missing
   | Session_push_failed of Push_reject_classify.rejection option
@@ -297,9 +301,11 @@ val apply_session_result : t -> Patch_id.t -> session_result -> t
     [Session_timed_out] -> set the resumable [session_id] carried by the result,
     clear_session_fallback + complete_failed. [Session_failed] ->
     on_session_failure + complete_failed. [Session_no_resume] -> clear
-    llm_session_id \+ complete_failed. [Session_give_up] -> set_session_failed +
-    set_tried_fresh + clear llm_session_id + complete_failed.
-    [Session_worktree_missing] -> on_pre_session_failure + clear_worktree_path
+    llm_session_id \+ complete_failed. [Session_wontdo reason] -> persist reason
+    \+ complete_failed, preserving the session for a human reprompt.
+    [Session_give_up] -> set_session_failed + set_tried_fresh + clear
+    llm_session_id + complete_failed. [Session_worktree_missing] ->
+    on_pre_session_failure + clear_worktree_path
     + complete_failed.
 
     {b Deferred completion}: [Session_push_failed] and [Session_no_commits] do
@@ -330,9 +336,9 @@ val combine_session_and_push :
 (** Pure: fold the LLM session outcome and the supervisor's post-session push
     outcome into a single [session_result] for [apply_session_result].
     - A pre-existing LLM failure ([Session_process_error], [Session_failed],
-      [Session_timed_out], [Session_no_resume], [Session_give_up],
-      [Session_worktree_missing], [Session_push_failed _]) is preserved
-      unchanged — the push outcome doesn't change anything.
+      [Session_timed_out], [Session_no_resume], [Session_wontdo],
+      [Session_give_up], [Session_worktree_missing], [Session_push_failed _]) is
+      preserved unchanged — the push outcome doesn't change anything.
     - [Session_ok] with [Push_ok] or [Push_up_to_date] stays [Session_ok] when
       [branch_changed] is true or the delivery is [Start]. A successful Start
       can publish a PR from commits pushed by an earlier failed session. For
