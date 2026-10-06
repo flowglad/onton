@@ -14,6 +14,8 @@ let entry before after message =
 let finish before after target =
   entry before after ("rebase (finish): refs/heads/patch onto " ^ target)
 
+let raw_reflog entries = String.concat ~sep:"\n" entries ^ "\n"
+
 type operation =
   | Rebase
   | Rebase_without_remote
@@ -74,7 +76,7 @@ let trace operations =
     let authority =
       Rewrite_lineage.of_reflog ~branch:"patch" ~local_sha:!local
         ~remote_sha:!tracking
-        ~reflog:(String.concat ~sep:"\n" (List.rev !reflog))
+        ~reflog:(raw_reflog (List.rev !reflog))
         ~ancestor_oracle:(fun a ~descendant -> ancestor a descendant)
     in
     let ancestry =
@@ -114,7 +116,7 @@ let authority () =
   Rewrite_lineage.of_reflog ~branch:"patch" ~local_sha:(sha 3)
     ~remote_sha:(sha 2)
     ~reflog:
-      (String.concat ~sep:"\n"
+      (raw_reflog
          [
            entry (sha 1) (sha 2) "commit: original";
            finish (sha 2) (sha 3) (sha 2);
@@ -175,7 +177,7 @@ let properties =
         Bool.equal
           (Option.is_some
              (Rewrite_lineage.of_reflog ~branch:"patch" ~local_sha
-                ~remote_sha:(sha 2) ~reflog:(String.concat ~sep:"\n" reflog)
+                ~remote_sha:(sha 2) ~reflog:(raw_reflog reflog)
                 ~ancestor_oracle:(fun a ~descendant -> ancestor a descendant)))
           incorporates_remote);
     Test.make ~name:"rebase authority binds both captured publication commits"
@@ -212,7 +214,7 @@ let properties =
           (Rewrite_lineage.of_reflog ~branch:"patch" ~local_sha:(sha 3)
              ~remote_sha:(sha 2)
              ~reflog:
-               (String.concat ~sep:"\n"
+               (raw_reflog
                   [
                     entry (sha 1) (sha 2) "commit: original";
                     entry (sha 2) (sha 3) message;
@@ -227,7 +229,7 @@ let properties =
              ~reflog:
                (if missing_reflog then ""
                 else
-                  String.concat ~sep:"\n"
+                  raw_reflog
                     [
                       entry (sha 1) (sha 2) "commit: original";
                       finish (sha 2) (sha 3) (sha 1);
@@ -270,12 +272,67 @@ let properties =
           (Rewrite_lineage.of_reflog ~branch:"patch" ~local_sha:(sha 3)
              ~remote_sha:(sha 2)
              ~reflog:
-               (String.concat ~sep:"\n"
+               (raw_reflog
                   ([ entry (sha 1) (sha 2) "commit: original" ]
                   @ gap
                   @ [ finish (sha 4) (sha 3) (sha 1) ]))
              ~ancestor_oracle:(fun a ~descendant ->
                String.equal a descendant || String.equal a (sha 1))));
+    Test.make
+      ~name:"partial reflog tails preserve only the captured completed history"
+      ~count:500
+      Gen.(pair bool string)
+      (fun (capture_new_tip, suffix) ->
+        let partial =
+          String.filter suffix ~f:(fun c -> not (Char.equal c '\n'))
+        in
+        let reflog = raw_reflog [ finish (sha 2) (sha 3) (sha 2) ] ^ partial in
+        let result =
+          Rewrite_lineage.of_reflog ~branch:"patch"
+            ~local_sha:(if capture_new_tip then sha 4 else sha 3)
+            ~remote_sha:(sha 2) ~reflog
+            ~ancestor_oracle:(fun a ~descendant ->
+              String.equal a descendant
+              || (String.equal a (sha 2) && String.equal descendant (sha 3)))
+        in
+        Bool.equal (Option.is_some result) (not capture_new_tip));
+    Test.make ~name:"complete malformed tails still fail closed" ~count:1
+      Gen.unit (fun () ->
+        Option.is_none
+          (Rewrite_lineage.of_reflog ~branch:"patch" ~local_sha:(sha 3)
+             ~remote_sha:(sha 2)
+             ~reflog:
+               (raw_reflog [ finish (sha 2) (sha 3) (sha 2); "malformed" ])
+             ~ancestor_oracle:(fun _ ~descendant:_ -> true)));
+    Test.make ~name:"an unterminated finish record grants no authority" ~count:1
+      Gen.unit (fun () ->
+        Option.is_none
+          (Rewrite_lineage.of_reflog ~branch:"patch" ~local_sha:(sha 3)
+             ~remote_sha:(sha 2)
+             ~reflog:(finish (sha 2) (sha 3) (sha 2))
+             ~ancestor_oracle:(fun _ ~descendant:_ -> true)));
+    Test.make
+      ~name:"failed newest rebase checks do not query older reflog ancestry"
+      ~count:300
+      Gen.(pair (int_range 1 500) bool)
+      (fun (history_length, target_includes_remote) ->
+        let calls = ref 0 in
+        let older =
+          List.init history_length ~f:(fun _ ->
+              entry (sha 2) (sha 4) "commit: older")
+        in
+        let result =
+          Rewrite_lineage.of_reflog ~branch:"patch" ~local_sha:(sha 3)
+            ~remote_sha:(sha 2)
+            ~reflog:(raw_reflog (older @ [ finish (sha 4) (sha 3) (sha 5) ]))
+            ~ancestor_oracle:(fun a ~descendant ->
+              Int.incr calls;
+              String.equal a (sha 2)
+              && String.equal descendant (sha 5)
+              && target_includes_remote
+              || (String.equal a (sha 5) && String.equal descendant (sha 3)))
+        in
+        Option.is_none result && !calls <= 3);
   ]
 
 let () =

@@ -46,6 +46,20 @@ let with_temp_dir f =
 let sh ?(dir = ".") cmd = Git_env.sh ~dir cmd
 let git_capture ?(dir = ".") args = Git_env.git_capture ~cwd:dir args
 
+(* Observe runtime Git requests while forwarding every command to real Git. *)
+let observing_mgr (type tag) (mgr : tag Eio.Process.mgr_ty Eio.Resource.t)
+    on_spawn =
+  let (Eio.Resource.T (state, ops)) = mgr in
+  let module Original = (val Eio.Resource.get ops Eio.Process.Pi.Mgr) in
+  let module Observed = struct
+    include Original
+
+    let spawn t ~sw ?cwd ?stdin ?stdout ?stderr ?env ?executable args =
+      on_spawn args;
+      Original.spawn t ~sw ?cwd ?stdin ?stdout ?stderr ?env ?executable args
+  end in
+  Eio.Resource.T (state, Eio.Process.Pi.mgr (module Observed))
+
 let setup_origin ~origin_dir =
   Unix.mkdir origin_dir 0o755;
   sh ~dir:origin_dir "git init -q --bare --initial-branch=main"
@@ -61,6 +75,57 @@ let setup_seed_clone ~origin_dir ~managed_dir =
   sh ~dir:managed_dir "git add seed.txt";
   sh ~dir:managed_dir "git commit -q -m 'seed'";
   sh ~dir:managed_dir "git push -q -u origin main"
+
+let scenario_lineage_planning_guards env =
+  let clock = Eio.Stdenv.clock env in
+  with_temp_dir @@ fun root ->
+  let origin_dir = Stdlib.Filename.concat root "origin.git" in
+  let managed_dir = Stdlib.Filename.concat root "managed" in
+  setup_origin ~origin_dir;
+  setup_seed_clone ~origin_dir ~managed_dir;
+  sh ~dir:managed_dir
+    "git checkout -q -b feat; echo remote > remote.txt; git add remote.txt; \
+     git commit -q -m remote; git push -q -u origin feat; git reset -q --hard \
+     main; echo local > local.txt; git add local.txt; git commit -q -m local";
+  let reflog_reads = ref 0 in
+  let process_mgr =
+    observing_mgr (Eio.Stdenv.process_mgr env) (fun args ->
+        if List.mem args "logs/refs/heads/feat" ~equal:String.equal then
+          Int.incr reflog_reads)
+  in
+  let check ~path ~base ~preserve_history expected ~reads =
+    reflog_reads := 0;
+    let actual =
+      Worktree.force_push_with_lease ~clock ~process_mgr ~path
+        ~branch:(Types.Branch.of_string "feat")
+        ~base:(Types.Branch.of_string base)
+        ~preserve_history ()
+    in
+    if not (Worktree.equal_push_result actual expected) then
+      failwith ("planning guard: " ^ Worktree.show_push_result actual);
+    if !reflog_reads <> reads then
+      failwith "planning guard performed unnecessary lineage validation"
+  in
+  check
+    ~path:(Stdlib.Filename.concat root "missing")
+    ~base:"main" ~preserve_history:false Worktree.Push_worktree_missing ~reads:0;
+  sh ~dir:managed_dir "git checkout -q -b recovery";
+  check ~path:managed_dir ~base:"main" ~preserve_history:false
+    (Worktree.Push_rejected
+       (Push_reject_classify.Local_state_unsafe
+          { reason = "refuse_branch_switched" }))
+    ~reads:0;
+  sh ~dir:managed_dir "git checkout -q feat";
+  check ~path:managed_dir ~base:"feat" ~preserve_history:false
+    Worktree.Push_no_commits ~reads:0;
+  check ~path:managed_dir ~base:"main" ~preserve_history:true
+    (Worktree.Push_rejected
+       (Push_reject_classify.Local_state_unsafe
+          { reason = "refuse_history_rewrite" }))
+    ~reads:0;
+  check ~path:managed_dir ~base:"main" ~preserve_history:false
+    (Worktree.Push_rejected Push_reject_classify.Lease_violation) ~reads:1;
+  Stdlib.print_endline "  lineage_planning_guards: OK"
 
 let scenario_branch_switched env =
   let process_mgr = Eio.Stdenv.process_mgr env in
@@ -863,6 +928,7 @@ let to_rejection_partition =
 let () =
   Eio_main.run @@ fun env ->
   Stdlib.print_endline "Worktree.force_push_with_lease + Push_plan integration:";
+  scenario_lineage_planning_guards env;
   scenario_branch_switched env;
   scenario_local_missing_remote env;
   scenario_happy_path env;

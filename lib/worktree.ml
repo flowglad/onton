@@ -953,58 +953,76 @@ let force_push_with_lease_unbounded ~on_phase ~preserve_history ~process_mgr
         ancestry,
         remote_changes_included,
         commits_ahead_of_base ) -> (
-      let rewrite_authority =
-        match (branch_ref_sha, remote_tracking_sha, ancestry) with
-        | Some local_sha, Some remote_sha, Push_plan.Local_diverged_from_remote
-          when (not preserve_history)
-               && (not remote_changes_included)
-               && not (rebase_in_progress_raw ~process_mgr ~path) -> (
-            let code, reflog, _ =
-              run_git_exit_code ~process_mgr
-                [
-                  "git";
-                  "-C";
-                  path;
-                  "rev-parse";
-                  "--path-format=absolute";
-                  "--git-path";
-                  "logs/refs/heads/" ^ branch_str;
-                ]
-            in
-            match
-              if code = 0 then read_file_opt (String.strip reflog) else None
-            with
-            | None -> None
-            | Some reflog ->
-                Rewrite_lineage.of_reflog ~branch:branch_str ~local_sha
-                  ~remote_sha ~reflog ~ancestor_oracle:(fun sha ~descendant ->
-                    let code, _, _ =
-                      run_git_exit_code ~process_mgr
-                        [
-                          "git";
-                          "-C";
-                          path;
-                          "merge-base";
-                          "--is-ancestor";
-                          sha;
-                          descendant;
-                        ]
-                    in
-                    code = 0))
-        | ( _,
-            _,
-            ( Push_plan.Local_includes_remote | Push_plan.Local_missing_remote
-            | Push_plan.No_remote_yet | Push_plan.Unknown ) )
-        | None, _, Push_plan.Local_diverged_from_remote
-        | _, None, Push_plan.Local_diverged_from_remote
-        | Some _, Some _, Push_plan.Local_diverged_from_remote ->
-            None
-      in
-      let decision =
+      let plan rewrite_authority =
         Push_plan.plan ~preserve_history ~expected_branch:branch_str
           ~worktree_path_exists ~worktree_head_branch ~branch_ref_sha
           ~remote_tracking_sha ~ancestry ~remote_changes_included
           ~rewrite_authority ~commits_ahead_of_base
+      in
+      let preliminary = plan None in
+      let decision =
+        match preliminary with
+        | Refuse (Push_plan.Remote_not_integrated _) ->
+            let rewrite_authority =
+              match (branch_ref_sha, remote_tracking_sha, ancestry) with
+              | ( Some local_sha,
+                  Some remote_sha,
+                  Push_plan.Local_diverged_from_remote )
+                when (not preserve_history)
+                     && (not remote_changes_included)
+                     && not (rebase_in_progress_raw ~process_mgr ~path) -> (
+                  let code, reflog, _ =
+                    run_git_exit_code ~process_mgr
+                      [
+                        "git";
+                        "-C";
+                        path;
+                        "rev-parse";
+                        "--path-format=absolute";
+                        "--git-path";
+                        "logs/refs/heads/" ^ branch_str;
+                      ]
+                  in
+                  match
+                    if code = 0 then read_file_opt (String.strip reflog)
+                    else None
+                  with
+                  | None -> None
+                  | Some reflog ->
+                      Rewrite_lineage.of_reflog ~branch:branch_str ~local_sha
+                        ~remote_sha ~reflog
+                        ~ancestor_oracle:(fun sha ~descendant ->
+                          let code, _, _ =
+                            run_git_exit_code ~process_mgr
+                              [
+                                "git";
+                                "-C";
+                                path;
+                                "merge-base";
+                                "--is-ancestor";
+                                sha;
+                                descendant;
+                              ]
+                          in
+                          code = 0))
+              | ( _,
+                  _,
+                  ( Push_plan.Local_includes_remote
+                  | Push_plan.Local_missing_remote | Push_plan.No_remote_yet
+                  | Push_plan.Unknown ) )
+              | None, _, Push_plan.Local_diverged_from_remote
+              | _, None, Push_plan.Local_diverged_from_remote
+              | Some _, Some _, Push_plan.Local_diverged_from_remote ->
+                  None
+            in
+            plan rewrite_authority
+        | Push _
+        | Refuse
+            ( Push_plan.Worktree_missing | Push_plan.No_commits_ahead_of_base
+            | Push_plan.Branch_ref_missing _ | Push_plan.Branch_switched _
+            | Push_plan.Local_missing_remote_commits _
+            | Push_plan.History_would_be_rewritten _ ) ->
+            preliminary
       in
       match decision with
       | Refuse Push_plan.Worktree_missing -> Push_worktree_missing

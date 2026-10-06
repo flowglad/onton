@@ -27,28 +27,32 @@ let of_reflog ~branch ~local_sha ~remote_sha ~reflog ~ancestor_oracle =
     | None -> None
   in
   let prefix = "rebase (finish): refs/heads/" ^ branch ^ " onto " in
-  let rec walk ~expected ~rewritten entries =
-    if rewritten && ancestor_oracle remote_sha ~descendant:expected then
-      Some { branch; local_sha; remote_sha }
-    else
-      match entries with
-      | Some (before, after, message) :: rest when String.equal expected after
-        ->
-          let rebase_target = String.chop_prefix message ~prefix in
-          let completed_rebase =
-            Option.value_map rebase_target ~default:false ~f:(fun target ->
-                valid_sha target
-                && ancestor_oracle remote_sha ~descendant:target
-                && ancestor_oracle target ~descendant:after)
-          in
-          if completed_rebase || ancestor_oracle before ~descendant:after then
-            walk ~expected:before
-              ~rewritten:(rewritten || completed_rebase)
-              rest
-          else None
-      | _ -> None
+  let rec walk ~expected entries =
+    match entries with
+    | Some (before, after, message) :: rest when String.equal expected after
+      -> (
+        match String.chop_prefix message ~prefix with
+        | Some target ->
+            if
+              valid_sha target
+              && ancestor_oracle remote_sha ~descendant:target
+              && ancestor_oracle target ~descendant:after
+              && ancestor_oracle remote_sha ~descendant:before
+            then Some { branch; local_sha; remote_sha }
+            else None
+        | None ->
+            if ancestor_oracle before ~descendant:after then
+              walk ~expected:before rest
+            else None)
+    | _ -> None
   in
   if not (valid_sha local_sha && valid_sha remote_sha) then None
   else
-    walk ~expected:local_sha ~rewritten:false
-      (List.rev (List.map (String.split_lines reflog) ~f:parse))
+    (* Git terminates each record with a newline. A concurrent append can leave
+       a partial tail in the captured bytes; it is not a published record. *)
+    let complete_records =
+      Option.value_map (String.rsplit2 reflog ~on:'\n') ~default:""
+        ~f:(fun (complete, _) -> complete)
+    in
+    walk ~expected:local_sha
+      (List.rev (List.map (String.split_lines complete_records) ~f:parse))
