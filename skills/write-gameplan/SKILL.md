@@ -81,9 +81,9 @@ A gameplan can be **standalone** or part of a **workstream** (a larger project s
 
 **MANDATORY FIRST STEP**: Before writing any YAML, read `references/gameplan-schema.json` (relative to this skill's directory). It is a formal [JSON Schema (draft 2020-12)](https://json-schema.org/draft/2020-12/schema) defining every required field, its type, constraints, and structure. Do NOT generate gameplans from memory — the schema is the sole source of truth for the output shape.
 
-The gameplan is a **YAML mapping** written to `gameplans/<project-name>.yaml`. Every section is a named attribute. The JSON Schema remains the sole shape contract: YAML is decoded to the same objects, arrays, strings, numbers, booleans, and nulls before validation. Existing `.json` gameplans remain supported; preserve the format when editing one unless the user requests conversion.
+The gameplan is a **YAML mapping** written to `gameplans/<project-name>.yaml`. Every section is a named attribute. The JSON Schema remains the sole shape contract: YAML is decoded to the same objects, arrays, strings, numbers, booleans, and nulls before validation.
 
-Use two-space indentation and literal block scalars (`|` or `|-`) for the `spec` / `finalStateSpec` fields. Use folded scalars (`>` or `>-`) to word-wrap prose. For non-empty block scalars, `|` / `>` keep one trailing newline in the decoded string, while `|-` / `>-` strip trailing newlines; `|+` / `>+` keep all trailing newlines. Literal scalars keep internal line breaks; folded scalars turn ordinary line breaks into spaces, but blank and more-indented lines preserve breaks. Choose the style and chomping indicator to match the exact intended string, especially for verbatim `spec` / `finalStateSpec` values. Use `[]` for empty arrays and `null` for absent values. Quote string IDs with leading zeroes or numeric-looking text. Plain `true`, `false`, and `null` have their JSON types; words such as `on`, `off`, and dates remain strings. Use JSON-style decimal numbers. Each file contains one document with unique string mapping keys; tags, anchors, aliases, and merge keys are unsupported.
+Use two-space indentation and literal block scalars (`|` or `|-`) for the `spec` / `finalStateSpec` fields. Use folded scalars (`>` or `>-`) to word-wrap prose. For non-empty block scalars, `|` / `>` keep one trailing newline in the decoded string, while `|-` / `>-` strip trailing newlines; `|+` / `>+` keep all trailing newlines. Literal scalars keep internal line breaks; folded scalars turn ordinary line breaks into spaces, but blank and more-indented lines preserve breaks. Choose the style and chomping indicator to match the exact intended string, especially for verbatim `spec` / `finalStateSpec` values. Use `[]` for empty arrays and `null` for absent values. Quote string IDs with leading zeroes or numeric-looking text. Plain `true`, `false`, and `null` are booleans and null; words such as `on`, `off`, and dates remain strings. Use decimal numbers. Each file contains one document with unique string mapping keys; tags, anchors, aliases, and merge keys are unsupported.
 
 Format YAML before validation to add blank lines between top-level fields and wrap long prose (88 columns by default):
 
@@ -560,7 +560,7 @@ Run the validator before finalising:
 python3 scripts/validate.py <path/to/gameplan.yaml>
 ```
 
-YAML validation also checks canonical formatting without rewriting the file. Formatting failures include the command to fix them. If you formatted with a custom width, use the same `--width` when validating; JSON plans are exempt from YAML formatting checks.
+YAML validation also checks canonical formatting without rewriting the file. Formatting failures include the command to fix them. If you formatted with a custom width, use the same `--width` when validating.
 
 It exits 0 on PASS and 1 with explicit error lines on FAIL. Fix every reported error; do not ship a gameplan that has validator failures or WARNs.
 
@@ -679,7 +679,7 @@ If your project uses a different specification language (TLA+, Alloy, Z, etc.), 
 
 ## Execution
 
-YAML and JSON gameplans use the same versioned contract. Onton derives the dependency graph from `functionalChanges[].ownedBy` / `requiredBy` and `orderingConstraints`, then executes patches in isolated worktrees. Classification is defined once on the patch. A producer's completion is not proof of its guarantees: dependent agents inspect the current implementation and relevant evidence before relying on them.
+YAML gameplans use the versioned contract. Onton derives the dependency graph from `functionalChanges[].ownedBy` / `requiredBy` and `orderingConstraints`, then executes patches in isolated worktrees. Classification is defined once on the patch. A producer's completion is not proof of its guarantees: dependent agents inspect the current implementation and relevant evidence before relying on them.
 
 ## Guidelines
 

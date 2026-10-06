@@ -90,15 +90,12 @@ class GameplanDocuments(unittest.TestCase):
             self.assertIn('FAIL:', result.stderr)
             self.assertNotIn('Traceback', result.stderr)
 
-    def test_examples_are_equivalent_and_valid(self):
-        self.assertEqual(load_document(REFERENCES / 'example.yaml'),
-                         load_document(REFERENCES / 'example.json'))
-        for suffix in ['yaml', 'json']:
-            result = subprocess.run([sys.executable, str(SCRIPTS / 'validate.py'),
-                                     str(REFERENCES / ('example.' + suffix))],
-                                    stdin=subprocess.DEVNULL, capture_output=True,
-                                    text=True, timeout=30)
-            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+    def test_yaml_example_is_valid(self):
+        result = subprocess.run([sys.executable, str(SCRIPTS / 'validate.py'),
+                                 str(REFERENCES / 'example.yaml')],
+                                stdin=subprocess.DEVNULL, capture_output=True,
+                                text=True, timeout=30)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
     def test_validator_reports_invalid_shape_without_traceback(self):
         with tempfile.TemporaryDirectory() as td:

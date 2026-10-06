@@ -609,10 +609,10 @@ gameplan.yaml ──> Gameplan_parser ──> Graph + Patches
           └─────────────────────────────────────────────┘
 ```
 
-Gameplans use YAML (`.yaml` or `.yml`); existing JSON plans remain supported.
+Author gameplans in YAML (`.yaml` or `.yml`).
 The same schema and semantic checks apply to both. Use literal block scalars
 for specs and folded scalars for word-wrapped prose. YAML accepts one document with unique string
-keys and JSON scalar types; tags, anchors, aliases, and merge keys are unsupported.
+keys and typed scalars; tags, anchors, aliases, and merge keys are unsupported.
 Install the authoring skill's Python dependencies from `skills/write-gameplan/scripts/requirements.txt`;
 the validator also checks canonical YAML formatting.
 

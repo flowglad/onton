@@ -1,26 +1,38 @@
 """Exercise the authored-plan validator through its public CLI."""
 import copy
-import json
+import yaml
 from pathlib import Path
 import subprocess
 import sys
 import tempfile
 import unittest
 
+from format_yaml import format_yaml
+from gameplan_document import load_document
+
 SCRIPTS = Path(__file__).resolve().parent
-EXAMPLE = SCRIPTS.parent / "references" / "example.json"
+EXAMPLE = SCRIPTS.parent / "references" / "example.yaml"
 
 
 class ContractValidation(unittest.TestCase):
     def setUp(self):
-        self.plan = json.loads(EXAMPLE.read_text())
+        self.plan = load_document(EXAMPLE)
 
     def validate(self, expected=0, message=None, without_schema=False):
         with tempfile.TemporaryDirectory() as directory:
-            path = Path(directory) / "plan.json"
-            path.write_text(json.dumps(self.plan))
+            path = Path(directory) / "plan.yaml"
+            path.write_text(format_yaml(yaml.safe_dump(self.plan, sort_keys=False, allow_unicode=True)))
+            command = [sys.executable, str(SCRIPTS / "validate.py"), str(path)]
+            if without_schema:
+                command = [
+                    sys.executable, "-c",
+                    "import sys, runpy; sys.modules['jsonschema'] = None; "
+                    "sys.path.insert(0, sys.argv[1]); sys.argv = sys.argv[2:]; "
+                    "runpy.run_path(sys.argv[0], run_name='__main__')",
+                    str(SCRIPTS), str(SCRIPTS / "validate.py"), str(path),
+                ]
             result = subprocess.run(
-                [sys.executable, *(["-S"] if without_schema else []), str(SCRIPTS / "validate.py"), str(path)],
+                command,
                 stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=30,
             )
         output = result.stdout + result.stderr
