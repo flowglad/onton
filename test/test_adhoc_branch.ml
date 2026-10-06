@@ -12,6 +12,7 @@ let empty_gameplan : Gameplan.t =
       repo_owner = "alice";
       repo_name = "demo";
       problem_statement = "";
+      architecture_design = "";
       solution_summary = "";
       final_state_spec = "";
       patches = [];

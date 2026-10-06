@@ -55,6 +55,68 @@ def validate_schema(inst: dict, errors: list[str]) -> None:
         errors.append(f"schema [{loc}]: {e.message}")
 
 
+def validate_architecture_design(inst: dict, errors: list[str]) -> None:
+    """New authoring requires design; a present section must be execution-ready."""
+    if "architectureDesign" not in inst:
+        if inst.get("formatVersion") == 3:
+            errors.append("architectureDesign is required in formatVersion 3")
+        return
+
+    def shape(value, fields, label):
+        if not isinstance(value, dict):
+            errors.append(f"architectureDesign {label} must be an object")
+            return False
+        if set(value) != set(fields):
+            errors.append(f"architectureDesign {label} requires exactly {', '.join(fields)}")
+            return False
+        return True
+
+    def string(value, label):
+        if not isinstance(value, str) or not value.strip():
+            errors.append(f"architectureDesign {label} must be a non-empty string")
+            return False
+        return True
+
+    design = inst["architectureDesign"]
+    if not shape(design, ["summary", "decisions"], "section"):
+        return
+    string(design["summary"], "summary")
+    if not isinstance(design["decisions"], list):
+        errors.append("architectureDesign decisions must be an array")
+        return
+    ids = set()
+    for decision in design["decisions"]:
+        if not shape(decision, ["id", "topic", "question", "choice", "alternatives", "resolution"], "decision"):
+            continue
+        for key in ["id", "topic", "question", "choice"]:
+            string(decision[key], key)
+        identifier = decision["id"]
+        if isinstance(identifier, str):
+            if identifier in ids:
+                errors.append(f"architectureDesign duplicate decision ID {identifier}")
+            ids.add(identifier)
+        alternatives = decision["alternatives"]
+        if not isinstance(alternatives, list):
+            errors.append("architectureDesign alternatives must be an array")
+        else:
+            for alternative in alternatives:
+                if shape(alternative, ["choice", "tradeoffs"], "alternative"):
+                    for key in ["choice", "tradeoffs"]:
+                        string(alternative[key], key)
+        resolution = decision["resolution"]
+        if not isinstance(resolution, dict):
+            errors.append("architectureDesign resolution must be an object")
+            continue
+        kind = resolution.get("kind")
+        if kind == "unresolved":
+            errors.append(f"architectureDesign {identifier} is unresolved; consult the engineer before execution")
+        elif kind not in ("engineer_approved", "constrained", "delegated"):
+            errors.append("architectureDesign unknown resolution kind")
+        elif shape(resolution, ["kind", "evidence", "rationale"], "resolution"):
+            string(resolution["evidence"], "evidence")
+            string(resolution["rationale"], "rationale")
+
+
 def validate_patch_numbers(inst: dict, errors: list[str]) -> dict[str, dict]:
     patches = inst.get("patches", [])
     nums = [_pid(p["number"]) for p in patches]
@@ -135,8 +197,8 @@ def validate_functional_changes(inst: dict, patches_by_id: dict[str, dict], erro
     for index, criterion in enumerate(inst.get("acceptanceCriteria", [])):
         if isinstance(criterion, dict):
             criteria.append(criterion)
-        elif inst.get("formatVersion") == 2:
-            errors.append(f"acceptanceCriteria[{index}]: formatVersion 2 requires an object")
+        elif inst.get("formatVersion") in (2, 3):
+            errors.append(f"acceptanceCriteria[{index}]: formatVersion {inst.get('formatVersion')} requires an object")
     criterion_ids = [criterion["id"] for criterion in criteria]
     if len(criterion_ids) != len(set(criterion_ids)):
         errors.append("duplicate acceptance criterion IDs")
@@ -160,7 +222,7 @@ def validate_functional_changes(inst: dict, patches_by_id: dict[str, dict], erro
 
 def derived_dependencies(inst: dict) -> dict[str, list[str]]:
     """Planning-time projection; Onton independently derives the execution graph."""
-    if inst.get("formatVersion") != 2:
+    if inst.get("formatVersion") not in (2, 3):
         return {_pid(d["patch"]): [_pid(x) for x in d.get("dependsOn", [])]
                 for d in inst.get("dependencyGraph", []) or []}
     deps: dict[str, set[str]] = {_pid(p["number"]): set() for p in inst.get("patches", [])}
@@ -173,9 +235,9 @@ def derived_dependencies(inst: dict) -> dict[str, list[str]]:
 
 
 def validate_dependency_graph(inst: dict, patches_by_id: dict[str, dict], errors: list[str]) -> None:
-    if inst.get("formatVersion") == 2:
+    if inst.get("formatVersion") in (2, 3):
         if "dependencyGraph" in inst:
-            errors.append("formatVersion 2 derives dependencies; remove dependencyGraph")
+            errors.append("formatVersion 2 or 3 derives dependencies; remove dependencyGraph")
     else:
         graph = inst.get("dependencyGraph", []) or []
         ids = [_pid(entry["patch"]) for entry in graph]
@@ -327,7 +389,7 @@ def validate_reachability_traces(inst: dict, patches_by_id: dict[str, dict], err
 
 
 def validate_write_frames(inst: dict, patches_by_id: dict[str, dict], errors: list[str]) -> None:
-    if inst.get("formatVersion") != 2:
+    if inst.get("formatVersion") not in (2, 3):
         return
     reach = _transitive_deps(inst)
     writers: dict[str, list[str]] = {}
@@ -481,6 +543,8 @@ def main(argv: list[str]) -> int:
         return 2
 
     errors: list[str] = []
+    if type(inst.get("formatVersion")) is not int or inst.get("formatVersion") != 3:
+        errors.append("Newly authored plans require formatVersion 3; migrate legacy plans before authoring validation")
     validate_schema(inst, errors)
     validate_formatting(gp_path, args.width, errors)
     # Schema errors need not prevent independent checks, but malformed shapes
@@ -491,6 +555,7 @@ def main(argv: list[str]) -> int:
         errors.append(f"patch numbers: cannot check malformed structure ({exc})")
         patches_by_id = {}
     for check, arguments in [
+        (validate_architecture_design, (inst, errors)),
         (validate_routing, (inst, patches_by_id, errors)),
         (validate_functional_changes, (inst, patches_by_id, errors)),
         (validate_dependency_graph, (inst, patches_by_id, errors)),

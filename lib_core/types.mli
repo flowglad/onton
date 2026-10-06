@@ -390,6 +390,9 @@ module Gameplan : sig
             [repo_owner] for the empty-default rationale. *)
     problem_statement : string;
     solution_summary : string;
+    architecture_design : string; [@yojson.default ""]
+        (** Validated architectural decisions rendered for execution; empty for
+            legacy plans. *)
     final_state_spec : string; [@yojson.default ""]
     patches : Patch.t list;
     publication : Gameplan_publication.persisted; [@yojson.default None]

@@ -10,6 +10,7 @@ let gameplan =
     repo_owner = "";
     repo_name = "";
     problem_statement = "";
+    architecture_design = "";
     solution_summary = "";
     final_state_spec = "";
     patches = [];

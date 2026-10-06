@@ -12,6 +12,7 @@
     "workstream",
     "problemStatement",
     "solutionSummary",
+    "architectureDesign",
     "mergabilityStrategy",
     "currentStateAnalysis",
     "operationalConsiderations",
@@ -31,8 +32,8 @@
   ],
   "properties": {
     "formatVersion": {
-      "const": 2,
-      "description": "Onton derives scheduling from functional guarantees and serialization constraints."
+      "const": 3,
+      "description": "Architectural design is required and resolved before execution; scheduling is derived from owned guarantees and serialization constraints."
     },
     "projectName": {
       "type": "string",
@@ -161,6 +162,9 @@
         "$ref": "#/$defs/orderingConstraint"
       },
       "description": "Only serialization requirements (shared file ownership, migration order). Capability dependencies are derived from functionalChanges.requiredBy."
+    },
+    "architectureDesign": {
+      "$ref": "#/$defs/architectureDesign"
     }
   },
   "additionalProperties": false,
@@ -916,6 +920,134 @@
         }
       },
       "additionalProperties": false
+    },
+    "architectureDesign": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "summary",
+        "decisions"
+      ],
+      "properties": {
+        "summary": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "\\S"
+        },
+        "decisions": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/architectureDecision"
+          }
+        }
+      }
+    },
+    "architectureDecision": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "topic",
+        "question",
+        "choice",
+        "alternatives",
+        "resolution"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "\\S"
+        },
+        "topic": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "\\S"
+        },
+        "question": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "\\S"
+        },
+        "choice": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "\\S"
+        },
+        "alternatives": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "choice",
+              "tradeoffs"
+            ],
+            "properties": {
+              "choice": {
+                "type": "string",
+                "minLength": 1,
+                "pattern": "\\S"
+              },
+              "tradeoffs": {
+                "type": "string",
+                "minLength": 1,
+                "pattern": "\\S"
+              }
+            }
+          }
+        },
+        "resolution": {
+          "oneOf": [
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "kind",
+                "evidence",
+                "rationale"
+              ],
+              "properties": {
+                "kind": {
+                  "enum": [
+                    "engineer_approved",
+                    "constrained",
+                    "delegated"
+                  ]
+                },
+                "evidence": {
+                  "type": "string",
+                  "minLength": 1,
+                  "pattern": "\\S"
+                },
+                "rationale": {
+                  "type": "string",
+                  "minLength": 1,
+                  "pattern": "\\S"
+                }
+              }
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "kind",
+                "reason"
+              ],
+              "properties": {
+                "kind": {
+                  "const": "unresolved"
+                },
+                "reason": {
+                  "type": "string",
+                  "minLength": 1,
+                  "pattern": "\\S"
+                }
+              }
+            }
+          ]
+        }
+      }
     }
   }
 }

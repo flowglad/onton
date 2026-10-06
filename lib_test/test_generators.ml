@@ -299,6 +299,7 @@ let gen_gameplan =
             repo_owner = "";
             repo_name = "";
             problem_statement = "test problem";
+            architecture_design = "";
             solution_summary = "test solution";
             final_state_spec = "";
             patches;
@@ -822,6 +823,7 @@ let make_test_gameplan patches =
       repo_owner = "";
       repo_name = "";
       problem_statement = "";
+      architecture_design = "";
       solution_summary = "";
       final_state_spec = "";
       patches;

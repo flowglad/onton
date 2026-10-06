@@ -362,7 +362,7 @@ let json_precedents json =
 let required_field json key =
   match Json.field key json with
   | Some value -> value
-  | None -> raise (Parse_error (key ^ " is required in formatVersion 2"))
+  | None -> raise (Parse_error (key ^ " is required in formatVersion 2 or 3"))
 
 let nonempty_string value =
   let text = to_string value in
@@ -470,8 +470,8 @@ let validate_verification json functional_changes =
                           ^ " verification file must be in its owner's files")))
             )))
 
-let parse_acceptance_criteria ~version2 json functional_changes =
-  if not version2 then
+let parse_acceptance_criteria ~structured json functional_changes =
+  if not structured then
     List.map (json_string_list json "acceptanceCriteria") ~f:(fun text ->
         (text, []))
   else
@@ -506,24 +506,125 @@ let parse_acceptance_criteria ~version2 json functional_changes =
             (String.concat ~sep:", " references),
           references ))
 
-let operational_context ~version2 json =
+(* Absence is accepted for existing plans; present design is always admitted
+   through this boundary, independently of formatVersion and openQuestions. *)
+let architecture_context ~required json =
+  let design =
+    match json with
+    | `Assoc fields ->
+        List.Assoc.find fields ~equal:String.equal "architectureDesign"
+    | _ -> None
+  in
+  match design with
+  | None when required ->
+      raise (Parse_error "architectureDesign is required in formatVersion 3")
+  | None -> ""
+  | Some design ->
+      let fail message =
+        raise (Parse_error ("architectureDesign: " ^ message))
+      in
+      let object_fields label expected value =
+        match value with
+        | `Assoc fields ->
+            let keys = List.map fields ~f:fst in
+            unique_strings ("architectureDesign " ^ label ^ " fields") keys;
+            if
+              not
+                (List.for_all keys ~f:(fun key ->
+                     List.mem expected key ~equal:String.equal))
+            then fail (label ^ " contains unknown fields");
+            List.iter expected ~f:(fun key ->
+                if not (List.mem keys key ~equal:String.equal) then
+                  fail (label ^ " requires " ^ key))
+        | _ -> fail (label ^ " must be an object")
+      in
+      let string obj key =
+        match member key obj with
+        | `String s when not (String.is_empty (String.strip s)) -> s
+        | _ -> fail (key ^ " must be a non-empty string")
+      in
+      object_fields "design" [ "summary"; "decisions" ] design;
+      let summary = string design "summary" in
+      let decisions =
+        match member "decisions" design with
+        | `List xs -> xs
+        | _ -> fail "decisions must be an array"
+      in
+      let rendered =
+        List.map decisions ~f:(fun decision ->
+            object_fields "decision"
+              [
+                "id";
+                "topic";
+                "question";
+                "choice";
+                "alternatives";
+                "resolution";
+              ]
+              decision;
+            let id = string decision "id" in
+            let topic = string decision "topic" in
+            let question = string decision "question" in
+            let choice = string decision "choice" in
+            let alternatives =
+              match member "alternatives" decision with
+              | `List xs ->
+                  List.map xs ~f:(fun alternative ->
+                      object_fields "alternative" [ "choice"; "tradeoffs" ]
+                        alternative;
+                      "  - Alternative: "
+                      ^ string alternative "choice"
+                      ^ " — "
+                      ^ string alternative "tradeoffs")
+              | _ -> fail (id ^ " alternatives must be an array")
+            in
+            let resolution = member "resolution" decision in
+            let kind = string resolution "kind" in
+            if String.equal kind "unresolved" then
+              fail (id ^ " is unresolved; consult the engineer before execution");
+            if
+              not
+                (List.mem
+                   [ "engineer_approved"; "constrained"; "delegated" ]
+                   kind ~equal:String.equal)
+            then fail (id ^ " has unknown resolution kind " ^ kind);
+            object_fields "resolution"
+              [ "kind"; "evidence"; "rationale" ]
+              resolution;
+            let evidence = string resolution "evidence" in
+            let rationale = string resolution "rationale" in
+            ( id,
+              String.concat ~sep:"\n"
+                ([
+                   "- " ^ id ^ " (" ^ topic ^ "): " ^ question;
+                   "  Choice: " ^ choice;
+                   "  Resolution: " ^ kind ^ " — " ^ evidence;
+                   "  Rationale: " ^ rationale;
+                 ]
+                @ alternatives) ))
+      in
+      unique_strings "architectureDesign decision IDs"
+        (List.map rendered ~f:fst);
+      String.concat ~sep:"\n" (summary :: List.map rendered ~f:snd)
+
+let operational_context ~structured json =
   match
-    if version2 then required_field json "operationalConsiderations"
+    if structured then required_field json "operationalConsiderations"
     else member "operationalConsiderations" json
   with
-  | `Null when not version2 -> ""
+  | `Null when not structured -> ""
   | `Assoc fields ->
       List.map fields ~f:(fun (key, value) ->
           "- " ^ key ^ ": " ^ to_string value)
       |> String.concat ~sep:"\n"
   | _ -> raise (Parse_error "operationalConsiderations must be an object")
 
-let required_change_context ~version2 json =
+let required_change_context ~structured json =
   match
-    if version2 then required_field json "requiredChanges"
+    if structured then required_field json "requiredChanges"
     else member "requiredChanges" json
   with
-  | `Null when not version2 -> ""
+  | `Null when not structured -> ""
   | `List changes ->
       List.map changes ~f:(fun item ->
           let file = to_string (member "file" item) in
@@ -597,18 +698,21 @@ let parse_json_string input =
   | Error msg -> Error (Printf.sprintf "JSON parse error: %s" msg)
   | Ok json -> (
       try
-        let version2 =
+        let format_version =
           match member "formatVersion" json with
-          | `Null -> false
-          | `Int 2 -> true
-          | _ -> raise (Parse_error "Unsupported formatVersion (expected 2)")
+          | `Null -> None
+          | `Int ((2 | 3) as version) -> Some version
+          | _ ->
+              raise (Parse_error "Unsupported formatVersion (expected 2 or 3)")
         in
-        if version2 && Option.is_some (Json.field "dependencyGraph" json) then
+        let structured = Option.is_some format_version in
+        if structured && Option.is_some (Json.field "dependencyGraph" json) then
           raise
             (Parse_error
-               "formatVersion 2 derives dependencies; remove dependencyGraph");
+               "formatVersion 2 or 3 derives dependencies; remove \
+                dependencyGraph");
         if
-          (not version2)
+          (not structured)
           && (Option.is_some (Json.field "orderingConstraints" json)
              || List.exists
                   (match member "functionalChanges" json with
@@ -621,11 +725,11 @@ let parse_json_string input =
           raise
             (Parse_error
                "requiredBy, verifiedBy and orderingConstraints require \
-                formatVersion 2");
-        let operational_considerations = operational_context ~version2 json in
-        let required_changes = required_change_context ~version2 json in
+                formatVersion 2 or 3");
+        let operational_considerations = operational_context ~structured json in
+        let required_changes = required_change_context ~structured json in
         let ordering_constraints =
-          if version2 then parse_ordering_constraints json else []
+          if structured then parse_ordering_constraints json else []
         in
         let project_name = member "projectName" json |> to_string in
         let optional_string key =
@@ -649,6 +753,11 @@ let parse_json_string input =
         in
         let solution_summary =
           match json |> member "solutionSummary" with `String s -> s | _ -> ""
+        in
+        let architecture_design =
+          architecture_context
+            ~required:(Option.equal Int.equal format_version (Some 3))
+            json
         in
         let final_state_spec =
           match json |> member "finalStateSpec" with `String s -> s | _ -> ""
@@ -680,7 +789,7 @@ let parse_json_string input =
               |> String.concat ~sep:"\n"
           | _ -> ""
         in
-        if version2 then
+        if structured then
           ignore
             (required_field json "functionalChanges" |> to_list
               : Yojson.Safe.t list);
@@ -714,7 +823,7 @@ let parse_json_string input =
                               or alphanumeric patch id")
                   in
                   let required_by, verified_by =
-                    if version2 then (
+                    if structured then (
                       let required_by =
                         required_field obj "requiredBy"
                         |> to_list
@@ -773,9 +882,9 @@ let parse_json_string input =
               raise
                 (Parse_error "functionalChanges must be an array of objects")
         in
-        if version2 then validate_verification json functional_changes;
+        if structured then validate_verification json functional_changes;
         let criteria =
-          parse_acceptance_criteria ~version2 json functional_changes
+          parse_acceptance_criteria ~structured json functional_changes
         in
         let acceptance_criteria = List.map criteria ~f:fst in
         let context_resources =
@@ -910,7 +1019,7 @@ let parse_json_string input =
         in
         (* Dependency graph: {patch, classification, dependsOn[]} format *)
         let dep_graph =
-          if version2 then
+          if structured then
             derive_dependencies
               (required_field json "patches"
               |> to_list
@@ -952,15 +1061,15 @@ let parse_json_string input =
                          "patches[].number must be an integer or alphanumeric \
                           string")
               in
-              if version2 && Option.is_some (Json.field "dependsOn" p) then
+              if structured && Option.is_some (Json.field "dependsOn" p) then
                 raise
                   (Parse_error
-                     "formatVersion 2 derives patch dependencies from \
+                     "formatVersion 2 or 3 derives patch dependencies from \
                       requirements");
               let title = p |> member "title" |> to_string in
               let changes = json_string_list p "changes" in
               let description =
-                if version2 then ""
+                if structured then ""
                 else
                   match changes with
                   | [] -> ""
@@ -1060,7 +1169,7 @@ let parse_json_string input =
             match validate ~patches ~dep_graph with
             | Error e -> Error e
             | Ok () -> (
-                if version2 then validate_write_frames json patches;
+                if structured then validate_write_frames json patches;
                 match
                   validate_functional_changes ~patches ~functional_changes
                 with
@@ -1086,6 +1195,7 @@ let parse_json_string input =
                                     repo_name;
                                     problem_statement;
                                     solution_summary;
+                                    architecture_design;
                                     final_state_spec;
                                     patches;
                                     functional_changes;

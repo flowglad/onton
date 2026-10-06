@@ -98,6 +98,7 @@ let run_case env ~capture_session ~respond =
             repo_owner = "test";
             repo_name = "test";
             problem_statement = "";
+            architecture_design = "";
             solution_summary = "";
             final_state_spec = "";
             patches = [ patch ];

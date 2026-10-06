@@ -34,6 +34,7 @@ let gameplan =
       repo_owner = "test";
       repo_name = "test";
       problem_statement = "";
+      architecture_design = "";
       solution_summary = "";
       final_state_spec = "";
       patches = [];
@@ -70,6 +71,19 @@ let render patches notes = Feature_pr_body.render ~gameplan ~patches ~notes
 
 let tests =
   [
+    property "feature PR refresh preserves architectural design once" G.string
+      (fun design ->
+        let design = "Resolved architecture: " ^ design in
+        let gameplan =
+          Gameplan.{ gameplan with architecture_design = design }
+        in
+        let expected = "## Architectural Design\n\n" ^ design ^ "\n\n" in
+        let body = Feature_pr_body.render ~gameplan ~patches:[] ~notes:[] in
+        String.equal body expected
+        && String.equal body (Feature_pr_body.render_contributions ~gameplan [])
+        && String.is_prefix
+             (Feature_pr_body.render ~gameplan ~patches:[ p 1; p 2 ] ~notes:[])
+             ~prefix:expected);
     property "render total over arbitrary patch content and notes"
       (G.list (G.triple G.string G.string G.string))
       (fun entries ->

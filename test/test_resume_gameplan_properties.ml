@@ -33,6 +33,7 @@ let gameplan patches =
     repo_owner = "owner";
     repo_name = "repo";
     problem_statement = "problem";
+    architecture_design = "";
     solution_summary = "solution";
     final_state_spec = "spec";
     patches;

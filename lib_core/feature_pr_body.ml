@@ -49,6 +49,7 @@ let render_contributions ~(gameplan : Gameplan.t) contributions =
     (String.concat ~sep:"\n\n"
        (List.filter [ gameplan.problem_statement; gameplan.solution_summary ]
           ~f:(fun s -> not (String.is_empty (String.strip s)))))
+  ^ section "Architectural Design" gameplan.architecture_design
   ^ section "Changes" (collect (fun c -> c.changes))
   ^ section "Gameplan Specification"
       (if String.is_empty (String.strip gameplan.final_state_spec) then ""

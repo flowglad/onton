@@ -227,6 +227,17 @@ let render_gameplan_layer ~(project_name : string) (gameplan : Gameplan.t) :
       ("project_name", project_name);
       ("problem_statement", gameplan.Gameplan.problem_statement);
       ("solution_summary", gameplan.Gameplan.solution_summary);
+      ( "architecture_design_section",
+        optional_section ~header:"Architectural Design (Execution Boundary)"
+          (if String.is_empty (String.strip gameplan.architecture_design) then
+             ""
+           else
+             gameplan.architecture_design
+             ^ "\n\
+                Implement autonomously within this design. If evidence \
+                requires changing a consequential architectural decision, stop \
+                dependent work and consult the engineer; implementation \
+                mechanics remain autonomous.") );
       ( "final_state_spec_section",
         optional_section ~header:"Final State Specification (Non-negotiable)"
           gameplan.Gameplan.final_state_spec );
@@ -260,7 +271,7 @@ let render_gameplan_layer ~(project_name : string) (gameplan : Gameplan.t) :
 
 ## Solution Summary
 {{solution_summary}}
-{{final_state_spec_section}}{{explicit_opinions_section}}{{current_state_section}}{{operational_considerations_section}}{{required_changes_section}}{{gameplan_acceptance_section}}
+{{architecture_design_section}}{{final_state_spec_section}}{{explicit_opinions_section}}{{current_state_section}}{{operational_considerations_section}}{{required_changes_section}}{{gameplan_acceptance_section}}
 ## Patches in Gameplan
 {{patches_list}}
 {{gameplan_reference_section}}
@@ -725,6 +736,7 @@ let%test "render_spec_suffix: both empty" =
       repo_owner = "";
       repo_name = "";
       problem_statement = "";
+      architecture_design = "";
       solution_summary = "";
       final_state_spec = "";
       patches = [];
@@ -769,6 +781,7 @@ let%test "render_spec_suffix: gameplan spec only" =
       repo_owner = "";
       repo_name = "";
       problem_statement = "";
+      architecture_design = "";
       solution_summary = "";
       final_state_spec = "module FOO.\nsome spec";
       patches = [];
@@ -816,6 +829,7 @@ let%test "render_spec_suffix: patch spec only" =
       repo_owner = "";
       repo_name = "";
       problem_statement = "";
+      architecture_design = "";
       solution_summary = "";
       final_state_spec = "";
       patches = [];
@@ -863,6 +877,7 @@ let%test "render_spec_suffix: both present" =
       repo_owner = "";
       repo_name = "";
       problem_statement = "";
+      architecture_design = "";
       solution_summary = "";
       final_state_spec = "module FOO.\ngameplan spec";
       patches = [];
@@ -902,6 +917,9 @@ let render_pr_description ~(project_name : string) (patch : Patch.t)
       ("description", patch.Patch.description);
       ("problem_statement", gameplan.Gameplan.problem_statement);
       ("solution_summary", gameplan.Gameplan.solution_summary);
+      ( "architecture_design_section",
+        optional_section ~header:"Architectural Design"
+          gameplan.Gameplan.architecture_design );
       ("dependencies", deps);
       ("changes_section", optional_list_section ~header:"Changes" patch.changes);
       ("gameplan_spec_section", "");
@@ -924,7 +942,7 @@ let render_pr_description ~(project_name : string) (patch : Patch.t)
         {|## Patch {{patch_id}}: {{title}}
 
 {{description}}
-{{changes_section}}{{gameplan_spec_section}}{{patch_spec_section}}{{reachability_section}}{{acceptance_criteria_section}}{{files_section}}{{precedents_section}}|}
+{{architecture_design_section}}{{changes_section}}{{gameplan_spec_section}}{{patch_spec_section}}{{reachability_section}}{{acceptance_criteria_section}}{{files_section}}{{precedents_section}}|}
         vars)
 
 let render_pr_body_prompt ~(branch_only : bool) ~(project_name : string)
@@ -1809,6 +1827,7 @@ let%test "patch prompt includes title and deps" =
         repo_owner = "flowglad";
         repo_name = "onton";
         problem_statement = "Port Anton to OCaml.";
+        architecture_design = "";
         solution_summary = "Use Eio for concurrency.";
         final_state_spec = "";
         operational_considerations = "";
@@ -1913,6 +1932,7 @@ let%test "patch prompt static prefix is byte-identical across patches" =
         repo_owner = "flowglad";
         repo_name = "onton";
         problem_statement = "Prompt cache hit rate is low.\n\n## Patch notes";
+        architecture_design = "";
         solution_summary = "Move shared prompt content into a stable prefix.";
         final_state_spec = "module HEADLESS_CACHE_TUNING.\n\n## Patch state.";
         operational_considerations = "";
@@ -1973,6 +1993,7 @@ let%test "agents_md content appears in static prefix when Some" =
         repo_owner = "flowglad";
         repo_name = "onton";
         problem_statement = "Prompt cache hit rate is low.";
+        architecture_design = "";
         solution_summary = "Keep shared content in a stable prefix.";
         final_state_spec = "";
         operational_considerations = "";
@@ -2028,6 +2049,7 @@ let%test "agents_md section is omitted when None" =
         repo_owner = "flowglad";
         repo_name = "onton";
         problem_statement = "Prompt cache hit rate is low.";
+        architecture_design = "";
         solution_summary = "Keep shared content in a stable prefix.";
         final_state_spec = "";
         operational_considerations = "";
@@ -2132,6 +2154,7 @@ let make_layer_test_fixture () =
         repo_owner = "flowglad";
         repo_name = "onton";
         problem_statement = "Prompts mix gameplan, patch, and turn content.";
+        architecture_design = "";
         solution_summary = "Compose three layers in a fixed order.";
         final_state_spec = "module THREE_LAYERS.";
         operational_considerations = "";
@@ -2175,6 +2198,21 @@ let%test "gameplan_layer is the prefix of render_patch_prompt for both patches"
   in
   String.is_prefix prompt_a ~prefix:g_layer
   && String.is_prefix prompt_b ~prefix:g_layer
+
+let%test "architectural execution boundary reaches both fresh patch prompts" =
+  let patch_a, patch_b, gameplan = make_layer_test_fixture () in
+  let design =
+    "Application owns admission. Engineer selected durable task execution."
+  in
+  let gameplan = { gameplan with architecture_design = design } in
+  List.for_all [ patch_a; patch_b ] ~f:(fun patch ->
+      let prompt =
+        render_patch_prompt ~project_name:"onton" patch gameplan
+          ~base_branch:"main"
+      in
+      String.is_substring prompt
+        ~substring:"Architectural Design (Execution Boundary)"
+      && String.is_substring prompt ~substring:design)
 
 let%test "gameplan layer points at the published gameplan artifact copy" =
   let _, _, gameplan = make_layer_test_fixture () in
@@ -2521,6 +2559,31 @@ let%test
   in
   not
     (String.is_substring rendered ~substring:"Required Context Before Editing")
+
+let%test "PR descriptions and PR-note prompts retain architectural decisions" =
+  let patch, _, gameplan = make_layer_test_fixture () in
+  let design =
+    "Application owns admission.\n\
+     AD-1: Durable tasks.\n\
+     Alternative: request execution.\n\
+     Resolution: engineer_approved — engineer selected tasks.\n\
+     Rationale: provider latency."
+  in
+  let gameplan = { gameplan with architecture_design = design } in
+  let body = render_pr_description ~project_name:"onton" patch gameplan in
+  let prompt =
+    render_pr_body_prompt ~branch_only:false ~project_name:"onton"
+      ~pr_number:(Pr_number.of_int 1) ~pr_body:body ~spec_suffix:""
+      ~artifact_path:"notes.md"
+  in
+  String.is_substring body ~substring:"## Architectural Design"
+  && String.is_substring body ~substring:design
+  && String.is_substring prompt ~substring:design
+
+let%test "legacy PR descriptions omit an empty architectural section" =
+  let patch, _, gameplan = make_layer_test_fixture () in
+  let body = render_pr_description ~project_name:"onton" patch gameplan in
+  not (String.is_substring body ~substring:"## Architectural Design")
 
 let%test "render_pr_description surfaces precedents when present" =
   let patch, _, gameplan = make_layer_test_fixture () in

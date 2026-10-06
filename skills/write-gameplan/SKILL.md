@@ -13,9 +13,33 @@ Create a structured, machine-readable gameplan for a complex codebase change. Th
 
 Start with the behavior the user actually requested and the constraints they supplied. Inspect the existing path for that behavior, then choose the smallest change that can deliver it. A workstream milestone, schema field, or operational checklist is context for that choice; it does not authorize additional product behavior or infrastructure.
 
-Before drafting patches or YAML, identify any missing decision whose answer would materially change the product surface, persistence model, authority boundary, or architecture. Ask the programmer then, with the concrete alternatives and their cost. For example, "view candidates and run tests" does not establish that the flow needs a web page rather than an existing CLI, or that test runs need a durable attempt ledger, recovery after interruption, or retry semantics. Those are separate requirements. If the codebase and supplied context settle a decision, record the evidence and proceed. If the answer changes the design substantially and cannot be inferred, wait for it before committing to a design; do not bury a preferred answer in `explicitOpinions` and ask only after writing the plan.
+Before drafting patches or YAML, identify missing requirements and architectural choices. For example, "view candidates and run tests" does not establish that the flow needs a web page rather than an existing CLI, or that test runs need a durable attempt ledger, recovery after interruption, or retry semantics. Clarify missing requirements, then apply [Consult on Architectural Decisions](#consult-on-architectural-decisions) to the choices about how to deliver them. A clear requirement can still admit several reasonable architectures.
 
 Keep an explicit boundary between requested outcomes, existing constraints, and optional ideas. Include an optional capability only when it is necessary to deliver the requested outcome or the programmer chooses it. Ordinary failure handling for a chosen path still belongs in the plan, but do not turn every conceivable failure mode into a new table, workflow, UI, or retry protocol. Use `openQuestions` for consequential decisions discovered later; resolve them before finalizing the affected patches.
+
+## Consult on Architectural Decisions
+
+**The programmer participates in architectural choices before they become the plan.** This includes service/package ownership, persistence strategy and lifetime, synchronous versus asynchronous execution, scheduled tasks, validation layers and authority boundaries, and data flow between runtimes. Routine implementation details within an agreed architecture remain the agent's responsibility.
+
+After focused code inspection, identify the architectural choices needed for this change. For each, distinguish:
+
+- **Already decided:** the programmer explicitly chose it in this conversation or an identifiable engineer-approved decision in the supplied documents. Cite that decision and proceed without asking again. A requested outcome, existing implementation, precedent, or agent-authored plan is not by itself evidence of engineer approval of a new architectural choice. Approval of an earlier broad milestone does not settle details it left unspecified.
+- **Single obvious answer:** binding requirements and repository constraints leave one reasonable design. Record the constraints and why alternatives are unsuitable; proceed. Familiarity, a preferred pattern, lower implementation effort, or the presence of an existing scheduler/database does not alone make the answer obvious.
+- **Meaningful alternatives:** two or more reasonable designs remain. Present the choice to the programmer before selecting an owner, storage model, execution mechanism, validation boundary, or data flow in patches or specs. Give concrete alternatives, the tradeoffs that matter here, and a recommendation grounded in the inspected code. Even when scope and acceptance criteria are settled, consult on these choices.
+
+Ask one decision at a time when answers depend on each other; closely related independent choices may be presented together. Wait for the answer before drafting the dependent design. Continue independent research while waiting. If the programmer is unavailable, retain the choice in `openQuestions` and leave the affected design provisional; silence, a preselected recommendation, and an empty questions array are not decisions. Explicit delegation by the programmer may authorize choosing within a stated scope; record that delegation rather than inferring it from a request to write a gameplan.
+
+Use `architectureDesign.decisions[].resolution` to retain the basis of each architectural choice: the programmer's answer, the specific previously approved decision, the constraints establishing a single obvious answer, or explicit delegation. Do not describe the agent's recommendation as approved. A final review of a fully specified YAML does not substitute for this design dialogue, and writing an agent-selected choice back into a workstream does not establish prior approval.
+
+For example, a requirement for durable qualification evidence settles the need to retain evidence, but may leave DB rows versus object storage, app service versus worker ownership, and scheduled reconciliation versus event-driven dispatch open. Surface those choices before decomposing patches; do not resolve them merely because the repository already has PostgreSQL and a task scheduler.
+
+### Record the architectural layer
+
+Read [Architecture design and delegation](references/architecture-design.md) for the altitude test, format and research basis. Before decomposing patches or writing formal specs, discuss a short system outline and the consequential choices it leaves open. Record the result in required `architectureDesign` under `formatVersion: 3`: a responsibility/state/execution/data-flow `summary` and `decisions` with question, choice, alternatives/tradeoffs and resolution evidence. Do not fill a category checklist with invented decisions. For a routine change with no architectural choices, use `decisions: []` and explain the unchanged boundaries in the summary.
+
+A choice belongs here when alternatives change responsibility, state lifetime, execution or failure semantics, trust/validation boundaries, or the path data takes through the system. Hashing details, exact indexes, timeout values, identifiers and helper structure remain implementation mechanics unless they change one of those contracts. `engineer_approved` requires an actual answer or identifiable engineer-approved source; `constrained` requires binding constraints eliminating meaningful alternatives; `delegated` requires explicit, scoped engineer delegation. A recommendation is `unresolved`, even if it is plausible. Keep unresolved choices in `openQuestions` too; validation and execution reject them.
+
+Carry this layer consistently into patch guarantees and specs; those artifacts cannot silently settle a still-open design question. During execution, agents choose mechanics autonomously within the resolved architecture. New evidence requiring an architectural change calls for engineer consultation before dependent work continues.
 
 ## Atomicity Constraint (Read This First)
 
@@ -23,6 +47,8 @@ A gameplan is, by definition, a bundle of work with two non-negotiable propertie
 
 1. **Atomic.** Either every patch lands or the gameplan is reverted as a unit. There are no partial outcomes the team is supposed to evaluate and then decide whether to continue.
 2. **Autonomously parallelizable.** Once the gameplan is approved, an orchestrator (or a swarm of agents) can execute the patches concurrently, respecting the dependency graph Onton derives from owned guarantees and serialization constraints. No human is in the loop between patches.
+
+This execution constraint begins after planning and approval. Architectural consultation while authoring the gameplan is required as described above; it is not an inter-patch human checkpoint. Unexpected evidence invalidating the approved design is an intervention, not a planned dependency on a human decision.
 
 The following structures are therefore **prohibited inside a single gameplan**:
 
@@ -70,7 +96,7 @@ A gameplan can be **standalone** or part of a **workstream** (a larger project s
 1. Retrieve the workstream definition to understand the broader context
 2. Identify which milestone this gameplan corresponds to
 3. **Ground the landed state of prior milestones.** For each milestone in `priorMilestones` (at minimum the immediately preceding one), determine whether and *how* it actually landed — against the codebase, not the workstream's description of it. Find the merged patches (git log, merged PRs, the milestone's flag names), open the files and surfaces its Definition of Done names, and check whether any `Operator Actions Before Next Milestone` it declared (flag flips, backfills, soak verdicts) were actually performed. Record what you find: landed as planned, landed with drift (renamed symbols, descoped work, a different flag), or not fully landed. This serves two purposes — it is the real foundation for `currentStateAnalysis` (the prior milestone's landed code *is* the current state this gameplan builds on; see [Rule 4](#rule-4--ground-efficacy-not-just-existence) on re-deriving from HEAD, not from a prior description), and it is write-back surface area (see [write-back item 4](#writing-back-to-the-parent-workstream): gameplanning milestone N is usually the first opportunity to record how milestone N−1 landed). If a prior milestone did *not* fully land or a required operator action was skipped, surface that to the programmer before planning on top of it — it may change this gameplan's scope or preconditions.
-4. Review the milestone's "Definition of Done" — this informs your acceptance criteria
+4. Review the milestone's "Definition of Done" — this informs your acceptance criteria. Separate its required outcomes from architectural decisions, and establish which decisions have engineer approval under [Consult on Architectural Decisions](#consult-on-architectural-decisions). A detailed workstream does not automatically settle every implementation choice.
 5. Read the workstream's terminal **Definition of Done (Acceptance Suite)** and pull out every assertion whose `Traces to` names **this** milestone as owner. These are the concrete, observable obligations this gameplan must make true; they should map onto your `acceptanceCriteria` and `finalStateSpec`. You will sharpen them with real artifact names during the [write-back](#writing-back-to-the-parent-workstream).
 6. Ensure your gameplan leaves the codebase in a consistent state
 7. Read the workstream's `Established Precedents` section (plus any milestone-scoped precedents). For each precedent, identify the specific patches in this gameplan that consume it — touch its API, implement its algorithm, depend on its invariants — and attach it to those patches' `precedents` arrays. Do **not** blanket-copy workstream precedents onto every patch; only the ones that actually use the technique. See [Leveraging Established Precedents](#leveraging-established-precedents) for the per-patch shape.
@@ -101,7 +127,7 @@ All of these fields are **required** and must be present in every gameplan:
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `formatVersion` | `integer` | `2` — dependencies are derived from functional guarantees and serialization constraints |
+| `formatVersion` | `integer` | `3` — architecture is resolved before execution; dependencies are derived from functional guarantees and serialization constraints |
 | `projectName` | `string` | Kebab-case, used in branch names and PR titles |
 | `owner` | `string` | Repository owner on the git forge (user, org, group). Non-empty; forge-specific format rules are enforced by the orchestrator at session start. See [One Repo Per Gameplan](#one-repo-per-gameplan) |
 | `repo` | `string` | Repository name on the git forge (paired with `owner`). All file paths in this gameplan are interpreted relative to this repo's root |
@@ -109,6 +135,7 @@ All of these fields are **required** and must be present in every gameplan:
 | `workstream` | `object \| null` | `{ name, milestone, priorMilestones, unlocks }` — null if standalone |
 | `problemStatement` | `string` | 2-4 sentences: what problem, why it matters |
 | `solutionSummary` | `string` | 3-5 sentences: high-level approach |
+| `architectureDesign` | `object` | System outline and consequential decisions with alternatives and resolution evidence; see [format](references/architecture-design.md) |
 | `currentStateAnalysis` | `string` | Where the codebase is now vs. where it needs to be |
 | `operationalConsiderations` | `object` | `{ externalSystemAccess, crossRuntimeContracts, failureBehavior, concurrencyAndIdempotency, rollbackStrategy }` — see [Operational Considerations](#operational-considerations) |
 | `mergabilityStrategy` | `object` | `{ featureFlagStrategy, featureFlags, patchOrderingStrategy }` |
@@ -319,7 +346,7 @@ functionalChanges:
 orderingConstraints: []
 ```
 
-Onton derives edges from owner to consumer, unions them with `orderingConstraints`, deduplicates them, and rejects unknown patches, self-dependencies and cycles in the combined graph. Do not author `dependencyGraph` or patch-level `dependsOn`. A guarantee can name a transitive consumer: retain that semantic reference even when its scheduling edge is transitively redundant. New plans use `formatVersion: 2`; Onton's legacy reader supports existing unversioned plans, but mixed formats are rejected. When editing a legacy plan, migrate each old capability edge to an actual owned guarantee and each genuine serialization edge to a reasoned ordering constraint; never discard the old edges or translate all of them into generic ordering constraints.
+Onton derives edges from owner to consumer, unions them with `orderingConstraints`, deduplicates them, and rejects unknown patches, self-dependencies and cycles in the combined graph. Do not author `dependencyGraph` or patch-level `dependsOn`. A guarantee can name a transitive consumer: retain that semantic reference even when its scheduling edge is transitively redundant. New plans use `formatVersion: 3`; Onton's legacy reader supports existing v2 and unversioned plans, but mixed formats are rejected. When upgrading v2, preserve its owned guarantees and serialization constraints, and resolve the architectural layer with the engineer; do not invent retrospective approval evidence. When editing an unversioned legacy plan, migrate each old capability edge to an actual owned guarantee and each genuine serialization edge to a reasoned ordering constraint; never discard the old edges or translate all of them into generic ordering constraints.
 
 `acceptanceCriteria` entries have `id`, `description` and nonempty `tracesTo` functional-change IDs. Onton routes them to the corresponding producers and consumers. Every behavioral promise in the problem, solution and final spec must have an owner; every prerequisite consumed by a later patch must have a producer or grounded existing implementation.
 
@@ -355,7 +382,7 @@ Beyond *what changes*, a gameplan must explain how the **chosen scope** behaves 
 
 ### `externalSystemAccess`
 
-When a gameplan newly depends on an external system (object storage, database the runtime doesn't currently reach, third-party API, queue, secret store, internal service), the runtime executing the new code must be able to reach it in production. Audit the existing access posture of that runtime (direct SDK with ambient IAM, presigned URL handed in by another service, broker proxy, VPC endpoint, etc.), pick an access mode, and assign one patch to own the wiring — IAM grant, new endpoint, presigned-URL minting path, network policy, secret rotation. Be especially suspicious of newly-invented `*Client` / `*Transport` interfaces — they are where an undecided access-mode question hides. Sentinel classes whose existence encodes a *lack* of access (e.g. a `PresignedOnly*` adapter) are signals that the runtime cannot hold the underlying credentials. The chosen capability should appear as a `functionalChange` owned by that patch, not just as an interface parameter.
+When a gameplan newly depends on an external system (object storage, database the runtime doesn't currently reach, third-party API, queue, secret store, internal service), the runtime executing the new code must be able to reach it in production. Audit the existing access posture of that runtime (direct SDK with ambient IAM, presigned URL handed in by another service, broker proxy, VPC endpoint, etc.), resolve the access mode under [Consult on Architectural Decisions](#consult-on-architectural-decisions), and assign one patch to own the wiring — IAM grant, new endpoint, presigned-URL minting path, network policy, secret rotation. Be especially suspicious of newly-invented `*Client` / `*Transport` interfaces — they are where an undecided access-mode question hides. Sentinel classes whose existence encodes a *lack* of access (e.g. a `PresignedOnly*` adapter) are signals that the runtime cannot hold the underlying credentials. The chosen capability should appear as a `functionalChange` owned by that patch, not just as an interface parameter.
 
 ### `crossRuntimeContracts`
 
@@ -574,6 +601,8 @@ The validator covers everything mechanisable: YAML formatting, schema shape, spe
 
 The rest is human judgement. Walk these before setting the relevant `mergabilityChecklist` booleans to `true`:
 
+0. **Architectural decision provenance** — review service ownership, persistence, task/scheduling choices, validation layers, and data flow in `solutionSummary`, `operationalConsiderations`, patches and specs. Each architectural choice must trace to a programmer answer, an identifiable previously approved decision, a justified single obvious answer, or explicit delegation recorded in `architectureDesign`. A schema/spec validation PASS does not establish consultation. Surface any choice still resting only on the agent's preference before finalizing.
+
 1. **Functional-change coverage** (`functionalChangesOwnedByExactlyOnePatch`) — the validator confirms each FC has a single resolving `ownedBy`. It cannot confirm the *set* of FCs covers every observable change. Re-read `problemStatement`, `solutionSummary`, `acceptanceCriteria`, and `finalStateSpec`; every behavioural promise there must map to an FC.
 
 2. **Context-resource fit** — the validator confirms routing is bidirectional and references resolve. Manually confirm that docs/evals/reference patches actually name the implementation or contract they describe — a resource attached to a patch that never reads it is dead weight.
@@ -596,7 +625,7 @@ The rest is human judgement. Walk these before setting the relevant `mergability
 
 ## Resolving Open Questions
 
-Resolve scope-changing questions before drafting, as described in [Set Scope Before Designing](#set-scope-before-designing). After the gameplan is written and verified, work through any remaining `openQuestions` with the programmer **one question at a time** until the array is empty. Do not defer an unanswered question that determines the plan's architecture to this final pass.
+Resolve scope-changing and architectural questions before drafting the dependent design, as described in [Set Scope Before Designing](#set-scope-before-designing) and [Consult on Architectural Decisions](#consult-on-architectural-decisions). After the gameplan is written and verified, work through any remaining `openQuestions` with the programmer until they are resolved. Never clear a question solely by adopting your recommendation. Do not defer an unanswered question that determines the plan's architecture to this final pass.
 
 Why this step is mandatory:
 
@@ -610,13 +639,13 @@ For each open question, in order:
 3. **Wait for the programmer's decision** before moving on. If they ask for deeper analysis, provide it. If they pick an option you didn't list, accept it. If their resolution conflicts with the spec file or workstream constraints, flag the conflict explicitly and offer to regenerate the gameplan with updated assumptions before proceeding.
 4. **Record the resolution** by:
    - Editing the gameplan to reflect the chosen path — update affected patches (`changes`, `spec`, `files`, signatures), `acceptanceCriteria`, `finalStateSpec`, guarantee consumers, `orderingConstraints`, and any other fields the decision touches.
-   - Appending an entry to `explicitOpinions` — an object with non-empty `opinion` (the chosen resolution) and `rationale` (why it was chosen) keys — so the reasoning is preserved in the gameplan itself.
+   - Recording architectural resolutions in `architectureDesign` with evidence from the answer; record other opinions in `explicitOpinions`. Do not duplicate the architectural decision inventory.
    - Removing the question from `openQuestions`.
-5. **Move to the next question.** Do not batch — questions are presented sequentially because later questions often depend on earlier answers, and batching prevents the programmer from reasoning about each decision in isolation.
+5. **Move to the next question.** Present dependent questions sequentially; closely related independent questions may be grouped without deciding unanswered choices yourself.
 
 After the last question is resolved, **re-run `scripts/validate.py`** since edits made during this dialogue may have introduced regressions.
 
-The end state is a gameplan with `openQuestions: []` and an `explicitOpinions` array that captures every decision made during the dialogue.
+The end state is a gameplan with `openQuestions: []` and `architectureDesign` / `explicitOpinions` that retain the decisions at their respective levels.
 
 ## Writing Back to the Parent Workstream
 
@@ -632,7 +661,7 @@ The list below is not a sequence or priority order. Treat these five categories 
 
 Propose write-backs for:
 
-1. **Decisions from the open-question dialogue.** Every entry added to `explicitOpinions` during [Resolving Open Questions](#resolving-open-questions) that answers a *workstream-level* question or constrains a *later* milestone. Add it to the workstream's `Decisions Made` and close the corresponding row in its `Open Questions`. This is the highest-value write-back — workstream open questions are frequently the ones that can only be resolved once a milestone is actually planned.
+1. **Decisions from the open-question dialogue.** Every architectural resolution or entry added to `explicitOpinions` during [Resolving Open Questions](#resolving-open-questions) that answers a *workstream-level* question or constrains a *later* milestone. Add it to the workstream's `Decisions Made` and close the corresponding row in its `Open Questions`. This is the highest-value write-back — workstream open questions are frequently the ones that can only be resolved once a milestone is actually planned.
 
 2. **Cross-cutting precedents discovered during planning.** The inverse of [Handoff to write-gameplan](#leveraging-established-precedents): if planning surfaced prior art absent from the workstream's `Established Precedents` **and it spans multiple milestones**, promote it up using the workstream's four-field shape (kind, name, url, why applicable). Inherit the same discipline as the downward handoff — a precedent scoped to this one gameplan stays on its patch and does **not** go up.
 

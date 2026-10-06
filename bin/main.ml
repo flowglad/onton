@@ -547,6 +547,7 @@ let resolve_config ~project ~gameplan_path ~forge ~github_token ~backend ~model
           repo_owner = owner;
           repo_name = repo;
           problem_statement = "";
+          architecture_design = "";
           solution_summary = "";
           final_state_spec = "";
           patches = [];

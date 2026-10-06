@@ -1,4 +1,4 @@
-formatVersion: 2
+formatVersion: 3
 
 projectName: extract-patch-decision
 
@@ -32,6 +32,26 @@ solutionSummary: >-
   invariant: actions as domains, cap conditions as predicates. Wire main.ml to call
   these functions instead of inlining the logic. Add QCheck2 property tests derived from
   the formal spec's preconditions and postconditions.
+
+architectureDesign:
+  summary: >-
+    Pure lifecycle decisions belong to onton_core. The effectful runner supplies current
+    state and executes the returned disposition. Existing state ownership, persistence
+    and scheduling remain unchanged.
+  decisions:
+    - id: AD-1
+      topic: ownership
+      question: Where should lifecycle decision rules run?
+      choice: A pure decision module in onton_core, called by the effectful runner.
+      alternatives: []
+      resolution:
+        kind: constrained
+        evidence: >-
+          This example requires pure property-testable rules; repository guidance places
+          pure logic in lib_core and effects in lib.
+        rationale: >-
+          Keeping effects in the runner is required by the pure testing boundary; module
+          names and helper decomposition remain implementation choices.
 
 mergabilityStrategy:
   featureFlagStrategy: >-
