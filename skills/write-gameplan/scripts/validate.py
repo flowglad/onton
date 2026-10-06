@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Validate a YAML gameplan.
+"""Validate a gameplan.
 
 Runs every check enumerated in SKILL.md's Verification section that can be
 mechanised: canonical YAML formatting, JSON Schema shape, Pantagruel spec parsing, context-routing
@@ -460,7 +460,7 @@ def validate_formatting(path: Path, width: int, errors: list[str]) -> None:
 
 def main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("path", type=Path, help="YAML gameplan")
+    parser.add_argument("path", type=Path, help="gameplan file path")
     parser.add_argument("--width", type=int, default=88,
                         help="preferred YAML line width (default: 88)")
     args = parser.parse_args(argv[1:])

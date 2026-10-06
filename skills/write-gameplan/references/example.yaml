@@ -142,6 +142,7 @@ functionalChanges:
       - 'disposition: merged -> Skip'
       - 'disposition: busy -> Busy'
       - 'on_ci_failure: count >= 3 -> Cap_reached'
+      - 'disposition: needs_intervention -> Blocked'
   - id: FC-5
     description: >-
       main.ml runner_fiber delegates every patch-lifecycle decision to Patch_decision —
@@ -341,6 +342,7 @@ patches:
       - 'disposition: merged -> Skip'
       - 'disposition: busy -> Busy'
       - 'on_ci_failure: count >= 3 -> Cap_reached'
+      - 'disposition: needs_intervention -> Blocked'
     testStubsImplemented:
     spec: |
       module EXTRACT_DECISION_PATCH_2.
@@ -395,6 +397,7 @@ patches:
       - 'disposition: merged -> Skip'
       - 'disposition: busy -> Busy'
       - 'on_ci_failure: count >= 3 -> Cap_reached'
+      - 'disposition: needs_intervention -> Blocked'
     spec: |
       module EXTRACT_DECISION_PATCH_3.
 
@@ -476,6 +479,11 @@ testMap:
     stubPatch: 2
     implPatch: 3
   - testName: 'on_ci_failure: count >= 3 -> Cap_reached'
+    file: test/test_patch_decision.ml
+    stubPatch: 2
+    implPatch: 3
+
+  - testName: 'disposition: needs_intervention -> Blocked'
     file: test/test_patch_decision.ml
     stubPatch: 2
     implPatch: 3
