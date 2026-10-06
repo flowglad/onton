@@ -111,7 +111,8 @@ def validate_architecture_design(inst: dict, errors: list[str]) -> None:
         if kind == "unresolved":
             errors.append(f"architectureDesign {identifier} is unresolved; consult the engineer before execution")
         elif kind not in ("engineer_approved", "constrained", "delegated"):
-            errors.append("architectureDesign unknown resolution kind")
+            tag = identifier if isinstance(identifier, str) else "<invalid-decision-id>"
+            errors.append(f"architectureDesign {tag} has unknown resolution kind {kind!r}")
         elif shape(resolution, ["kind", "evidence", "rationale"], "resolution"):
             string(resolution["evidence"], "evidence")
             string(resolution["rationale"], "rationale")

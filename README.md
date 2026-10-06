@@ -626,14 +626,15 @@ of edges and unordered overlapping file writes. Acceptance criteria have stable
 IDs and `tracesTo` references to functional changes. Unversioned legacy plans
 with `dependencyGraph` still load; new plans must not mix the two representations.
 
-Format v3 requires `architectureDesign` at both authoring validation and execution
-admission: a system outline and consequential decisions with alternatives and resolution evidence. Engineers resolve
-meaningful architectural choices before patch decomposition; agents choose implementation
-mechanics autonomously within that design. Onton rejects malformed or unresolved design
-decisions and carries admitted design into patch context and patch/feature PR
-descriptions. Existing v2 and unversioned plans without this section still load;
-authoring validation requires migration to v3. Resolution evidence is a declaration,
-not proof of consultation.
+Format v3 requires `architectureDesign` at both authoring validation and
+execution admission: a system outline and consequential decisions with
+alternatives and resolution evidence. Engineers resolve meaningful
+architectural choices before patch decomposition; agents choose implementation
+mechanics autonomously within that design. Onton rejects malformed or
+unresolved design decisions and carries admitted design into patch context and
+patch/feature PR descriptions. Existing v2 and unversioned plans without this
+section still load; authoring validation requires migration to v3. Resolution
+evidence is a declaration, not proof of consultation.
 
 Patch sessions receive the plan constraints, owned and required guarantees,
 producer evidence, routed acceptance criteria, and repository instructions when

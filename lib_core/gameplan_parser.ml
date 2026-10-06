@@ -580,6 +580,9 @@ let parse_architecture_design ~required json =
               | _ -> fail (id ^ " alternatives must be an array")
             in
             let resolution = member "resolution" decision in
+            (match resolution with
+            | `Assoc _ -> ()
+            | _ -> fail "resolution must be an object");
             let kind = string resolution "kind" in
             if String.equal kind "unresolved" then
               fail (id ^ " is unresolved; consult the engineer before execution");

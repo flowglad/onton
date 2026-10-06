@@ -216,6 +216,31 @@ let () =
                (parse (field (plan 1 [] []) "architectureDesign" design)
                  : (Gameplan_parser.t, string) Result.t);
              true));
+      Test.make ~name:"architecture non-object resolution reports its shape"
+        ~count:100
+        Gen.(
+          oneof
+            [
+              map (fun n -> `Int n) int;
+              map (fun s -> `String s) string;
+              return `Null;
+              return (`List []);
+            ])
+        (safely (fun resolution ->
+             let decision =
+               field
+                 (architecture_decision "constrained")
+                 "resolution" resolution
+             in
+             match
+               parse
+                 (field (plan 1 [] []) "architectureDesign"
+                    (architecture [ decision ]))
+             with
+             | Ok _ -> false
+             | Error message ->
+                 String.is_substring message
+                   ~substring:"resolution must be an object"));
       Test.make
         ~name:"architecture resolutions retain context through persistence"
         ~count:1 Gen.unit

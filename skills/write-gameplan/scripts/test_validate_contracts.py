@@ -69,6 +69,16 @@ class ContractValidation(unittest.TestCase):
         self.plan["architectureDesign"]["decisions"][0]["resolution"]["evidence"] = "  "
         self.validate(1, "evidence", without_schema=True)
 
+    def test_architecture_unknown_resolution_identifies_decision(self):
+        decision = self.plan["architectureDesign"]["decisions"][0]
+        decision["resolution"]["kind"] = "todo"
+        for identifier, tag in [("AD-1", "AD-1"), ([], "<invalid-decision-id>")]:
+            for without_schema in [False, True]:
+                with self.subTest(identifier=identifier, without_schema=without_schema):
+                    decision["id"] = identifier
+                    self.validate(1, f"architectureDesign {tag} has unknown resolution kind 'todo'",
+                                  without_schema=without_schema)
+
     def test_architecture_duplicate_ids(self):
         decisions = self.plan["architectureDesign"]["decisions"]
         decisions.append(copy.deepcopy(decisions[0]))
@@ -236,19 +246,19 @@ class ContractValidation(unittest.TestCase):
             if change["ownedBy"] == 3:
                 change["requiredBy"] = []
         self.plan["patches"][3]["files"].extend([
-            {"path": "lib/dune", "action": "modify", "description": "Shared manifest"},
-            {"path": "lib/patch_decision.mli", "action": "modify", "description": "Shared interface"},
-            {"path": "lib/dune", "action": "modify", "description": "Repeated entry"},
+            {"path": "lib_core/dune", "action": "modify", "description": "Shared manifest"},
+            {"path": "lib_core/patch_decision.mli", "action": "modify", "description": "Shared interface"},
+            {"path": "lib_core/dune", "action": "modify", "description": "Repeated entry"},
         ])
-        self.validate(1, "unordered write conflict between patches 1 and 4: ['lib/dune', 'lib/patch_decision.mli']")
+        self.validate(1, "unordered write conflict between patches 1 and 4: ['lib_core/dune', 'lib_core/patch_decision.mli']")
 
     def test_transitive_order_allows_multiple_shared_paths(self):
         for change in self.plan["functionalChanges"]:
             if change["ownedBy"] == 3:
                 change["requiredBy"] = []
         self.plan["patches"][3]["files"].extend([
-            {"path": "lib/dune", "action": "modify", "description": "Shared manifest"},
-            {"path": "lib/patch_decision.mli", "action": "modify", "description": "Shared interface"},
+            {"path": "lib_core/dune", "action": "modify", "description": "Shared manifest"},
+            {"path": "lib_core/patch_decision.mli", "action": "modify", "description": "Shared interface"},
         ])
         self.plan["orderingConstraints"] = [
             {"before": 3, "after": 4, "reason": "Consumer follows implementation"}

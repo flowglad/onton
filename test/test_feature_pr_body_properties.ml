@@ -139,11 +139,16 @@ let tests =
         in
         let expected = "## Architectural Design\n\n" ^ design ^ "\n\n" in
         let body = Feature_pr_body.render ~gameplan ~patches:[] ~notes:[] in
+        let populated =
+          Feature_pr_body.render ~gameplan ~patches:[ p 1; p 2 ] ~notes:[]
+        in
         String.equal body expected
         && String.equal body (Feature_pr_body.render_contributions ~gameplan [])
-        && String.is_prefix
-             (Feature_pr_body.render ~gameplan ~patches:[ p 1; p 2 ] ~notes:[])
-             ~prefix:expected);
+        && String.is_prefix populated ~prefix:expected
+        && not
+             (String.is_substring
+                (String.drop_prefix populated (String.length expected))
+                ~substring:expected));
     property "render total over arbitrary patch content and notes"
       (G.list (G.triple G.string G.string G.string))
       (fun entries ->

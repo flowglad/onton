@@ -86,6 +86,18 @@ let render_with_override ~(project_name : string) ~(name : string)
   | Some template -> substitute_variables template vars
   | None -> default ()
 
+(* Architecture is an execution contract even for templates predating v3. *)
+let render_with_architecture ~project_name ~name ~vars ~default =
+  let rendered = render_with_override ~project_name ~name ~vars ~default in
+  match
+    List.Assoc.find vars ~equal:String.equal "architecture_design_section"
+  with
+  | Some section
+    when (not (String.is_empty section))
+         && not (String.is_substring rendered ~substring:section) ->
+      rendered ^ section
+  | _ -> rendered
+
 let format_list items =
   List.map items ~f:(fun s -> "- " ^ s) |> String.concat ~sep:"\n"
 
@@ -261,7 +273,8 @@ let render_gameplan_layer ~(project_name : string) (gameplan : Gameplan.t) :
           ?publication:gameplan.publication () );
     ]
   in
-  render_with_override ~project_name ~name:"gameplan" ~vars ~default:(fun () ->
+  render_with_architecture ~project_name ~name:"gameplan" ~vars
+    ~default:(fun () ->
       substitute_variables
         {|# [{{project_name}}]
 
@@ -936,7 +949,7 @@ let render_pr_description ~(project_name : string) (patch : Patch.t)
       ("precedents_section", format_precedents patch.Patch.precedents);
     ]
   in
-  render_with_override ~project_name ~name:"pr_description" ~vars
+  render_with_architecture ~project_name ~name:"pr_description" ~vars
     ~default:(fun () ->
       substitute_variables
         {|## Patch {{patch_id}}: {{title}}
@@ -2226,6 +2239,64 @@ let make_architecture_test_fixture () =
           };
         ];
     }
+
+let%test
+    "architecture survives legacy and current project overrides exactly once" =
+  let root = Stdlib.Filename.temp_file "onton-architecture-overrides-" "" in
+  Stdlib.Sys.remove root;
+  let previous = Stdlib.Sys.getenv_opt "ONTON_DATA_DIR" in
+  Unix.putenv "ONTON_DATA_DIR" root;
+  let project_name = "architecture-overrides" in
+  let project_dir = Project_store.project_dir project_name in
+  let prompts = prompts_dir project_name in
+  Project_store.ensure_dir prompts;
+  let paths =
+    List.map [ "gameplan"; "pr_description" ] ~f:(fun name ->
+        Stdlib.Filename.concat prompts (name ^ ".md"))
+  in
+  Exn.protect
+    ~finally:(fun () ->
+      (match previous with
+      | Some value -> Unix.putenv "ONTON_DATA_DIR" value
+      | None -> Unix.unsetenv "ONTON_DATA_DIR");
+      List.iter paths ~f:Stdlib.Sys.remove;
+      List.iter [ prompts; project_dir; root ] ~f:Unix.rmdir)
+    ~f:(fun () ->
+      let patch, _, legacy = make_layer_test_fixture () in
+      let gameplan =
+        {
+          legacy with
+          architecture_design = Some (make_architecture_test_fixture ());
+        }
+      in
+      List.for_all [ false; true ] ~f:(fun placeholder ->
+          let template =
+            "Custom {{project_name}}"
+            ^ if placeholder then "{{architecture_design_section}}" else ""
+          in
+          List.iter paths ~f:(fun path ->
+              Stdlib.Out_channel.with_open_text path (fun oc ->
+                  Stdlib.Out_channel.output_string oc template));
+          let renderers =
+            [
+              (fun plan -> render_gameplan_layer ~project_name plan);
+              (fun plan -> render_pr_description ~project_name patch plan);
+            ]
+          in
+          List.for_all renderers ~f:(fun render ->
+              let body = render gameplan in
+              String.is_prefix body ~prefix:"Custom architecture-overrides"
+              && String.is_substring body ~substring:"Engineer selected tasks"
+              && String.is_substring body
+                   ~substring:"Alternative: Request execution"
+              && List.length
+                   (String.substr_index_all body ~may_overlap:false
+                      ~pattern:"## Architectural Design")
+                 = 1
+              && String.equal (render legacy) "Custom architecture-overrides")
+          && String.is_substring
+               (render_gameplan_layer ~project_name gameplan)
+               ~substring:"stop dependent work and consult the engineer"))
 
 let%test "architectural execution boundary reaches both fresh patch prompts" =
   let patch_a, patch_b, gameplan = make_layer_test_fixture () in

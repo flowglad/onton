@@ -123,11 +123,14 @@ See `references/example.yaml` for a complete schema-valid gameplan.
 
 ### Required Top-Level Fields
 
-All of these fields are **required** and must be present in every gameplan:
+These fields are **required for newly authored v3 gameplans**. Existing v2
+and unversioned plans retain their version and legacy field contract during
+maintenance unless the user requests migration. Do not add a v3 version or
+invent architectural approval evidence merely to satisfy the authoring schema.
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `formatVersion` | `integer` | `3` — architecture is resolved before execution; dependencies are derived from functional guarantees and serialization constraints |
+| `formatVersion` | `integer` | `3` for new plans; retain the version of existing plans unless migration is requested — architecture is resolved before execution; dependencies are derived from functional guarantees and serialization constraints |
 | `projectName` | `string` | Kebab-case, used in branch names and PR titles |
 | `owner` | `string` | Repository owner on the git forge (user, org, group). Non-empty; forge-specific format rules are enforced by the orchestrator at session start. See [One Repo Per Gameplan](#one-repo-per-gameplan) |
 | `repo` | `string` | Repository name on the git forge (paired with `owner`). All file paths in this gameplan are interpreted relative to this repo's root |
@@ -346,7 +349,7 @@ functionalChanges:
 orderingConstraints: []
 ```
 
-Onton derives edges from owner to consumer, unions them with `orderingConstraints`, deduplicates them, and rejects unknown patches, self-dependencies and cycles in the combined graph. Do not author `dependencyGraph` or patch-level `dependsOn`. A guarantee can name a transitive consumer: retain that semantic reference even when its scheduling edge is transitively redundant. New plans use `formatVersion: 3`; Onton's legacy reader supports existing v2 and unversioned plans, but mixed formats are rejected. When upgrading v2, preserve its owned guarantees and serialization constraints, and resolve the architectural layer with the engineer; do not invent retrospective approval evidence. When editing an unversioned legacy plan, migrate each old capability edge to an actual owned guarantee and each genuine serialization edge to a reasoned ordering constraint; never discard the old edges or translate all of them into generic ordering constraints.
+Onton derives edges from owner to consumer, unions them with `orderingConstraints`, deduplicates them, and rejects unknown patches, self-dependencies and cycles in the combined graph. Do not author `dependencyGraph` or patch-level `dependsOn`. A guarantee can name a transitive consumer: retain that semantic reference even when its scheduling edge is transitively redundant. New plans use `formatVersion: 3`; Onton's legacy reader supports existing v2 and unversioned plans, but mixed formats are rejected. When upgrading v2, preserve its owned guarantees and serialization constraints, and resolve the architectural layer with the engineer; do not invent retrospective approval evidence. When explicitly migrating an unversioned legacy plan, migrate each old capability edge to an actual owned guarantee and each genuine serialization edge to a reasoned ordering constraint; never discard the old edges or translate all of them into generic ordering constraints.
 
 `acceptanceCriteria` entries have `id`, `description` and nonempty `tracesTo` functional-change IDs. Onton routes them to the corresponding producers and consumers. Every behavioral promise in the problem, solution and final spec must have an owner; every prerequisite consumed by a later patch must have a producer or grounded existing implementation.
 
@@ -581,7 +584,14 @@ feature and its entry points are gone, stop carrying its tombstone.
 
 ## Verification
 
-Run the validator before finalising:
+For new or explicitly migrated v3 plans, run the authoring validator before finalising:
+
+The current schema and `scripts/validate.py` validate v3 authoring only; they
+cannot certify a retained v2 or unversioned plan. For legacy maintenance, use
+the validator/schema from that plan's version and Onton's backward-compatible
+parser for admission checks. Report that validation scope explicitly. If v3
+authoring validation is needed, obtain a migration request first and resolve
+the architectural layer with the engineer; do not silently upgrade the plan.
 
 ```
 python3 scripts/validate.py <path/to/gameplan.yaml>
@@ -643,7 +653,7 @@ For each open question, in order:
    - Removing the question from `openQuestions`.
 5. **Move to the next question.** Present dependent questions sequentially; closely related independent questions may be grouped without deciding unanswered choices yourself.
 
-After the last question is resolved, **re-run `scripts/validate.py`** since edits made during this dialogue may have introduced regressions.
+After the last question is resolved, **re-run the applicable version’s validation** (for v3, `scripts/validate.py`) since edits made during this dialogue may have introduced regressions.
 
 The end state is a gameplan with `openQuestions: []` and `architectureDesign` / `explicitOpinions` that retain the decisions at their respective levels.
 
