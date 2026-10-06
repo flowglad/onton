@@ -302,10 +302,11 @@ val apply_session_result : t -> Patch_id.t -> session_result -> t
     clear_session_fallback + complete_failed. [Session_failed] ->
     on_session_failure + complete_failed. [Session_no_resume] -> clear
     llm_session_id \+ complete_failed. [Session_wontdo reason] -> persist reason
-    \+ complete_failed, preserving the session for a human reprompt.
-    [Session_give_up] -> set_session_failed + set_tried_fresh + clear
-    llm_session_id + complete_failed. [Session_worktree_missing] ->
-    on_pre_session_failure + clear_worktree_path
+    \+ complete, consuming inflight guidance without restoring it to the inbox
+    and preserving the session for a human reprompt. [Session_give_up] ->
+    set_session_failed + set_tried_fresh + clear llm_session_id +
+    complete_failed. [Session_worktree_missing] -> on_pre_session_failure +
+    clear_worktree_path
     + complete_failed.
 
     {b Deferred completion}: [Session_push_failed] and [Session_no_commits] do
