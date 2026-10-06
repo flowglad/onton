@@ -373,6 +373,36 @@ module Reachability_trace : sig
       not a plausibly-named one off it. *)
 end
 
+module Architecture_design : sig
+  type resolution_basis = { evidence : string; rationale : string }
+  [@@deriving show, eq, sexp_of, compare, yojson]
+
+  type resolution =
+    | Engineer_approved of resolution_basis
+    | Constrained of resolution_basis
+    | Delegated of resolution_basis
+  [@@deriving show, eq, sexp_of, compare, yojson]
+
+  type alternative = { alternative_choice : string; tradeoffs : string }
+  [@@deriving show, eq, sexp_of, compare, yojson]
+
+  type decision = {
+    id : string;
+    topic : string;
+    question : string;
+    choice : string;
+    alternatives : alternative list;
+    resolution : resolution;
+  }
+  [@@deriving show, eq, sexp_of, compare, yojson]
+
+  type t = { summary : string; decisions : decision list }
+  [@@deriving show, eq, sexp_of, compare, yojson]
+
+  val render : t -> string
+  (** Render admitted design at prompt and PR-description boundaries. *)
+end
+
 module Gameplan : sig
   type t = {
     project_name : string;
@@ -390,9 +420,9 @@ module Gameplan : sig
             [repo_owner] for the empty-default rationale. *)
     problem_statement : string;
     solution_summary : string;
-    architecture_design : string; [@yojson.default ""]
-        (** Validated architectural decisions rendered for execution; empty for
-            legacy plans. *)
+    architecture_design : Architecture_design.t option; [@yojson.default None]
+        (** Admitted architectural design; unresolved resolutions are excluded
+            from its type. Absent for legacy plans. *)
     final_state_spec : string; [@yojson.default ""]
     patches : Patch.t list;
     publication : Gameplan_publication.persisted; [@yojson.default None]

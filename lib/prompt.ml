@@ -229,15 +229,14 @@ let render_gameplan_layer ~(project_name : string) (gameplan : Gameplan.t) :
       ("solution_summary", gameplan.Gameplan.solution_summary);
       ( "architecture_design_section",
         optional_section ~header:"Architectural Design (Execution Boundary)"
-          (if String.is_empty (String.strip gameplan.architecture_design) then
-             ""
-           else
-             gameplan.architecture_design
-             ^ "\n\
-                Implement autonomously within this design. If evidence \
-                requires changing a consequential architectural decision, stop \
-                dependent work and consult the engineer; implementation \
-                mechanics remain autonomous.") );
+          (Option.value_map gameplan.architecture_design ~default:""
+             ~f:(fun design ->
+               Architecture_design.render design
+               ^ "\n\
+                  Implement autonomously within this design. If evidence \
+                  requires changing a consequential architectural decision, \
+                  stop dependent work and consult the engineer; implementation \
+                  mechanics remain autonomous.")) );
       ( "final_state_spec_section",
         optional_section ~header:"Final State Specification (Non-negotiable)"
           gameplan.Gameplan.final_state_spec );
@@ -736,7 +735,7 @@ let%test "render_spec_suffix: both empty" =
       repo_owner = "";
       repo_name = "";
       problem_statement = "";
-      architecture_design = "";
+      architecture_design = None;
       solution_summary = "";
       final_state_spec = "";
       patches = [];
@@ -781,7 +780,7 @@ let%test "render_spec_suffix: gameplan spec only" =
       repo_owner = "";
       repo_name = "";
       problem_statement = "";
-      architecture_design = "";
+      architecture_design = None;
       solution_summary = "";
       final_state_spec = "module FOO.\nsome spec";
       patches = [];
@@ -829,7 +828,7 @@ let%test "render_spec_suffix: patch spec only" =
       repo_owner = "";
       repo_name = "";
       problem_statement = "";
-      architecture_design = "";
+      architecture_design = None;
       solution_summary = "";
       final_state_spec = "";
       patches = [];
@@ -877,7 +876,7 @@ let%test "render_spec_suffix: both present" =
       repo_owner = "";
       repo_name = "";
       problem_statement = "";
-      architecture_design = "";
+      architecture_design = None;
       solution_summary = "";
       final_state_spec = "module FOO.\ngameplan spec";
       patches = [];
@@ -919,7 +918,8 @@ let render_pr_description ~(project_name : string) (patch : Patch.t)
       ("solution_summary", gameplan.Gameplan.solution_summary);
       ( "architecture_design_section",
         optional_section ~header:"Architectural Design"
-          gameplan.Gameplan.architecture_design );
+          (Option.value_map gameplan.Gameplan.architecture_design ~default:""
+             ~f:Architecture_design.render) );
       ("dependencies", deps);
       ("changes_section", optional_list_section ~header:"Changes" patch.changes);
       ("gameplan_spec_section", "");
@@ -1827,7 +1827,7 @@ let%test "patch prompt includes title and deps" =
         repo_owner = "flowglad";
         repo_name = "onton";
         problem_statement = "Port Anton to OCaml.";
-        architecture_design = "";
+        architecture_design = None;
         solution_summary = "Use Eio for concurrency.";
         final_state_spec = "";
         operational_considerations = "";
@@ -1932,7 +1932,7 @@ let%test "patch prompt static prefix is byte-identical across patches" =
         repo_owner = "flowglad";
         repo_name = "onton";
         problem_statement = "Prompt cache hit rate is low.\n\n## Patch notes";
-        architecture_design = "";
+        architecture_design = None;
         solution_summary = "Move shared prompt content into a stable prefix.";
         final_state_spec = "module HEADLESS_CACHE_TUNING.\n\n## Patch state.";
         operational_considerations = "";
@@ -1993,7 +1993,7 @@ let%test "agents_md content appears in static prefix when Some" =
         repo_owner = "flowglad";
         repo_name = "onton";
         problem_statement = "Prompt cache hit rate is low.";
-        architecture_design = "";
+        architecture_design = None;
         solution_summary = "Keep shared content in a stable prefix.";
         final_state_spec = "";
         operational_considerations = "";
@@ -2049,7 +2049,7 @@ let%test "agents_md section is omitted when None" =
         repo_owner = "flowglad";
         repo_name = "onton";
         problem_statement = "Prompt cache hit rate is low.";
-        architecture_design = "";
+        architecture_design = None;
         solution_summary = "Keep shared content in a stable prefix.";
         final_state_spec = "";
         operational_considerations = "";
@@ -2154,7 +2154,7 @@ let make_layer_test_fixture () =
         repo_owner = "flowglad";
         repo_name = "onton";
         problem_statement = "Prompts mix gameplan, patch, and turn content.";
-        architecture_design = "";
+        architecture_design = None;
         solution_summary = "Compose three layers in a fixed order.";
         final_state_spec = "module THREE_LAYERS.";
         operational_considerations = "";
@@ -2199,12 +2199,42 @@ let%test "gameplan_layer is the prefix of render_patch_prompt for both patches"
   String.is_prefix prompt_a ~prefix:g_layer
   && String.is_prefix prompt_b ~prefix:g_layer
 
+let make_architecture_test_fixture () =
+  Architecture_design.
+    {
+      summary = "Application owns admission; durable tasks execute work.";
+      decisions =
+        [
+          {
+            id = "AD-1";
+            topic = "execution";
+            question = "Where should qualification execute?";
+            choice = "Durable tasks";
+            alternatives =
+              [
+                {
+                  alternative_choice = "Request execution";
+                  tradeoffs = "Couples request latency";
+                };
+              ];
+            resolution =
+              Engineer_approved
+                {
+                  evidence = "Engineer selected tasks";
+                  rationale = "Provider latency exceeds request budget";
+                };
+          };
+        ];
+    }
+
 let%test "architectural execution boundary reaches both fresh patch prompts" =
   let patch_a, patch_b, gameplan = make_layer_test_fixture () in
-  let design =
-    "Application owns admission. Engineer selected durable task execution."
+  let gameplan =
+    {
+      gameplan with
+      architecture_design = Some (make_architecture_test_fixture ());
+    }
   in
-  let gameplan = { gameplan with architecture_design = design } in
   List.for_all [ patch_a; patch_b ] ~f:(fun patch ->
       let prompt =
         render_patch_prompt ~project_name:"onton" patch gameplan
@@ -2212,7 +2242,14 @@ let%test "architectural execution boundary reaches both fresh patch prompts" =
       in
       String.is_substring prompt
         ~substring:"Architectural Design (Execution Boundary)"
-      && String.is_substring prompt ~substring:design)
+      && String.is_substring prompt
+           ~substring:"Application owns admission; durable tasks execute work."
+      && String.is_substring prompt
+           ~substring:"Resolution: engineer_approved — Engineer selected tasks"
+      && String.is_substring prompt
+           ~substring:"Alternative: Request execution — Couples request latency"
+      && String.is_substring prompt
+           ~substring:"stop dependent work and consult the engineer")
 
 let%test "gameplan layer points at the published gameplan artifact copy" =
   let _, _, gameplan = make_layer_test_fixture () in
@@ -2562,14 +2599,12 @@ let%test
 
 let%test "PR descriptions and PR-note prompts retain architectural decisions" =
   let patch, _, gameplan = make_layer_test_fixture () in
-  let design =
-    "Application owns admission.\n\
-     AD-1: Durable tasks.\n\
-     Alternative: request execution.\n\
-     Resolution: engineer_approved — engineer selected tasks.\n\
-     Rationale: provider latency."
+  let gameplan =
+    {
+      gameplan with
+      architecture_design = Some (make_architecture_test_fixture ());
+    }
   in
-  let gameplan = { gameplan with architecture_design = design } in
   let body = render_pr_description ~project_name:"onton" patch gameplan in
   let prompt =
     render_pr_body_prompt ~branch_only:false ~project_name:"onton"
@@ -2577,8 +2612,16 @@ let%test "PR descriptions and PR-note prompts retain architectural decisions" =
       ~artifact_path:"notes.md"
   in
   String.is_substring body ~substring:"## Architectural Design"
-  && String.is_substring body ~substring:design
-  && String.is_substring prompt ~substring:design
+  && List.for_all
+       [
+         "Application owns admission; durable tasks execute work.";
+         "Choice: Durable tasks";
+         "Resolution: engineer_approved — Engineer selected tasks";
+         "Rationale: Provider latency exceeds request budget";
+         "Alternative: Request execution — Couples request latency";
+       ] ~f:(fun content ->
+         String.is_substring body ~substring:content
+         && String.is_substring prompt ~substring:content)
 
 let%test "legacy PR descriptions omit an empty architectural section" =
   let patch, _, gameplan = make_layer_test_fixture () in

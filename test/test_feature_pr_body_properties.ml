@@ -34,7 +34,7 @@ let gameplan =
       repo_owner = "test";
       repo_name = "test";
       problem_statement = "";
-      architecture_design = "";
+      architecture_design = None;
       solution_summary = "";
       final_state_spec = "";
       patches = [];
@@ -71,11 +71,71 @@ let render patches notes = Feature_pr_body.render ~gameplan ~patches ~notes
 
 let tests =
   [
+    property "feature PR renders typed decisions across all resolution kinds"
+      (G.triple G.string G.string G.string)
+      (fun (choice, evidence, tradeoffs) ->
+        let choice = "Chosen: " ^ choice in
+        let evidence = "Evidence: " ^ evidence in
+        let tradeoffs = "Tradeoff: " ^ tradeoffs in
+        List.for_all
+          [
+            (fun basis -> Architecture_design.Engineer_approved basis);
+            (fun basis -> Architecture_design.Constrained basis);
+            (fun basis -> Architecture_design.Delegated basis);
+          ]
+          ~f:(fun resolve ->
+            let basis =
+              Architecture_design.{ evidence; rationale = "One write owner" }
+            in
+            let design =
+              Architecture_design.
+                {
+                  summary = "Application owns admission";
+                  decisions =
+                    [
+                      {
+                        id = "AD-1";
+                        topic = "ownership";
+                        question = "Who owns admission?";
+                        choice;
+                        alternatives =
+                          [
+                            {
+                              alternative_choice = "Worker admission";
+                              tradeoffs;
+                            };
+                          ];
+                        resolution = resolve basis;
+                      };
+                    ];
+                }
+            in
+            let gameplan =
+              Gameplan.{ gameplan with architecture_design = Some design }
+            in
+            let body = Feature_pr_body.render ~gameplan ~patches:[] ~notes:[] in
+            List.for_all
+              [
+                "Application owns admission";
+                "AD-1";
+                "Who owns admission?";
+                choice;
+                evidence;
+                "One write owner";
+                "Worker admission";
+                tradeoffs;
+              ] ~f:(fun expected ->
+                String.is_substring body ~substring:expected)));
     property "feature PR refresh preserves architectural design once" G.string
       (fun design ->
         let design = "Resolved architecture: " ^ design in
         let gameplan =
-          Gameplan.{ gameplan with architecture_design = design }
+          Gameplan.
+            {
+              gameplan with
+              architecture_design =
+                Some Architecture_design.{ summary = design; decisions = [] };
+            }
         in
         let expected = "## Architectural Design\n\n" ^ design ^ "\n\n" in
         let body = Feature_pr_body.render ~gameplan ~patches:[] ~notes:[] in

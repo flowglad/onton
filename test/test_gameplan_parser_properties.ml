@@ -229,16 +229,47 @@ let () =
                  with
                  | Error _ -> false
                  | Ok parsed ->
-                     let context =
-                       parsed.gameplan.Gameplan.architecture_design
+                     let structural_match =
+                       match parsed.gameplan.Gameplan.architecture_design with
+                       | None -> false
+                       | Some design -> (
+                           String.equal design.summary
+                             "Application owns admission; tasks execute work"
+                           &&
+                           match design.decisions with
+                           | [ decision ] ->
+                               String.equal decision.id "AD-1"
+                               && String.equal decision.topic "ownership"
+                               && String.equal decision.question
+                                    "Who owns admission?"
+                               && String.equal decision.choice
+                                    "Application service owns admission"
+                               && (match decision.alternatives with
+                                 | [ alternative ] ->
+                                     String.equal alternative.alternative_choice
+                                       "Worker owns admission"
+                                     && String.equal alternative.tradeoffs
+                                          "Requires a second authority boundary"
+                                 | _ -> false)
+                               &&
+                               let actual_kind, basis =
+                                 match decision.resolution with
+                                 | Architecture_design.Engineer_approved basis
+                                   ->
+                                     ("engineer_approved", basis)
+                                 | Architecture_design.Constrained basis ->
+                                     ("constrained", basis)
+                                 | Architecture_design.Delegated basis ->
+                                     ("delegated", basis)
+                               in
+                               String.equal actual_kind kind
+                               && String.equal basis.evidence
+                                    "Engineer selected the application boundary"
+                               && String.equal basis.rationale
+                                    "One write owner controls admission"
+                           | _ -> false)
                      in
-                     String.is_substring context
-                       ~substring:"Application service owns admission"
-                     && String.is_substring context
-                          ~substring:"Requires a second authority boundary"
-                     && String.is_substring context
-                          ~substring:
-                            "Engineer selected the application boundary"
+                     structural_match
                      && Gameplan.equal
                           (Gameplan.t_of_yojson
                              (Gameplan.yojson_of_t parsed.gameplan))
@@ -303,11 +334,11 @@ let () =
              match parse (plan 1 [] []) with
              | Error _ -> false
              | Ok parsed -> (
-                 String.is_empty parsed.gameplan.architecture_design
+                 Option.is_none parsed.gameplan.architecture_design
                  &&
                  match Gameplan.yojson_of_t parsed.gameplan with
                  | `Assoc fields ->
-                     String.is_empty
+                     Option.is_none
                        (Gameplan.t_of_yojson
                           (`Assoc
                              (List.Assoc.remove fields ~equal:String.equal

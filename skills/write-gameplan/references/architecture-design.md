@@ -60,7 +60,9 @@ validator rejects older or missing versions even without the optional JSON Schem
 so downgrading is not an authoring escape hatch. Onton retains compatibility with
 existing v2 and unversioned plans; when a section is present in any version, it rejects
 malformed or unresolved decisions. Admitted design, tradeoffs and resolution evidence are carried into
-patch context, patch and feature PR descriptions, and persisted session state. The gate checks the declaration, not whether
+typed runtime records and persisted session state. Renderers turn those records into
+patch context and patch/feature PR descriptions; unresolved resolutions have no runtime
+variant. The gate checks the declaration, not whether
 a conversation actually occurred or the design inventory is complete. Authoring must
 still inspect the whole plan for unrecorded choices. A schema pass is not human approval.
 

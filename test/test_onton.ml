@@ -33,7 +33,7 @@ let () =
         repo_owner = "";
         repo_name = "";
         problem_statement = "";
-        architecture_design = "";
+        architecture_design = None;
         solution_summary = "";
         final_state_spec = "";
         patches;

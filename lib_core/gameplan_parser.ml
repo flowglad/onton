@@ -508,7 +508,7 @@ let parse_acceptance_criteria ~structured json functional_changes =
 
 (* Absence is accepted for existing plans; present design is always admitted
    through this boundary, independently of formatVersion and openQuestions. *)
-let architecture_context ~required json =
+let parse_architecture_design ~required json =
   let design =
     match json with
     | `Assoc fields ->
@@ -518,7 +518,7 @@ let architecture_context ~required json =
   match design with
   | None when required ->
       raise (Parse_error "architectureDesign is required in formatVersion 3")
-  | None -> ""
+  | None -> None
   | Some design ->
       let fail message =
         raise (Parse_error ("architectureDesign: " ^ message))
@@ -550,7 +550,7 @@ let architecture_context ~required json =
         | `List xs -> xs
         | _ -> fail "decisions must be an array"
       in
-      let rendered =
+      let decisions =
         List.map decisions ~f:(fun decision ->
             object_fields "decision"
               [
@@ -572,40 +572,43 @@ let architecture_context ~required json =
                   List.map xs ~f:(fun alternative ->
                       object_fields "alternative" [ "choice"; "tradeoffs" ]
                         alternative;
-                      "  - Alternative: "
-                      ^ string alternative "choice"
-                      ^ " — "
-                      ^ string alternative "tradeoffs")
+                      Types.Architecture_design.
+                        {
+                          alternative_choice = string alternative "choice";
+                          tradeoffs = string alternative "tradeoffs";
+                        })
               | _ -> fail (id ^ " alternatives must be an array")
             in
             let resolution = member "resolution" decision in
             let kind = string resolution "kind" in
             if String.equal kind "unresolved" then
               fail (id ^ " is unresolved; consult the engineer before execution");
-            if
-              not
-                (List.mem
-                   [ "engineer_approved"; "constrained"; "delegated" ]
-                   kind ~equal:String.equal)
-            then fail (id ^ " has unknown resolution kind " ^ kind);
             object_fields "resolution"
               [ "kind"; "evidence"; "rationale" ]
               resolution;
-            let evidence = string resolution "evidence" in
-            let rationale = string resolution "rationale" in
-            ( id,
-              String.concat ~sep:"\n"
-                ([
-                   "- " ^ id ^ " (" ^ topic ^ "): " ^ question;
-                   "  Choice: " ^ choice;
-                   "  Resolution: " ^ kind ^ " — " ^ evidence;
-                   "  Rationale: " ^ rationale;
-                 ]
-                @ alternatives) ))
+            let basis =
+              Types.Architecture_design.
+                {
+                  evidence = string resolution "evidence";
+                  rationale = string resolution "rationale";
+                }
+            in
+            let resolution =
+              match kind with
+              | "engineer_approved" ->
+                  Types.Architecture_design.Engineer_approved basis
+              | "constrained" -> Types.Architecture_design.Constrained basis
+              | "delegated" -> Types.Architecture_design.Delegated basis
+              | _ -> fail (id ^ " has unknown resolution kind " ^ kind)
+            in
+            Types.Architecture_design.
+              { id; topic; question; choice; alternatives; resolution })
       in
       unique_strings "architectureDesign decision IDs"
-        (List.map rendered ~f:fst);
-      String.concat ~sep:"\n" (summary :: List.map rendered ~f:snd)
+        (List.map decisions
+           ~f:(fun (decision : Types.Architecture_design.decision) ->
+             decision.id));
+      Some Types.Architecture_design.{ summary; decisions }
 
 let operational_context ~structured json =
   match
@@ -755,7 +758,7 @@ let parse_json_string input =
           match json |> member "solutionSummary" with `String s -> s | _ -> ""
         in
         let architecture_design =
-          architecture_context
+          parse_architecture_design
             ~required:(Option.equal Int.equal format_version (Some 3))
             json
         in
