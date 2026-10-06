@@ -183,25 +183,26 @@ let () =
               (Start_with_human { messages })
           with _ -> false);
       Test.make ~name:"only Human Respond prompts omit patch instructions"
-        ~count:1 Gen.unit (fun () ->
-          List.for_all [ Start; Respond ] ~f:(fun delivery_mode ->
-              List.for_all
-                (None
-                :: List.map
-                     (Operation_kind.Findings :: Operation_kind.Rebase
-                    :: feedback_ops)
-                     ~f:Option.some)
-                ~f:(fun kind ->
-                  let expected =
-                    equal_delivery_mode delivery_mode Start
-                    || not
-                         (Option.equal Operation_kind.equal kind
-                            (Some Operation_kind.Human))
-                  in
-                  Bool.equal
-                    (session_prompt_requires_patch_instructions ~delivery_mode
-                       ~kind)
-                    expected)));
+        ~count:500
+        Gen.(
+          pair
+            (oneof_list [ Start; Respond ])
+            (oneof_list
+               (None
+               :: List.map
+                    (Operation_kind.Findings :: Operation_kind.Rebase
+                   :: feedback_ops)
+                    ~f:Option.some)))
+        (fun (delivery_mode, kind) ->
+          let expected =
+            equal_delivery_mode delivery_mode Start
+            || not
+                 (Option.equal Operation_kind.equal kind
+                    (Some Operation_kind.Human))
+          in
+          Bool.equal
+            (session_prompt_requires_patch_instructions ~delivery_mode ~kind)
+            expected);
       Test.make
         ~name:"human delivery without backend acceptance must be restored"
         Gen.bool (fun turn_accepted ->
