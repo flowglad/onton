@@ -836,7 +836,7 @@ val reconciliation_hold_reason : t -> string option
 (** Terminal patch state suspends reconciliation execution while retaining its
     checkpoint. Resuming work must observe Git through the recovery protocol. *)
 
-val migrate_legacy_branch_state : t -> t
+val migrate_legacy_branch_state : main_branch:Types.Branch.t -> t -> t
 (** Upgrade an agent whose snapshot has no reconciliation checkpoint. Retain
     session/worktree/provenance and unrelated intervention state. Existing work
     starts with observation; obsolete branch counters and pending-push

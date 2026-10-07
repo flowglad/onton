@@ -191,16 +191,25 @@ module Make (W : Worktree.S) (Env : ENV) = struct
       Branch_reconcile_runner.run_owned ~owner:write_owner ~persist ~now
         ~execute event
     in
+    let outcome =
+      match outcome with
+      | Branch_reconcile_runner.Idle ->
+          (* A settled receipt can outlive its remote ref while Start retries
+             PR creation. Revalidate before reporting publication to the caller. *)
+          Branch_reconcile_runner.run_owned ~owner:write_owner ~persist ~now
+            ~execute Branch_reconcile.Reconfirm_publication
+      | Branch_reconcile_runner.Waiting
+      | Branch_reconcile_runner.Repair_needed _
+      | Branch_reconcile_runner.Intervention _
+      | Branch_reconcile_runner.Checkpoint_failed _ ->
+          outcome
+    in
     match outcome with
     | Branch_reconcile_runner.Idle ->
-        let candidate =
-          Runtime.read Env.runtime (fun snap ->
-              Option.bind
-                (Branch_reconcile.operation
-                   (Orchestrator.agent snap.Runtime.orchestrator patch_id)
-                     .Patch_agent.branch_reconcile) ~f:(fun op -> op.candidate))
-        in
-        if Option.is_some candidate then `Published else `No_work
+        Runtime.read Env.runtime (fun snap ->
+            Branch_reconcile.publication_status
+              (Orchestrator.agent snap.Runtime.orchestrator patch_id)
+                .branch_reconcile)
     | Branch_reconcile_runner.Waiting | Branch_reconcile_runner.Repair_needed _
       ->
         `Pending

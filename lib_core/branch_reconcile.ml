@@ -79,6 +79,7 @@ type observation = {
   sequencer : string option;
   conflicts : int;
   target_included : bool;
+  base_contains_source : bool;
   completed_integration : bool;
 }
 [@@deriving eq, compare, sexp_of, yojson]
@@ -264,6 +265,7 @@ type event =
   | Repair_completed of { token : token; at : float }
   | Tick of float
   | Recover
+  | Reconfirm_publication
   | Resume
   | Refresh of observation
 [@@deriving eq, compare, sexp_of]
@@ -355,6 +357,20 @@ let check_destination (op : operation) ~observed =
                 false)
       then Ok ()
       else Error "publication_destination_requires_inspection"
+
+let publication_status t =
+  match t.active with
+  | Some { phase = Settled; candidate = Some _; _ } -> `Published
+  | Some { phase = Settled; candidate = None; _ } -> `No_work
+  | None
+  | Some
+      {
+        phase =
+          ( Preparing | Integrating | Repairing _ | Publishing | Confirming
+          | Waiting _ | Recovering | Intervention _ );
+        _;
+      } ->
+      `Pending
 
 let is_unsettled t =
   match phase t with
@@ -716,10 +732,11 @@ let observed t op (o : observation) =
   | (Reconcile_base | Reconcile_request _ | Integrate_revision _), Some _ ->
       stop t op "integration_context_missing"
   | (Publish_revision _ | Publish_session _), None
-    when Option.is_none o.remote
-         && Option.equal Commit.equal
-              (Option.bind t.materialized ~f:materialization_boundary)
-              (Some o.source) ->
+    when o.base_contains_source
+         || Option.is_none o.remote
+            && Option.equal Commit.equal
+                 (Option.bind t.materialized ~f:materialization_boundary)
+                 (Some o.source) ->
       settle t op
   | (Reconcile_base | Reconcile_request _ | Integrate_revision _), None
     when not o.clean ->
@@ -995,6 +1012,20 @@ let step t = function
           | Preparing | Integrating | Repairing _ | Publishing | Confirming
           | Waiting _ | Recovering | Settled | Intervention _ ->
               (t, [])))
+  | Reconfirm_publication -> (
+      match t.active with
+      | Some ({ phase = Settled; candidate = Some candidate; _ } as op) ->
+          issue t op Confirming (Confirm candidate)
+      | None
+      | Some
+          {
+            phase =
+              ( Preparing | Integrating | Repairing _ | Publishing | Confirming
+              | Waiting _ | Recovering | Intervention _ );
+            _;
+          }
+      | Some { phase = Settled; candidate = None; _ } ->
+          (t, []))
   | Refresh o -> (
       match (t.active, t.desired) with
       | Some ({ phase = Settled; _ } as op), Some intent

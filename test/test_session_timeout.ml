@@ -79,6 +79,7 @@ module Fake_worktree : Worktree.S = struct
           sequencer = None;
           conflicts = 0;
           target_included = true;
+          base_contains_source = false;
           head = sha !head;
           completed_integration = false;
           destination =

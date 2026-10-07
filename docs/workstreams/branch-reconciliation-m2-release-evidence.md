@@ -12,10 +12,10 @@ Git refs/trees/index state, persisted snapshots, or runtime outcomes.
 
 | Acceptance | Executable evidence | Observed contract |
 |---|---|---|
-| A01: identity/idempotence | `test/test_branch_reconcile_properties.ml` | Generated duplicate/stale results, retry and repair events, restart, fixed points and captured authority; 54 properties. |
+| A01: identity/idempotence | `test/test_branch_reconcile_properties.ml` | Generated duplicate/stale results, retry and repair events, restart, fixed points and captured authority; 57 properties. |
 | A02: durable dispatch | `test/test_branch_reconcile_git.ml`, `test/test_branch_reconcile_ownership.ml` | Failed checkpoint prevents mutation; interrupted commands recover by inspection; capacity/ownership handoff revalidates the current turn. |
 | A03: materialization | `test/test_worktree_setup_base_fetch_integration.ml`, `test/test_branch_reconcile_git.ml` | Starting commit is retained before implementation; later fetch/base movement cannot replace the proven replay boundary. |
-| A04: publication independent of implementation | `test/test_session_result_properties.ml`, `test/test_branch_reconcile_git.ml`, `test/test_gameplan_publication.ml` | Session receipt survives publication failure; lost push acknowledgement is confirmed directly without another push or implementation session. |
+| A04: publication independent of implementation | `test/test_session_result_properties.ml`, `test/test_branch_reconcile_git.ml`, `test/test_gameplan_publication.ml` | Session receipt survives publication failure; lost push acknowledgement is confirmed directly without another push or implementation session. A Start retry rechecks the remote and restores a deleted ref without rerunning implementation. Adopted empty branches return no-work and remain eligible for another implementation attempt. |
 | A05: staged repair | `test/test_branch_reconcile_git.ml` | Staged resolutions survive restart; Onton continues the original integration without requiring an agent commit, then observes newer base movement. |
 | A06: remote races | `test/test_branch_reconcile_git.ml`, `test/test_feature_branch_git.ml` | Rewrite replay and preserving merge retain both sides. Recorded replay permits legitimate conflict-resolution changes; inferred boundaries do not grant the same authority. PR #482/#483 regression scenarios retain work and confirm the actual remote. |
 | A07: root ownership | `test/test_feature_branch_git.ml`, `test/test_feature_branch_mode.ml`, `test/test_branch_reconcile_git.ml` | Concurrent contributions preserve ancestry; descendant receipt waits for confirmed publication containing its captured source. |
@@ -56,7 +56,7 @@ recorded after the destination-binding change and formatting:
 
 Architecture invocation: `opam exec -- uv run --project <archlint> python
 <archlint>/evaluate.py --repo-root <onton> --adapter ocaml --ocaml-root .`.
-The local final log is `/tmp/onton-m2-final-gate.log`; this committed map preserves
+The local final log is `/tmp/onton-m2-review-gate.log`; this committed map preserves
 the results without requiring that temporary file.
 
 Additional completed checks:

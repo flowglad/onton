@@ -80,6 +80,76 @@ let () =
       ~process_mgr:(Eio.Stdenv.process_mgr env)
       ~clock:(Eio.Stdenv.clock env) ~path:dir
   in
+  List.iter
+    (fun adopted ->
+      List.iter
+        (fun existing_remote ->
+          Git.with_temp_repo (fun remote ->
+              let base = commit remote "base" "base\n" "base" in
+              Git.with_temp_repo (fun dir ->
+                  prepare remote dir;
+                  if existing_remote then
+                    Git.run_git ~cwd:dir [ "push"; "origin"; "patch" ];
+                  (* Ahead-of-base means reachability, not merely tip equality. *)
+                  ignore (commit remote "later-base" "later\n" "base advances");
+                  let runtime = make_runtime () and io = make_io dir in
+                  let receipt =
+                    if adopted then B.Adopted_branch (sha base)
+                    else B.New_branch (sha base)
+                  in
+                  let checkpoint = Filename.temp_file "empty-adopted" ".json" in
+                  Fun.protect
+                    ~finally:(fun () -> Sys.remove checkpoint)
+                    (fun () ->
+                      ignore
+                        (run runtime (persist checkpoint) io
+                           (B.Materialized receipt));
+                      check "empty branch publication settles without work"
+                        (run runtime (persist checkpoint) io
+                           (B.Request
+                              {
+                                intent with
+                                purpose = B.Publish_revision (sha base);
+                              })
+                        = R.Idle);
+                      check "empty branch has no published candidate"
+                        (match B.operation (state runtime) with
+                        | Some op -> op.candidate = None
+                        | None -> false);
+                      check "empty adopted branch creates no remote ref"
+                        (existing_remote
+                        || Git.git_exit_code ~cwd:remote
+                             [ "show-ref"; "--verify"; "refs/heads/patch" ]
+                           <> 0)))))
+        [ false; true ])
+    [ false; true ];
+  Git.with_temp_repo (fun remote ->
+      ignore (commit remote "base" "base\n" "base");
+      Git.with_temp_repo (fun dir ->
+          prepare remote dir;
+          let source = commit dir "work" "work\n" "implementation" in
+          let runtime = make_runtime () and io = make_io dir in
+          let checkpoint = Filename.temp_file "reconfirm-publication" ".json" in
+          Fun.protect
+            ~finally:(fun () -> Sys.remove checkpoint)
+            (fun () ->
+              check "initial publication settles"
+                (run runtime (persist checkpoint) io
+                   (B.Request
+                      { intent with purpose = B.Publish_revision (sha source) })
+                = R.Idle);
+              Git.run_git ~cwd:remote [ "update-ref"; "-d"; "refs/heads/patch" ];
+              let runtime =
+                Runtime.create ~gameplan
+                  ~main_branch:(Types.Branch.of_string "main")
+                  ~snapshot:(get (Persistence.load ~path:checkpoint))
+                  ()
+              in
+              check "publication retry reconfirms and restores deleted branch"
+                (run runtime (persist checkpoint) io B.Reconfirm_publication
+                = R.Idle);
+              check "restored remote is the exact captured candidate"
+                (Git.git_capture ~cwd:remote [ "rev-parse"; "patch" ] = source))));
   Git.with_temp_repo (fun original_remote ->
       ignore (commit original_remote "base" "base\n" "base");
       Git.with_temp_repo (fun replacement ->

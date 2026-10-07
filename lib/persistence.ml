@@ -285,7 +285,7 @@ let patch_agent_to_yojson (a : Patch_agent.t) =
         `List (List.map a.delivered_ci_run_ids ~f:(fun i -> `Int i)) );
     ]
 
-let patch_agent_of_yojson ~gameplan json =
+let patch_agent_of_yojson ~main_branch ~gameplan json =
   let ( let* ) r f = Result.bind r ~f in
   let* queue =
     result_all
@@ -590,7 +590,7 @@ let patch_agent_of_yojson ~gameplan json =
         ()
     |> fun agent ->
       if Option.is_none (Json.field "branch_reconcile" json) then
-        Patch_agent.migrate_legacy_branch_state agent
+        Patch_agent.migrate_legacy_branch_state ~main_branch agent
       else agent )
 
 (* ---------- Activity_log ---------- *)
@@ -746,7 +746,7 @@ let orchestrator_of_yojson ~gameplan json =
       (result_all
          (member "agents" json |> to_assoc
          |> List.map ~f:(fun (key, value) ->
-             Result.bind (patch_agent_of_yojson ~gameplan value)
+             Result.bind (patch_agent_of_yojson ~main_branch ~gameplan value)
                ~f:(fun agent ->
                  let payload_id = Patch_id.to_string agent.patch_id in
                  if String.equal key payload_id then

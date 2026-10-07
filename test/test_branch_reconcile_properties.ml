@@ -27,6 +27,7 @@ let observation =
       sequencer = None;
       conflicts = 0;
       target_included = false;
+      base_contains_source = false;
       head = source;
       completed_integration = false;
       destination = Branch_reconcile.Remote_id.of_destination "fixture-origin";
@@ -75,6 +76,7 @@ let progress_result command =
           source = candidate;
           remote = Some candidate;
           target_included = true;
+          base_contains_source = false;
           completed_integration = true;
         }
   | B.Publish _ -> B.Published
@@ -96,6 +98,73 @@ let unverified =
 
 let tests =
   [
+    QCheck2.Test.make
+      ~name:"BR a retained candidate is not publication confirmation" ~count:100
+      Gen.bool (fun reconfirm ->
+        let state =
+          if reconfirm then fst (B.step (settled ()) B.Reconfirm_publication)
+          else publishing ()
+        in
+        B.publication_status state = `Pending
+        && B.publication_status (settled ()) = `Published
+        && B.publication_status B.empty = `Pending);
+    QCheck2.Test.make
+      ~name:
+        "BR adopted publication with no commits ahead settles without a \
+         candidate"
+      ~count:100
+      Gen.(pair bool bool)
+      (fun (adopted, published) ->
+        let receipt =
+          if adopted then B.Adopted_branch source else B.New_branch source
+        in
+        let state, _ = B.step B.empty (B.Materialized receipt) in
+        let state, _ =
+          B.step state
+            (B.Request { intent with purpose = Publish_revision source })
+        in
+        let state, effects =
+          reply state
+            (B.Observed
+               {
+                 observation with
+                 base_contains_source = true;
+                 remote = (if published then Some source else None);
+               })
+        in
+        B.phase state = Some B.Settled
+        && (match B.operation state with
+          | Some op -> op.candidate = None
+          | None -> false)
+        && List.for_all
+             (function
+               | B.Completed _ -> true
+               | B.Execute _ | B.Repair _ | B.Start_repair _ -> false)
+             effects);
+    QCheck2.Test.make
+      ~name:
+        "BR explicit publication reconfirmation restores a deleted remote with \
+         an absent lease" ~count:100 Gen.bool (fun restart ->
+        let state = settled () in
+        let state =
+          if restart then
+            match B.decode (B.yojson_of_t state) with
+            | Ok state -> state
+            | Error _ -> assert false
+          else state
+        in
+        let state, _ = B.step state B.Reconfirm_publication in
+        let duplicate, effects = B.step state B.Reconfirm_publication in
+        let restored, _ =
+          reply state (B.Remote { sha = None; topology = Unproven })
+        in
+        B.equal state duplicate && effects = []
+        &&
+        match B.pending restored with
+        | Some command ->
+            B.equal_command_kind command.kind
+              (B.Publish { candidate; expected = None })
+        | None -> false);
     QCheck2.Test.make
       ~name:
         "BR destination authority survives restart and requires explicit resume"
@@ -629,6 +698,7 @@ let tests =
                    target = candidate;
                    remote = Some incoming;
                    target_included = true;
+                   base_contains_source = false;
                  })
           in
           let state, _ = reply state B.Remote_checked_out in
@@ -969,6 +1039,7 @@ let tests =
                    source = candidate;
                    head = candidate;
                    target_included = true;
+                   base_contains_source = false;
                  })
           in
           let state, _ =

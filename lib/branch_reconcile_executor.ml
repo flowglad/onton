@@ -250,6 +250,18 @@ let observation io ~destination ~branch ~intent ~policy ~boundaries ~target
       sequencer;
       conflicts = List.length checkout.conflicts;
       target_included = ancestor io target source;
+      base_contains_source =
+        (match intent.purpose with
+        | Branch_reconcile.Publish_revision _
+        | Branch_reconcile.Publish_session _
+          when Option.is_none original_source ->
+            let base = resolve io ("refs/remotes/origin/" ^ intent.base) in
+            ancestor io source base
+        | Branch_reconcile.Publish_revision _
+        | Branch_reconcile.Publish_session _ | Branch_reconcile.Reconcile_base
+        | Branch_reconcile.Reconcile_request _
+        | Branch_reconcile.Integrate_revision _ ->
+            false);
       completed_integration =
         Option.value_map original_source ~default:false ~f:(fun original ->
             Branch_reconcile.completion_proven ~policy

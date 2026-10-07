@@ -61,6 +61,7 @@ let claim runtime =
                 sequencer = None;
                 conflicts = 0;
                 target_included = false;
+                base_contains_source = false;
                 completed_integration = false;
                 destination =
                   Branch_reconcile.Remote_id.of_destination "fixture-origin";
@@ -120,6 +121,7 @@ let waiting_repair ~root ~stale ~changed =
                   sequencer = Some "step";
                   conflicts = 1;
                   target_included = false;
+                  base_contains_source = false;
                   completed_integration = false;
                   destination =
                     Branch_reconcile.Remote_id.of_destination "fixture-origin";

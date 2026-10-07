@@ -29,7 +29,7 @@ verified agent history recovery, and destination-root integration. All enabled
 branch mutations use the owned checkpoint runner. Legacy scheduling detectors
 and compatibility views remain for M3 cleanup.
 
-The final source gate passed with 54 reconciliation properties and real Git
+The final source gate passed with 57 reconciliation properties and real Git
 acceptance. SourceHut's actual Git observation handler was exercised with injected
 build results; installed Simgit lifecycle and old-binary v2 rejection were checked
 separately. These are local acceptance results, not live-provider rollout evidence.

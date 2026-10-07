@@ -68,6 +68,9 @@ type observation = {
   sequencer : string option;
   conflicts : int;
   target_included : bool;
+  base_contains_source : bool;
+      (** Checked against the desired base for initial publication observations.
+      *)
   completed_integration : bool;
 }
 [@@deriving eq, compare, sexp_of]
@@ -246,6 +249,9 @@ type event =
   | Repair_completed of { token : token; at : float }
   | Tick of float
   | Recover
+  | Reconfirm_publication
+      (** Explicitly revalidate a settled candidate; ordinary polling and
+          duplicate requests remain fixed points. *)
   | Resume
   | Refresh of observation
 [@@deriving eq, compare, sexp_of]
@@ -307,6 +313,10 @@ val remote_integrations : t -> integration_receipt list
 
 val pending : t -> command option
 val phase : t -> phase option
+
+val publication_status : t -> [ `Published | `No_work | `Pending ]
+(** A retained candidate is not confirmation while its operation is unfinished.
+*)
 
 val is_unsettled : t -> bool
 (** An owned operation is unfinished, including an intervention that retains

@@ -221,6 +221,12 @@ progress stop with `recovery_preservation_unproven`, retaining the recovery refs
 Remaining deterministic cutover paths must route exhausted recovery through this
 owner before release.
 
+Initial publication checks whether the source has commits outside the desired
+base, including for adopted branches. No-work settlement has no candidate and
+allows another implementation attempt. Start retries explicitly reconfirm a
+settled candidate before retrying PR creation; a deleted remote ref resumes
+publication with an absent-ref lease. Ordinary duplicate intent remains inert.
+
 Publication observes and confirms the actual configured push URL, even when it
 differs from the fetch URL. Multiple distinct push destinations stop specifically
 before mutation; partial multi-destination publication is not represented by the

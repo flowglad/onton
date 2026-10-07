@@ -16,6 +16,7 @@ let remote_head = ref None
 let base_head = ref "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 let before_push = ref (fun () -> ())
 let fail_push = ref false
+let adopt_branch = ref false
 
 module Fake_worktree : Worktree.S = struct
   let integrate ~root_path:_ ~root_branch:_ ~descendant_branch:_ ~head_sha:_ =
@@ -69,7 +70,9 @@ module Fake_worktree : Worktree.S = struct
   let commit_gameplan ~path:_ ~publication:_ ~message:_ = assert false
 
   let materialization ~path:_ ~project_name:_ ~branch:_ =
-    Ok (Some (B.New_branch (sha "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")))
+    let head = sha "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" in
+    Ok
+      (Some (if !adopt_branch then B.Adopted_branch head else B.New_branch head))
 
   let reconcile ~path:_ ~project_name:_ ~branch:_ ~operation:_ command =
     let observation () =
@@ -84,6 +87,7 @@ module Fake_worktree : Worktree.S = struct
           sequencer = None;
           conflicts = 0;
           target_included = true;
+          base_contains_source = String.equal !head !base_head;
           head = sha !head;
           completed_integration = false;
           destination =
@@ -122,10 +126,11 @@ module Fake_worktree : Worktree.S = struct
   let rebase_in_progress ~path:_ = assert false
 end
 
-let run_case ?(cancel = false) ?(push_failure = false) ?(detect_pr = false)
-    ?(advance_base = false) ?(delivery_mode = Onton_core.Patch_decision.Start)
-    ?(kind = None) ?(branch_role = `Mainline) ?resume_session
-    ?(prompt = "Implement the patch") env ~content ~commit ~expect_opt_out =
+let run_case ?(adopted = false) ?(cancel = false) ?(push_failure = false)
+    ?(detect_pr = false) ?(advance_base = false)
+    ?(delivery_mode = Onton_core.Patch_decision.Start) ?(kind = None)
+    ?(branch_role = `Mainline) ?resume_session ?(prompt = "Implement the patch")
+    env ~content ~commit ~expect_opt_out =
   head := "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
   base_head :=
     if advance_base then "cccccccccccccccccccccccccccccccccccccccc"
@@ -133,6 +138,7 @@ let run_case ?(cancel = false) ?(push_failure = false) ?(detect_pr = false)
   pushes := 0;
   remote_head := None;
   fail_push := push_failure;
+  adopt_branch := adopted;
   let root = Stdlib.Filename.temp_dir "onton-wontdo-" "" in
   let old = Stdlib.Sys.getenv_opt "ONTON_DATA_DIR" in
   Unix.putenv "ONTON_DATA_DIR" root;
@@ -570,6 +576,15 @@ let run_case ?(cancel = false) ?(push_failure = false) ?(detect_pr = false)
       else (
         assert (Option.is_none after.wontdo_reason);
         assert (!pushes = if commit then 1 else 0);
+        if adopted && (not commit) && not detect_pr then (
+          assert (Poly.equal result.disposition `No_commits);
+          match after.session_completion with
+          | None -> assert false
+          | Some completion ->
+              assert (
+                not
+                  (Onton_core.Session_result.resume_start ~delivery_mode:Start
+                     ~guidance:[] ~publication:after.branch_reconcile completion)));
         if commit && push_failure then (
           assert (Poly.equal result.disposition `Retry_push);
           match after.session_completion with
@@ -632,7 +647,23 @@ let run_case ?(cancel = false) ?(push_failure = false) ?(detect_pr = false)
                   ~backend ~complexity:None
               in
               assert (Poly.equal continued.disposition `Ok);
-              assert (!pushes = 2))
+              assert (!pushes = 2);
+              remote_head := None;
+              let continued =
+                SD.run ~kind ~delivery_mode ~patch_id
+                  ~prompt:
+                    (SD.create_prompt
+                       ~context:(fun ~worktree_path:_ ->
+                         failwith
+                           "implementation rendered on deleted-remote retry")
+                       ~turn:prompt)
+                  ~agent:resumed
+                  ~on_pr_detected:(fun _ -> assert false)
+                  ~backend ~complexity:None
+              in
+              assert (Poly.equal continued.disposition `Ok);
+              assert (!pushes = 3);
+              assert (Option.equal String.equal !remote_head (Some !head)))
         else if commit then (
           assert (Poly.equal result.disposition `Ok);
           assert (after.no_commits_push_count = 0);
@@ -663,6 +694,8 @@ let () =
         ~commit:false ~expect_opt_out:true;
       List.iter [ `Mainline; `Integration_root; `Feature_descendant ]
         ~f:(fun branch_role ->
+          run_case env ~adopted:true ~branch_role ~content:"" ~commit:false
+            ~expect_opt_out:false;
           List.iter [ None; Some "existing-thread" ] ~f:(fun resume_session ->
               List.iter
                 [

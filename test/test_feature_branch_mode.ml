@@ -721,6 +721,7 @@ let () =
                B.sequencer = None;
                B.conflicts = 0;
                target_included = false;
+               base_contains_source = false;
              })
       in
       let orch = reply orch B.Pinned in

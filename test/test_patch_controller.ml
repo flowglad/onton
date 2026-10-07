@@ -2436,7 +2436,9 @@ let () =
           |> Patch_agent.increment_ci_failure_count
         in
         match
-          Persistence.patch_agent_of_yojson ~gameplan:(make_gameplan patch)
+          Persistence.patch_agent_of_yojson
+            ~main_branch:(Onton_core.Types.Branch.of_string "main")
+            ~gameplan:(make_gameplan patch)
             (Persistence.patch_agent_to_yojson agent)
         with
         | Error _ -> false

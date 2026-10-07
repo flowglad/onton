@@ -192,6 +192,7 @@ let () =
           in
           let decode =
             Onton.Persistence.patch_agent_of_yojson
+              ~main_branch:(Onton_core.Types.Branch.of_string "main")
               ~gameplan:(gameplan_for_agent agent)
           in
           match (decode original, decode legacy) with
@@ -221,6 +222,16 @@ let () =
                 || Option.is_some baseline.worktree_path
               in
               Yojson.Safe.equal (unrelated baseline) (unrelated migrated)
+              && (match
+                    Onton_core.Branch_reconcile.operation
+                      migrated.branch_reconcile
+                  with
+                | None -> not existing
+                | Some op ->
+                    String.equal op.intent.base
+                      (Onton_core.Types.Branch.to_string
+                         (Option.value baseline.base_branch
+                            ~default:(Onton_core.Types.Branch.of_string "main"))))
               && migrated.conflict_noop_count = 0
               && migrated.no_commits_push_count = 0
               && migrated.push_failure_count = 0
@@ -463,7 +474,11 @@ let () =
         try
           let gameplan = gameplan_for_agent agent in
           let json = Onton.Persistence.patch_agent_to_yojson agent in
-          match Onton.Persistence.patch_agent_of_yojson ~gameplan json with
+          match
+            Onton.Persistence.patch_agent_of_yojson
+              ~main_branch:(Onton_core.Types.Branch.of_string "main")
+              ~gameplan json
+          with
           | Ok agent' -> Onton_core.Patch_agent.equal agent agent'
           | Error _msg -> false
         with _ -> false)
@@ -476,7 +491,11 @@ let () =
           let agent = Onton_core.Patch_agent.set_native_stack agent false in
           let gameplan = gameplan_for_agent agent in
           let json = Onton.Persistence.patch_agent_to_yojson agent in
-          match Onton.Persistence.patch_agent_of_yojson ~gameplan json with
+          match
+            Onton.Persistence.patch_agent_of_yojson
+              ~main_branch:(Onton_core.Types.Branch.of_string "main")
+              ~gameplan json
+          with
           | Ok restored ->
               restored.Onton_core.Patch_agent.native_stack
               && restored.native_stack_absent_polls = 1
@@ -521,7 +540,11 @@ let () =
           in
           let gameplan = gameplan_for_agent agent in
           let json = Onton.Persistence.patch_agent_to_yojson agent in
-          match Onton.Persistence.patch_agent_of_yojson ~gameplan json with
+          match
+            Onton.Persistence.patch_agent_of_yojson
+              ~main_branch:(Onton_core.Types.Branch.of_string "main")
+              ~gameplan json
+          with
           | Ok agent' ->
               Onton_core.Anchor_history.equal
                 (Onton_core.Patch_agent.anchor_history agent)
@@ -545,7 +568,11 @@ let () =
                        not (String.equal k "anchor_history")))
             | other -> other
           in
-          match Onton.Persistence.patch_agent_of_yojson ~gameplan json with
+          match
+            Onton.Persistence.patch_agent_of_yojson
+              ~main_branch:(Onton_core.Types.Branch.of_string "main")
+              ~gameplan json
+          with
           | Ok agent' ->
               Onton_core.Anchor_history.equal
                 (Onton_core.Patch_agent.anchor_history agent')
@@ -559,7 +586,11 @@ let () =
         try
           let gameplan = gameplan_for_agent agent in
           let json = Onton.Persistence.patch_agent_to_yojson agent in
-          match Onton.Persistence.patch_agent_of_yojson ~gameplan json with
+          match
+            Onton.Persistence.patch_agent_of_yojson
+              ~main_branch:(Onton_core.Types.Branch.of_string "main")
+              ~gameplan json
+          with
           | Ok agent' ->
               Option.equal Pr_number.equal
                 (Onton_core.Patch_agent.pr_number agent)
@@ -611,7 +642,11 @@ let () =
                        not (String.equal k "pr_status")))
             | other -> other
           in
-          match Onton.Persistence.patch_agent_of_yojson ~gameplan json with
+          match
+            Onton.Persistence.patch_agent_of_yojson
+              ~main_branch:(Onton_core.Types.Branch.of_string "main")
+              ~gameplan json
+          with
           | Ok agent' ->
               (* Whatever the agent's original pr_status, the legacy-only
                  decode preserves the pr_number value and avoids Missing. *)
@@ -641,7 +676,11 @@ let () =
                        && not (String.equal k "pr_status")))
             | other -> other
           in
-          match Onton.Persistence.patch_agent_of_yojson ~gameplan json with
+          match
+            Onton.Persistence.patch_agent_of_yojson
+              ~main_branch:(Onton_core.Types.Branch.of_string "main")
+              ~gameplan json
+          with
           | Ok agent' ->
               Option.is_none (Onton_core.Patch_agent.pr_number agent')
           | Error _ -> false
@@ -680,7 +719,11 @@ let () =
                 `Assoc fields
             | other -> other
           in
-          match Onton.Persistence.patch_agent_of_yojson ~gameplan json with
+          match
+            Onton.Persistence.patch_agent_of_yojson
+              ~main_branch:(Onton_core.Types.Branch.of_string "main")
+              ~gameplan json
+          with
           | Ok agent' ->
               Bool.equal agent'.mergeability_unknown
                 (Option.equal String.equal legacy_status (Some "UNKNOWN"))
@@ -703,7 +746,11 @@ let () =
                        not (String.equal k "branch")))
             | other -> other
           in
-          match Onton.Persistence.patch_agent_of_yojson ~gameplan json with
+          match
+            Onton.Persistence.patch_agent_of_yojson
+              ~main_branch:(Onton_core.Types.Branch.of_string "main")
+              ~gameplan json
+          with
           | Ok agent' -> Branch.equal agent.branch agent'.branch
           | Error _ -> false
         with _ -> false)

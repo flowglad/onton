@@ -1186,7 +1186,7 @@ let reconcile_branch t event =
 let record_session_completion t completion =
   { t with session_completion = Some completion }
 
-let migrate_legacy_branch_state t =
+let migrate_legacy_branch_state ~main_branch t =
   if not (Branch_reconcile.equal t.branch_reconcile Branch_reconcile.empty) then
     t
   else
@@ -1201,7 +1201,7 @@ let migrate_legacy_branch_state t =
                 {
                   base =
                     Branch.to_string
-                      (Option.value t.base_branch ~default:t.branch);
+                      (Option.value t.base_branch ~default:main_branch);
                   policy = Preserve_ancestry;
                   purpose = Publish_session "legacy-snapshot-migration";
                 }))

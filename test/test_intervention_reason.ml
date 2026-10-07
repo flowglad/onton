@@ -494,9 +494,13 @@ let () =
          in
          let a = apply count Patch_agent.increment_ci_failure_count a in
          let a = apply count Patch_agent.increment_rebase_failure_count a in
-         let migrated = Patch_agent.migrate_legacy_branch_state a in
+         let migrated =
+           Patch_agent.migrate_legacy_branch_state
+             ~main_branch:(Branch.of_string "main") a
+         in
          Patch_agent.equal migrated
-           (Patch_agent.migrate_legacy_branch_state migrated)
+           (Patch_agent.migrate_legacy_branch_state
+              ~main_branch:(Branch.of_string "main") migrated)
          && migrated.Patch_agent.ci_failure_count = count
          && migrated.Patch_agent.rebase_failure_count = 0
          && Branch_reconcile.is_pending migrated.Patch_agent.branch_reconcile
