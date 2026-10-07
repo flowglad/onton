@@ -24,7 +24,7 @@ as required preservation evidence, including work arriving between agent turns.
 
 | Reason | Recovery action |
 |---|---|
-| `dirty_worktree` / `history_recovery_dirty_worktree` | Preserve and reconcile staged, unstaged and untracked work. Commit intended patch work or move unrelated work to a separately retained checkout. Resume with a clean checkout. Onton does not automatically stash or discard it. |
+| `dirty_worktree` / `history_recovery_dirty_worktree` | Preserve and reconcile staged, unstaged and untracked work. Keep the captured branch tip intact; preserve intended commits on a separate branch or worktree. Resume with a clean checkout. Onton does not automatically stash or discard it. |
 | `publication_during_integration` | A legacy or publication-only checkpoint encountered a live sequencer. Inspect and complete or deliberately abort that integration while retaining its work before resuming publication. |
 | `recovery_preservation_unproven` | Two completed recovery turns failed to establish preservation. Inspect retained source/candidate/remote refs and reconstruct the intended result before resuming. |
 | Permission or repository-policy rejection | Correct credentials or policy, then resume. Do not rerun successful implementation solely because publication failed. |

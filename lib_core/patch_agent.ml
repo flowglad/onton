@@ -238,7 +238,9 @@ let intervention_reason t =
   | Some _ -> existing
   | None -> (
       match Branch_reconcile.phase t.branch_reconcile with
-      | Some (Branch_reconcile.Intervention reason) -> Some reason
+      | Some (Branch_reconcile.Intervention reason) when not t.merged ->
+          Some reason
+      | Some (Branch_reconcile.Intervention _) -> None
       | None
       | Some
           ( Branch_reconcile.Preparing | Branch_reconcile.Integrating

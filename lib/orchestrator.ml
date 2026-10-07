@@ -276,6 +276,9 @@ let complete t patch_id =
                       | Reconcile_branch (_, operation)
                         when Branch_reconcile.is_pending
                                (agent t patch_id).branch_reconcile
+                             && Option.is_none
+                                  (Patch_agent.reconciliation_hold_reason
+                                     (agent t patch_id))
                              && Option.value_map
                                   (Branch_reconcile.operation
                                      (agent t patch_id).branch_reconcile)

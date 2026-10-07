@@ -825,6 +825,24 @@ let materialization ~io ~prefix =
     | Some _, Some _ -> Error "contradictory_materialization_receipts"
   with Probe_failed reason -> Error reason
 
+let pin_materialization_intent ~io ~prefix head =
+  let ref_name = prefix ^ "/materializing-base" in
+  let code, _, err = io.git [ "show-ref"; "--verify"; "--quiet"; ref_name ] in
+  match code with
+  | 0 -> (
+      try
+        if Branch_reconcile.Commit.equal (resolve io ref_name) head then Ok ()
+        else Error "materialization intent changed"
+      with Probe_failed reason -> Error reason)
+  | 1 ->
+      let code, _, err =
+        io.git
+          [ "update-ref"; ref_name; Branch_reconcile.Commit.to_string head; "" ]
+      in
+      if code = 0 then Ok ()
+      else Error ("materialization intent pin failed: " ^ err)
+  | _ -> Error ("materialization intent probe failed: " ^ err)
+
 let record_materialization ~io ~prefix ~branch ~new_branch_from =
   match materialization ~io ~prefix with
   | Error _ as error -> error
@@ -857,6 +875,25 @@ let record_materialization ~io ~prefix ~branch ~new_branch_from =
           raise (Probe_failed ("materialization pin failed: " ^ err));
         materialization ~io ~prefix
       with Probe_failed reason -> Error reason)
+
+let recover_materialization ~io ~prefix ~branch =
+  match materialization ~io ~prefix with
+  | Ok (Some _) as result -> result
+  | Error _ as error -> error
+  | Ok None -> (
+      let code, _, err =
+        io.git
+          [ "show-ref"; "--verify"; "--quiet"; prefix ^ "/materializing-base" ]
+      in
+      match code with
+      | 1 -> Ok None
+      | 0 -> (
+          try
+            let head = resolve io (prefix ^ "/materializing-base") in
+            record_materialization ~io ~prefix ~branch
+              ~new_branch_from:(Some head)
+          with Probe_failed reason -> Error reason)
+      | _ -> Error ("materialization intent probe failed: " ^ err))
 
 let make_io ~process_mgr ~clock ~path =
   {

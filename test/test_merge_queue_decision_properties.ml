@@ -53,6 +53,12 @@ let gen_previous_entry = QCheck2.Gen.option gen_merge_queue_entry
 
 let gen_poll_result =
   let open QCheck2.Gen in
+  let* base_branch = option (map Branch.of_string gen_string) in
+  let* base_oid =
+    match base_branch with
+    | None -> return None
+    | Some _ -> map (fun oid -> Some oid) gen_string
+  in
   let* queue = gen_queue in
   let* merged = bool in
   let* closed = bool in
@@ -74,8 +80,8 @@ let gen_poll_result =
         is_draft;
         merge_state;
         merge_ready;
-        base_branch = None;
-        base_oid = None;
+        base_branch;
+        base_oid;
         head_oid = None;
         review_decision = None;
         unresolved_comment_count = 0;
@@ -218,6 +224,9 @@ let prop_apply_shape =
         && (not result.poll_result.checks_passing)
         && List.exists result.poll_result.ci_checks
              ~f:Ci_check.is_merge_queue_failure
+        && Option.equal Branch.equal result.poll_result.base_branch
+             poll.base_branch
+        && Option.equal String.equal result.poll_result.base_oid poll.base_oid
       else
         (not result.merge_queue_ejected) && Poller.equal result.poll_result poll)
 

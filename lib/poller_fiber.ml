@@ -623,7 +623,20 @@ module Make (Forge : Forge.S) (W : Worktree.S) (Env : Poller_env.S) = struct
       (* Phase 2: Single atomic update — apply all poll results + reconcile.
        This prevents the runner from seeing an intermediate state where
        poll results are applied but the reconciler hasn't run yet. *)
-      let poll_events, per_patch_sides, reconcile_logs =
+      let terminal_patch_ids =
+        List.filter_map observations ~f:(fun (patch_id, obs, _, _, _, _) ->
+            if obs.Patch_controller.poll_result.merged then Some patch_id
+            else None)
+        |> List.dedup_and_sort ~compare:Patch_id.compare
+      in
+      let rec with_terminal_ownership patch_ids f =
+        match patch_ids with
+        | [] -> f ()
+        | patch_id :: rest ->
+            Runtime.with_patch_ownership runtime ~patch_id (fun _ ->
+                with_terminal_ownership rest f)
+      in
+      let apply_poll_results () =
         Runtime.update_orchestrator_returning runtime (fun orch ->
             (* Apply all poll results *)
             let orch, poll_events, sides =
@@ -778,6 +791,9 @@ module Make (Forge : Forge.S) (W : Worktree.S) (Env : Poller_env.S) = struct
                   | Reconciler.Start_operation _ -> orch)
             in
             (orch, (List.rev poll_events, List.rev sides, List.rev !rec_logs)))
+      in
+      let poll_events, per_patch_sides, reconcile_logs =
+        with_terminal_ownership terminal_patch_ids apply_poll_results
       in
       (* Phase 3: Side effects — outside the lock *)
       List.iter poll_events

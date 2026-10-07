@@ -985,7 +985,7 @@ let detail_info_rows (pv : patch_view) ~width ~now =
   in
   let reconciliation =
     List.map pv.reconciliation_details ~f:(fun (label, value) ->
-        fit_value ("  " ^ label ^ ": ") value)
+        fit_value ("  " ^ label ^ ": ") (sanitize_text value))
   in
   let rows = lines @ op_line @ reconciliation @ intervention @ ci_section in
   (* A refusal can be several pages long. Keep the title and status pinned,

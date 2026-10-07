@@ -77,6 +77,12 @@ module Make (W : Worktree.S) (Env : ENV) : S = struct
           | Ok () -> ()
           | Error message -> raise (Provenance_unavailable message))
 
+  let checkpoint_provenance_if_available ~patch_id ~path ~branch =
+    try checkpoint_provenance ~patch_id ~path ~branch
+    with Provenance_unavailable reason ->
+      Runtime_logging.log_event Env.runtime ~patch_id
+        ("Materialization checkpoint skipped — " ^ reason)
+
   let ensure_worktree_impl ~patch_id ~(agent : Patch_agent.t) ?branch ?base_ref
       () =
     let runtime = Env.runtime in
@@ -96,7 +102,7 @@ module Make (W : Worktree.S) (Env : ENV) : S = struct
     let path = resolve_worktree_path ~patch_id ~agent ?branch () in
     let br = Option.value branch ~default:agent.Patch_agent.branch in
     if is_ready ~path ~branch:br then (
-      checkpoint_provenance ~patch_id ~path ~branch:br;
+      checkpoint_provenance_if_available ~patch_id ~path ~branch:br;
       Runtime.update_orchestrator runtime (fun orch ->
           Orchestrator.set_worktree_path orch patch_id path);
       Path path)
@@ -127,7 +133,7 @@ module Make (W : Worktree.S) (Env : ENV) : S = struct
       in
       match live_existing with
       | Some existing ->
-          checkpoint_provenance ~patch_id ~path:existing ~branch:br;
+          checkpoint_provenance_if_available ~patch_id ~path:existing ~branch:br;
           log_event runtime ~patch_id
             (Printf.sprintf "Found existing worktree for branch at %s" existing);
           Runtime.update_orchestrator runtime (fun orch ->
@@ -300,7 +306,7 @@ module Make (W : Worktree.S) (Env : ENV) : S = struct
                a refusal after provisioning has already succeeded. *)
             match created with
             | true ->
-                checkpoint_provenance ~patch_id ~path ~branch:br;
+                checkpoint_provenance_if_available ~patch_id ~path ~branch:br;
                 Runtime.update_orchestrator runtime (fun orch ->
                     Orchestrator.set_worktree_path orch patch_id path);
                 (match
@@ -351,8 +357,8 @@ module Make (W : Worktree.S) (Env : ENV) : S = struct
                  path above. *)
                     match W.find_for_branch br with
                     | Some existing when is_ready ~path:existing ~branch:br ->
-                        checkpoint_provenance ~patch_id ~path:existing
-                          ~branch:br;
+                        checkpoint_provenance_if_available ~patch_id
+                          ~path:existing ~branch:br;
                         log_event runtime ~patch_id
                           (Printf.sprintf
                              "Adopting concurrently-created worktree at %s"

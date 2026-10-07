@@ -87,14 +87,10 @@ let apply_poll_result ?(merge_queue_ejection_confirmed = false)
     (Orchestrator.agent t patch_id).Patch_agent.native_stack
   in
   let deferred_head =
-    (not
-       (Option.is_some confirmed_remote_head
-       && Option.equal String.equal confirmed_remote_head
-            poll_result.Poller.head_oid))
-    && Execution_mode.observation_pending
-         (Orchestrator.execution_mode t)
-         (Orchestrator.agent t patch_id)
-         poll_result.Poller.head_oid
+    Execution_mode.observation_pending
+      (Orchestrator.execution_mode t)
+      (Orchestrator.agent t patch_id)
+      poll_result.Poller.head_oid
   in
   let poll_result =
     let satisfied =
@@ -876,13 +872,13 @@ let automerge_transient_hold (agent : Patch_agent.t) ~main_branch =
 
 let apply_branch_observation ?confirmed_remote_head t patch_id ~head_sha ~checks
     =
+  let _ = confirmed_remote_head in
   let a = Orchestrator.agent t patch_id in
   if (not (Orchestrator.is_feature_descendant t patch_id)) || a.merged then t
   else if
-    (not (Option.equal String.equal confirmed_remote_head (Some head_sha)))
-    && Execution_mode.observation_pending
-         (Orchestrator.execution_mode t)
-         a (Some head_sha)
+    Execution_mode.observation_pending
+      (Orchestrator.execution_mode t)
+      a (Some head_sha)
   then Orchestrator.set_checks_passing t patch_id false
   else
     let t =

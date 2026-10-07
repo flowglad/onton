@@ -195,6 +195,24 @@ let tests =
                ~f:(fun op -> op.failures = 1 && Option.is_none op.repair)
         with _ -> false);
     QCheck2.Test.make
+      ~name:"terminal patch completes held reconciliation delivery" ~count:50
+      QCheck2.Gen.bool (fun merged ->
+        try
+          let t = request (create ()) in
+          let message = one_pending t in
+          let t, accepted = Orchestrator.accept_message t message.message_id in
+          let t =
+            if merged then Orchestrator.mark_merged t pid
+            else
+              Orchestrator.apply_session_result t pid
+                (Orchestrator.Session_wontdo "superseded")
+          in
+          let t = Orchestrator.complete t pid in
+          Option.is_some accepted
+          && List.for_all (pending t) ~f:(fun msg ->
+              not (Message_id.equal msg.message_id message.message_id))
+        with _ -> false);
+    QCheck2.Test.make
       ~name:"session completion cannot erase pending publication"
       QCheck2.Gen.(int_range 1 30)
       (fun count ->
@@ -409,12 +427,10 @@ let () =
           (observation source)
       in
       let agent = Orchestrator.agent t pid in
-      let confirmed =
-        Option.equal String.equal confirmed_remote_head (Some source)
-      in
-      assert (Bool.equal agent.has_conflict confirmed);
+      assert (not agent.has_conflict);
       assert (
-        Bool.equal (Option.is_none agent.expected_remote_head_oid) confirmed))
+        Option.equal String.equal agent.expected_remote_head_oid
+          (Some candidate)))
 
 let () =
   List.iter [ false; true ] ~f:(fun merged ->

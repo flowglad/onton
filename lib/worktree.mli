@@ -561,6 +561,8 @@ module type S = sig
     operation:Branch_reconcile.operation ->
     Branch_reconcile.command ->
     Branch_reconcile.result
+  (** Mutates Git state. The caller must hold the patch/root write lock for this
+      checkout throughout the call. *)
 
   val rebase_in_progress : path:string -> bool
 end

@@ -74,6 +74,8 @@ type t = {
           Distinct from Onton's patch dependency graph. *)
   head_branch : Branch.t option;
   base_oid : string option;
+      (** Base branch OID observed at poll time: GitHub [baseRefOid], or the
+          locally resolved base ref on SourceHut. [None] when unavailable. *)
   head_oid : string option;
   merge_commit_sha : string option;
       (** For a merged PR, the squash/merge commit SHA on the base branch

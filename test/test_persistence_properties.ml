@@ -179,7 +179,19 @@ let () =
     QCheck2.Test.make
       ~name:
         "legacy branch migration observes work and preserves unrelated state"
-      ~count:200 gen_patch_agent_fully_populated (fun agent ->
+      ~count:200
+      QCheck2.Gen.(
+        map
+          (fun agent ->
+            agent |> Onton_core.Patch_agent.increment_conflict_noop_count
+            |> Onton_core.Patch_agent.increment_no_commits_push_count
+            |> Onton_core.Patch_agent.increment_push_failure_count
+            |> Onton_core.Patch_agent.increment_rebase_failure_count
+            |> fun agent ->
+            Onton_core.Patch_agent.set_expected_remote_head_oid agent
+              (Some "legacy-head"))
+          gen_patch_agent_fully_populated)
+      (fun agent ->
         try
           let original = Onton.Persistence.patch_agent_to_yojson agent in
           let legacy =
@@ -248,6 +260,27 @@ let () =
               | Error _ -> false)
           | Error _, _ | _, Error _ -> false
         with _ -> false)
+  in
+  let v2_requires_branch_checkpoint =
+    QCheck2.Test.make ~name:"v2 rejects absent or null branch checkpoint"
+      ~count:100 gen_patch_agent_fully_populated (fun agent ->
+        let gameplan = gameplan_for_agent agent in
+        let json = Onton.Persistence.patch_agent_to_yojson agent in
+        let without, null_checkpoint =
+          match json with
+          | `Assoc fields ->
+              let fields =
+                List.Assoc.remove fields ~equal:String.equal "branch_reconcile"
+              in
+              (`Assoc fields, `Assoc (("branch_reconcile", `Null) :: fields))
+          | _ -> (json, json)
+        in
+        let decode json =
+          Onton.Persistence.patch_agent_of_yojson ~snapshot_version:2
+            ~main_branch:(Branch.of_string "main") ~gameplan json
+        in
+        Result.is_error (decode without)
+        && Result.is_error (decode null_checkpoint))
   in
   let legacy_architecture_snapshot =
     QCheck2.Test.make
@@ -968,6 +1001,7 @@ let () =
         snapshot_roundtrip;
         metadata_snapshot_roundtrip;
         legacy_branch_migration;
+        v2_requires_branch_checkpoint;
         legacy_architecture_snapshot;
         legacy_feature_fields_default_false;
         applied_control_ids_decode;

@@ -57,7 +57,7 @@ let publication_intent (completion : completion) ~base ~policy =
       base;
       policy;
       purpose =
-        (match Option.bind completion.head ~f:Commit.make with
+        (match Option.bind completion.head ~f:Branch_reconcile.Commit.make with
         | Some revision -> Publish_revision revision
         | None -> Publish_session completion.session_uuid);
     }

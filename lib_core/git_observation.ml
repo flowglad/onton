@@ -143,7 +143,9 @@ let completed_integration ~branch ~source ~target ~head ~reflog =
               && (String.equal message
                     ("rebase (finish): refs/heads/" ^ branch ^ " onto " ^ target)
                  || String.is_prefix message
-                      ~prefix:("merge " ^ target ^ ": Merge made by "))
+                      ~prefix:("merge " ^ target ^ ": Merge made by ")
+                 || String.equal message ("merge " ^ target ^ ": Fast-forward")
+                 )
           | [] | [ _ ] -> false))
 
 type continuation = Blocked | Continue | Skip_empty_replay | Complete_merge

@@ -225,28 +225,28 @@ let run_ensure ?cancel_stage ?(fail_checkpoint = false) env ~managed_dir
     let project_name = project_name
     let user_config = { User_config.on_worktree_create = Some "true" }
   end in
-  (check_hook :=
-     fun () ->
-       let checkpoint = Project_store.snapshot_path project_name in
-       let persisted =
-         match Persistence.load ~path:checkpoint with
-         | Ok snapshot -> snapshot
-         | Error message -> failwith message
-       in
-       let state =
-         (Orchestrator.agent persisted.Runtime.orchestrator pid)
-           .Patch_agent.branch_reconcile
-       in
-       match Branch_reconcile.materialization state with
-       | Some receipt ->
-           let actual =
-             git_capture ~dir:managed_dir
-               [ "rev-parse"; "refs/heads/" ^ branch ]
-           in
-           assert_string "materialization persisted before hook" actual
-             (Branch_reconcile.Commit.to_string
-                (Branch_reconcile.materialization_head receipt))
-       | None -> failwith "hook ran without materialization provenance");
+  let check_materialization () =
+    let checkpoint = Project_store.snapshot_path project_name in
+    let persisted =
+      match Persistence.load ~path:checkpoint with
+      | Ok snapshot -> snapshot
+      | Error message -> failwith message
+    in
+    let state =
+      (Orchestrator.agent persisted.Runtime.orchestrator pid)
+        .Patch_agent.branch_reconcile
+    in
+    match Branch_reconcile.materialization state with
+    | Some receipt ->
+        let actual =
+          git_capture ~dir:managed_dir [ "rev-parse"; "refs/heads/" ^ branch ]
+        in
+        assert_string "materialization persisted before hook" actual
+          (Branch_reconcile.Commit.to_string
+             (Branch_reconcile.materialization_head receipt))
+    | None -> failwith "materialization provenance missing"
+  in
+  check_hook := if fail_checkpoint then fun () -> () else check_materialization;
   let module WS = Worktree_setup.Make (W) (Env) in
   let agent =
     Runtime.read Env.runtime (fun snap ->
@@ -262,10 +262,10 @@ let run_ensure ?cancel_stage ?(fail_checkpoint = false) env ~managed_dir
     Project_store.ensure_dir (Stdlib.Filename.dirname checkpoint);
     Unix.mkdir checkpoint 0o700;
     (match ensure () with
-    | Worktree_setup.Refused -> ()
-    | Worktree_setup.Path _ | Worktree_setup.Missing ->
-        failwith "failed checkpoint allowed checkout use");
-    if !hook_calls <> 0 then failwith "hook ran after failed checkpoint";
+    | Worktree_setup.Path _ -> ()
+    | Worktree_setup.Refused | Worktree_setup.Missing ->
+        failwith "failed checkpoint refused usable checkout");
+    if !hook_calls <> 1 then failwith "hook did not run after checkout creation";
     let state =
       Runtime.read Env.runtime (fun snap ->
           (Orchestrator.agent snap.Runtime.orchestrator pid)
@@ -274,6 +274,7 @@ let run_ensure ?cancel_stage ?(fail_checkpoint = false) env ~managed_dir
     if Option.is_some (Branch_reconcile.materialization state) then
       failwith "failed checkpoint was published in memory";
     Unix.rmdir checkpoint;
+    check_hook := check_materialization;
     created := false);
   match ensure () with
   | Worktree_setup.Path p ->
@@ -435,6 +436,50 @@ let scenario_checkpoint_failure env =
        ~branch:"checkpoint-failure/patch-1" ~base_ref:"main");
   Stdlib.print_endline "  checkpoint_failure_preserves_checkout: OK"
 
+let scenario_receipt_recovery env =
+  with_temp_dir @@ fun root ->
+  let origin_dir = Stdlib.Filename.concat root "origin" in
+  let managed_dir = Stdlib.Filename.concat root "managed" in
+  setup_origin_with_main ~origin_dir;
+  clone_into ~origin_dir ~managed_dir;
+  let project_name = "receipt-recovery" in
+  let branch = "receipt-recovery/patch-1" in
+  let wt =
+    run_ensure env ~managed_dir ~project_name
+      ~pid:(Types.Patch_id.of_string "1")
+      ~branch ~base_ref:"main"
+  in
+  let prefix = Branch_reconcile.recovery_prefix ~project:project_name ~branch in
+  Git_env.run_git ~cwd:managed_dir
+    [ "update-ref"; "-d"; prefix ^ "/materialized-base" ];
+  let io =
+    Branch_reconcile_executor.make_io
+      ~process_mgr:(Eio.Stdenv.process_mgr env)
+      ~clock:(Eio.Stdenv.clock env) ~path:wt
+  in
+  let head =
+    match
+      Branch_reconcile.Commit.make (git_capture ~dir:wt [ "rev-parse"; "HEAD" ])
+    with
+    | Some head -> head
+    | None -> failwith "invalid checkout HEAD"
+  in
+  (match
+     Branch_reconcile_executor.pin_materialization_intent ~io ~prefix head
+   with
+  | Ok () -> ()
+  | Error message -> failwith message);
+  (match
+     Branch_reconcile_executor.recover_materialization ~io ~prefix ~branch
+   with
+  | Ok (Some (Branch_reconcile.New_branch head)) ->
+      assert_string "recovered new-branch boundary"
+        (git_capture ~dir:wt [ "rev-parse"; "HEAD" ])
+        (Branch_reconcile.Commit.to_string head)
+  | Ok (Some (Branch_reconcile.Adopted_branch _)) | Ok None | Error _ ->
+      failwith "creation intent did not recover its receipt");
+  Stdlib.print_endline "  receipt_recovery: OK"
+
 let scenario_nested_cancellation env =
   List.iter [ `Ready; `Create; `Recovery ] ~f:(fun cancel_stage ->
       with_temp_dir (fun root ->
@@ -455,6 +500,7 @@ let () =
   Stdlib.print_endline "worktree_setup base-fetch integration:";
   scenario_nested_cancellation env;
   scenario_checkpoint_failure env;
+  scenario_receipt_recovery env;
   scenario_stale_local_main env;
   scenario_dep_base_local_canonical env;
   scenario_fetch_failure_falls_back env;

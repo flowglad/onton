@@ -59,8 +59,13 @@ let rewrite_authority ~git ~branch ~local_sha ~remote_sha =
              ~ancestor_oracle:ancestor
              ~content_oracle:(fun ~remote_sha ~target ~result_sha ->
                let bases =
-                 checked [ "merge-base"; "--all"; remote_sha; target ]
-                 |> String.split_lines
+                 let code, stdout, stderr =
+                   git [ "merge-base"; "--all"; remote_sha; target ]
+                 in
+                 match code with
+                 | 0 -> String.split_lines stdout
+                 | 1 -> []
+                 | _ -> raise (Probe_failed stderr)
                in
                match bases with
                | [ common ] when not (String.is_empty common) ->

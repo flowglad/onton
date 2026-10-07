@@ -18,7 +18,7 @@ open Types
     v} *)
 
 type spawn = Orchestrator.action
-(** An action to spawn: Start, Respond, or Rebase. *)
+(** An action to spawn: Start, Respond, Rebase, or Reconcile_branch. *)
 
 val plan_spawns : Orchestrator.t -> patches:Patch.t list -> spawn list
 (** Compute all actions whose preconditions hold. Pure function — no side
@@ -30,6 +30,7 @@ val plan_spawns : Orchestrator.t -> patches:Patch.t list -> spawn list
     - Start only for patches without PRs where deps are satisfied.
     - Respond only for patches with PRs, picking highest-priority feedback.
     - Rebase only when Rebase is the highest-priority queued operation.
+    - Reconcile_branch only when a branch operation is pending and runnable.
     - At most one action per patch. *)
 
 val classify :

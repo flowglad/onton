@@ -19,10 +19,14 @@ let write_file_atomically ~path ~content =
         Stdlib.flush oc;
         Unix.fsync (Unix.descr_of_out_channel oc));
     Stdlib.Sys.rename tmp_path path;
-    let fd = Unix.openfile dir [ Unix.O_RDONLY ] 0 in
-    Stdlib.Fun.protect
-      ~finally:(fun () -> Unix.close fd)
-      (fun () -> Unix.fsync fd);
+    (* The rename already changed the visible snapshot. A directory-sync
+       failure cannot be reported as a rejected state transition. *)
+    (try
+       let fd = Unix.openfile dir [ Unix.O_RDONLY ] 0 in
+       Stdlib.Fun.protect
+         ~finally:(fun () -> Unix.close fd)
+         (fun () -> Unix.fsync fd)
+     with Unix.Unix_error _ -> ());
     Ok ()
   with exn ->
     (try Stdlib.Sys.remove tmp_path with _ -> ());
@@ -285,7 +289,7 @@ let patch_agent_to_yojson (a : Patch_agent.t) =
         `List (List.map a.delivered_ci_run_ids ~f:(fun i -> `Int i)) );
     ]
 
-let patch_agent_of_yojson ~main_branch ~gameplan json =
+let patch_agent_of_yojson ?(snapshot_version = 1) ~main_branch ~gameplan json =
   let ( let* ) r f = Result.bind r ~f in
   let* queue =
     result_all
@@ -314,7 +318,8 @@ let patch_agent_of_yojson ~main_branch ~gameplan json =
   in
   let* branch_reconcile =
     match Json.field "branch_reconcile" json with
-    | None -> Ok Branch_reconcile.empty
+    | None when snapshot_version = 1 -> Ok Branch_reconcile.empty
+    | None -> Error "patch_agent: missing branch_reconcile in v2 snapshot"
     | Some checkpoint -> Branch_reconcile.decode checkpoint
   in
   let* session_completion =
@@ -589,8 +594,10 @@ let patch_agent_of_yojson ~main_branch ~gameplan json =
           | _ -> [])
         ()
     |> fun agent ->
-      if Option.is_none (Json.field "branch_reconcile" json) then
-        Patch_agent.migrate_legacy_branch_state ~main_branch agent
+      if
+        snapshot_version = 1
+        && Option.is_none (Json.field "branch_reconcile" json)
+      then Patch_agent.migrate_legacy_branch_state ~main_branch agent
       else agent )
 
 (* ---------- Activity_log ---------- *)
@@ -737,7 +744,7 @@ let message_status_of_string = function
   | "Obsolete" -> Ok Orchestrator.Obsolete
   | other -> Error (Printf.sprintf "unknown message status: %s" other)
 
-let orchestrator_of_yojson ~gameplan json =
+let orchestrator_of_yojson ?(snapshot_version = 1) ~gameplan json =
   try
     let ( let* ) r f = Result.bind r ~f in
     let graph = Graph.of_gameplan gameplan in
@@ -746,8 +753,9 @@ let orchestrator_of_yojson ~gameplan json =
       (result_all
          (member "agents" json |> to_assoc
          |> List.map ~f:(fun (key, value) ->
-             Result.bind (patch_agent_of_yojson ~main_branch ~gameplan value)
-               ~f:(fun agent ->
+             Result.bind
+               (patch_agent_of_yojson ~snapshot_version ~main_branch ~gameplan
+                  value) ~f:(fun agent ->
                  let payload_id = Patch_id.to_string agent.patch_id in
                  if String.equal key payload_id then
                    Ok (Patch_id.of_string key, agent)
@@ -929,7 +937,8 @@ let snapshot_of_yojson json =
              try_of_yojson Gameplan.t_of_yojson (member "gameplan" json)))
         ~f:(fun gameplan ->
           Result.bind
-            (orchestrator_of_yojson ~gameplan (member "orchestrator" json))
+            (orchestrator_of_yojson ~snapshot_version:version ~gameplan
+               (member "orchestrator" json))
             ~f:(fun orchestrator ->
               Result.map
                 (activity_log_of_yojson (member "activity_log" json))

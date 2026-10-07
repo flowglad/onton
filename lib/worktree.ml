@@ -1743,6 +1743,23 @@ let make_with_protection ~protected_branch ~fs ~config ~clock ~process_mgr
                     (action, None)
               in
               let _, created =
+                let prefix =
+                  Branch_reconcile.recovery_prefix ~project:project_name
+                    ~branch:(Types.Branch.to_string branch)
+                in
+                (match expected_head with
+                | None -> ()
+                | Some head -> (
+                    let repo_io =
+                      Branch_reconcile_executor.make_io ~process_mgr ~clock
+                        ~path:repo_root
+                    in
+                    match
+                      Branch_reconcile_executor.pin_materialization_intent
+                        ~io:repo_io ~prefix head
+                    with
+                    | Ok () -> ()
+                    | Error message -> failwith message));
                 B.materialize ~path ~branch ~expected_local action
               in
               let io =
@@ -1837,7 +1854,8 @@ let make_with_protection ~protected_branch ~fs ~config ~clock ~process_mgr
         Branch_reconcile.recovery_prefix ~project:project_name
           ~branch:(Types.Branch.to_string branch)
       in
-      Branch_reconcile_executor.materialization ~io ~prefix
+      Branch_reconcile_executor.recover_materialization ~io ~prefix
+        ~branch:(Types.Branch.to_string branch)
 
     let reconcile ~path ~project_name ~branch ~operation command =
       let io = Branch_reconcile_executor.make_io ~process_mgr ~clock ~path in

@@ -70,13 +70,6 @@ let plan_has_rebase_target (plan : t) target =
     | Capture_anchor _ | Record_anchor_on_success _ ->
         false)
 
-let plan_has_materialization_for_slot (plan : t) slot =
-  List.exists plan ~f:(function
-    | Capture_materialization { slot = s } -> Int.equal s slot
-    | Ensure_worktree | Fetch_origin | Capture_anchor _ | Rebase_onto _
-    | Record_anchor_on_success _ ->
-        false)
-
 let plan_has_record_for (plan : t) base =
   List.exists plan ~f:(function
     | Record_anchor_on_success { base = b; _ } -> Branch.equal b base
@@ -125,9 +118,13 @@ let () =
       Test.make
         ~name:"for_start: initial anchor uses materialization provenance"
         gen_branch (fun base ->
-          plan_has_materialization_for_slot
+          equal
             (for_start ~base ~materialized:false)
-            0);
+            [
+              Ensure_worktree;
+              Capture_materialization { slot = 0 };
+              Record_anchor_on_success { slot = 0; base };
+            ]);
       Test.make ~name:"for_start: includes Record_anchor_on_success for base"
         gen_branch (fun base ->
           plan_has_record_for (for_start ~base ~materialized:false) base);

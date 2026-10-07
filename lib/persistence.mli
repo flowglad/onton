@@ -40,6 +40,7 @@ val patch_agent_to_yojson : Patch_agent.t -> Yojson.Safe.t
 (** Convert a patch agent to JSON. Exposed for testing. *)
 
 val patch_agent_of_yojson :
+  ?snapshot_version:int ->
   main_branch:Types.Branch.t ->
   gameplan:Types.Gameplan.t ->
   Yojson.Safe.t ->
