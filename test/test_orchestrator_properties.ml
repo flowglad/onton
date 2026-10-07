@@ -99,7 +99,10 @@ let () =
           List.for_all actions ~f:(function
             | Orchestrator.Start (pid, _) ->
                 not (Patch_agent.has_pr (Orchestrator.agent orch pid))
-            | Orchestrator.Respond (_, _) | Orchestrator.Rebase (_, _) -> true)
+            | Orchestrator.Respond (_, _)
+            | Orchestrator.Rebase (_, _)
+            | Orchestrator.Reconcile_branch _ ->
+                true)
         with _ -> false)
   in
 
@@ -130,7 +133,10 @@ let () =
                 Patch_agent.has_pr a && (not a.Patch_agent.merged)
                 && (not a.Patch_agent.busy)
                 && not (Patch_agent.needs_intervention a)
-            | Orchestrator.Start (_, _) | Orchestrator.Rebase (_, _) -> true)
+            | Orchestrator.Start (_, _)
+            | Orchestrator.Rebase (_, _)
+            | Orchestrator.Reconcile_branch _ ->
+                true)
         with _ -> false)
   in
 
@@ -162,7 +168,10 @@ let () =
                 match highest with
                 | Some expected -> Operation_kind.equal k expected
                 | None -> false)
-            | Orchestrator.Start (_, _) | Orchestrator.Rebase (_, _) -> true)
+            | Orchestrator.Start (_, _)
+            | Orchestrator.Rebase (_, _)
+            | Orchestrator.Reconcile_branch _ ->
+                true)
         with _ -> false)
   in
 
@@ -179,7 +188,10 @@ let () =
           List.for_all actions2 ~f:(function
             | Orchestrator.Start (pid, _) ->
                 not (Patch_agent.has_pr (Orchestrator.agent orch pid))
-            | Orchestrator.Respond (_, _) | Orchestrator.Rebase (_, _) -> true)
+            | Orchestrator.Respond (_, _)
+            | Orchestrator.Rebase (_, _)
+            | Orchestrator.Reconcile_branch _ ->
+                true)
         with _ -> false)
   in
 
@@ -193,6 +205,13 @@ let () =
           let _orch, _effects, actions = tick orch ~patches in
           let action_equal a b =
             match (a, b) with
+            | ( Orchestrator.Reconcile_branch (p1, o1),
+                Orchestrator.Reconcile_branch (p2, o2) ) ->
+                Patch_id.equal p1 p2 && Int.equal o1 o2
+            | ( Orchestrator.Reconcile_branch _,
+                ( Orchestrator.Start _ | Orchestrator.Respond _
+                | Orchestrator.Rebase _ ) ) ->
+                false
             | Orchestrator.Start (p1, b1), Orchestrator.Start (p2, b2) ->
                 Patch_id.equal p1 p2 && Branch.equal b1 b2
             | Orchestrator.Respond (p1, k1), Orchestrator.Respond (p2, k2) ->
@@ -200,11 +219,14 @@ let () =
             | Orchestrator.Rebase (p1, b1), Orchestrator.Rebase (p2, b2) ->
                 Patch_id.equal p1 p2 && Branch.equal b1 b2
             | ( Orchestrator.Start _,
-                (Orchestrator.Respond _ | Orchestrator.Rebase _) )
+                ( Orchestrator.Respond _ | Orchestrator.Rebase _
+                | Orchestrator.Reconcile_branch _ ) )
             | ( Orchestrator.Respond _,
-                (Orchestrator.Start _ | Orchestrator.Rebase _) )
+                ( Orchestrator.Start _ | Orchestrator.Rebase _
+                | Orchestrator.Reconcile_branch _ ) )
             | ( Orchestrator.Rebase _,
-                (Orchestrator.Start _ | Orchestrator.Respond _) ) ->
+                ( Orchestrator.Start _ | Orchestrator.Respond _
+                | Orchestrator.Reconcile_branch _ ) ) ->
                 false
           in
           List.length pending = List.length actions
@@ -224,7 +246,10 @@ let () =
           let started_ids =
             List.filter_map actions ~f:(function
               | Orchestrator.Start (pid, _) -> Some pid
-              | Orchestrator.Respond (_, _) | Orchestrator.Rebase (_, _) -> None)
+              | Orchestrator.Respond (_, _)
+              | Orchestrator.Rebase (_, _)
+              | Orchestrator.Reconcile_branch _ ->
+                  None)
           in
           let graph = Orchestrator.graph orch in
           List.for_all started_ids ~f:(fun pid ->
@@ -248,7 +273,9 @@ let () =
             List.map actions ~f:(function
               | Orchestrator.Start (pid, _) -> pid
               | Orchestrator.Respond (pid, _) -> pid
-              | Orchestrator.Rebase (pid, _) -> pid)
+              | Orchestrator.Rebase (pid, _)
+              | Orchestrator.Reconcile_branch (pid, _) ->
+                  pid)
           in
           let deduped = List.dedup_and_sort pids ~compare:Patch_id.compare in
           List.length pids = List.length deduped
@@ -301,6 +328,7 @@ let () =
                 | Orchestrator.Start (pid, _)
                 | Orchestrator.Respond (pid, _)
                 | Orchestrator.Rebase (pid, _)
+                | Orchestrator.Reconcile_branch (pid, _)
                 -> List.mem merged_ids pid ~equal:Patch_id.equal))
         with _ -> false)
   in
@@ -332,7 +360,9 @@ let () =
               not
                 (List.exists actions ~f:(function
                   | Orchestrator.Respond (p, _) -> Patch_id.equal p pid
-                  | Orchestrator.Start (_, _) | Orchestrator.Rebase (_, _) ->
+                  | Orchestrator.Start (_, _)
+                  | Orchestrator.Rebase (_, _)
+                  | Orchestrator.Reconcile_branch _ ->
                       false))
         with _ -> false)
   in
@@ -367,7 +397,8 @@ let () =
                 | Orchestrator.Rebase (pid, _) ->
                     Patch_id.equal pid first.Patch.id
                     && Operation_kind.equal kind Operation_kind.Rebase
-                | Orchestrator.Start (_, _) -> false)
+                | Orchestrator.Start (_, _) | Orchestrator.Reconcile_branch _ ->
+                    false)
         with _ -> false)
   in
 
@@ -381,7 +412,10 @@ let () =
           let started_ids =
             List.filter_map actions ~f:(function
               | Orchestrator.Start (pid, _) -> Some pid
-              | Orchestrator.Respond (_, _) | Orchestrator.Rebase (_, _) -> None)
+              | Orchestrator.Respond (_, _)
+              | Orchestrator.Rebase (_, _)
+              | Orchestrator.Reconcile_branch _ ->
+                  None)
           in
           (* After tick, every agent that had startable preconditions should
              now have has_pr = true *)
@@ -428,7 +462,9 @@ let () =
                 let a = Orchestrator.agent orch pid in
                 List.mem a.Patch_agent.queue Operation_kind.Rebase
                   ~equal:Operation_kind.equal
-            | Orchestrator.Start _ | Orchestrator.Respond _ -> true)
+            | Orchestrator.Start _ | Orchestrator.Respond _
+            | Orchestrator.Reconcile_branch _ ->
+                true)
         with _ -> false)
   in
 
@@ -455,7 +491,9 @@ let () =
             (List.exists actions ~f:(function
               | Orchestrator.Respond (_, k) ->
                   Operation_kind.equal k Operation_kind.Rebase
-              | Orchestrator.Start _ | Orchestrator.Rebase _ -> false))
+              | Orchestrator.Start _ | Orchestrator.Rebase _
+              | Orchestrator.Reconcile_branch _ ->
+                  false))
         with _ -> false)
   in
 
@@ -1481,6 +1519,8 @@ let () =
                     is_draft = false;
                     merge_state = Pr_state.Mergeable;
                     merge_ready = false;
+                    base_branch = None;
+                    base_oid = None;
                     head_oid = None;
                     review_decision = None;
                     unresolved_comment_count = 0;
@@ -1527,6 +1567,8 @@ let () =
                     is_draft = false;
                     merge_state = Pr_state.Conflicting;
                     merge_ready = false;
+                    base_branch = None;
+                    base_oid = None;
                     head_oid = None;
                     review_decision = None;
                     unresolved_comment_count = 0;
@@ -1574,6 +1616,8 @@ let () =
                     is_draft = false;
                     merge_state = Pr_state.Mergeable;
                     merge_ready = false;
+                    base_branch = None;
+                    base_oid = None;
                     head_oid = None;
                     review_decision = None;
                     unresolved_comment_count = 0;
@@ -1625,6 +1669,8 @@ let () =
                     is_draft = false;
                     merge_state;
                     merge_ready = false;
+                    base_branch = None;
+                    base_oid = None;
                     head_oid = None;
                     review_decision = None;
                     unresolved_comment_count = 0;
@@ -1678,6 +1724,8 @@ let () =
                     is_draft = false;
                     merge_state = Pr_state.Mergeable;
                     merge_ready = false;
+                    base_branch = None;
+                    base_oid = None;
                     head_oid = None;
                     review_decision = None;
                     unresolved_comment_count = 0;
@@ -1725,6 +1773,8 @@ let () =
                     is_draft = false;
                     merge_state = Pr_state.Mergeable;
                     merge_ready = false;
+                    base_branch = None;
+                    base_oid = None;
                     head_oid = None;
                     review_decision = None;
                     unresolved_comment_count = 0;
@@ -1781,6 +1831,8 @@ let () =
                     is_draft = false;
                     merge_state = Pr_state.Mergeable;
                     merge_ready = false;
+                    base_branch = None;
+                    base_oid = None;
                     head_oid = None;
                     review_decision = None;
                     unresolved_comment_count = 0;
@@ -1840,6 +1892,8 @@ let () =
                     is_draft = false;
                     merge_state = Pr_state.Mergeable;
                     merge_ready = false;
+                    base_branch = None;
+                    base_oid = None;
                     head_oid = None;
                     review_decision = None;
                     unresolved_comment_count = 0;
@@ -1889,6 +1943,8 @@ let () =
                     is_draft = false;
                     merge_state = Pr_state.Mergeable;
                     merge_ready = false;
+                    base_branch = None;
+                    base_oid = None;
                     head_oid = None;
                     review_decision = None;
                     unresolved_comment_count = 0;

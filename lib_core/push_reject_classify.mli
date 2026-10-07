@@ -8,10 +8,11 @@
     rejection status to stdout and server diagnostics to stderr. Distinguishing
     causes matters because:
 
-    - [Workflow_scope_missing] / [Branch_protection] / [Push_pattern_block] /
-      [Hook_failure] are {e permanent} under the current credentials — retrying
-      will just hit the same wall. The orchestrator escalates these directly to
-      [needs_intervention] instead of looping. See [is_permanent].
+    - [Workflow_scope_missing] / [Permission_denied] / [Branch_protection] /
+      [Push_pattern_block] / [Hook_failure] are {e permanent} under the current
+      credentials — retrying will just hit the same wall. The orchestrator
+      escalates these directly to [needs_intervention] instead of looping. See
+      [is_permanent].
     - [Lease_violation] is a real race (the remote ref advanced between fetch
       and push). Retrying after a re-fetch is the correct response.
     - [Merge_queue_locked] is {e transient} by construction: GitHub locks the
@@ -26,6 +27,10 @@ type rejection =
       (** [refusing to allow an OAuth App to create or update workflow] — the
           token lacks the [workflow] OAuth scope and the push includes a change
           to a file under [.github/workflows/]. *)
+  | Permission_denied
+      (** Explicit server denial of write access. Authentication expiry and
+          transport failures remain retryable unless write denial is
+          established. *)
   | Branch_protection
       (** [GH006: Protected branch update failed] /
           [protected branch hook declined] — a branch protection rule rejected
@@ -70,7 +75,7 @@ remote: associated pull request.
           missing remote commits, etc.). Permanent: a retry without human action
           cannot fix it. [reason] is a short human-readable label drawn from
           [Push_plan.short_label]. *)
-[@@deriving show, eq, sexp_of, compare]
+[@@deriving show, eq, sexp_of, compare, yojson]
 
 val classify : stderr:string -> stdout:string -> rejection
 (** Decide why a push was rejected, given the captured stderr and stdout from
@@ -91,9 +96,9 @@ val detail_excerpt : rejection -> string option
 
 val is_permanent : rejection -> bool
 (** [true] for rejections that will not resolve on retry under the current
-    credentials and branch state ([Workflow_scope_missing], [Branch_protection],
-    [Push_pattern_block], [Hook_failure]); [false] for [Lease_violation]
-    (genuine race), [Merge_queue_locked] (self-clears when the queued PR merges
-    or is dequeued) and [Unknown] (conservative — we don't escalate on something
-    we don't understand). The orchestrator uses this to short-circuit the
-    push-failure counter and flip directly to intervention. *)
+    credentials and branch state ([Workflow_scope_missing], [Permission_denied],
+    [Branch_protection], [Push_pattern_block], [Hook_failure]); [false] for
+    [Lease_violation] (genuine race), [Merge_queue_locked] (self-clears when the
+    queued PR merges or is dequeued) and [Unknown] (conservative — we don't
+    escalate on something we don't understand). The orchestrator uses this to
+    short-circuit the push-failure counter and flip directly to intervention. *)

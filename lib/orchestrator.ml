@@ -19,6 +19,7 @@ type action =
   | Start of Patch_id.t * Branch.t
   | Respond of Patch_id.t * Operation_kind.t
   | Rebase of Patch_id.t * Branch.t
+  | Reconcile_branch of Patch_id.t * int
 [@@deriving sexp_of, show, eq]
 
 type patch_agent_message = {
@@ -30,6 +31,44 @@ type patch_agent_message = {
   status : message_status;
 }
 [@@deriving sexp_of, show, eq]
+
+let action_identity = function
+  | Start (patch_id, base) ->
+      Printf.sprintf "start:%s:%s"
+        (Patch_id.to_string patch_id)
+        (Branch.to_string base)
+  | Respond (patch_id, kind) ->
+      Printf.sprintf "respond:%s:%s"
+        (Patch_id.to_string patch_id)
+        (Operation_kind.to_label kind)
+  | Reconcile_branch (patch_id, operation) ->
+      Printf.sprintf "branch:%s:%d" (Patch_id.to_string patch_id) operation
+  | Rebase (patch_id, base) ->
+      Printf.sprintf "rebase:%s:%s"
+        (Patch_id.to_string patch_id)
+        (Branch.to_string base)
+
+let message_of_action (patch_agent : Patch_agent.t) action =
+  let identity =
+    match action with
+    | Reconcile_branch _ -> action_identity action
+    | Start _ | Respond _ | Rebase _ ->
+        Printf.sprintf "%d:%s" patch_agent.generation (action_identity action)
+  in
+  let digest = Stdlib.Digest.to_hex (Stdlib.Digest.string identity) in
+  let msg_id =
+    Message_id.of_string
+      (Printf.sprintf "%s:%s" (Patch_id.to_string patch_agent.patch_id) digest)
+  in
+
+  {
+    message_id = msg_id;
+    patch_id = patch_agent.patch_id;
+    generation = patch_agent.generation;
+    action;
+    payload_hash = digest;
+    status = Pending;
+  }
 
 type t = {
   execution_mode : Execution_mode.t;
@@ -98,7 +137,7 @@ let merge_dependencies_allow_action t = function
       Graph.merge_deps_satisfied t.graph patch_id ~has_merged:(fun pid ->
           Option.value_map (find_agent t pid) ~default:false ~f:(fun a ->
               a.Patch_agent.merged))
-  | Respond _ | Rebase _ -> true
+  | Respond _ | Rebase _ | Reconcile_branch _ -> true
 
 let require_dependency_merge t patch_id ~dep =
   {
@@ -122,6 +161,8 @@ let fire t action =
       then t
       else
         update_agent t pid ~f:(fun a -> Patch_agent.start a ~base_branch:base)
+  | Reconcile_branch (pid, _) ->
+      update_agent t pid ~f:Patch_agent.begin_branch_reconciliation
   | Respond (pid, k) -> update_agent t pid ~f:(fun a -> Patch_agent.respond a k)
   | Rebase (pid, base) ->
       update_agent t pid ~f:(fun a -> Patch_agent.rebase a ~base_branch:base)
@@ -227,7 +268,26 @@ let complete t patch_id =
             t with
             outbox =
               Map.set t.outbox ~key:message_id
-                ~data:{ msg with status = Completed };
+                ~data:
+                  {
+                    msg with
+                    status =
+                      (match msg.action with
+                      | Reconcile_branch (_, operation)
+                        when Branch_reconcile.is_pending
+                               (agent t patch_id).branch_reconcile
+                             && Option.is_none
+                                  (Patch_agent.reconciliation_hold_reason
+                                     (agent t patch_id))
+                             && Option.value_map
+                                  (Branch_reconcile.operation
+                                     (agent t patch_id).branch_reconcile)
+                                  ~default:false ~f:(fun op ->
+                                    op.id = operation) ->
+                          Pending
+                      | Start _ | Respond _ | Rebase _ | Reconcile_branch _ ->
+                          Completed);
+                  };
           })
 
 let enqueue t patch_id kind =
@@ -346,13 +406,31 @@ let remove_agent t patch_id =
           not (Patch_id.equal msg.patch_id patch_id));
   }
 
+let reconciliation_message_current t (msg : patch_agent_message) =
+  match msg.action with
+  | Reconcile_branch (pid, operation) ->
+      Option.value_map (find_agent t pid) ~default:false ~f:(fun agent ->
+          Branch_reconcile.is_pending agent.branch_reconcile
+          && Option.value_map
+               (Branch_reconcile.operation agent.branch_reconcile)
+               ~default:false ~f:(fun op -> op.id = operation))
+  | Start _ | Respond _ | Rebase _ -> false
+
+let reconciliation_message_held t (msg : patch_agent_message) =
+  match msg.action with
+  | Reconcile_branch (pid, _) ->
+      Option.value_map (find_agent t pid) ~default:true ~f:(fun agent ->
+          Option.is_some (Patch_agent.reconciliation_hold_reason agent))
+  | Start _ | Respond _ | Rebase _ -> false
+
 let reconcile_message t msg =
   let t =
     Map.fold t.outbox ~init:t ~f:(fun ~key ~data acc ->
         if
           Patch_id.equal data.patch_id msg.patch_id
           && equal_message_status data.status Pending
-          && not (Message_id.equal key msg.message_id)
+          && (not (Message_id.equal key msg.message_id))
+          && not (reconciliation_message_current acc data)
         then
           {
             acc with
@@ -362,6 +440,8 @@ let reconcile_message t msg =
         else acc)
   in
   match Map.find t.outbox msg.message_id with
+  | Some { status = Completed; _ } when reconciliation_message_current t msg ->
+      { t with outbox = Map.set t.outbox ~key:msg.message_id ~data:msg }
   | Some { status = Pending | Acked | Completed; _ } -> t
   | Some { status = Obsolete; _ } | None ->
       { t with outbox = Map.set t.outbox ~key:msg.message_id ~data:msg }
@@ -382,7 +462,8 @@ let mark_patch_pending_messages_obsolete_except t patch_id ~keep =
       if
         Patch_id.equal data.patch_id patch_id
         && equal_message_status data.status Pending
-        && not (Set.mem keep key)
+        && (not (Set.mem keep key))
+        && not (reconciliation_message_current acc data)
       then
         {
           acc with
@@ -440,7 +521,10 @@ let start_eligibility t ~base_contains_merged_siblings base =
                 (Patch_agent.highest_priority a)
                 (Some Operation_kind.Rebase)
             in
-            let busy_rebasing = running_rebase || runnable_rebase in
+            let busy_rebasing =
+              Branch_reconcile.is_unsettled a.branch_reconcile
+              || running_rebase || runnable_rebase
+            in
             (* Freshness is dependency-scoped, not main-scoped: the base is
                fresh iff its local branch was actually rebased onto the
                structurally-correct base for the current merge state
@@ -483,12 +567,15 @@ let start_eligibility t ~base_contains_merged_siblings base =
 
 let runnable_messages t =
   let action_rank = function
+    | Reconcile_branch _ -> -1
     | Start _ -> 0
     | Rebase _ -> 1
     | Respond (_, kind) -> Priority.priority kind
   in
   Map.data t.outbox
   |> List.filter ~f:(fun msg ->
+      (not (reconciliation_message_held t msg))
+      &&
       match msg.status with
       | Pending -> (
           merge_dependencies_allow_action t msg.action
@@ -515,7 +602,10 @@ let runnable_messages t =
               | Patch_agent.Unmaterialized -> eligibility patch_id base
               | Patch_agent.Materialized _ -> true)
           | Rebase (patch_id, base) -> eligibility patch_id base
-          | Respond _ -> true)
+          | Respond _ -> true
+          | Reconcile_branch _ ->
+              reconciliation_message_current t msg
+              && not (agent t msg.patch_id).busy)
       | Acked ->
           let agent = agent t msg.patch_id in
           Option.equal Message_id.equal agent.current_message_id
@@ -531,12 +621,22 @@ let accept_message t message_id =
   | Some msg -> (
       match msg.status with
       | Acked | Completed | Obsolete -> (t, None)
-      | Pending when not (merge_dependencies_allow_action t msg.action) ->
+      | Pending
+        when reconciliation_message_held t msg
+             || not (merge_dependencies_allow_action t msg.action) ->
           (t, None)
       | Pending ->
           let agent = agent t msg.patch_id in
-          if agent.Patch_agent.generation <> msg.generation then
+          let current =
+            match msg.action with
+            | Reconcile_branch _ -> reconciliation_message_current t msg
+            | Start _ | Respond _ | Rebase _ ->
+                agent.Patch_agent.generation = msg.generation
+          in
+          if not current then
             let t = mark_message_obsolete t message_id in
+            (t, None)
+          else if reconciliation_message_current t msg && agent.busy then
             (t, None)
           else
             let t = fire t msg.action in
@@ -560,6 +660,7 @@ let resume_message t message_id =
             Option.equal Message_id.equal agent.current_message_id
               (Some message_id)
             && (not agent.busy)
+            && (not (reconciliation_message_held t msg))
             && merge_dependencies_allow_action t msg.action
           then
             let op =
@@ -569,11 +670,26 @@ let resume_message t message_id =
                   else Some Operation_kind.Human
               | Respond (_, kind) -> Some kind
               | Rebase _ -> Some Operation_kind.Rebase
+              | Reconcile_branch _ -> None
             in
-            ( update_agent t msg.patch_id
-                ~f:(Patch_agent.resume_current_message ~op),
+            ( update_agent t msg.patch_id ~f:(fun a ->
+                  match msg.action with
+                  | Reconcile_branch _ ->
+                      Patch_agent.begin_branch_reconciliation a
+                  | Start _ | Respond _ | Rebase _ ->
+                      Patch_agent.resume_current_message a ~op),
               Some msg.action )
           else (t, None))
+
+let ensure_reconciliation_message t patch_id =
+  match find_agent t patch_id with
+  | Some agent when Branch_reconcile.is_pending agent.branch_reconcile -> (
+      match Branch_reconcile.operation agent.branch_reconcile with
+      | Some op ->
+          reconcile_message t
+            (message_of_action agent (Reconcile_branch (patch_id, op.id)))
+      | None -> t)
+  | Some _ | None -> t
 
 let send_human_message t patch_id message =
   let t = update_agent t patch_id ~f:Patch_agent.reset_intervention_state in
@@ -582,7 +698,8 @@ let send_human_message t patch_id message =
     update_agent t patch_id ~f:(fun a ->
         Patch_agent.add_human_message a message)
   in
-  enqueue t patch_id Operation_kind.Human
+  enqueue t patch_id Operation_kind.Human |> fun t ->
+  ensure_reconciliation_message t patch_id
 
 let set_pr_number t patch_id pr_number =
   update_agent t patch_id ~f:(fun a -> Patch_agent.set_pr_number a pr_number)
@@ -734,7 +851,8 @@ let increment_start_attempts_without_pr t patch_id =
 
 let reset_intervention_state t patch_id =
   let t = update_agent t patch_id ~f:Patch_agent.reset_intervention_state in
-  refresh_base_branch t patch_id
+  refresh_base_branch t patch_id |> fun t ->
+  ensure_reconciliation_message t patch_id
 
 let set_branch_blocked t patch_id =
   update_agent t patch_id ~f:Patch_agent.set_branch_blocked
@@ -803,16 +921,24 @@ let restore ?(promotion_claimed = false) ~graph ~agents ~outbox ~main_branch ()
      round-trip identity; [Runtime.create] restamps the whole orchestrator
      with the resolved config value right after restore, so the running cap
      always comes from config, not from stale persisted state. *)
-  {
-    execution_mode = Execution_mode.mainline;
-    promotion_claimed;
-    promotion_inflight = false;
-    graph;
-    agents;
-    outbox;
-    main_branch;
-    max_ci_failures = Patch_agent.default_max_ci_failures;
-  }
+  let restored =
+    {
+      execution_mode = Execution_mode.mainline;
+      promotion_claimed;
+      promotion_inflight = false;
+      graph;
+      agents;
+      outbox;
+      main_branch;
+      max_ci_failures = Patch_agent.default_max_ci_failures;
+    }
+  in
+  Map.fold agents ~init:restored ~f:(fun ~key:pid ~data:agent orch ->
+      match Branch_reconcile.operation agent.Patch_agent.branch_reconcile with
+      | Some op when Branch_reconcile.is_pending agent.branch_reconcile ->
+          reconcile_message orch
+            (message_of_action agent (Reconcile_branch (pid, op.id)))
+      | Some _ | None -> orch)
 
 let main_branch t = t.main_branch
 let set_main_branch t branch = { t with main_branch = branch }
@@ -981,6 +1107,7 @@ let apply_rebase_push_result t patch_id
   | Some
       (Worktree.Push_rejected
          ( Push_reject_classify.Workflow_scope_missing
+         | Push_reject_classify.Permission_denied
          | Push_reject_classify.Branch_protection
          | Push_reject_classify.Push_pattern_block
          | Push_reject_classify.Lease_violation
@@ -1106,6 +1233,7 @@ let apply_conflict_push_result t patch_id decision
       | Some
           ( Worktree.Push_rejected
               ( Push_reject_classify.Workflow_scope_missing
+              | Push_reject_classify.Permission_denied
               | Push_reject_classify.Branch_protection
               | Push_reject_classify.Push_pattern_block
               | Push_reject_classify.Lease_violation
@@ -1127,7 +1255,7 @@ let apply_conflict_push_result t patch_id decision
   | Cleanup_needed, _ -> (t, Conflict_cleanup_queued)
   | Conflict_failed, _ -> (t, Conflict_give_up)
 
-type session_result =
+type session_result = Session_result.t =
   | Session_ok
   | Session_process_error of { is_fresh : bool; detail : string option }
   | Session_no_resume
@@ -1476,3 +1604,106 @@ let apply_respond_outcome t patch_id kind outcome =
 
 let mark_branch_published t id =
   update_agent t id ~f:Patch_agent.mark_branch_published
+
+let reconcile_branch t patch_id event =
+  match Map.find t.agents patch_id with
+  | None -> (t, [])
+  | Some agent ->
+      let prior =
+        List.hd (Branch_reconcile.integrations agent.branch_reconcile)
+      in
+      let prior_publication =
+        List.hd (Branch_reconcile.publications agent.branch_reconcile)
+      in
+      let agent, commands = Patch_agent.reconcile_branch agent event in
+      let agent =
+        match Branch_reconcile.operation agent.branch_reconcile with
+        | Some op when Branch_reconcile.equal_phase op.phase Settled -> (
+            match op.candidate with
+            | Some candidate ->
+                Patch_agent.set_expected_remote_head_oid agent
+                  (Some (Branch_reconcile.Commit.to_string candidate))
+            | None -> agent)
+        | Some _ | None -> agent
+      in
+      (* Reconciliation owns its operation sequence. Checkpointing a command
+         must not invalidate the independent patch-message generation. *)
+      let t = { t with agents = Map.set t.agents ~key:patch_id ~data:agent } in
+      let t =
+        match Branch_reconcile.operation agent.branch_reconcile with
+        | Some op when Branch_reconcile.is_pending agent.branch_reconcile ->
+            reconcile_message t
+              (message_of_action agent (Reconcile_branch (patch_id, op.id)))
+        | Some _ | None ->
+            {
+              t with
+              outbox =
+                Map.map t.outbox ~f:(fun msg ->
+                    match msg.action with
+                    | Reconcile_branch (pid, _)
+                      when Patch_id.equal pid patch_id
+                           && equal_message_status msg.status Pending ->
+                        { msg with status = Completed }
+                    | Start _ | Respond _ | Rebase _ | Reconcile_branch _ -> msg);
+            }
+      in
+      let t =
+        match
+          List.hd (Branch_reconcile.integrations agent.branch_reconcile)
+        with
+        | Some receipt
+          when (not
+                  (Option.equal Branch_reconcile.equal_integration_receipt prior
+                     (Some receipt)))
+               && Branch_reconcile.equal_policy
+                    receipt.capture.integration_policy Rewrite
+               && not
+                    (Branch_reconcile.Commit.equal
+                       receipt.capture.source_revision
+                       receipt.integrated_revision) ->
+            enqueue_rebase_for_stranded_dependents t patch_id
+        | Some _ | None -> t
+      in
+      let t =
+        match
+          List.hd (Branch_reconcile.publications agent.branch_reconcile)
+        with
+        | Some receipt
+          when is_integration_root t patch_id
+               && not
+                    (Option.equal Branch_reconcile.equal_publication_receipt
+                       prior_publication (Some receipt)) -> (
+            match receipt.published_intent.purpose with
+            | Branch_reconcile.Integrate_revision { contributor; revision } -> (
+                let contributor = Patch_id.of_string contributor in
+                match find_agent t contributor with
+                | Some child when is_feature_descendant t contributor ->
+                    let t = set_automerge_inflight t contributor false in
+                    if
+                      Option.equal String.equal child.head_oid
+                        (Some (Branch_reconcile.Commit.to_string revision))
+                    then
+                      let t = mark_merged t contributor in
+                      let t = clear_automerge_deadline t contributor in
+                      let t = reset_automerge_failure_count t contributor in
+                      let t =
+                        set_merge_commit_sha t contributor
+                          (Some
+                             (Branch_reconcile.Commit.to_string
+                                receipt.published_revision))
+                      in
+                      invalidate_root_readiness t
+                    else invalidate_root_readiness t
+                | Some _ | None -> t)
+            | Branch_reconcile.Reconcile_base
+            | Branch_reconcile.Reconcile_request _
+            | Branch_reconcile.Publish_revision _
+            | Branch_reconcile.Publish_session _ ->
+                t)
+        | Some _ | None -> t
+      in
+      (t, commands)
+
+let record_session_completion t patch_id completion =
+  update_agent t patch_id ~f:(fun agent ->
+      Patch_agent.record_session_completion agent completion)

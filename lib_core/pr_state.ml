@@ -65,6 +65,7 @@ type t = {
   merge_queue_entry : merge_queue_entry option;
   native_stack : bool;
   head_branch : Types.Branch.t option;
+  base_oid : string option;
   head_oid : string option;
   merge_commit_sha : string option;
       (** For a merged PR, the squash/merge commit SHA on the base branch
@@ -397,6 +398,7 @@ let truncated_pending_state : t =
     merge_queue_entry = None;
     native_stack = false;
     head_branch = None;
+    base_oid = None;
     head_oid = Some "deadbeef";
     merge_commit_sha = None;
     base_branch = None;

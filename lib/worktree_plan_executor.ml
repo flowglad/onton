@@ -22,7 +22,7 @@ module Make (W : Worktree.S) (Env : Run_env.S) : S = struct
     in
     (* Slot table for [Capture_anchor] -> [Record_anchor_on_success]
        handoff. Slots are sparse, so a small association list is plenty. *)
-    let slots : (int * string option) list ref = ref [] in
+    let slots : (int * (string * bool) option) list ref = ref [] in
     let set_slot k v =
       slots :=
         (k, v)
@@ -64,9 +64,24 @@ module Make (W : Worktree.S) (Env : Run_env.S) : S = struct
                   (Printf.sprintf "fetch before rebase failed: %s" msg),
                 path,
                 Base.List.rev events ))
+      | Worktree_plan.Capture_materialization { slot } :: rest ->
+          let receipt =
+            Runtime.read Env.runtime (fun snap ->
+                Branch_reconcile.materialization
+                  (Orchestrator.agent snap.Runtime.orchestrator patch_id)
+                    .Patch_agent.branch_reconcile)
+          in
+          let boundary =
+            Base.Option.bind receipt
+              ~f:Branch_reconcile.materialization_boundary
+          in
+          set_slot slot
+            (Base.Option.map boundary ~f:(fun sha ->
+                 (Branch_reconcile.Commit.to_string sha, false)));
+          loop ~path ~last_rebase ~events rest
       | Worktree_plan.Capture_anchor { ref_name; slot } :: rest ->
           let sha = W.read_branch_sha ~path ~ref_name in
-          set_slot slot sha;
+          set_slot slot (Base.Option.map sha ~f:(fun sha -> (sha, true)));
           loop ~path ~last_rebase ~events rest
       | Worktree_plan.Rebase_onto target :: rest -> (
           (* Compute the upstream argument via Rebase_decision.plan, using
@@ -118,8 +133,8 @@ module Make (W : Worktree.S) (Env : Run_env.S) : S = struct
             | Worktree.Ok | Worktree.Noop -> (
                 match get_slot slot with
                 | None -> Worktree_plan.Anchor_capture_failed :: events
-                | Some sha -> (
-                    match Anchor.make ~base ~sha ~observed_at_remote:true with
+                | Some (sha, observed_at_remote) -> (
+                    match Anchor.make ~base ~sha ~observed_at_remote with
                     | Some a -> Worktree_plan.Anchor_recorded a :: events
                     | None -> Worktree_plan.Anchor_capture_failed :: events))
           in

@@ -43,6 +43,7 @@ val reconcile_patch :
 
 val apply_poll_result :
   ?merge_queue_ejection_confirmed:bool ->
+  ?confirmed_remote_head:string ->
   Orchestrator.t ->
   Patch_id.t ->
   poll_observation ->

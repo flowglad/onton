@@ -190,3 +190,16 @@ let with_patch_write t ~patch_id f =
             Orchestrator.is_integration_root s.orchestrator patch_id)
       then with_root_write t f
       else f ())
+
+(* A scoped capability lets nested reconciliation reuse the write ownership
+   already held by a session without reacquiring the non-reentrant mutex. *)
+type patch_write = { runtime : t; patch_id : Patch_id.t; mutable live : bool }
+
+let with_patch_ownership runtime ~patch_id f =
+  with_patch_write runtime ~patch_id (fun () ->
+      let owner = { runtime; patch_id; live = true } in
+      Fun.protect ~finally:(fun () -> owner.live <- false) (fun () -> f owner))
+
+let with_owned_patch owner f =
+  if not owner.live then invalid_arg "expired patch write ownership";
+  f owner.runtime owner.patch_id

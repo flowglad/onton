@@ -172,7 +172,9 @@ let () =
             let starts1 =
               List.count actions1 ~f:(function
                 | Orchestrator.Start _ -> true
-                | Orchestrator.Respond _ | Orchestrator.Rebase _ -> false)
+                | Orchestrator.Respond _ | Orchestrator.Rebase _
+                | Orchestrator.Reconcile_branch _ ->
+                    false)
             in
             starts1 = 0))
   in
@@ -226,7 +228,8 @@ let () =
                   | Orchestrator.Rebase (p, _) ->
                       Patch_id.equal p pid
                       && Operation_kind.equal kind Operation_kind.Rebase
-                  | Orchestrator.Start _ -> false)))
+                  | Orchestrator.Start _ | Orchestrator.Reconcile_branch _ ->
+                      false)))
   in
   QCheck2.Test.check_exn prop_p3;
   Stdlib.print_endline "P3 passed"
@@ -269,6 +272,7 @@ let () =
                       | Orchestrator.Start (p, _)
                       | Orchestrator.Respond (p, _)
                       | Orchestrator.Rebase (p, _)
+                      | Orchestrator.Reconcile_branch (p, _)
                       -> Patch_id.equal p pid))))
   in
   QCheck2.Test.check_exn prop_p4;
@@ -310,7 +314,9 @@ let () =
                     not
                       (List.exists actions ~f:(function
                         | Orchestrator.Respond (p, _) -> Patch_id.equal p pid
-                        | Orchestrator.Start _ | Orchestrator.Rebase _ -> false))
+                        | Orchestrator.Start _ | Orchestrator.Rebase _
+                        | Orchestrator.Reconcile_branch _ ->
+                            false))
                   in
                   let orch = Orchestrator.reset_intervention_state orch pid in
                   let _, _effects, actions2 =
@@ -320,7 +326,9 @@ let () =
                   let unblocked =
                     List.exists actions2 ~f:(function
                       | Orchestrator.Respond (p, _) -> Patch_id.equal p pid
-                      | Orchestrator.Start _ | Orchestrator.Rebase _ -> false)
+                      | Orchestrator.Start _ | Orchestrator.Rebase _
+                      | Orchestrator.Reconcile_branch _ ->
+                          false)
                   in
                   blocked && unblocked))
   in
@@ -402,7 +410,8 @@ let () =
                     | Orchestrator.Rebase (p, _) ->
                         if Patch_id.equal p pid then Some Operation_kind.Rebase
                         else None
-                    | Orchestrator.Start _ -> None)
+                    | Orchestrator.Start _ | Orchestrator.Reconcile_branch _ ->
+                        None)
                 in
                 match (expected_hp, responded_kind) with
                 | Some hp, Some rk -> Operation_kind.equal hp rk
@@ -446,7 +455,9 @@ let () =
                 in
                 List.exists actions ~f:(function
                   | Orchestrator.Rebase (p, _) -> Patch_id.equal p pid
-                  | Orchestrator.Respond _ | Orchestrator.Start _ -> false)))
+                  | Orchestrator.Respond _ | Orchestrator.Start _
+                  | Orchestrator.Reconcile_branch _ ->
+                      false)))
   in
   QCheck2.Test.check_exn prop_p8;
   Stdlib.print_endline "P8 passed"

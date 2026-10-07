@@ -3,10 +3,15 @@
 open Base
 open Onton
 open Onton_core.Types
+module B = Onton_core.Branch_reconcile
 
-let head = ref "base"
+let sha value =
+  match B.Commit.make value with Some sha -> sha | None -> assert false
+
+let head = ref "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 let pushes = ref 0
-let base_head = ref "base"
+let remote_head = ref None
+let base_head = ref "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 let recovered_worktree = ref ""
 
 module Fake_worktree : Worktree.S = struct
@@ -43,7 +48,8 @@ module Fake_worktree : Worktree.S = struct
     else Some !head
 
   let is_ancestor ~path:_ ~ancestor ~descendant =
-    String.equal ancestor "base" && String.equal descendant "advanced-base"
+    String.equal ancestor "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    && String.equal descendant "cccccccccccccccccccccccccccccccccccccccc"
 
   let read_in_progress_conflict_info ~path:_ ~target:_ ~project_name:_
       ~ancestor_ids:_ =
@@ -51,14 +57,65 @@ module Fake_worktree : Worktree.S = struct
 
   let force_push_with_lease ~path:_ ~branch:_ ~base:_ =
     Int.incr pushes;
-    if String.equal !head "base" then Worktree.Push_no_commits
+    if String.equal !head "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" then
+      Worktree.Push_no_commits
     else Worktree.Push_ok
 
   let commit_gameplan ~path:_ ~publication:_ ~message:_ = assert false
+
+  let materialization ~path:_ ~project_name:_ ~branch:_ =
+    Ok (Some (B.New_branch (sha "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")))
+
+  let reconcile ~path:_ ~project_name:_ ~branch:_ ~operation:_ command =
+    let observation () =
+      B.
+        {
+          source = sha !head;
+          target = sha !head;
+          remote = Option.map !remote_head ~f:sha;
+          boundary = Recorded (sha "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+          topology = Unproven;
+          clean = true;
+          sequencer = None;
+          conflicts = 0;
+          target_included = true;
+          base_contains_source = String.equal !head !base_head;
+          head = sha !head;
+          completed_integration = false;
+          destination =
+            Onton_core.Branch_reconcile.Remote_id.of_destination
+              "fixture-origin";
+        }
+    in
+    match command.B.kind with
+    | B.Observe -> B.Observed (observation ())
+    | B.Inspect -> B.Inspected (observation ())
+    | B.Pin _ -> B.Pinned
+    | B.Publish _ ->
+        Int.incr pushes;
+        remote_head := Some !head;
+        B.Published
+    | B.Confirm candidate ->
+        B.Remote
+          {
+            sha = Option.map !remote_head ~f:sha;
+            topology =
+              (if
+                 Option.equal B.Commit.equal
+                   (Option.map !remote_head ~f:sha)
+                   (Some candidate)
+               then Equal
+               else Unproven);
+          }
+    | B.Commit_merge _ | B.Plan_remote_replay _ | B.Checkout_remote _
+    | B.Verify_recovery | B.Integrate _ | B.Continue _ ->
+        B.Permanent "unexpected integration in session fixture"
+
   let rebase_in_progress ~path:_ = assert false
 end
 
 let run_case env ~capture_session ~respond =
+  remote_head := None;
   let root = Stdlib.Filename.temp_dir "onton-session-timeout-" "" in
   let old = Stdlib.Sys.getenv_opt "ONTON_DATA_DIR" in
   Unix.putenv "ONTON_DATA_DIR" root;

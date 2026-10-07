@@ -157,8 +157,10 @@ let () =
               let is_start =
                 match action with
                 | Some (Orchestrator.Start _) -> true
-                | Some (Orchestrator.Respond _ | Orchestrator.Rebase _) | None
-                  ->
+                | Some
+                    ( Orchestrator.Respond _ | Orchestrator.Rebase _
+                    | Orchestrator.Reconcile_branch _ )
+                | None ->
                     false
               in
               let orch = Orchestrator.reset_busy orch pid in
@@ -226,7 +228,9 @@ let () =
                 | Orchestrator.Respond (p, kind) ->
                     Patch_id.equal p pid
                     && Operation_kind.equal kind Operation_kind.Human
-                | Orchestrator.Start _ | Orchestrator.Rebase _ -> false
+                | Orchestrator.Start _ | Orchestrator.Rebase _
+                | Orchestrator.Reconcile_branch _ ->
+                    false
               in
               is_human_respond)
         with _ -> false
@@ -292,7 +296,9 @@ let () =
                 | Orchestrator.Respond (p, kind) ->
                     Patch_id.equal p pid
                     && Operation_kind.equal kind Operation_kind.Human
-                | Orchestrator.Start _ | Orchestrator.Rebase _ -> false
+                | Orchestrator.Start _ | Orchestrator.Rebase _
+                | Orchestrator.Reconcile_branch _ ->
+                    false
               in
               is_human_respond)
         with _ -> false
@@ -360,7 +366,9 @@ let () =
                   | Orchestrator.Respond (p, kind) ->
                       Patch_id.equal p pid
                       && Operation_kind.equal kind Operation_kind.Human
-                  | Orchestrator.Start _ | Orchestrator.Rebase _ -> false
+                  | Orchestrator.Start _ | Orchestrator.Rebase _
+                  | Orchestrator.Reconcile_branch _ ->
+                      false
                 in
                 is_human_respond)
           in
@@ -423,7 +431,9 @@ let () =
                 | Orchestrator.Respond (p, kind) ->
                     Patch_id.equal p pid
                     && Operation_kind.equal kind Operation_kind.Human
-                | Orchestrator.Start _ | Orchestrator.Rebase _ -> false)
+                | Orchestrator.Start _ | Orchestrator.Rebase _
+                | Orchestrator.Reconcile_branch _ ->
+                    false)
           in
           b_in_inbox && replanned
         with _ -> false

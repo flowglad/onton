@@ -341,7 +341,7 @@ let apply_command m cmd =
               | Orchestrator.Start (p, base) when Patch_id.equal p pid ->
                   Some base
               | Orchestrator.Start _ | Orchestrator.Rebase _
-              | Orchestrator.Respond _ ->
+              | Orchestrator.Respond _ | Orchestrator.Reconcile_branch _ ->
                   None)
         in
         Option.value_map base_opt ~default:m ~f:(do_start m pid)
@@ -443,7 +443,7 @@ let fire_runnable_traced m =
             match do_rebase_traced m pid base with
             | m, Some f -> (m, f :: fired)
             | m, None -> (m, fired))
-      | Orchestrator.Respond _ -> (m, fired))
+      | Orchestrator.Respond _ | Orchestrator.Reconcile_branch _ -> (m, fired))
 
 let fire_runnable m = fst (fire_runnable_traced m)
 
@@ -554,7 +554,9 @@ let prop_diamond_witness =
             match Orchestrator.message_action msg with
             | Orchestrator.Start (pid, base) ->
                 Patch_id.equal pid p3 && Branch.equal base branch_p1
-            | Orchestrator.Rebase _ | Orchestrator.Respond _ -> false)
+            | Orchestrator.Rebase _ | Orchestrator.Respond _
+            | Orchestrator.Reconcile_branch _ ->
+                false)
       in
       demand_created && containment_flipped && start_runnable)
 
@@ -893,7 +895,9 @@ let prop_fixpoint_rebase_silence =
                 Patch_controller.plan_messages m.orch ~patches:m.patches
                 |> List.for_all ~f:(fun msg ->
                     match Orchestrator.message_action msg with
-                    | Orchestrator.Start _ | Orchestrator.Rebase _ -> false
+                    | Orchestrator.Start _ | Orchestrator.Rebase _
+                    | Orchestrator.Reconcile_branch _ ->
+                        false
                     | Orchestrator.Respond _ -> true)
               in
               let m, fired = fire_runnable_traced m in
@@ -931,7 +935,9 @@ let prop_unrelated_main_advance_inert =
                 Patch_controller.plan_messages m.orch ~patches:m.patches
                 |> List.for_all ~f:(fun msg ->
                     match Orchestrator.message_action msg with
-                    | Orchestrator.Start _ | Orchestrator.Rebase _ -> false
+                    | Orchestrator.Start _ | Orchestrator.Rebase _
+                    | Orchestrator.Reconcile_branch _ ->
+                        false
                     | Orchestrator.Respond _ -> true)
               in
               let m, fired = fire_runnable_traced m in

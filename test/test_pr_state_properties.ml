@@ -41,6 +41,7 @@ let base : Pr_state.t =
     merge_queue_entry = None;
     native_stack = false;
     head_branch = None;
+    base_oid = None;
     head_oid = None;
     merge_commit_sha = None;
     base_branch = None;
@@ -244,7 +245,27 @@ let prop_merge_ready_divergence =
             | Some d -> Bool.equal d.Pr_state.derived_merge_ready merge_ready
             | None -> false))
 
+let prop_poll_retains_revision_pair =
+  QCheck2.Test.make
+    ~name:"poll retains identified and unknown head/base revisions" ~count:300
+    QCheck2.Gen.(triple (option string) (option string) (option string))
+    (fun (head_oid, base_oid, base_name) ->
+      try
+        let base_branch = Option.map Types.Branch.of_string base_name in
+        let result =
+          Poller.poll ~was_merged:false
+            { base with head_oid; base_oid; base_branch }
+        in
+        let decoded = Poller.t_of_yojson (Poller.yojson_of_t result) in
+        result.head_oid = head_oid && result.base_oid = base_oid
+        && decoded.head_oid = head_oid
+        && decoded.base_oid = base_oid
+        && result.base_branch = base_branch
+        && decoded.base_branch = base_branch
+      with _ -> false)
+
 let () =
+  QCheck2.Test.check_exn prop_poll_retains_revision_pair;
   QCheck2.Test.check_exn merge_ready_matches_component_predicates;
   QCheck2.Test.check_exn prop_merged_closed_track_status;
   QCheck2.Test.check_exn prop_mergeable_and_conflict;

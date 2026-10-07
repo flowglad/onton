@@ -22,6 +22,8 @@ type pr_body_refresh = private { version : int; pending : bool }
 [@@deriving eq, sexp_of, compare]
 
 type t = private {
+  branch_reconcile : Branch_reconcile.t;
+  session_completion : Session_result.completion option;
   patch_id : Types.Patch_id.t;
   branch : Types.Branch.t;
   pr_status : Patch_pr_status.t;
@@ -747,6 +749,8 @@ val mark_pr_missing : t -> t
     wrapper). *)
 
 val restore :
+  ?session_completion:Session_result.completion option ->
+  ?branch_reconcile:Branch_reconcile.t ->
   ?branch_published:bool ->
   patch_id:Types.Patch_id.t ->
   branch:Types.Branch.t ->
@@ -816,3 +820,24 @@ val restore :
     checks — use only for deserialization. *)
 
 val mark_branch_published : t -> t
+
+val reconcile_branch :
+  t -> Branch_reconcile.event -> t * Branch_reconcile.effect_command list
+
+val begin_branch_reconciliation : t -> t
+(** Claim execution capacity without claiming that an implementation session
+    ran. *)
+
+val record_session_completion : t -> Session_result.completion -> t
+(** Record the backend result and observed local revision before publication. A
+    missing revision is unknown evidence, not proof of an absent branch. *)
+
+val reconciliation_hold_reason : t -> string option
+(** Terminal patch state suspends reconciliation execution while retaining its
+    checkpoint. Resuming work must observe Git through the recovery protocol. *)
+
+val migrate_legacy_branch_state : main_branch:Types.Branch.t -> t -> t
+(** Upgrade an agent whose snapshot has no reconciliation checkpoint. Retain
+    session/worktree/provenance and unrelated intervention state. Existing work
+    starts with observation; obsolete branch counters and pending-push
+    expectations do not authorize execution or permanently block it. *)

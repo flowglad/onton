@@ -51,6 +51,11 @@ module Fake_worktree : Worktree.S = struct
 
   let force_push_with_lease ~path:_ ~branch:_ ~base:_ = assert false
   let commit_gameplan ~path:_ ~publication:_ ~message:_ = assert false
+  let materialization ~path:_ ~project_name:_ ~branch:_ = Ok None
+
+  let reconcile ~path:_ ~project_name:_ ~branch:_ ~operation:_ _ =
+    Branch_reconcile.Permanent "unexpected reconciliation in fake worktree"
+
   let rebase_in_progress ~path:_ = assert false
 end
 

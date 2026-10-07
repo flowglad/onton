@@ -6,6 +6,7 @@ open Base
 type op =
   | Ensure_worktree
   | Fetch_origin
+  | Capture_materialization of { slot : int }
   | Capture_anchor of { ref_name : string; slot : int }
   | Rebase_onto of Types.Branch.t
   | Record_anchor_on_success of { slot : int; base : Types.Branch.t }
@@ -46,8 +47,7 @@ let for_start ~base ~materialized =
   else
     [
       Ensure_worktree;
-      Fetch_origin;
-      Capture_anchor { ref_name = ref_string_of base; slot = 0 };
+      Capture_materialization { slot = 0 };
       Record_anchor_on_success { slot = 0; base };
     ]
 
@@ -55,8 +55,8 @@ let ensures_worktree_before_fs (plan : t) =
   let rec loop ensured = function
     | [] -> true
     | Ensure_worktree :: rest -> loop true rest
-    | ( Fetch_origin | Capture_anchor _ | Rebase_onto _
-      | Record_anchor_on_success _ )
+    | ( Fetch_origin | Capture_materialization _ | Capture_anchor _
+      | Rebase_onto _ | Record_anchor_on_success _ )
       :: rest ->
         ensured && loop ensured rest
   in

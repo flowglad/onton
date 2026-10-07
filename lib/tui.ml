@@ -337,6 +337,7 @@ type patch_view = {
   base_branch : Branch.t option;
   worktree_path : string option;
   intervention_reason : string option;
+  reconciliation_details : (string * string) list;
   wontdo_reason : string option;
   automerge_enabled : bool;
   automerge_deadline : float option;
@@ -534,6 +535,11 @@ let patch_view_of_agent (agent : Patch_agent.t)
     base_branch = agent.base_branch;
     worktree_path = agent.worktree_path;
     intervention_reason = human_intervention_reason agent;
+    reconciliation_details =
+      Branch_reconcile.diagnostics agent.branch_reconcile
+      @ Option.to_list
+          (Option.map (Patch_agent.reconciliation_hold_reason agent)
+             ~f:(fun reason -> ("Reconcile hold", reason)));
     wontdo_reason = agent.wontdo_reason;
     automerge_enabled = agent.automerge_enabled;
     automerge_deadline = agent.automerge_deadline;
@@ -977,7 +983,11 @@ let detail_info_rows (pv : patch_view) ~width ~now =
       in
       ci_header @ ci_rows @ overflow
   in
-  let rows = lines @ op_line @ intervention @ ci_section in
+  let reconciliation =
+    List.map pv.reconciliation_details ~f:(fun (label, value) ->
+        fit_value ("  " ^ label ^ ": ") (sanitize_text value))
+  in
+  let rows = lines @ op_line @ reconciliation @ intervention @ ci_section in
   (* A refusal can be several pages long. Keep the title and status pinned,
      and let the existing metadata scroll with the explanation so short
      terminals still have space to inspect it. *)

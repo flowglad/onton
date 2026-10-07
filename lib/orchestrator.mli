@@ -21,6 +21,7 @@ type action =
   | Start of Patch_id.t * Branch.t
   | Respond of Patch_id.t * Operation_kind.t
   | Rebase of Patch_id.t * Branch.t
+  | Reconcile_branch of Patch_id.t * int
 [@@deriving sexp_of, show, eq]
 
 type message_status = Pending | Acked | Completed | Obsolete
@@ -268,7 +269,7 @@ val add_planned_patch : t -> Patch.t -> deps:Patch_id.t list -> t
     the activity log (truncated to ~500 chars) — backend, exit code, stderr
     excerpt. It surfaces in [events.jsonl] via [show_session_result] so
     [debug_upload] bundles are self-diagnosing. *)
-type session_result =
+type session_result = Session_result.t =
   | Session_ok
   | Session_process_error of { is_fresh : bool; detail : string option }
   | Session_no_resume
@@ -622,3 +623,17 @@ val mark_branch_published : t -> Patch_id.t -> t
 val refresh_base_branch : t -> Patch_id.t -> t
 val promotion_claimed : t -> bool
 val settle_restored_promotion : t -> t
+
+val reconcile_branch :
+  t ->
+  Types.Patch_id.t ->
+  Branch_reconcile.event ->
+  t * Branch_reconcile.effect_command list
+
+val message_of_action : Patch_agent.t -> action -> patch_agent_message
+(** Branch reconciliation messages are identified by operation, independently of
+    polling's patch generation. Other message identities retain their
+    generation. *)
+
+val record_session_completion :
+  t -> Patch_id.t -> Session_result.completion -> t

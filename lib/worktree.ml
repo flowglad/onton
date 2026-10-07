@@ -533,9 +533,24 @@ let git_status ~process_mgr ~path =
 let has_uncommitted_changes ~process_mgr ~path =
   let code, stdout, stderr =
     run_git_exit_code ~process_mgr
-      [ "git"; "-C"; path; "status"; "--porcelain=v1"; "--untracked-files=all" ]
+      [
+        "git";
+        "-C";
+        path;
+        "status";
+        "--porcelain=v1";
+        "-z";
+        "--untracked-files=all";
+      ]
   in
-  if code = 0 then Result.Ok (not (String.is_empty stdout))
+  if code = 0 then
+    let observation =
+      Git_observation.of_porcelain ~branch:None ~head:""
+        ~sequencer:Git_observation.None_active stdout
+    in
+    if observation.Git_observation.valid then
+      Result.Ok (not (Git_observation.clean observation))
+    else Result.Error ("Malformed git status in " ^ path)
   else
     Result.Error
       (Printf.sprintf "git status failed in %s (exit %d): %s" path code
@@ -970,97 +985,13 @@ let force_push_with_lease_unbounded ~on_phase ~preserve_history ~process_mgr
                   Push_plan.Local_diverged_from_remote )
                 when (not preserve_history)
                      && (not remote_changes_included)
-                     && not (rebase_in_progress_raw ~process_mgr ~path) -> (
-                  let code, reflog, _ =
-                    run_git_exit_code ~process_mgr
-                      [
-                        "git";
-                        "-C";
-                        path;
-                        "rev-parse";
-                        "--path-format=absolute";
-                        "--git-path";
-                        "logs/refs/heads/" ^ branch_str;
-                      ]
-                  in
-                  match
-                    if code = 0 then read_file_opt (String.strip reflog)
-                    else None
-                  with
-                  | None -> None
-                  | Some reflog ->
-                      Rewrite_lineage.of_reflog ~branch:branch_str ~local_sha
-                        ~remote_sha ~reflog
-                        ~content_oracle:(fun ~remote_sha ~target ~result_sha ->
-                          let code, bases, _ =
-                            run_git_exit_code ~process_mgr
-                              [
-                                "git";
-                                "-C";
-                                path;
-                                "merge-base";
-                                "--all";
-                                remote_sha;
-                                target;
-                              ]
-                          in
-                          match (code, String.split_lines bases) with
-                          | 0, [ common ] when not (String.is_empty common) -> (
-                              let changed_paths ?(deletions_only = false) before
-                                  after =
-                                let code, paths, _ =
-                                  run_git_exit_code ~process_mgr
-                                    [
-                                      "git";
-                                      "-C";
-                                      path;
-                                      "diff";
-                                      "--no-ext-diff";
-                                      "--no-textconv";
-                                      "--no-renames";
-                                      "--ignore-submodules=none";
-                                      "--name-only";
-                                      "-z";
-                                      (if deletions_only then "--diff-filter=D"
-                                       else "--diff-filter=ACDMRTUXB");
-                                      before;
-                                      after;
-                                      "--";
-                                    ]
-                                in
-                                if code = 0 then Some paths else None
-                              in
-                              match
-                                ( changed_paths common remote_sha,
-                                  changed_paths remote_sha result_sha,
-                                  changed_paths ~deletions_only:true common
-                                    target,
-                                  changed_paths ~deletions_only:true remote_sha
-                                    result_sha )
-                              with
-                              | ( Some remote_changed_paths,
-                                  Some local_changed_paths,
-                                  Some target_deleted_paths,
-                                  Some local_deleted_paths ) ->
-                                  Rewrite_lineage.changes_preserved
-                                    ~remote_changed_paths ~local_changed_paths
-                                    ~target_deleted_paths ~local_deleted_paths
-                              | _ -> false)
-                          | _ -> false)
-                        ~ancestor_oracle:(fun sha ~descendant ->
-                          let code, _, _ =
-                            run_git_exit_code ~process_mgr
-                              [
-                                "git";
-                                "-C";
-                                path;
-                                "merge-base";
-                                "--is-ancestor";
-                                sha;
-                                descendant;
-                              ]
-                          in
-                          code = 0))
+                     && not (rebase_in_progress_raw ~process_mgr ~path) ->
+                  Git_publication_evidence.rewrite_authority
+                    ~git:(fun args ->
+                      run_git_exit_code ~process_mgr
+                        ("git" :: "-C" :: path :: args))
+                    ~branch:branch_str ~local_sha ~remote_sha
+                  |> Result.ok |> Option.join
               | ( _,
                   _,
                   ( Push_plan.Local_includes_remote
@@ -1726,6 +1657,20 @@ module type S = sig
     message:string ->
     (unit, string) Result.t
 
+  val materialization :
+    path:string ->
+    project_name:string ->
+    branch:Types.Branch.t ->
+    (Branch_reconcile.materialization option, string) Result.t
+
+  val reconcile :
+    path:string ->
+    project_name:string ->
+    branch:Types.Branch.t ->
+    operation:Branch_reconcile.operation ->
+    Branch_reconcile.command ->
+    Branch_reconcile.result
+
   val rebase_in_progress : path:string -> bool
 end
 
@@ -1773,9 +1718,59 @@ let make_with_protection ~protected_branch ~fs ~config ~clock ~process_mgr
                 ~remote);
           execute_action =
             (fun ~path ~branch_str:_ ~expected_local action ->
+              let action, expected_head =
+                match action with
+                | Start_point_plan.Create_new_branch_from_base { base_branch }
+                  -> (
+                    let io =
+                      Branch_reconcile_executor.make_io ~process_mgr ~clock
+                        ~path:repo_root
+                    in
+                    match
+                      Branch_reconcile_executor.capture_commit ~io
+                        ~ref_name:base_branch
+                    with
+                    | Error message -> failwith message
+                    | Ok sha ->
+                        let prefix =
+                          Branch_reconcile.recovery_prefix ~project:project_name
+                            ~branch:(Types.Branch.to_string branch)
+                        in
+                        let sha =
+                          match
+                            Branch_reconcile_executor.pin_materialization_intent
+                              ~io ~prefix sha
+                          with
+                          | Ok pinned -> pinned
+                          | Error message -> failwith message
+                        in
+                        ( Start_point_plan.Create_new_branch_from_base
+                            {
+                              base_branch =
+                                Branch_reconcile.Commit.to_string sha;
+                            },
+                          Some sha ))
+                | Start_point_plan.Reset_and_use_remote_tracking _
+                | Start_point_plan.Use_local_branch_unchanged _ ->
+                    (action, None)
+              in
               let _, created =
                 B.materialize ~path ~branch ~expected_local action
               in
+              let io =
+                Branch_reconcile_executor.make_io ~process_mgr ~clock ~path
+              in
+              let prefix =
+                Branch_reconcile.recovery_prefix ~project:project_name
+                  ~branch:(Types.Branch.to_string branch)
+              in
+              (match
+                 Branch_reconcile_executor.record_materialization ~io ~prefix
+                   ~branch:(Types.Branch.to_string branch)
+                   ~new_branch_from:expected_head
+               with
+              | Ok _ -> ()
+              | Error message -> failwith message);
               created);
         }
       in
@@ -1847,6 +1842,25 @@ let make_with_protection ~protected_branch ~fs ~config ~clock ~process_mgr
 
     let commit_gameplan ~path ~publication ~message =
       commit_gameplan ~clock ~process_mgr ~path ~publication ~message
+
+    let materialization ~path ~project_name ~branch =
+      let io = Branch_reconcile_executor.make_io ~process_mgr ~clock ~path in
+      let prefix =
+        Branch_reconcile.recovery_prefix ~project:project_name
+          ~branch:(Types.Branch.to_string branch)
+      in
+      Branch_reconcile_executor.recover_materialization ~io ~prefix
+        ~branch:(Types.Branch.to_string branch)
+
+    let reconcile ~path ~project_name ~branch ~operation command =
+      let io = Branch_reconcile_executor.make_io ~process_mgr ~clock ~path in
+      let prefix =
+        Branch_reconcile.recovery_prefix ~project:project_name
+          ~branch:(Types.Branch.to_string branch)
+      in
+      Branch_reconcile_executor.execute ~io ~prefix
+        ~branch:(Types.Branch.to_string branch)
+        ~operation command
 
     let rebase_in_progress ~path = rebase_in_progress ~process_mgr ~path
   end : S)

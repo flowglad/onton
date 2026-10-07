@@ -26,6 +26,12 @@ let gen_branch =
     map Branch.of_string
       (string_size ~gen:(char_range 'a' 'z') (int_range 3 20)))
 
+let gen_sha =
+  QCheck2.Gen.(
+    string_size
+      ~gen:(oneof_list (String.to_list "0123456789abcdef"))
+      (return 40))
+
 let gen_operation_kind =
   QCheck2.Gen.oneof_list
     Operation_kind.
@@ -374,6 +380,11 @@ let gen_pr_state =
     let* is_fork = bool in
     let* head_branch = option gen_branch in
     let* base_branch = option gen_branch in
+    let* base_oid =
+      match base_branch with
+      | None -> return None
+      | Some _ -> map (fun oid -> Some oid) gen_sha
+    in
     map5
       (fun (status, merge_state) merge_ready (check_status, ci_checks_truncated)
            ci_checks (comments, unresolved_comment_count) ->
@@ -394,6 +405,7 @@ let gen_pr_state =
           merge_queue_required = false;
           merge_queue_entry = None;
           head_branch;
+          base_oid;
           head_oid = None;
           base_branch;
           native_stack = false;
@@ -429,6 +441,12 @@ let gen_github_error =
 let gen_poller =
   QCheck2.Gen.(
     let* is_draft = bool in
+    let* base_branch = option gen_branch in
+    let* base_oid =
+      match base_branch with
+      | None -> return None
+      | Some _ -> map (fun oid -> Some oid) gen_sha
+    in
     map5
       (fun queue (merged, closed, merge_state) merge_ready checks_passing
            ci_checks ->
@@ -440,6 +458,8 @@ let gen_poller =
             is_draft;
             merge_state;
             merge_ready;
+            base_branch;
+            base_oid;
             head_oid = None;
             review_decision = None;
             unresolved_comment_count = 0;

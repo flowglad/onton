@@ -175,6 +175,113 @@ let () =
           | Error _msg -> false
         with _ -> false)
   in
+  let legacy_branch_migration =
+    QCheck2.Test.make
+      ~name:
+        "legacy branch migration observes work and preserves unrelated state"
+      ~count:200
+      QCheck2.Gen.(
+        map
+          (fun agent ->
+            agent |> Onton_core.Patch_agent.increment_conflict_noop_count
+            |> Onton_core.Patch_agent.increment_no_commits_push_count
+            |> Onton_core.Patch_agent.increment_push_failure_count
+            |> Onton_core.Patch_agent.increment_rebase_failure_count
+            |> fun agent ->
+            Onton_core.Patch_agent.set_expected_remote_head_oid agent
+              (Some "legacy-head"))
+          gen_patch_agent_fully_populated)
+      (fun agent ->
+        try
+          let original = Onton.Persistence.patch_agent_to_yojson agent in
+          let legacy =
+            match original with
+            | `Assoc fields ->
+                `Assoc
+                  (List.Assoc.remove fields ~equal:String.equal
+                     "branch_reconcile")
+            | _ -> assert false
+          in
+          let decode =
+            Onton.Persistence.patch_agent_of_yojson
+              ~main_branch:(Onton_core.Types.Branch.of_string "main")
+              ~gameplan:(gameplan_for_agent agent)
+          in
+          match (decode original, decode legacy) with
+          | Ok baseline, Ok migrated -> (
+              let excluded =
+                [
+                  "branch_reconcile";
+                  "conflict_noop_count";
+                  "no_commits_push_count";
+                  "push_failure_count";
+                  "rebase_failure_count";
+                  "expected_remote_head_oid";
+                  "intervention_reason";
+                ]
+              in
+              let unrelated a =
+                match Onton.Persistence.patch_agent_to_yojson a with
+                | `Assoc fields ->
+                    `Assoc
+                      (List.filter fields ~f:(fun (key, _) ->
+                           not (List.mem excluded key ~equal:String.equal)))
+                | _ -> assert false
+              in
+              let existing =
+                baseline.has_session || baseline.branch_published
+                || Onton_core.Patch_agent.has_pr baseline
+                || Option.is_some baseline.worktree_path
+              in
+              Yojson.Safe.equal (unrelated baseline) (unrelated migrated)
+              && (match
+                    Onton_core.Branch_reconcile.operation
+                      migrated.branch_reconcile
+                  with
+                | None -> not existing
+                | Some op ->
+                    String.equal op.intent.base
+                      (Onton_core.Types.Branch.to_string
+                         (Option.value baseline.base_branch
+                            ~default:(Onton_core.Types.Branch.of_string "main"))))
+              && migrated.conflict_noop_count = 0
+              && migrated.no_commits_push_count = 0
+              && migrated.push_failure_count = 0
+              && migrated.rebase_failure_count = 0
+              && Option.is_none migrated.expected_remote_head_oid
+              && Bool.equal existing
+                   (Onton_core.Branch_reconcile.is_pending
+                      migrated.branch_reconcile)
+              &&
+              match
+                decode (Onton.Persistence.patch_agent_to_yojson migrated)
+              with
+              | Ok again -> Onton_core.Patch_agent.equal migrated again
+              | Error _ -> false)
+          | Error _, _ | _, Error _ -> false
+        with _ -> false)
+  in
+  let v2_requires_branch_checkpoint =
+    QCheck2.Test.make ~name:"v2 rejects absent or null branch checkpoint"
+      ~count:100 gen_patch_agent_fully_populated (fun agent ->
+        let gameplan = gameplan_for_agent agent in
+        let json = Onton.Persistence.patch_agent_to_yojson agent in
+        let without, null_checkpoint =
+          match json with
+          | `Assoc fields ->
+              let fields =
+                List.Assoc.remove fields ~equal:String.equal "branch_reconcile"
+              in
+              (`Assoc fields, `Assoc (("branch_reconcile", `Null) :: fields))
+          | _ -> (json, json)
+        in
+        let decode json =
+          Onton.Persistence.patch_agent_of_yojson ~snapshot_version:2
+            ~main_branch:(Branch.of_string "main") ~gameplan json
+        in
+        Result.is_error (decode without)
+        && Result.is_error (decode null_checkpoint))
+  in
   let legacy_architecture_snapshot =
     QCheck2.Test.make
       ~name:"legacy string architecture resumes without losing snapshot state"
@@ -373,7 +480,7 @@ let () =
           match json with
           | `Assoc fields ->
               List.exists fields ~f:(fun (k, v) ->
-                  String.equal k "version" && Yojson.Safe.equal v (`Int 1))
+                  String.equal k "version" && Yojson.Safe.equal v (`Int 2))
           | _ -> false
         with _ -> false)
   in
@@ -400,7 +507,11 @@ let () =
         try
           let gameplan = gameplan_for_agent agent in
           let json = Onton.Persistence.patch_agent_to_yojson agent in
-          match Onton.Persistence.patch_agent_of_yojson ~gameplan json with
+          match
+            Onton.Persistence.patch_agent_of_yojson
+              ~main_branch:(Onton_core.Types.Branch.of_string "main")
+              ~gameplan json
+          with
           | Ok agent' -> Onton_core.Patch_agent.equal agent agent'
           | Error _msg -> false
         with _ -> false)
@@ -413,7 +524,11 @@ let () =
           let agent = Onton_core.Patch_agent.set_native_stack agent false in
           let gameplan = gameplan_for_agent agent in
           let json = Onton.Persistence.patch_agent_to_yojson agent in
-          match Onton.Persistence.patch_agent_of_yojson ~gameplan json with
+          match
+            Onton.Persistence.patch_agent_of_yojson
+              ~main_branch:(Onton_core.Types.Branch.of_string "main")
+              ~gameplan json
+          with
           | Ok restored ->
               restored.Onton_core.Patch_agent.native_stack
               && restored.native_stack_absent_polls = 1
@@ -458,7 +573,11 @@ let () =
           in
           let gameplan = gameplan_for_agent agent in
           let json = Onton.Persistence.patch_agent_to_yojson agent in
-          match Onton.Persistence.patch_agent_of_yojson ~gameplan json with
+          match
+            Onton.Persistence.patch_agent_of_yojson
+              ~main_branch:(Onton_core.Types.Branch.of_string "main")
+              ~gameplan json
+          with
           | Ok agent' ->
               Onton_core.Anchor_history.equal
                 (Onton_core.Patch_agent.anchor_history agent)
@@ -482,7 +601,11 @@ let () =
                        not (String.equal k "anchor_history")))
             | other -> other
           in
-          match Onton.Persistence.patch_agent_of_yojson ~gameplan json with
+          match
+            Onton.Persistence.patch_agent_of_yojson
+              ~main_branch:(Onton_core.Types.Branch.of_string "main")
+              ~gameplan json
+          with
           | Ok agent' ->
               Onton_core.Anchor_history.equal
                 (Onton_core.Patch_agent.anchor_history agent')
@@ -496,7 +619,11 @@ let () =
         try
           let gameplan = gameplan_for_agent agent in
           let json = Onton.Persistence.patch_agent_to_yojson agent in
-          match Onton.Persistence.patch_agent_of_yojson ~gameplan json with
+          match
+            Onton.Persistence.patch_agent_of_yojson
+              ~main_branch:(Onton_core.Types.Branch.of_string "main")
+              ~gameplan json
+          with
           | Ok agent' ->
               Option.equal Pr_number.equal
                 (Onton_core.Patch_agent.pr_number agent)
@@ -548,7 +675,11 @@ let () =
                        not (String.equal k "pr_status")))
             | other -> other
           in
-          match Onton.Persistence.patch_agent_of_yojson ~gameplan json with
+          match
+            Onton.Persistence.patch_agent_of_yojson
+              ~main_branch:(Onton_core.Types.Branch.of_string "main")
+              ~gameplan json
+          with
           | Ok agent' ->
               (* Whatever the agent's original pr_status, the legacy-only
                  decode preserves the pr_number value and avoids Missing. *)
@@ -578,7 +709,11 @@ let () =
                        && not (String.equal k "pr_status")))
             | other -> other
           in
-          match Onton.Persistence.patch_agent_of_yojson ~gameplan json with
+          match
+            Onton.Persistence.patch_agent_of_yojson
+              ~main_branch:(Onton_core.Types.Branch.of_string "main")
+              ~gameplan json
+          with
           | Ok agent' ->
               Option.is_none (Onton_core.Patch_agent.pr_number agent')
           | Error _ -> false
@@ -617,7 +752,11 @@ let () =
                 `Assoc fields
             | other -> other
           in
-          match Onton.Persistence.patch_agent_of_yojson ~gameplan json with
+          match
+            Onton.Persistence.patch_agent_of_yojson
+              ~main_branch:(Onton_core.Types.Branch.of_string "main")
+              ~gameplan json
+          with
           | Ok agent' ->
               Bool.equal agent'.mergeability_unknown
                 (Option.equal String.equal legacy_status (Some "UNKNOWN"))
@@ -640,7 +779,11 @@ let () =
                        not (String.equal k "branch")))
             | other -> other
           in
-          match Onton.Persistence.patch_agent_of_yojson ~gameplan json with
+          match
+            Onton.Persistence.patch_agent_of_yojson
+              ~main_branch:(Onton_core.Types.Branch.of_string "main")
+              ~gameplan json
+          with
           | Ok agent' -> Branch.equal agent.branch agent'.branch
           | Error _ -> false
         with _ -> false)
@@ -857,6 +1000,8 @@ let () =
         intervention_snapshot;
         snapshot_roundtrip;
         metadata_snapshot_roundtrip;
+        legacy_branch_migration;
+        v2_requires_branch_checkpoint;
         legacy_architecture_snapshot;
         legacy_feature_fields_default_false;
         applied_control_ids_decode;

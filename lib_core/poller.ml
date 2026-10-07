@@ -14,6 +14,8 @@ type t = {
       (** GitHub's tri-state mergeability; source for the [has_conflict] and
           [mergeability_unknown] accessors. *)
   merge_ready : bool;
+  base_branch : Branch.t option; [@yojson.option]
+  base_oid : string option; [@yojson.option]
   head_oid : string option; [@yojson.option]
   review_decision : string option; [@yojson.option]
       (** Raw GitHub [reviewDecision]. An input to [merge_ready] via
@@ -73,6 +75,8 @@ let poll ~was_merged (pr : Pr_state.t) =
     is_draft = Pr_state.is_draft pr;
     merge_state = pr.Pr_state.merge_state;
     merge_ready = Pr_state.merge_ready pr;
+    base_branch = pr.Pr_state.base_branch;
+    base_oid = pr.Pr_state.base_oid;
     head_oid = pr.Pr_state.head_oid;
     review_decision = pr.Pr_state.review_decision;
     unresolved_comment_count = pr.Pr_state.unresolved_comment_count;

@@ -119,6 +119,7 @@ let descendants_complete t graph ~has_merged =
 let integration_ready t ~construction_open ~ignore_inflight ~max_failures
     ~terminal (a : Patch_agent.t) =
   is_descendant t a.patch_id && construction_open && a.branch_published
+  && (not (Branch_reconcile.is_unsettled a.branch_reconcile))
   && a.pr_body_delivered && (not a.merged) && (not a.busy)
   && (not (Patch_agent.needs_intervention a))
   && (not a.branch_blocked) && (not a.native_stack) && a.automerge_enabled
@@ -135,6 +136,7 @@ let integration_ready t ~construction_open ~ignore_inflight ~max_failures
 
 let root_ready t graph ~has_merged ~pending_integrations (a : Patch_agent.t) =
   is_root t a.patch_id
+  && (not (Branch_reconcile.is_unsettled a.branch_reconcile))
   && descendants_complete t graph ~has_merged
   && (not a.busy) && List.is_empty a.queue
   && Option.is_none a.current_op

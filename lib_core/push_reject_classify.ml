@@ -2,9 +2,11 @@
    @archlint.domain push-reject-classify *)
 
 open Base
+open Ppx_yojson_conv_lib.Yojson_conv.Primitives
 
 type rejection =
   | Workflow_scope_missing
+  | Permission_denied
   | Branch_protection
   | Push_pattern_block
   | Lease_violation
@@ -12,7 +14,7 @@ type rejection =
   | Hook_failure of string
   | Unknown of string
   | Local_state_unsafe of { reason : string }
-[@@deriving show, eq, sexp_of, compare]
+[@@deriving show, eq, sexp_of, compare, yojson]
 
 (* With [git push --porcelain], the [!] status and its parenthesized reason are
    written to stdout, while server diagnostics and the generic failure trailer
@@ -80,6 +82,12 @@ let classify ~stderr ~stdout =
     || contains_ci output "without `workflow` scope"
   then Workflow_scope_missing
   else if
+    contains_ci output "write access to repository not granted"
+    || contains_ci output "you do not have write access to this repository"
+    || contains_ci output "you are not allowed to push code to this project"
+    || (contains_ci output "permission to " && contains_ci output " denied to ")
+  then Permission_denied
+  else if
     (* Must precede [Branch_protection]: the merge-queue lock message carries
        both of that recognizer's fingerprints (GH006 + the hook-declined
        trailer) alongside its own queue-specific lines. *)
@@ -130,6 +138,7 @@ let classify ~stderr ~stdout =
 
 let short_label = function
   | Workflow_scope_missing -> "workflow_scope_missing"
+  | Permission_denied -> "push_permission_denied"
   | Branch_protection -> "branch_protection"
   | Push_pattern_block -> "push_pattern_block"
   | Lease_violation -> "lease_violation"
@@ -139,8 +148,8 @@ let short_label = function
   | Local_state_unsafe _ -> "local_state_unsafe"
 
 let detail_excerpt = function
-  | Workflow_scope_missing | Branch_protection | Push_pattern_block
-  | Lease_violation | Merge_queue_locked ->
+  | Workflow_scope_missing | Permission_denied | Branch_protection
+  | Push_pattern_block | Lease_violation | Merge_queue_locked ->
       None
   | Hook_failure s | Unknown s ->
       if String.is_empty (String.strip s) then None else Some s
@@ -149,7 +158,7 @@ let detail_excerpt = function
       if String.is_empty reason then None else Some reason
 
 let is_permanent = function
-  | Workflow_scope_missing | Branch_protection | Push_pattern_block
-  | Hook_failure _ | Local_state_unsafe _ ->
+  | Workflow_scope_missing | Permission_denied | Branch_protection
+  | Push_pattern_block | Hook_failure _ | Local_state_unsafe _ ->
       true
   | Lease_violation | Merge_queue_locked | Unknown _ -> false

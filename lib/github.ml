@@ -185,6 +185,7 @@ let graphql_query =
       headRefName
       headRefOid
       baseRefName
+      baseRefOid
       stack { id }
       mergeCommit { oid }
       mergeQueueEntry {
@@ -417,6 +418,7 @@ type pull_request = {
       [@key "reviewDecision"] [@yojson.default None]
   head_ref_name : string option; [@key "headRefName"] [@yojson.default None]
   head_ref_oid : string option; [@key "headRefOid"] [@yojson.default None]
+  base_ref_oid : string option; [@key "baseRefOid"] [@yojson.default None]
   base_ref_name : string option; [@key "baseRefName"] [@yojson.default None]
   stack : stack_node option; [@yojson.default None]
   merge_commit : oid_obj option; [@key "mergeCommit"] [@yojson.default None]
@@ -747,6 +749,7 @@ let pr_state_of_pull_request ~owner ~merge_queue_required (pr : pull_request) :
     merge_queue_required;
     merge_queue_entry;
     head_branch = Option.map pr.head_ref_name ~f:Types.Branch.of_string;
+    base_oid = pr.base_ref_oid;
     head_oid = pr.head_ref_oid;
     merge_commit_sha = Option.bind pr.merge_commit ~f:(fun o -> o.oid);
     base_branch = Option.map pr.base_ref_name ~f:Types.Branch.of_string;
@@ -2178,6 +2181,27 @@ let thread_fixture_json comments =
       }
     }|}
     comments
+
+let%test "forge base revision remains distinct from head and missing evidence" =
+  List.for_all [ None; Some "base-sha" ] ~f:(fun base ->
+      let body = thread_fixture_json "[]" in
+      let body =
+        match base with
+        | None -> body
+        | Some sha ->
+            String.substr_replace_first body
+              ~pattern:"\"baseRefName\": \"main\""
+              ~with_:
+                (Printf.sprintf
+                   "\"baseRefName\": \"main\", \"baseRefOid\": \"%s\"" sha)
+      in
+      match
+        parse_response_json ~owner:"octo" (Yojson.Safe.from_string body)
+      with
+      | Error _ -> false
+      | Ok pr ->
+          Option.equal String.equal pr.base_oid base
+          && Option.equal String.equal pr.head_oid (Some "abc123"))
 
 let%test
     "review thread with replies collapses to one comment, opener identity, \

@@ -143,9 +143,12 @@ Anchors get recorded at three moments by `lib/runner_fiber_impl.ml`,
 mediated by `Worktree_plan` capture/record ops the executor interprets:
 
 - **Start** — `Worktree_plan.for_start` runs after the worktree is created
-  and before the LLM session begins. It fetches origin, reads
-  `origin/<base_branch>`'s tip, and records that SHA as the agent's
-  initial anchor via `Orchestrator.apply_anchor_events`. Closes the
+  and before the LLM session begins. It derives the initial anchor from the
+  checkpointed `Branch_reconcile` materialization receipt, using the exact
+  starting commit retained in private Git refs. A subsequent fetch cannot
+  replace that boundary with a newer remote tip. Adopting an existing branch
+  records its starting revision without claiming a proven replay boundary.
+  `Orchestrator.apply_anchor_events` maintains the legacy anchor view. Closes the
   production-bug case where a patch branched off a dep and never rebased
   before the dep squash-merged.
 - **Rebase (Ok / Noop)** — `Worktree_plan.for_rebase` captures

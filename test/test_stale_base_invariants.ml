@@ -344,7 +344,9 @@ let sbi_materializing_starts_are_fresh m =
           with
           | Patch_agent.Unmaterialized -> base_is_fresh m base
           | Patch_agent.Materialized _ -> true)
-      | Orchestrator.Rebase _ | Orchestrator.Respond _ -> true)
+      | Orchestrator.Rebase _ | Orchestrator.Respond _
+      | Orchestrator.Reconcile_branch _ ->
+          true)
 
 (** SBI-2 (liveness): any patch deferred by the freshness gate is making
     progress toward Allow — either a [Rebase] is queued/in-flight for its base

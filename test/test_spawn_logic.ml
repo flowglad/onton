@@ -149,7 +149,7 @@ let () =
                 (List.exists spawns ~f:(fun s ->
                      match Onton.Spawn_logic.classify s with
                      | `Respond p -> Patch_id.equal p pid
-                     | `Start _ | `Rebase _ -> false))
+                     | `Start _ | `Rebase _ | `Reconcile_branch _ -> false))
         with _ -> false)
   in
 
@@ -168,7 +168,7 @@ let () =
               match Onton.Spawn_logic.classify s with
               | `Start pid ->
                   not (Patch_agent.has_pr (Orchestrator.agent orch pid))
-              | `Respond _ | `Rebase _ -> true)
+              | `Respond _ | `Rebase _ | `Reconcile_branch _ -> true)
         with _ -> false)
   in
 
@@ -188,7 +188,7 @@ let () =
                       (Orchestrator.agent orch p).Patch_agent.merged)
                     ~has_pr:(fun p ->
                       Patch_agent.has_pr (Orchestrator.agent orch p))
-              | `Respond _ | `Rebase _ -> true)
+              | `Respond _ | `Rebase _ | `Reconcile_branch _ -> true)
         with _ -> false)
   in
 
@@ -221,7 +221,7 @@ let () =
                   List.for_all
                     (Graph.open_pr_deps graph pid ~has_merged)
                     ~f:(open_dep_review_ready orch)
-              | `Respond _ | `Rebase _ -> true)
+              | `Respond _ | `Rebase _ | `Reconcile_branch _ -> true)
         with _ -> false)
   in
 
@@ -242,7 +242,7 @@ let () =
             List.filter_map spawns ~f:(fun s ->
                 match Onton.Spawn_logic.classify s with
                 | `Start pid -> Some pid
-                | `Respond _ | `Rebase _ -> None)
+                | `Respond _ | `Rebase _ | `Reconcile_branch _ -> None)
           in
           let graph = Orchestrator.graph orch in
           let has_merged p = (Orchestrator.agent orch p).Patch_agent.merged in
@@ -285,7 +285,7 @@ let () =
                   List.for_all
                     (Graph.open_pr_deps graph pid ~has_merged)
                     ~f:(open_dep_review_ready orch)
-              | `Respond _ | `Rebase _ -> true)
+              | `Respond _ | `Rebase _ | `Reconcile_branch _ -> true)
         with _ -> false)
   in
 
@@ -312,7 +312,7 @@ let () =
             List.filter_map spawns ~f:(fun s ->
                 match Onton.Spawn_logic.classify s with
                 | `Start pid -> Some pid
-                | `Respond _ | `Rebase _ -> None)
+                | `Respond _ | `Rebase _ | `Reconcile_branch _ -> None)
           in
           List.for_all (Graph.all_patch_ids graph) ~f:(fun pid ->
               let a = Orchestrator.agent orch pid in
@@ -346,7 +346,7 @@ let () =
           List.for_all spawns ~f:(fun s ->
               match Onton.Spawn_logic.classify s with
               | `Respond pid -> Patch_agent.has_pr (Orchestrator.agent orch pid)
-              | `Start _ | `Rebase _ -> true)
+              | `Start _ | `Rebase _ | `Reconcile_branch _ -> true)
         with _ -> false)
   in
 
@@ -371,7 +371,9 @@ let () =
                 List.find spawns ~f:(fun s ->
                     match s with
                     | Orchestrator.Respond (p, _) -> Patch_id.equal p pid
-                    | Orchestrator.Start _ | Orchestrator.Rebase _ -> false)
+                    | Orchestrator.Start _ | Orchestrator.Rebase _
+                    | Orchestrator.Reconcile_branch _ ->
+                        false)
               in
               match respond_for_pid with
               | Some (Orchestrator.Respond (_, k)) -> (
@@ -379,7 +381,10 @@ let () =
                   match expected with
                   | Some e -> Operation_kind.equal k e
                   | None -> false)
-              | Some (Orchestrator.Start _ | Orchestrator.Rebase _) -> false
+              | Some
+                  ( Orchestrator.Start _ | Orchestrator.Rebase _
+                  | Orchestrator.Reconcile_branch _ ) ->
+                  false
               | None ->
                   (* No respond is ok whenever Respond preconditions fail *)
                   (not (Patch_agent.has_pr a))
@@ -405,7 +410,9 @@ let () =
                  match s with
                  | Orchestrator.Respond (_, k) ->
                      Operation_kind.equal k Operation_kind.Rebase
-                 | Orchestrator.Start _ | Orchestrator.Rebase _ -> false))
+                 | Orchestrator.Start _ | Orchestrator.Rebase _
+                 | Orchestrator.Reconcile_branch _ ->
+                     false))
         with _ -> false)
   in
 

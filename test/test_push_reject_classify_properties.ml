@@ -133,6 +133,7 @@ let prop_generic_hook =
       with
       | Push_reject_classify.Hook_failure _ -> true
       | Push_reject_classify.Workflow_scope_missing
+      | Push_reject_classify.Permission_denied
       | Push_reject_classify.Branch_protection
       | Push_reject_classify.Push_pattern_block
       | Push_reject_classify.Lease_violation
@@ -146,6 +147,7 @@ let prop_empty_stderr =
       match Push_reject_classify.classify ~stderr:"" ~stdout:"" with
       | Push_reject_classify.Unknown s -> String.is_empty s
       | Push_reject_classify.Workflow_scope_missing
+      | Push_reject_classify.Permission_denied
       | Push_reject_classify.Branch_protection
       | Push_reject_classify.Push_pattern_block
       | Push_reject_classify.Lease_violation
@@ -196,6 +198,7 @@ let prop_permanence_matches_variant =
       let expected =
         match r with
         | Push_reject_classify.Workflow_scope_missing
+        | Push_reject_classify.Permission_denied
         | Push_reject_classify.Branch_protection
         | Push_reject_classify.Push_pattern_block
         | Push_reject_classify.Hook_failure _
@@ -256,6 +259,7 @@ let prop_unknown_truncation =
       | Push_reject_classify.Unknown s -> String.length s <= 200
       | Push_reject_classify.Hook_failure s -> String.length s <= 200
       | Push_reject_classify.Workflow_scope_missing
+      | Push_reject_classify.Permission_denied
       | Push_reject_classify.Branch_protection
       | Push_reject_classify.Push_pattern_block
       | Push_reject_classify.Lease_violation
@@ -354,11 +358,40 @@ let prop_porcelain_hook_decline =
         (Push_reject_classify.Hook_failure reason)
       && Push_reject_classify.is_permanent rejection)
 
+let prop_write_permission =
+  Test.make
+    ~name:"explicit write denial is permanent even before porcelain output"
+    Gen.(
+      pair bool
+        (oneof_list
+           [
+             "remote: Write access to repository not granted.";
+             "remote: Permission to owner/repo.git denied to user.";
+             "remote: error: You do not have write access to this repository.";
+             "remote: You are not allowed to push code to this project.";
+           ]))
+    (fun (porcelain, stderr) ->
+      let stdout =
+        if porcelain then
+          "!\tpatch:patch\t[remote rejected] (permission denied)\n"
+        else ""
+      in
+      let rejection = Push_reject_classify.classify ~stderr ~stdout in
+      Push_reject_classify.equal_rejection rejection Permission_denied
+      && Push_reject_classify.is_permanent rejection
+      && String.equal
+           (Push_reject_classify.short_label rejection)
+           "push_permission_denied"
+      && Worktree_parser.equal_push_result
+           (Worktree_parser.classify_push_result ~code:128 ~stdout ~stderr)
+           (Worktree_parser.Push_rejected Permission_denied))
+
 let () =
   List.iter
     ~f:(fun t -> QCheck2.Test.check_exn t)
     [
       prop_totality;
+      prop_write_permission;
       prop_workflow_scope;
       prop_branch_protection;
       prop_push_pattern;

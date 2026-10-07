@@ -23,6 +23,9 @@ let gen_op : op QCheck2.Gen.t =
     [
       QCheck2.Gen.return Ensure_worktree;
       QCheck2.Gen.return Fetch_origin;
+      QCheck2.Gen.map
+        (fun slot -> Capture_materialization { slot })
+        (QCheck2.Gen.int_range 0 4);
       QCheck2.Gen.map2
         (fun ref_name slot -> Capture_anchor { ref_name; slot })
         gen_ref_name
@@ -44,7 +47,8 @@ let reference_invariant (plan : t) =
     | [] -> true
     | Ensure_worktree :: rest -> loop true rest
     | Fetch_origin :: rest -> ensured && loop ensured rest
-    | Capture_anchor _ :: rest -> ensured && loop ensured rest
+    | Capture_materialization _ :: rest | Capture_anchor _ :: rest ->
+        ensured && loop ensured rest
     | Rebase_onto _ :: rest -> ensured && loop ensured rest
     | Record_anchor_on_success _ :: rest -> ensured && loop ensured rest
   in
@@ -53,8 +57,8 @@ let reference_invariant (plan : t) =
 let first_op_is_ensure_worktree (plan : t) =
   match plan with
   | Ensure_worktree :: _ -> true
-  | ( Fetch_origin | Capture_anchor _ | Rebase_onto _
-    | Record_anchor_on_success _ )
+  | ( Fetch_origin | Capture_materialization _ | Capture_anchor _
+    | Rebase_onto _ | Record_anchor_on_success _ )
     :: _
   | [] ->
       false
@@ -62,22 +66,16 @@ let first_op_is_ensure_worktree (plan : t) =
 let plan_has_rebase_target (plan : t) target =
   List.exists plan ~f:(function
     | Rebase_onto t -> Branch.equal t target
-    | Ensure_worktree | Fetch_origin | Capture_anchor _
-    | Record_anchor_on_success _ ->
-        false)
-
-let plan_has_capture_for_slot (plan : t) ref_name slot =
-  List.exists plan ~f:(function
-    | Capture_anchor { ref_name = r; slot = s } ->
-        String.equal r ref_name && Int.equal s slot
-    | Ensure_worktree | Fetch_origin | Rebase_onto _
-    | Record_anchor_on_success _ ->
+    | Ensure_worktree | Fetch_origin | Capture_materialization _
+    | Capture_anchor _ | Record_anchor_on_success _ ->
         false)
 
 let plan_has_record_for (plan : t) base =
   List.exists plan ~f:(function
     | Record_anchor_on_success { base = b; _ } -> Branch.equal b base
-    | Ensure_worktree | Fetch_origin | Capture_anchor _ | Rebase_onto _ -> false)
+    | Ensure_worktree | Fetch_origin | Capture_materialization _
+    | Capture_anchor _ | Rebase_onto _ ->
+        false)
 
 let () =
   let open QCheck2 in
@@ -114,16 +112,19 @@ let () =
           not
             (List.exists (for_start ~base ~materialized:false) ~f:(function
               | Rebase_onto _ -> true
-              | Ensure_worktree | Fetch_origin | Capture_anchor _
-              | Record_anchor_on_success _ ->
+              | Ensure_worktree | Fetch_origin | Capture_materialization _
+              | Capture_anchor _ | Record_anchor_on_success _ ->
                   false)));
       Test.make
-        ~name:"for_start: includes Capture_anchor for origin/<base> in slot 0"
+        ~name:"for_start: initial anchor uses materialization provenance"
         gen_branch (fun base ->
-          plan_has_capture_for_slot
+          equal
             (for_start ~base ~materialized:false)
-            ("origin/" ^ Branch.to_string base)
-            0);
+            [
+              Ensure_worktree;
+              Capture_materialization { slot = 0 };
+              Record_anchor_on_success { slot = 0; base };
+            ]);
       Test.make ~name:"for_start: includes Record_anchor_on_success for base"
         gen_branch (fun base ->
           plan_has_record_for (for_start ~base ~materialized:false) base);

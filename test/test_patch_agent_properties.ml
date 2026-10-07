@@ -10,6 +10,53 @@ let agent id =
 let tests =
   [
     QCheck2.Test.make
+      ~name:
+        "branch dispatch preserves backend completion across busy lifecycles"
+      ~count:200
+      QCheck2.Gen.(pair bool (list bool))
+      (fun (implemented, activity) ->
+        let initial = agent "patch" in
+        let initial =
+          if implemented then
+            Patch_agent.start initial ~base_branch:(Branch.of_string "main")
+          else initial
+        in
+        let completion =
+          Session_result.
+            {
+              session_uuid = "completed-session";
+              delivery_mode = Start;
+              kind = None;
+              message_id = None;
+              result = Session_ok;
+              head = None;
+              guidance = [];
+              turn_accepted = true;
+            }
+        in
+        let initial =
+          Patch_agent.record_session_completion initial completion
+        in
+        let initial, _ =
+          Patch_agent.reconcile_branch initial
+            Branch_reconcile.(
+              Request
+                { base = "main"; policy = Rewrite; purpose = Reconcile_base })
+        in
+        let final =
+          List.fold activity ~init:initial ~f:(fun a running ->
+              if running then Patch_agent.begin_branch_reconciliation a
+              else Patch_agent.complete a)
+          |> Patch_agent.complete
+        in
+        (not final.Patch_agent.busy)
+        && Bool.equal initial.Patch_agent.has_session
+             final.Patch_agent.has_session
+        && Branch_reconcile.equal initial.Patch_agent.branch_reconcile
+             final.Patch_agent.branch_reconcile
+        && Option.equal Session_result.equal_completion
+             final.Patch_agent.session_completion (Some completion));
+    QCheck2.Test.make
       ~name:"WONTDO normalizes arbitrary reasons and is idempotent" ~count:500
       QCheck2.Gen.string (fun reason ->
         let a = agent "patch" in

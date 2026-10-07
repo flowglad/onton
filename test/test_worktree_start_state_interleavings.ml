@@ -40,7 +40,9 @@ let child_start_action orch ~patches ~child =
   Patch_controller.plan_actions orch ~patches
   |> List.find ~f:(function
     | Orchestrator.Start (patch_id, _) -> Patch_id.equal patch_id child
-    | Orchestrator.Respond _ | Orchestrator.Rebase _ -> false)
+    | Orchestrator.Respond _ | Orchestrator.Rebase _
+    | Orchestrator.Reconcile_branch _ ->
+        false)
 
 let child_start_planned orch ~patches ~child =
   Option.is_some (child_start_action orch ~patches ~child)
@@ -354,9 +356,16 @@ let prop_materialized_retry_preserves_rebase_anchor =
                 && Option.equal Branch.equal
                      child_agent.Patch_agent.branch_rebased_onto
                      (Some original_base)
-            | Some (Orchestrator.Respond _ | Orchestrator.Rebase _) | None ->
+            | Some
+                ( Orchestrator.Respond _ | Orchestrator.Rebase _
+                | Orchestrator.Reconcile_branch _ )
+            | None ->
                 false)
-        | Some (Orchestrator.Respond _ | Orchestrator.Rebase _) | None -> false
+        | Some
+            ( Orchestrator.Respond _ | Orchestrator.Rebase _
+            | Orchestrator.Reconcile_branch _ )
+        | None ->
+            false
       with _ -> false)
 
 let () =

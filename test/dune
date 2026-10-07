@@ -825,3 +825,44 @@
  (name test_session_prompt_properties)
  (modules test_session_prompt_properties)
  (libraries onton_core qcheck-core qcheck-core.runner))
+
+(test
+ (name test_branch_reconcile_properties)
+ (modules test_branch_reconcile_properties)
+ (flags (:standard -w -40-42))
+ (libraries onton_core qcheck-core qcheck-core.runner))
+
+(test
+ (name test_git_observation_properties)
+ (modules test_git_observation_properties)
+ (flags (:standard -w -40-42))
+ (libraries onton_core qcheck-core qcheck-core.runner))
+
+(test
+ (name test_branch_reconcile_git)
+ (modules test_branch_reconcile_git)
+ (flags (:standard -w -40-42))
+ (libraries onton onton_core onton_test_support eio_main unix)
+ (deps (package onton))
+ (action
+  (setenv ONTON_SETSID_EXEC
+   %{bin:onton-setsid-exec}
+   (run %{test}))))
+
+(test
+ (name test_branch_reconcile_outbox)
+ (modules test_branch_reconcile_outbox)
+ (flags (:standard -w -40-42))
+ (libraries onton onton_core qcheck-core qcheck-core.runner))
+
+(test
+ (name test_session_result_properties)
+ (modules test_session_result_properties)
+ (flags (:standard -w -40-42))
+ (libraries onton_core qcheck-core qcheck-core.runner))
+
+(test
+ (name test_branch_reconcile_ownership)
+ (modules test_branch_reconcile_ownership)
+ (flags (:standard -w -40-42))
+ (libraries onton onton_core eio_main unix))

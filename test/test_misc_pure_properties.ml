@@ -81,6 +81,7 @@ let sample_pr_state ~merge_queue_required ~merge_queue_entry =
       merge_queue_required;
       merge_queue_entry;
       head_branch = None;
+      base_oid = None;
       head_oid = None;
       merge_commit_sha = None;
       base_branch = None;

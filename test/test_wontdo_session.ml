@@ -3,10 +3,20 @@
 open Base
 open Onton
 open Onton_core.Types
+module B = Onton_core.Branch_reconcile
 
-let head = ref "base"
+let sha value =
+  match B.Commit.make value with Some sha -> sha | None -> assert false
+
+exception Cancel_verified
+
+let head = ref "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 let pushes = ref 0
-let base_head = ref "base"
+let remote_head = ref None
+let base_head = ref "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+let before_push = ref (fun () -> ())
+let fail_push = ref false
+let adopt_branch = ref false
 
 module Fake_worktree : Worktree.S = struct
   let integrate ~root_path:_ ~root_branch:_ ~descendant_branch:_ ~head_sha:_ =
@@ -42,28 +52,96 @@ module Fake_worktree : Worktree.S = struct
     else Some !head
 
   let is_ancestor ~path:_ ~ancestor ~descendant =
-    String.equal ancestor "base" && String.equal descendant "advanced-base"
+    String.equal ancestor "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    && String.equal descendant "cccccccccccccccccccccccccccccccccccccccc"
 
   let read_in_progress_conflict_info ~path:_ ~target:_ ~project_name:_
       ~ancestor_ids:_ =
     assert false
 
   let force_push_with_lease ~path:_ ~branch:_ ~base:_ =
+    !before_push ();
     Int.incr pushes;
-    if String.equal !head "base" then Worktree.Push_no_commits
+    if !fail_push then Worktree.Push_error "transport unavailable"
+    else if String.equal !head "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" then
+      Worktree.Push_no_commits
     else Worktree.Push_ok
 
   let commit_gameplan ~path:_ ~publication:_ ~message:_ = assert false
+
+  let materialization ~path:_ ~project_name:_ ~branch:_ =
+    let head = sha "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" in
+    Ok
+      (Some (if !adopt_branch then B.Adopted_branch head else B.New_branch head))
+
+  let reconcile ~path:_ ~project_name:_ ~branch:_ ~operation:_ command =
+    let observation () =
+      B.
+        {
+          source = sha !head;
+          target = sha !head;
+          remote = Option.map !remote_head ~f:sha;
+          boundary = Recorded (sha "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+          topology = Unproven;
+          clean = true;
+          sequencer = None;
+          conflicts = 0;
+          target_included = true;
+          base_contains_source =
+            String.equal !head !base_head
+            || is_ancestor ~path:"fixture" ~ancestor:!head
+                 ~descendant:!base_head;
+          head = sha !head;
+          completed_integration = false;
+          destination =
+            Onton_core.Branch_reconcile.Remote_id.of_destination
+              "fixture-origin";
+        }
+    in
+    match command.B.kind with
+    | B.Observe -> B.Observed (observation ())
+    | B.Inspect -> B.Inspected (observation ())
+    | B.Pin _ -> B.Pinned
+    | B.Publish _ ->
+        !before_push ();
+        Int.incr pushes;
+        if !fail_push then
+          B.Retryable { reason = "transport unavailable"; retry_after = None }
+        else (
+          remote_head := Some !head;
+          B.Published)
+    | B.Confirm candidate ->
+        B.Remote
+          {
+            sha = Option.map !remote_head ~f:sha;
+            topology =
+              (if
+                 Option.equal B.Commit.equal
+                   (Option.map !remote_head ~f:sha)
+                   (Some candidate)
+               then Equal
+               else Unproven);
+          }
+    | B.Commit_merge _ | B.Plan_remote_replay _ | B.Checkout_remote _
+    | B.Verify_recovery | B.Integrate _ | B.Continue _ ->
+        B.Permanent "unexpected integration in session fixture"
+
   let rebase_in_progress ~path:_ = assert false
 end
 
-let run_case ?(detect_pr = false) ?(advance_base = false)
+let run_case ?(adopted = false) ?(cancel = false) ?(push_failure = false)
+    ?(detect_pr = false) ?(advance_base = false)
     ?(delivery_mode = Onton_core.Patch_decision.Start) ?(kind = None)
     ?(branch_role = `Mainline) ?resume_session ?(prompt = "Implement the patch")
     env ~content ~commit ~expect_opt_out =
-  head := "base";
-  base_head := if advance_base then "advanced-base" else "base";
+  head := "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+  base_head :=
+    if advance_base then "cccccccccccccccccccccccccccccccccccccccc"
+    else "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
   pushes := 0;
+  remote_head := None;
+  fail_push := push_failure;
+  adopt_branch := adopted;
   let root = Stdlib.Filename.temp_dir "onton-wontdo-" "" in
   let old = Stdlib.Sys.getenv_opt "ONTON_DATA_DIR" in
   Unix.putenv "ONTON_DATA_DIR" root;
@@ -186,6 +264,26 @@ let run_case ?(detect_pr = false) ?(advance_base = false)
         let fetch_mutex = Eio.Mutex.create ()
       end in
       let module SD = Session_driver.Make (Fake_worktree) (Env) in
+      (before_push :=
+         fun () ->
+           match
+             Persistence.load
+               ~path:(Project_store.snapshot_path gameplan.project_name)
+           with
+           | Error message -> failwith message
+           | Ok snapshot -> (
+               match
+                 (Orchestrator.agent snapshot.orchestrator patch_id)
+                   .session_completion
+               with
+               | None -> failwith "push preceded durable backend completion"
+               | Some completion ->
+                   assert (
+                     Onton_core.Session_result.equal completion.result
+                       Session_ok);
+                   assert (
+                     Option.equal String.equal completion.head (Some !head))));
+
       let path =
         Project_store.wontdo_artifact_path ~project_name:gameplan.project_name
           ~patch_id
@@ -213,7 +311,11 @@ let run_case ?(detect_pr = false) ?(advance_base = false)
                   on_event
                     (Stream_event.Text_delta
                        "https://github.com/test/test/pull/123\n");
-                if commit then head := "commit";
+                if commit then (
+                  head := "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+                  on_event (Stream_event.Text_delta "Committed patch work.\n"));
+                if cancel then
+                  raise (Eio.Cancel.Cancelled (Failure "test cancellation"));
                 {
                   exit_code = 0;
                   stdout = "";
@@ -252,16 +354,57 @@ let run_case ?(detect_pr = false) ?(advance_base = false)
                 ();
             ]
           (fun () ->
-            SD.run ~kind ~delivery_mode ~patch_id
-              ~prompt:
-                (SD.create_prompt
-                   ~context:(fun ~worktree_path:_ -> "")
-                   ~turn:prompt)
-              ~agent
-              ~on_pr_detected:(fun pr_number ->
-                Runtime.update_orchestrator runtime (fun orch ->
-                    Orchestrator.set_pr_number orch patch_id pr_number))
-              ~backend ~complexity:None)
+            try
+              SD.run ~kind ~delivery_mode ~patch_id
+                ~prompt:
+                  (SD.create_prompt
+                     ~context:(fun ~worktree_path:_ -> "")
+                     ~turn:prompt)
+                ~agent
+                ~on_pr_detected:(fun pr_number ->
+                  Runtime.update_orchestrator runtime (fun orch ->
+                      Orchestrator.set_pr_number orch patch_id pr_number))
+                ~backend ~complexity:None
+            with Eio.Cancel.Cancelled _ as exn ->
+              if not cancel then raise exn;
+              assert (!pushes = 0);
+              let restored =
+                Result.ok_or_failwith
+                  (Persistence.load
+                     ~path:(Project_store.snapshot_path gameplan.project_name))
+              in
+              let completed =
+                Orchestrator.agent restored.orchestrator patch_id
+              in
+              (match
+                 ( completed.session_completion,
+                   Onton_core.Branch_reconcile.operation
+                     completed.branch_reconcile )
+               with
+              | Some receipt, Some operation ->
+                  assert (Option.is_none receipt.head);
+                  assert (
+                    Onton_core.Branch_reconcile.equal_purpose
+                      operation.intent.purpose
+                      (Publish_session receipt.session_uuid));
+                  assert (
+                    Onton_core.Branch_reconcile.is_pending
+                      completed.branch_reconcile);
+                  assert (
+                    List.exists
+                      (Orchestrator.all_messages restored.orchestrator)
+                      ~f:(fun message ->
+                        Orchestrator.equal_message_status
+                          (Orchestrator.message_status message)
+                          Pending
+                        && Orchestrator.equal_action
+                             (Orchestrator.message_action message)
+                             (Reconcile_branch (patch_id, operation.id))))
+              | _ ->
+                  failwith
+                    "interrupted completion and publication were not \
+                     checkpointed together");
+              raise Cancel_verified)
       in
       let delivered_prompt, delivered_resume =
         match !delivered with
@@ -405,7 +548,7 @@ let run_case ?(detect_pr = false) ?(advance_base = false)
                 ~on_event:_
               ->
                 assert (not (Stdlib.Sys.file_exists path));
-                head := "commit";
+                head := "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
                 {
                   Llm_backend.exit_code = 0;
                   stdout = "";
@@ -435,17 +578,112 @@ let run_case ?(detect_pr = false) ?(advance_base = false)
                  (Orchestrator.agent snap.orchestrator patch_id).wontdo_reason))))
       else (
         assert (Option.is_none after.wontdo_reason);
-        assert (!pushes = 1);
-        if commit then (
+        assert (!pushes = if commit then 1 else 0);
+        if adopted && (not commit) && not detect_pr then (
+          assert (Poly.equal result.disposition `No_commits);
+          match after.session_completion with
+          | None -> assert false
+          | Some completion ->
+              assert (
+                not
+                  (Onton_core.Session_result.resume_start ~delivery_mode:Start
+                     ~guidance:[] ~publication:after.branch_reconcile completion)));
+        if commit && push_failure then (
+          assert (Poly.equal result.disposition `Retry_push);
+          match after.session_completion with
+          | None -> assert false
+          | Some completion ->
+              assert (
+                Onton_core.Session_result.equal completion.result Session_ok);
+              assert (
+                Option.equal String.equal completion.head
+                  (Some "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"));
+              assert (after.push_failure_count = 0);
+              fail_push := false;
+              let recovered =
+                Branch_reconcile_runner.run ~runtime ~patch_id
+                  ~persist:
+                    (Persistence.save_snapshot
+                       ~path:(Project_store.snapshot_path gameplan.project_name))
+                  ~now:(fun () -> Eio.Time.now Env.clock)
+                  ~execute:
+                    (Fake_worktree.reconcile ~path:"fixture"
+                       ~project_name:gameplan.project_name ~branch:agent.branch)
+                  (B.Tick (Eio.Time.now Env.clock +. 1000.))
+              in
+              assert (Poly.equal recovered Branch_reconcile_runner.Idle);
+              assert (!pushes = 2);
+              Runtime.update_orchestrator runtime (fun orch ->
+                  let orch =
+                    Orchestrator.apply_start_outcome orch patch_id
+                      Orchestrator.Start_failed
+                  in
+                  Orchestrator.fire orch (Orchestrator.Start (patch_id, main)));
+              let resumed =
+                Runtime.read runtime (fun snap ->
+                    Orchestrator.agent snap.orchestrator patch_id)
+              in
+              let backend =
+                {
+                  backend with
+                  Llm_backend.run_streaming =
+                    (fun ~project_name:_
+                      ~cwd:_
+                      ~patch_id:_
+                      ~prompt:_
+                      ~resume_session:_
+                      ~session_uuid:_
+                      ~complexity:_
+                      ~on_event:_
+                    -> failwith "implementation ran twice");
+                }
+              in
+              let continued =
+                SD.run ~kind ~delivery_mode ~patch_id
+                  ~prompt:
+                    (SD.create_prompt
+                       ~context:(fun ~worktree_path:_ ->
+                         failwith "implementation prompt rendered twice")
+                       ~turn:prompt)
+                  ~agent:resumed
+                  ~on_pr_detected:(fun _ -> assert false)
+                  ~backend ~complexity:None
+              in
+              assert (Poly.equal continued.disposition `Ok);
+              assert (!pushes = 2);
+              remote_head := None;
+              let continued =
+                SD.run ~kind ~delivery_mode ~patch_id
+                  ~prompt:
+                    (SD.create_prompt
+                       ~context:(fun ~worktree_path:_ ->
+                         failwith
+                           "implementation rendered on deleted-remote retry")
+                       ~turn:prompt)
+                  ~agent:resumed
+                  ~on_pr_detected:(fun _ -> assert false)
+                  ~backend ~complexity:None
+              in
+              assert (Poly.equal continued.disposition `Ok);
+              assert (!pushes = 3);
+              assert (Option.equal String.equal !remote_head (Some !head)))
+        else if commit then (
           assert (Poly.equal result.disposition `Ok);
           assert (after.no_commits_push_count = 0);
           assert (not (Onton_core.Patch_agent.needs_intervention after));
           assert (
             Option.equal String.equal after.expected_remote_head_oid
-              (Some "commit")))))
+              (Some "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb")))))
 
 let () =
   Eio_main.run (fun env ->
+      (try
+         run_case env ~cancel:true ~content:"" ~commit:true
+           ~expect_opt_out:false;
+         failwith "cancelled backend unexpectedly completed"
+       with Cancel_verified -> ());
+      run_case env ~push_failure:true ~content:"" ~commit:true
+        ~expect_opt_out:false;
       run_case env
         ~content:
           "  # WONTDO\n\nThis patch is unnecessary.\n\nPrerequisite missing.\n"
@@ -459,6 +697,8 @@ let () =
         ~commit:false ~expect_opt_out:true;
       List.iter [ `Mainline; `Integration_root; `Feature_descendant ]
         ~f:(fun branch_role ->
+          run_case env ~adopted:true ~branch_role ~content:"" ~commit:false
+            ~expect_opt_out:false;
           List.iter [ None; Some "existing-thread" ] ~f:(fun resume_session ->
               List.iter
                 [

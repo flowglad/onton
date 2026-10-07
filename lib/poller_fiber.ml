@@ -134,6 +134,20 @@ module Make (Forge : Forge.S) (W : Worktree.S) (Env : Poller_env.S) = struct
     let main = Env.main_branch in
     let poll_interval = Env.poll_interval in
     let repo_root = Env.repo_root in
+    let direct_remote_head (agent : Patch_agent.t) =
+      let io =
+        Branch_reconcile_executor.make_io ~process_mgr ~clock ~path:repo_root
+      in
+      match
+        Branch_reconcile_executor.remote_head io
+          ~branch:(Branch.to_string agent.branch)
+      with
+      | Ok head -> Option.map head ~f:Branch_reconcile.Commit.to_string
+      | Error reason ->
+          Runtime_logging.log_event runtime ~patch_id:agent.patch_id
+            ("Remote head confirmation unavailable: " ^ reason);
+          None
+    in
     let find_pr_number = Env.find_pr_number in
     let register_pr_number = Env.register_pr_number in
     let unregister_pr_number = Env.unregister_pr_number in
@@ -468,6 +482,21 @@ module Make (Forge : Forge.S) (W : Worktree.S) (Env : Poller_env.S) = struct
                 None
             | Poll_cycle.Apply_pr_state
                 { pr_state; poll_result; ci_checks_truncated } ->
+                let confirmed_remote_head =
+                  let mode, agent =
+                    Runtime.read runtime (fun snap ->
+                        let orch = snap.Runtime.orchestrator in
+                        ( Orchestrator.execution_mode orch,
+                          Orchestrator.find_agent orch patch_id ))
+                  in
+                  Option.bind agent ~f:(fun agent ->
+                      if
+                        Poller.has_conflict poll_result
+                        || Execution_mode.observation_pending mode agent
+                             poll_result.Poller.head_oid
+                      then direct_remote_head agent
+                      else None)
+                in
                 (* Augment with findings from every configured review backend.
                  Failures inside [poll_review_backends] are logged but
                  non-fatal. *)
@@ -575,6 +604,7 @@ module Make (Forge : Forge.S) (W : Worktree.S) (Env : Poller_env.S) = struct
                 Some
                   ( patch_id,
                     observation,
+                    confirmed_remote_head,
                     merge_queue_ejection_confirmed,
                     failed_ci,
                     ci_checks_truncated ))
@@ -582,7 +612,32 @@ module Make (Forge : Forge.S) (W : Worktree.S) (Env : Poller_env.S) = struct
       (* Phase 2: Single atomic update — apply all poll results + reconcile.
        This prevents the runner from seeing an intermediate state where
        poll results are applied but the reconciler hasn't run yet. *)
-      let poll_events, per_patch_sides, reconcile_logs =
+      let terminal_patch_ids =
+        let patch_ids =
+          List.filter_map observations ~f:(fun (patch_id, obs, _, _, _, _) ->
+              if obs.Patch_controller.poll_result.merged then Some patch_id
+              else None)
+          |> List.dedup_and_sort ~compare:Patch_id.compare
+        in
+        Runtime.read runtime (fun snap ->
+            (* Integration acquires its descendant before the root. The root
+               also owns root_write_mutex, so it must always be acquired last. *)
+            let descendants, roots =
+              List.partition_tf patch_ids ~f:(fun patch_id ->
+                  not
+                    (Orchestrator.is_integration_root snap.Runtime.orchestrator
+                       patch_id))
+            in
+            descendants @ roots)
+      in
+      let rec with_terminal_ownership patch_ids f =
+        match patch_ids with
+        | [] -> f ()
+        | patch_id :: rest ->
+            Runtime.with_patch_ownership runtime ~patch_id (fun _ ->
+                with_terminal_ownership rest f)
+      in
+      let apply_poll_results () =
         Runtime.update_orchestrator_returning runtime (fun orch ->
             (* Apply all poll results *)
             let orch, poll_events, sides =
@@ -591,6 +646,7 @@ module Make (Forge : Forge.S) (W : Worktree.S) (Env : Poller_env.S) = struct
                     (orch, poll_events, sides)
                     ( patch_id,
                       obs,
+                      confirmed_remote_head,
                       merge_queue_ejection_confirmed,
                       failed_ci,
                       ci_truncated )
@@ -600,7 +656,8 @@ module Make (Forge : Forge.S) (W : Worktree.S) (Env : Poller_env.S) = struct
                   | Some agent_before ->
                       let orch, log_entries, newly_blocked =
                         Patch_controller.apply_poll_result
-                          ~merge_queue_ejection_confirmed orch patch_id obs
+                          ?confirmed_remote_head ~merge_queue_ejection_confirmed
+                          orch patch_id obs
                       in
                       let agent_after = Orchestrator.agent orch patch_id in
                       let log_messages =
@@ -735,6 +792,9 @@ module Make (Forge : Forge.S) (W : Worktree.S) (Env : Poller_env.S) = struct
                   | Reconciler.Start_operation _ -> orch)
             in
             (orch, (List.rev poll_events, List.rev sides, List.rev !rec_logs)))
+      in
+      let poll_events, per_patch_sides, reconcile_logs =
+        with_terminal_ownership terminal_patch_ids apply_poll_results
       in
       (* Phase 3: Side effects — outside the lock *)
       List.iter poll_events

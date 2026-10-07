@@ -100,7 +100,8 @@ type start_delivery =
 
 (** The action that initiated a backend turn. Unlike PR presence, this remains
     stable when a Start discovers and associates its PR during the session. *)
-type delivery_mode = Start | Respond [@@deriving show, eq, sexp_of, compare]
+type delivery_mode = Session_result.delivery_mode = Start | Respond
+[@@deriving show, eq, sexp_of, compare]
 
 val session_prompt_requires_patch_instructions :
   delivery_mode:delivery_mode -> kind:Types.Operation_kind.t option -> bool

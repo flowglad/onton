@@ -82,6 +82,8 @@ let make_poll ~has_conflict ~merged ~checks_passing ~is_draft ~queue =
     merge_state =
       (if has_conflict then Pr_state.Conflicting else Pr_state.Mergeable);
     merge_ready = false;
+    base_branch = None;
+    base_oid = None;
     head_oid = None;
     review_decision = None;
     unresolved_comment_count = 0;

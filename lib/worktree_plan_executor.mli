@@ -20,8 +20,9 @@ module type S = sig
         later [Record_anchor_on_success] is NOT executed.
       - [Ok] and [Noop] both allow the plan to continue. A
         [Record_anchor_on_success] following a successful [Rebase_onto] (or
-        appearing in a [Capture_anchor]-only plan such as [for_start]) emits its
-        event. *)
+        appearing in a [Capture_materialization] plan such as [for_start]) emits
+        its event. Materialization anchors retain their local evidence source.
+  *)
 end
 
 module Make (_ : Worktree.S) (_ : Run_env.S) : S
