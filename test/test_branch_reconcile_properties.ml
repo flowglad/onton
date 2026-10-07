@@ -99,6 +99,36 @@ let unverified =
 let tests =
   [
     QCheck2.Test.make
+      ~name:"BR repeated publication confirmations preserve receipt history"
+      ~count:200
+      Gen.(pair (int_range 1 30) bool)
+      (fun (count, restart) ->
+        let initial = settled () in
+        let receipts = B.publications initial in
+        let rec confirm state remaining =
+          if remaining = 0 then
+            B.publications state = receipts
+            && B.publication_status state = `Published
+          else
+            let state =
+              if restart then
+                match B.decode (B.yojson_of_t state) with
+                | Ok state -> Some state
+                | Error _ -> None
+              else Some state
+            in
+            match state with
+            | None -> false
+            | Some state ->
+                let state, _ = B.step state B.Reconfirm_publication in
+                let state, _ =
+                  reply state
+                    (B.Remote { sha = Some candidate; topology = Equal })
+                in
+                B.publications state = receipts && confirm state (remaining - 1)
+        in
+        confirm initial count);
+    QCheck2.Test.make
       ~name:"BR a retained candidate is not publication confirmation" ~count:100
       Gen.bool (fun reconfirm ->
         let state =

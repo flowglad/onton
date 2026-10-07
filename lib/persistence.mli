@@ -46,7 +46,9 @@ val patch_agent_of_yojson :
   Yojson.Safe.t ->
   (Patch_agent.t, string) result
 (** Parse a patch agent from the current JSON schema. [~gameplan] is used to
-    derive the branch for old snapshots that lack a ["branch"] key. *)
+    derive the branch for old snapshots that lack a ["branch"] key.
+    [~main_branch] supplies the default reconciliation base for legacy snapshots
+    lacking both [base_branch] and a [branch_reconcile] checkpoint. *)
 
 val write_file_atomically :
   path:string -> content:string -> (unit, string) result

@@ -81,6 +81,43 @@ let () =
       ~clock:(Eio.Stdenv.clock env) ~path:dir
   in
   List.iter
+    (fun missing_base ->
+      Git.with_temp_repo (fun fetch_remote ->
+          ignore (commit fetch_remote "base" "base\n" "base");
+          let source = commit fetch_remote "work" "work\n" "source" in
+          Git.with_temp_repo (fun push_remote ->
+              ignore (commit push_remote "other" "other\n" "destination base");
+              if missing_base then
+                Git.run_git ~cwd:push_remote
+                  [ "update-ref"; "-d"; "refs/heads/main" ];
+              Git.with_temp_repo (fun dir ->
+                  prepare fetch_remote dir;
+                  Git.run_git ~cwd:dir
+                    [ "config"; "remote.origin.pushurl"; push_remote ];
+                  if missing_base then
+                    Git.run_git ~cwd:dir
+                      [ "update-ref"; "-d"; "refs/remotes/origin/main" ];
+                  let runtime = make_runtime () and io = make_io dir in
+                  let checkpoint =
+                    Filename.temp_file "destination-base" ".json"
+                  in
+                  Fun.protect
+                    ~finally:(fun () -> Sys.remove checkpoint)
+                    (fun () ->
+                      check "destination base does not suppress publication"
+                        (run runtime (persist checkpoint) io
+                           (B.Request
+                              {
+                                intent with
+                                purpose = Publish_revision (sha source);
+                              })
+                        = R.Idle);
+                      check "source is published to configured destination"
+                        (Git.git_capture ~cwd:push_remote
+                           [ "rev-parse"; "patch" ]
+                        = source))))))
+    [ false; true ];
+  List.iter
     (fun adopted ->
       List.iter
         (fun existing_remote ->

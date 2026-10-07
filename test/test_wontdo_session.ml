@@ -87,7 +87,10 @@ module Fake_worktree : Worktree.S = struct
           sequencer = None;
           conflicts = 0;
           target_included = true;
-          base_contains_source = String.equal !head !base_head;
+          base_contains_source =
+            String.equal !head !base_head
+            || is_ancestor ~path:"fixture" ~ancestor:!head
+                 ~descendant:!base_head;
           head = sha !head;
           completed_integration = false;
           destination =

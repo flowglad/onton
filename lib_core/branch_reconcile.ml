@@ -522,7 +522,13 @@ let settle t op =
       active = Some { op with phase = Settled; pending = None; failures = 0 };
       publications =
         (match op.candidate with
-        | Some candidate when not op.reobserve_after_completion ->
+        | Some candidate
+          when (not op.reobserve_after_completion)
+               && not
+                    (List.exists t.publications ~f:(fun receipt ->
+                         receipt.operation_id = op.id
+                         && Commit.equal receipt.published_revision candidate))
+          ->
             {
               operation_id = op.id;
               published_intent = op.intent;

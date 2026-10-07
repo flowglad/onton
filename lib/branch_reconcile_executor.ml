@@ -223,7 +223,7 @@ let observation io ~destination ~branch ~intent ~policy ~boundaries ~target
                 resolve io
                   ("refs/remotes/origin/" ^ intent.Branch_reconcile.base)))
   in
-  let remote = remote io ~destination branch in
+  let remote_sha = remote io ~destination branch in
   let rec select evidence =
     match Branch_reconcile.choose_boundary ~candidates:boundaries ~evidence with
     | Branch_reconcile.Chosen boundary -> boundary
@@ -243,9 +243,9 @@ let observation io ~destination ~branch ~intent ~policy ~boundaries ~target
       Branch_reconcile.head = commit checkout.head;
       source;
       target;
-      remote;
+      remote = remote_sha;
       boundary;
-      topology = topology io source remote;
+      topology = topology io source remote_sha;
       clean = G.clean checkout;
       sequencer;
       conflicts = List.length checkout.conflicts;
@@ -254,9 +254,10 @@ let observation io ~destination ~branch ~intent ~policy ~boundaries ~target
         (match intent.purpose with
         | Branch_reconcile.Publish_revision _
         | Branch_reconcile.Publish_session _
-          when Option.is_none original_source ->
-            let base = resolve io ("refs/remotes/origin/" ^ intent.base) in
-            ancestor io source base
+          when Option.is_none original_source -> (
+            match remote io ~destination intent.base with
+            | Some base -> ancestor io source base
+            | None -> false)
         | Branch_reconcile.Publish_revision _
         | Branch_reconcile.Publish_session _ | Branch_reconcile.Reconcile_base
         | Branch_reconcile.Reconcile_request _
