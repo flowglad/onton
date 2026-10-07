@@ -870,9 +870,7 @@ let automerge_transient_hold (agent : Patch_agent.t) ~main_branch =
   && agent.Patch_agent.automerge_failure_count < automerge_max_failures
   && Option.is_none agent.Patch_agent.merge_queue_entry
 
-let apply_branch_observation ?confirmed_remote_head t patch_id ~head_sha ~checks
-    =
-  let _ = confirmed_remote_head in
+let apply_branch_observation t patch_id ~head_sha ~checks =
   let a = Orchestrator.agent t patch_id in
   if (not (Orchestrator.is_feature_descendant t patch_id)) || a.merged then t
   else if

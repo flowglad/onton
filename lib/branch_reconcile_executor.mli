@@ -33,9 +33,14 @@ val materialization :
   (Branch_reconcile.materialization option, string) result
 
 val pin_materialization_intent :
-  io:io -> prefix:string -> Branch_reconcile.Commit.t -> (unit, string) result
+  io:io ->
+  prefix:string ->
+  Branch_reconcile.Commit.t ->
+  (Branch_reconcile.Commit.t, string) result
 (** Retain the chosen new-branch base before creating the checkout, so a
-    receipt-write failure can be recovered without guessing its boundary. *)
+    receipt-write failure can be recovered without guessing its boundary.
+    Returns the retained base; retries reuse it even if the requested base
+    moved. *)
 
 val recover_materialization :
   io:io ->

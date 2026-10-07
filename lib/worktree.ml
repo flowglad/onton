@@ -1732,6 +1732,18 @@ let make_with_protection ~protected_branch ~fs ~config ~clock ~process_mgr
                     with
                     | Error message -> failwith message
                     | Ok sha ->
+                        let prefix =
+                          Branch_reconcile.recovery_prefix ~project:project_name
+                            ~branch:(Types.Branch.to_string branch)
+                        in
+                        let sha =
+                          match
+                            Branch_reconcile_executor.pin_materialization_intent
+                              ~io ~prefix sha
+                          with
+                          | Ok pinned -> pinned
+                          | Error message -> failwith message
+                        in
                         ( Start_point_plan.Create_new_branch_from_base
                             {
                               base_branch =
@@ -1743,23 +1755,6 @@ let make_with_protection ~protected_branch ~fs ~config ~clock ~process_mgr
                     (action, None)
               in
               let _, created =
-                let prefix =
-                  Branch_reconcile.recovery_prefix ~project:project_name
-                    ~branch:(Types.Branch.to_string branch)
-                in
-                (match expected_head with
-                | None -> ()
-                | Some head -> (
-                    let repo_io =
-                      Branch_reconcile_executor.make_io ~process_mgr ~clock
-                        ~path:repo_root
-                    in
-                    match
-                      Branch_reconcile_executor.pin_materialization_intent
-                        ~io:repo_io ~prefix head
-                    with
-                    | Ok () -> ()
-                    | Error message -> failwith message));
                 B.materialize ~path ~branch ~expected_local action
               in
               let io =

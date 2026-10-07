@@ -159,8 +159,8 @@ let empty_gameplan =
 (** Instantiate the real [Worktree_setup.Make] over a real git-backed [W] for
     [managed_dir], then run [ensure_worktree] for a brand-new [branch] cut from
     [base_ref]. Returns the worktree path. *)
-let run_ensure ?cancel_stage ?(fail_checkpoint = false) env ~managed_dir
-    ~project_name ~pid ~branch ~base_ref =
+let run_ensure ?cancel_stage ?materialization_error ?(fail_checkpoint = false)
+    env ~managed_dir ~project_name ~pid ~branch ~base_ref =
   let process_mgr = Eio.Stdenv.process_mgr env in
   let clock = Eio.Stdenv.clock env in
   let module Real =
@@ -180,6 +180,11 @@ let run_ensure ?cancel_stage ?(fail_checkpoint = false) env ~managed_dir
   in
   let module W = struct
     include Real
+
+    let materialization ~path ~project_name ~branch =
+      match materialization_error with
+      | Some reason -> Error reason
+      | None -> Real.materialization ~path ~project_name ~branch
 
     let ensure_ready ~path ~branch =
       if
@@ -257,84 +262,94 @@ let run_ensure ?cancel_stage ?(fail_checkpoint = false) env ~managed_dir
       ~branch:(Types.Branch.of_string branch)
       ~base_ref ()
   in
-  if fail_checkpoint then (
-    let checkpoint = Project_store.snapshot_path project_name in
-    Project_store.ensure_dir (Stdlib.Filename.dirname checkpoint);
-    Unix.mkdir checkpoint 0o700;
-    (match ensure () with
-    | Worktree_setup.Path _ -> ()
-    | Worktree_setup.Refused | Worktree_setup.Missing ->
-        failwith "failed checkpoint refused usable checkout");
-    if !hook_calls <> 1 then failwith "hook did not run after checkout creation";
-    let state =
-      Runtime.read Env.runtime (fun snap ->
-          (Orchestrator.agent snap.Runtime.orchestrator pid)
-            .Patch_agent.branch_reconcile)
-    in
-    if Option.is_some (Branch_reconcile.materialization state) then
-      failwith "failed checkpoint was published in memory";
-    Unix.rmdir checkpoint;
-    check_hook := check_materialization;
-    created := false);
-  match ensure () with
-  | Worktree_setup.Path p ->
-      if fail_checkpoint then !check_hook ();
-      let original = git_capture ~dir:p [ "rev-parse"; "HEAD" ] in
-      let moved =
-        git_capture ~dir:managed_dir
-          [
-            "commit-tree";
-            original ^ "^{tree}";
-            "-p";
-            original;
-            "-m";
-            "base advanced after materialization";
-          ]
-      in
-      let origin =
-        git_capture ~dir:managed_dir [ "remote"; "get-url"; "origin" ]
-      in
-      if Stdlib.Sys.file_exists origin then
-        Git_env.run_git ~cwd:managed_dir
-          [ "push"; "-q"; "origin"; moved ^ ":refs/heads/" ^ base_ref ];
-      Git_env.run_git ~cwd:managed_dir
-        [ "update-ref"; "refs/remotes/origin/" ^ base_ref; moved ];
-      let module Executor = Worktree_plan_executor.Make (Real) (Env) in
-      let result, _, events =
-        Executor.execute ~patch_id:pid ~agent ~fetch_lock:Env.fetch_mutex
-          ~fail_label:"start" ~ancestor_ids:[]
-          (Worktree_plan.for_start
-             ~base:(Types.Branch.of_string base_ref)
-             ~materialized:false)
-      in
-      (match result with
-      | Worktree.Ok | Worktree.Noop -> ()
-      | Worktree.Conflict _ | Worktree.Merge_conflict _
-      | Worktree.Uncommitted_changes _ | Worktree.Error _ ->
-          failwith "start provenance plan failed");
-      (match events with
-      | [ Worktree_plan.Anchor_recorded anchor ] ->
-          assert_string "start anchor is the materialization revision" original
-            anchor.Anchor.sha;
-          if anchor.Anchor.observed_at_remote then
-            failwith "local materialization was labeled remote evidence"
-      | []
-      | Worktree_plan.Anchor_capture_failed :: _
-      | Worktree_plan.Anchor_recorded _ :: _ ->
-          failwith "start did not derive its anchor from materialization");
-      p
-  | Worktree_setup.Missing -> failwith "ensure_worktree: Missing"
-  | Worktree_setup.Refused -> failwith "ensure_worktree: Refused"
-  | exception exn when Worktree.has_cancellation exn ->
-      if Option.is_none cancel_stage then raise exn;
-      if not (phys_equal exn cancellation) then failwith "cancellation changed";
-      let after =
-        Runtime.read Env.runtime (fun snap ->
-            Orchestrator.agent snap.Runtime.orchestrator pid)
-      in
-      if not (Patch_agent.equal agent after) then
-        failwith "cancellation changed agent state";
-      "cancelled"
+  match materialization_error with
+  | Some _ -> (
+      match ensure () with
+      | Worktree_setup.Refused when !hook_calls = 0 -> "refused"
+      | Worktree_setup.Refused | Worktree_setup.Missing | Worktree_setup.Path _
+        ->
+          failwith "unsafe materialization was not refused before hook")
+  | None -> (
+      if fail_checkpoint then (
+        let checkpoint = Project_store.snapshot_path project_name in
+        Project_store.ensure_dir (Stdlib.Filename.dirname checkpoint);
+        Unix.mkdir checkpoint 0o700;
+        (match ensure () with
+        | Worktree_setup.Path _ -> ()
+        | Worktree_setup.Refused | Worktree_setup.Missing ->
+            failwith "failed checkpoint refused usable checkout");
+        if !hook_calls <> 1 then
+          failwith "hook did not run after checkout creation";
+        let state =
+          Runtime.read Env.runtime (fun snap ->
+              (Orchestrator.agent snap.Runtime.orchestrator pid)
+                .Patch_agent.branch_reconcile)
+        in
+        if Option.is_some (Branch_reconcile.materialization state) then
+          failwith "failed checkpoint was published in memory";
+        Unix.rmdir checkpoint;
+        check_hook := check_materialization;
+        created := false);
+      match ensure () with
+      | Worktree_setup.Path p ->
+          if fail_checkpoint then !check_hook ();
+          let original = git_capture ~dir:p [ "rev-parse"; "HEAD" ] in
+          let moved =
+            git_capture ~dir:managed_dir
+              [
+                "commit-tree";
+                original ^ "^{tree}";
+                "-p";
+                original;
+                "-m";
+                "base advanced after materialization";
+              ]
+          in
+          let origin =
+            git_capture ~dir:managed_dir [ "remote"; "get-url"; "origin" ]
+          in
+          if Stdlib.Sys.file_exists origin then
+            Git_env.run_git ~cwd:managed_dir
+              [ "push"; "-q"; "origin"; moved ^ ":refs/heads/" ^ base_ref ];
+          Git_env.run_git ~cwd:managed_dir
+            [ "update-ref"; "refs/remotes/origin/" ^ base_ref; moved ];
+          let module Executor = Worktree_plan_executor.Make (Real) (Env) in
+          let result, _, events =
+            Executor.execute ~patch_id:pid ~agent ~fetch_lock:Env.fetch_mutex
+              ~fail_label:"start" ~ancestor_ids:[]
+              (Worktree_plan.for_start
+                 ~base:(Types.Branch.of_string base_ref)
+                 ~materialized:false)
+          in
+          (match result with
+          | Worktree.Ok | Worktree.Noop -> ()
+          | Worktree.Conflict _ | Worktree.Merge_conflict _
+          | Worktree.Uncommitted_changes _ | Worktree.Error _ ->
+              failwith "start provenance plan failed");
+          (match events with
+          | [ Worktree_plan.Anchor_recorded anchor ] ->
+              assert_string "start anchor is the materialization revision"
+                original anchor.Anchor.sha;
+              if anchor.Anchor.observed_at_remote then
+                failwith "local materialization was labeled remote evidence"
+          | []
+          | Worktree_plan.Anchor_capture_failed :: _
+          | Worktree_plan.Anchor_recorded _ :: _ ->
+              failwith "start did not derive its anchor from materialization");
+          p
+      | Worktree_setup.Missing -> failwith "ensure_worktree: Missing"
+      | Worktree_setup.Refused -> failwith "ensure_worktree: Refused"
+      | exception exn when Worktree.has_cancellation exn ->
+          if Option.is_none cancel_stage then raise exn;
+          if not (phys_equal exn cancellation) then
+            failwith "cancellation changed";
+          let after =
+            Runtime.read Env.runtime (fun snap ->
+                Orchestrator.agent snap.Runtime.orchestrator pid)
+          in
+          if not (Patch_agent.equal agent after) then
+            failwith "cancellation changed agent state";
+          "cancelled")
 
 (** Origin's main advances after the clone; both the local [main] ref and the
     clone-time remote-tracking ref lag. The cut must land on origin's current
@@ -467,7 +482,8 @@ let scenario_receipt_recovery env =
   (match
      Branch_reconcile_executor.pin_materialization_intent ~io ~prefix head
    with
-  | Ok () -> ()
+  | Ok pinned when Branch_reconcile.Commit.equal pinned head -> ()
+  | Ok _ -> failwith "materialization base changed"
   | Error message -> failwith message);
   (match
      Branch_reconcile_executor.recover_materialization ~io ~prefix ~branch
@@ -479,6 +495,69 @@ let scenario_receipt_recovery env =
   | Ok (Some (Branch_reconcile.Adopted_branch _)) | Ok None | Error _ ->
       failwith "creation intent did not recover its receipt");
   Stdlib.print_endline "  receipt_recovery: OK"
+
+let scenario_unsafe_materialization env =
+  List.iter
+    [ "materialization_revision_changed"; "materialization_branch_changed" ]
+    ~f:(fun reason ->
+      with_temp_dir @@ fun root ->
+      let origin_dir = Stdlib.Filename.concat root "origin" in
+      let managed_dir = Stdlib.Filename.concat root "managed" in
+      setup_origin_with_main ~origin_dir;
+      clone_into ~origin_dir ~managed_dir;
+      assert_string "unsafe provenance refuses checkout" "refused"
+        (run_ensure ~materialization_error:reason env ~managed_dir
+           ~project_name:"unsafe-materialization"
+           ~pid:(Types.Patch_id.of_string "1")
+           ~branch:"unsafe-materialization/patch-1" ~base_ref:"main"))
+
+let scenario_creation_retry_reuses_base env =
+  with_temp_dir @@ fun root ->
+  let origin_dir = Stdlib.Filename.concat root "origin" in
+  let managed_dir = Stdlib.Filename.concat root "managed" in
+  setup_origin_with_main ~origin_dir;
+  clone_into ~origin_dir ~managed_dir;
+  let old_head = git_capture ~dir:managed_dir [ "rev-parse"; "main" ] in
+  let project_name = "creation-retry" in
+  let branch = Types.Branch.of_string "creation-retry/patch-1" in
+  let prefix =
+    Branch_reconcile.recovery_prefix ~project:project_name
+      ~branch:(Types.Branch.to_string branch)
+  in
+  let io =
+    Branch_reconcile_executor.make_io
+      ~process_mgr:(Eio.Stdenv.process_mgr env)
+      ~clock:(Eio.Stdenv.clock env) ~path:managed_dir
+  in
+  let old_head_sha =
+    match Branch_reconcile.Commit.make old_head with
+    | Some head -> head
+    | None -> failwith "invalid fixture head"
+  in
+  (match
+     Branch_reconcile_executor.pin_materialization_intent ~io ~prefix
+       old_head_sha
+   with
+  | Ok _ -> ()
+  | Error message -> failwith message);
+  sh ~dir:managed_dir
+    "git commit --allow-empty -q -m 'base advanced after failed setup'";
+  let module W =
+    (val Worktree.make ~fs:(Eio.Stdenv.fs env) ~config:Worktree_lifecycle.git
+           ~clock:(Eio.Stdenv.clock env)
+           ~process_mgr:(Eio.Stdenv.process_mgr env)
+           ~repo_root:managed_dir)
+  in
+  (match
+     W.create ~project_name
+       ~patch_id:(Types.Patch_id.of_string "1")
+       ~branch ~base_ref:"main"
+   with
+  | Error _ -> failwith "retry refused retained creation intent"
+  | Ok _ -> ());
+  assert_string "retry uses original pinned base" old_head
+    (git_capture ~dir:managed_dir
+       [ "rev-parse"; Types.Branch.to_string branch ])
 
 let scenario_nested_cancellation env =
   List.iter [ `Ready; `Create; `Recovery ] ~f:(fun cancel_stage ->
@@ -501,6 +580,8 @@ let () =
   scenario_nested_cancellation env;
   scenario_checkpoint_failure env;
   scenario_receipt_recovery env;
+  scenario_unsafe_materialization env;
+  scenario_creation_retry_reuses_base env;
   scenario_stale_local_main env;
   scenario_dep_base_local_canonical env;
   scenario_fetch_failure_falls_back env;

@@ -26,7 +26,11 @@ let gen_branch =
     map Branch.of_string
       (string_size ~gen:(char_range 'a' 'z') (int_range 3 20)))
 
-let gen_sha = QCheck2.Gen.(string_size ~gen:(char_range 'a' 'f') (return 40))
+let gen_sha =
+  QCheck2.Gen.(
+    string_size
+      ~gen:(oneof_list (String.to_list "0123456789abcdef"))
+      (return 40))
 
 let gen_operation_kind =
   QCheck2.Gen.oneof_list

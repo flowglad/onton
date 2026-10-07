@@ -79,7 +79,10 @@ module Make (W : Worktree.S) (Env : ENV) : S = struct
 
   let checkpoint_provenance_if_available ~patch_id ~path ~branch =
     try checkpoint_provenance ~patch_id ~path ~branch
-    with Provenance_unavailable reason ->
+    with
+    | Provenance_unavailable reason
+    when not (Git_observation.materialization_failure_is_unsafe reason)
+    ->
       Runtime_logging.log_event Env.runtime ~patch_id
         ("Materialization checkpoint skipped — " ^ reason)
 

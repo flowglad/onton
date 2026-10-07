@@ -831,16 +831,13 @@ let pin_materialization_intent ~io ~prefix head =
   let code, _, err = io.git [ "show-ref"; "--verify"; "--quiet"; ref_name ] in
   match code with
   | 0 -> (
-      try
-        if Branch_reconcile.Commit.equal (resolve io ref_name) head then Ok ()
-        else Error "materialization intent changed"
-      with Probe_failed reason -> Error reason)
+      try Ok (resolve io ref_name) with Probe_failed reason -> Error reason)
   | 1 ->
       let code, _, err =
         io.git
           [ "update-ref"; ref_name; Branch_reconcile.Commit.to_string head; "" ]
       in
-      if code = 0 then Ok ()
+      if code = 0 then Ok head
       else Error ("materialization intent pin failed: " ^ err)
   | _ -> Error ("materialization intent probe failed: " ^ err)
 

@@ -10,6 +10,28 @@ let parse =
 
 let tests =
   [
+    QCheck2.Test.make ~name:"materialization safety classification is exact"
+      ~count:500
+      Gen.(
+        oneof
+          [
+            string;
+            oneof_list
+              [
+                "materialization_revision_changed";
+                "materialization_branch_changed";
+                "contradictory_materialization_receipts";
+                "materialization pin failed";
+              ];
+          ])
+      (fun reason ->
+        G.materialization_failure_is_unsafe reason
+        = List.mem reason
+            [
+              "materialization_revision_changed";
+              "materialization_branch_changed";
+              "contradictory_materialization_receipts";
+            ]);
     QCheck2.Test.make ~name:"checkout observation totality" ~count:1000
       Gen.string (fun s ->
         try

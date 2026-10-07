@@ -4,6 +4,15 @@
 open Base
 open Ppx_yojson_conv_lib.Yojson_conv.Primitives
 
+let materialization_failure_is_unsafe reason =
+  List.mem
+    [
+      "materialization_revision_changed";
+      "materialization_branch_changed";
+      "contradictory_materialization_receipts";
+    ]
+    reason ~equal:String.equal
+
 type sequencer =
   | Rebase of {
       target : string;

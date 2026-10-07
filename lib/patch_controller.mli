@@ -285,7 +285,6 @@ val is_integration_candidate :
     it can admit a duplicate integration. *)
 
 val apply_branch_observation :
-  ?confirmed_remote_head:string ->
   Orchestrator.t ->
   Patch_id.t ->
   head_sha:string ->

@@ -52,3 +52,6 @@ type continuation = Blocked | Continue | Skip_empty_replay | Complete_merge
 [@@deriving eq, compare, sexp_of]
 
 val continuation : t -> continuation
+
+val materialization_failure_is_unsafe : string -> bool
+(** Persistent provenance mismatches must refuse checkout use. *)

@@ -287,16 +287,6 @@ module Make (Forge : Forge.S) (W : Worktree.S) (Env : Poller_env.S) = struct
                   Runtime_logging.log_event runtime ~patch_id:a.patch_id
                     ("Branch checks unavailable — " ^ Forge.show_error e)
               | Ok observed ->
-                  let confirmed_remote_head =
-                    if
-                      Execution_mode.observation_pending
-                        (Runtime.read runtime (fun snap ->
-                             Orchestrator.execution_mode
-                               snap.Runtime.orchestrator))
-                        a (Some observed.head_sha)
-                    then direct_remote_head a
-                    else None
-                  in
                   let checks_reused =
                     Option.value_map known_state ~default:false ~f:(fun s ->
                         String.equal s.Forge_types.head_sha observed.head_sha)
@@ -318,8 +308,7 @@ module Make (Forge : Forge.S) (W : Worktree.S) (Env : Poller_env.S) = struct
                       } );
                   Runtime.update_orchestrator runtime (fun orch ->
                       Patch_controller.apply_branch_observation orch a.patch_id
-                        ?confirmed_remote_head ~head_sha:observed.head_sha
-                        ~checks:observed.checks)))
+                        ~head_sha:observed.head_sha ~checks:observed.checks)))
         branch_intents;
       let intents =
         Runtime.read runtime (fun snap ->
@@ -624,10 +613,22 @@ module Make (Forge : Forge.S) (W : Worktree.S) (Env : Poller_env.S) = struct
        This prevents the runner from seeing an intermediate state where
        poll results are applied but the reconciler hasn't run yet. *)
       let terminal_patch_ids =
-        List.filter_map observations ~f:(fun (patch_id, obs, _, _, _, _) ->
-            if obs.Patch_controller.poll_result.merged then Some patch_id
-            else None)
-        |> List.dedup_and_sort ~compare:Patch_id.compare
+        let patch_ids =
+          List.filter_map observations ~f:(fun (patch_id, obs, _, _, _, _) ->
+              if obs.Patch_controller.poll_result.merged then Some patch_id
+              else None)
+          |> List.dedup_and_sort ~compare:Patch_id.compare
+        in
+        Runtime.read runtime (fun snap ->
+            (* Integration acquires its descendant before the root. The root
+               also owns root_write_mutex, so it must always be acquired last. *)
+            let descendants, roots =
+              List.partition_tf patch_ids ~f:(fun patch_id ->
+                  not
+                    (Orchestrator.is_integration_root snap.Runtime.orchestrator
+                       patch_id))
+            in
+            descendants @ roots)
       in
       let rec with_terminal_ownership patch_ids f =
         match patch_ids with
