@@ -113,7 +113,8 @@ type start_delivery =
   | Start_with_human of { messages : string list }
 [@@deriving show, eq, sexp_of, compare]
 
-type delivery_mode = Start | Respond [@@deriving show, eq, sexp_of, compare]
+type delivery_mode = Session_result.delivery_mode = Start | Respond
+[@@deriving show, eq, sexp_of, compare]
 
 let session_prompt_requires_patch_instructions ~delivery_mode ~kind =
   match delivery_mode with

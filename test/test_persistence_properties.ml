@@ -175,6 +175,69 @@ let () =
           | Error _msg -> false
         with _ -> false)
   in
+  let legacy_branch_migration =
+    QCheck2.Test.make
+      ~name:
+        "legacy branch migration observes work and preserves unrelated state"
+      ~count:200 gen_patch_agent_fully_populated (fun agent ->
+        try
+          let original = Onton.Persistence.patch_agent_to_yojson agent in
+          let legacy =
+            match original with
+            | `Assoc fields ->
+                `Assoc
+                  (List.Assoc.remove fields ~equal:String.equal
+                     "branch_reconcile")
+            | _ -> assert false
+          in
+          let decode =
+            Onton.Persistence.patch_agent_of_yojson
+              ~gameplan:(gameplan_for_agent agent)
+          in
+          match (decode original, decode legacy) with
+          | Ok baseline, Ok migrated -> (
+              let excluded =
+                [
+                  "branch_reconcile";
+                  "conflict_noop_count";
+                  "no_commits_push_count";
+                  "push_failure_count";
+                  "rebase_failure_count";
+                  "expected_remote_head_oid";
+                  "intervention_reason";
+                ]
+              in
+              let unrelated a =
+                match Onton.Persistence.patch_agent_to_yojson a with
+                | `Assoc fields ->
+                    `Assoc
+                      (List.filter fields ~f:(fun (key, _) ->
+                           not (List.mem excluded key ~equal:String.equal)))
+                | _ -> assert false
+              in
+              let existing =
+                baseline.has_session || baseline.branch_published
+                || Onton_core.Patch_agent.has_pr baseline
+                || Option.is_some baseline.worktree_path
+              in
+              Yojson.Safe.equal (unrelated baseline) (unrelated migrated)
+              && migrated.conflict_noop_count = 0
+              && migrated.no_commits_push_count = 0
+              && migrated.push_failure_count = 0
+              && migrated.rebase_failure_count = 0
+              && Option.is_none migrated.expected_remote_head_oid
+              && Bool.equal existing
+                   (Onton_core.Branch_reconcile.is_pending
+                      migrated.branch_reconcile)
+              &&
+              match
+                decode (Onton.Persistence.patch_agent_to_yojson migrated)
+              with
+              | Ok again -> Onton_core.Patch_agent.equal migrated again
+              | Error _ -> false)
+          | Error _, _ | _, Error _ -> false
+        with _ -> false)
+  in
   let legacy_architecture_snapshot =
     QCheck2.Test.make
       ~name:"legacy string architecture resumes without losing snapshot state"
@@ -373,7 +436,7 @@ let () =
           match json with
           | `Assoc fields ->
               List.exists fields ~f:(fun (k, v) ->
-                  String.equal k "version" && Yojson.Safe.equal v (`Int 1))
+                  String.equal k "version" && Yojson.Safe.equal v (`Int 2))
           | _ -> false
         with _ -> false)
   in
@@ -857,6 +920,7 @@ let () =
         intervention_snapshot;
         snapshot_roundtrip;
         metadata_snapshot_roundtrip;
+        legacy_branch_migration;
         legacy_architecture_snapshot;
         legacy_feature_fields_default_false;
         applied_control_ids_decode;

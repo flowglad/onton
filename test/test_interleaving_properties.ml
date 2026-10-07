@@ -399,6 +399,8 @@ let make_poll_result ~has_conflict ~merged ~ci_failed ~checks_passing
     merge_ready =
       (not has_conflict) && (not merged) && (not ci_failed)
       && not review_comments;
+    base_branch = None;
+    base_oid = None;
     head_oid = None;
     review_decision = None;
     unresolved_comment_count = 0;
@@ -777,7 +779,8 @@ let check_log_invariants info ~merged_logged =
 let pid_of_action = function
   | Orchestrator.Start (pid, _)
   | Orchestrator.Respond (pid, _)
-  | Orchestrator.Rebase (pid, _) ->
+  | Orchestrator.Rebase (pid, _)
+  | Orchestrator.Reconcile_branch (pid, _) ->
       pid
 
 (** I-1: busy -> has_session *)
@@ -817,7 +820,8 @@ let check_base_branch_freshness orch patches action =
              (Branch.to_string expected))
   | Orchestrator.Respond (_, _)
   | Orchestrator.Rebase (_, _)
-  | Orchestrator.Start (_, _) ->
+  | Orchestrator.Start (_, _)
+  | Orchestrator.Reconcile_branch _ ->
       ()
 
 (** I-4: merged is monotonic — once merged, never un-merged. Patches that were
@@ -846,7 +850,7 @@ let check_priority_ordering orch action =
   let expected_hp = Patch_agent.highest_priority agent in
   let actual_kind =
     match action with
-    | Orchestrator.Start _ -> None
+    | Orchestrator.Start _ | Orchestrator.Reconcile_branch _ -> None
     | Orchestrator.Respond (_, k) -> Some k
     | Orchestrator.Rebase _ -> Some Operation_kind.Rebase
   in
@@ -886,7 +890,10 @@ let check_needs_intervention_blocks_respond orch action =
           (Printf.sprintf
              "I-8 needs_intervention_blocks_respond violated for %s"
              (Patch_id.to_string pid))
-  | Orchestrator.Start (_, _) | Orchestrator.Rebase (_, _) -> ()
+  | Orchestrator.Start (_, _)
+  | Orchestrator.Rebase (_, _)
+  | Orchestrator.Reconcile_branch _ ->
+      ()
 
 (** I-9: conflict not cleared while Merge_conflict is queued or in-flight. *)
 let check_conflict_not_cleared_while_in_flight (a : Patch_agent.t) =
@@ -1516,6 +1523,8 @@ let () =
             apply_poll
               {
                 stale_poll with
+                base_branch = None;
+                base_oid = None;
                 head_oid = (if unidentified then None else Some "old");
               }
           in
@@ -1542,6 +1551,8 @@ let () =
                 queue = [];
                 merge_state = Pr_state.Mergeable;
                 merge_ready = true;
+                base_branch = None;
+                base_oid = None;
                 head_oid = Some "new";
               }
           in
@@ -1791,6 +1802,8 @@ let () =
                 is_draft = false;
                 merge_state = Pr_state.Mergeable;
                 merge_ready = false;
+                base_branch = None;
+                base_oid = None;
                 head_oid = None;
                 review_decision = None;
                 unresolved_comment_count = 0;
@@ -1870,6 +1883,8 @@ let () =
                 is_draft = false;
                 merge_state = Pr_state.Mergeable;
                 merge_ready = false;
+                base_branch = None;
+                base_oid = None;
                 head_oid = None;
                 review_decision = None;
                 unresolved_comment_count = 0;
@@ -1969,7 +1984,9 @@ let () =
               | Orchestrator.Respond (p, k) ->
                   Patch_id.equal p pid
                   && Operation_kind.equal k Operation_kind.Human
-              | Orchestrator.Start _ | Orchestrator.Rebase _ -> false)
+              | Orchestrator.Start _ | Orchestrator.Rebase _
+              | Orchestrator.Reconcile_branch _ ->
+                  false)
         in
         if not has_human_respond then
           failwith "no Respond(Human) action produced after send_human_message";

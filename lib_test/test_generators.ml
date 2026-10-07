@@ -394,6 +394,7 @@ let gen_pr_state =
           merge_queue_required = false;
           merge_queue_entry = None;
           head_branch;
+          base_oid = None;
           head_oid = None;
           base_branch;
           native_stack = false;
@@ -440,6 +441,8 @@ let gen_poller =
             is_draft;
             merge_state;
             merge_ready;
+            base_branch = None;
+            base_oid = None;
             head_oid = None;
             review_decision = None;
             unresolved_comment_count = 0;

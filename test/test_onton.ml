@@ -61,6 +61,7 @@ let () =
       assert (Onton_core.Types.Branch.equal base main_branch)
   | [] | _ :: _ :: _
   | [ Onton.Orchestrator.Respond _ ]
-  | [ Onton.Orchestrator.Rebase _ ] ->
+  | [ Onton.Orchestrator.Rebase _ ]
+  | [ Onton.Orchestrator.Reconcile_branch _ ] ->
       failwith "expected exactly one Start action for patch \"1\"");
   print_endline "all tests passed"

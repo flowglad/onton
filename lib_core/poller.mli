@@ -46,6 +46,8 @@ type t = {
       (** Component-derived merge readiness ([Pr_state.merge_ready_of]:
           mergeable + CI passing + non-blocking review). NOT GitHub's
           [mergeStateStatus]. *)
+  base_branch : Branch.t option; [@yojson.option]
+  base_oid : string option; [@yojson.option]
   head_oid : string option; [@yojson.option]
   review_decision : string option; [@yojson.option]
       (** Raw GitHub [reviewDecision]. An input to [merge_ready] upstream

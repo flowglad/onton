@@ -181,7 +181,12 @@ let log_poll t ~patch_id ~poll_result ~agent_before ~agent_after ~logs =
   emit_intervention_transition_if_needed ~patch_id ~agent_before ~agent_after
 
 let action_patch_id (action : Orchestrator.action) =
-  match action with Start (pid, _) | Respond (pid, _) | Rebase (pid, _) -> pid
+  match action with
+  | Start (pid, _)
+  | Respond (pid, _)
+  | Rebase (pid, _)
+  | Reconcile_branch (pid, _) ->
+      pid
 
 let log_action t ~action ~agent_before =
   ignore t;

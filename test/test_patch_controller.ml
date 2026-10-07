@@ -176,6 +176,13 @@ let () =
         in
         let action_equal a b =
           match (a, b) with
+          | ( Orchestrator.Reconcile_branch (p1, o1),
+              Orchestrator.Reconcile_branch (p2, o2) ) ->
+              Patch_id.equal p1 p2 && Int.equal o1 o2
+          | ( Orchestrator.Reconcile_branch _,
+              ( Orchestrator.Start _ | Orchestrator.Respond _
+              | Orchestrator.Rebase _ ) ) ->
+              false
           | Orchestrator.Start (p1, b1), Orchestrator.Start (p2, b2) ->
               Patch_id.equal p1 p2 && Branch.equal b1 b2
           | Orchestrator.Respond (p1, k1), Orchestrator.Respond (p2, k2) ->
@@ -183,11 +190,14 @@ let () =
           | Orchestrator.Rebase (p1, b1), Orchestrator.Rebase (p2, b2) ->
               Patch_id.equal p1 p2 && Branch.equal b1 b2
           | ( Orchestrator.Start _,
-              (Orchestrator.Respond _ | Orchestrator.Rebase _) )
+              ( Orchestrator.Respond _ | Orchestrator.Rebase _
+              | Orchestrator.Reconcile_branch _ ) )
           | ( Orchestrator.Respond _,
-              (Orchestrator.Start _ | Orchestrator.Rebase _) )
+              ( Orchestrator.Start _ | Orchestrator.Rebase _
+              | Orchestrator.Reconcile_branch _ ) )
           | ( Orchestrator.Rebase _,
-              (Orchestrator.Start _ | Orchestrator.Respond _) ) ->
+              ( Orchestrator.Start _ | Orchestrator.Respond _
+              | Orchestrator.Reconcile_branch _ ) ) ->
               false
         in
         Map.equal Patch_agent.equal
@@ -386,7 +396,9 @@ let () =
           | Orchestrator.Respond (action_pid, kind) ->
               Patch_id.equal action_pid pid
               && Operation_kind.equal kind Operation_kind.Pr_body
-          | Orchestrator.Start _ | Orchestrator.Rebase _ -> false))
+          | Orchestrator.Start _ | Orchestrator.Rebase _
+          | Orchestrator.Reconcile_branch _ ->
+              false))
   in
 
   let prop_reconcile_all_blocks_restart_after_intervention =
@@ -418,7 +430,9 @@ let () =
              (List.exists actions ~f:(function
                | Orchestrator.Start (action_pid, _) ->
                    Patch_id.equal action_pid pid
-               | Orchestrator.Respond _ | Orchestrator.Rebase _ -> false)))
+               | Orchestrator.Respond _ | Orchestrator.Rebase _
+               | Orchestrator.Reconcile_branch _ ->
+                   false)))
   in
 
   (* Dual of prop_reconcile_all_blocks_restart_after_intervention: the
@@ -468,7 +482,9 @@ let () =
         Patch_agent.needs_intervention (Orchestrator.agent orch pid)
         && List.exists actions ~f:(function
           | Orchestrator.Rebase (action_pid, _) -> Patch_id.equal action_pid pid
-          | Orchestrator.Start _ | Orchestrator.Respond _ -> false))
+          | Orchestrator.Start _ | Orchestrator.Respond _
+          | Orchestrator.Reconcile_branch _ ->
+              false))
   in
 
   (* Complement of the above: Respond must still be blocked under
@@ -517,7 +533,9 @@ let () =
              (List.exists actions ~f:(function
                | Orchestrator.Respond (action_pid, _) ->
                    Patch_id.equal action_pid pid
-               | Orchestrator.Start _ | Orchestrator.Rebase _ -> false)))
+               | Orchestrator.Start _ | Orchestrator.Rebase _
+               | Orchestrator.Reconcile_branch _ ->
+                   false)))
   in
 
   let prop_starting_patch_delivers_human_guidance =
@@ -557,7 +575,9 @@ let () =
               List.find actions ~f:(function
                 | Orchestrator.Start (action_pid, _) ->
                     Patch_id.equal action_pid pid
-                | Orchestrator.Respond _ | Orchestrator.Rebase _ -> false)
+                | Orchestrator.Respond _ | Orchestrator.Rebase _
+                | Orchestrator.Reconcile_branch _ ->
+                    false)
             with
             | None -> false
             | Some action -> (
@@ -646,7 +666,9 @@ let () =
               |> List.find ~f:(function
                 | Orchestrator.Start (action_pid, _) ->
                     Patch_id.equal action_pid pid
-                | Orchestrator.Respond _ | Orchestrator.Rebase _ -> false)
+                | Orchestrator.Respond _ | Orchestrator.Rebase _
+                | Orchestrator.Reconcile_branch _ ->
+                    false)
             with
             | None -> false
             | Some action ->
@@ -731,23 +753,24 @@ let () =
         in
         let orch = make_orch patch agent in
         let poll =
-          Poller.
-            {
-              queue = [];
-              merged = false;
-              closed = false;
-              is_draft = true;
-              merge_state = Pr_state.Mergeable;
-              merge_ready = false;
-              head_oid = None;
-              review_decision = None;
-              unresolved_comment_count = 0;
-              merge_queue_required = false;
-              merge_queue_entry = None;
-              checks_passing = true;
-              ci_checks = [];
-              merge_commit_sha = None;
-            }
+          {
+            Poller.queue = [];
+            merged = false;
+            closed = false;
+            is_draft = true;
+            merge_state = Pr_state.Mergeable;
+            merge_ready = false;
+            base_branch = None;
+            base_oid = None;
+            head_oid = None;
+            review_decision = None;
+            unresolved_comment_count = 0;
+            merge_queue_required = false;
+            merge_queue_entry = None;
+            checks_passing = true;
+            ci_checks = [];
+            merge_commit_sha = None;
+          }
         in
         let orch, _logs, _newly_blocked =
           Patch_controller.apply_poll_result orch pid
@@ -778,23 +801,24 @@ let () =
         in
         let orch = make_orch patch agent in
         let poll =
-          Poller.
-            {
-              queue = [ Operation_kind.Ci ];
-              merged = false;
-              closed = false;
-              is_draft = true;
-              merge_state = Pr_state.Mergeable;
-              merge_ready = false;
-              head_oid = None;
-              review_decision = None;
-              unresolved_comment_count = 0;
-              merge_queue_required = false;
-              merge_queue_entry = None;
-              checks_passing = false;
-              ci_checks = [];
-              merge_commit_sha = None;
-            }
+          {
+            Poller.queue = [ Operation_kind.Ci ];
+            merged = false;
+            closed = false;
+            is_draft = true;
+            merge_state = Pr_state.Mergeable;
+            merge_ready = false;
+            base_branch = None;
+            base_oid = None;
+            head_oid = None;
+            review_decision = None;
+            unresolved_comment_count = 0;
+            merge_queue_required = false;
+            merge_queue_entry = None;
+            checks_passing = false;
+            ci_checks = [];
+            merge_commit_sha = None;
+          }
         in
         let orch, _logs, _newly_blocked =
           Patch_controller.apply_poll_result orch pid
@@ -810,7 +834,9 @@ let () =
           | Orchestrator.Respond (action_pid, kind) ->
               Patch_id.equal action_pid pid
               && Operation_kind.equal kind Operation_kind.Ci
-          | Orchestrator.Start _ | Orchestrator.Rebase _ -> false))
+          | Orchestrator.Start _ | Orchestrator.Rebase _
+          | Orchestrator.Reconcile_branch _ ->
+              false))
   in
 
   let prop_idle_ci_failure_count_allows_reenqueue =
@@ -848,23 +874,24 @@ let () =
         in
         let orch = make_orch patch agent in
         let poll =
-          Poller.
-            {
-              queue = [ Operation_kind.Ci ];
-              merged = false;
-              closed = false;
-              is_draft = false;
-              merge_state = Pr_state.Mergeable;
-              merge_ready = false;
-              head_oid = None;
-              review_decision = None;
-              unresolved_comment_count = 0;
-              merge_queue_required = false;
-              merge_queue_entry = None;
-              checks_passing = false;
-              ci_checks = [];
-              merge_commit_sha = None;
-            }
+          {
+            Poller.queue = [ Operation_kind.Ci ];
+            merged = false;
+            closed = false;
+            is_draft = false;
+            merge_state = Pr_state.Mergeable;
+            merge_ready = false;
+            base_branch = None;
+            base_oid = None;
+            head_oid = None;
+            review_decision = None;
+            unresolved_comment_count = 0;
+            merge_queue_required = false;
+            merge_queue_entry = None;
+            checks_passing = false;
+            ci_checks = [];
+            merge_commit_sha = None;
+          }
         in
         let orch, _logs, _newly_blocked =
           Patch_controller.apply_poll_result orch pid
@@ -923,23 +950,24 @@ let () =
         in
         let orch = make_orch patch agent in
         let poll =
-          Poller.
-            {
-              queue = [ Operation_kind.Ci ];
-              merged = false;
-              closed = false;
-              is_draft = false;
-              merge_state = Pr_state.Mergeable;
-              merge_ready = false;
-              head_oid = None;
-              review_decision = None;
-              unresolved_comment_count = 0;
-              merge_queue_required = false;
-              merge_queue_entry = None;
-              checks_passing = false;
-              ci_checks = [ check ];
-              merge_commit_sha = None;
-            }
+          {
+            Poller.queue = [ Operation_kind.Ci ];
+            merged = false;
+            closed = false;
+            is_draft = false;
+            merge_state = Pr_state.Mergeable;
+            merge_ready = false;
+            base_branch = None;
+            base_oid = None;
+            head_oid = None;
+            review_decision = None;
+            unresolved_comment_count = 0;
+            merge_queue_required = false;
+            merge_queue_entry = None;
+            checks_passing = false;
+            ci_checks = [ check ];
+            merge_commit_sha = None;
+          }
         in
         let orch, _logs, _newly_blocked =
           Patch_controller.apply_poll_result orch pid
@@ -999,23 +1027,24 @@ let () =
         in
         let orch = make_orch patch agent in
         let poll =
-          Poller.
-            {
-              queue = [ Operation_kind.Ci ];
-              merged = false;
-              closed = false;
-              is_draft = false;
-              merge_state = Pr_state.Mergeable;
-              merge_ready = false;
-              head_oid = None;
-              review_decision = None;
-              unresolved_comment_count = 0;
-              merge_queue_required = false;
-              merge_queue_entry = None;
-              checks_passing = false;
-              ci_checks = [ check ];
-              merge_commit_sha = None;
-            }
+          {
+            Poller.queue = [ Operation_kind.Ci ];
+            merged = false;
+            closed = false;
+            is_draft = false;
+            merge_state = Pr_state.Mergeable;
+            merge_ready = false;
+            base_branch = None;
+            base_oid = None;
+            head_oid = None;
+            review_decision = None;
+            unresolved_comment_count = 0;
+            merge_queue_required = false;
+            merge_queue_entry = None;
+            checks_passing = false;
+            ci_checks = [ check ];
+            merge_commit_sha = None;
+          }
         in
         let orch, _logs, _newly_blocked =
           Patch_controller.apply_poll_result orch pid
@@ -1088,23 +1117,24 @@ let () =
             }
         in
         let poll =
-          Poller.
-            {
-              queue = [ Operation_kind.Ci ];
-              merged = false;
-              closed = false;
-              is_draft = false;
-              merge_state = Pr_state.Mergeable;
-              merge_ready = false;
-              head_oid = None;
-              review_decision = None;
-              unresolved_comment_count = 0;
-              merge_queue_required = false;
-              merge_queue_entry = None;
-              checks_passing = false;
-              ci_checks = [ check ];
-              merge_commit_sha = None;
-            }
+          {
+            Poller.queue = [ Operation_kind.Ci ];
+            merged = false;
+            closed = false;
+            is_draft = false;
+            merge_state = Pr_state.Mergeable;
+            merge_ready = false;
+            base_branch = None;
+            base_oid = None;
+            head_oid = None;
+            review_decision = None;
+            unresolved_comment_count = 0;
+            merge_queue_required = false;
+            merge_queue_entry = None;
+            checks_passing = false;
+            ci_checks = [ check ];
+            merge_commit_sha = None;
+          }
         in
         let orch, _logs, _newly_blocked =
           Patch_controller.apply_poll_result orch pid
@@ -1131,23 +1161,24 @@ let () =
         in
         let orch = make_orch patch agent in
         let poll =
-          Poller.
-            {
-              queue = [];
-              merged = false;
-              closed = false;
-              is_draft = true;
-              merge_state = Pr_state.Mergeable;
-              merge_ready;
-              head_oid = None;
-              review_decision = None;
-              unresolved_comment_count = 0;
-              merge_queue_required = false;
-              merge_queue_entry = None;
-              checks_passing;
-              ci_checks = [];
-              merge_commit_sha = None;
-            }
+          {
+            Poller.queue = [];
+            merged = false;
+            closed = false;
+            is_draft = true;
+            merge_state = Pr_state.Mergeable;
+            merge_ready;
+            base_branch = None;
+            base_oid = None;
+            head_oid = None;
+            review_decision = None;
+            unresolved_comment_count = 0;
+            merge_queue_required = false;
+            merge_queue_entry = None;
+            checks_passing;
+            ci_checks = [];
+            merge_commit_sha = None;
+          }
         in
         let orch, _logs, _newly_blocked =
           Patch_controller.apply_poll_result orch pid
@@ -1176,23 +1207,24 @@ let () =
         in
         let orch = make_orch patch agent in
         let poll =
-          Poller.
-            {
-              queue = [];
-              merged = false;
-              closed = false;
-              is_draft = true;
-              merge_state = Pr_state.Mergeable;
-              merge_ready = false;
-              head_oid = None;
-              review_decision = None;
-              unresolved_comment_count = 0;
-              merge_queue_required = false;
-              merge_queue_entry = None;
-              checks_passing = false;
-              ci_checks = [];
-              merge_commit_sha = None;
-            }
+          {
+            Poller.queue = [];
+            merged = false;
+            closed = false;
+            is_draft = true;
+            merge_state = Pr_state.Mergeable;
+            merge_ready = false;
+            base_branch = None;
+            base_oid = None;
+            head_oid = None;
+            review_decision = None;
+            unresolved_comment_count = 0;
+            merge_queue_required = false;
+            merge_queue_entry = None;
+            checks_passing = false;
+            ci_checks = [];
+            merge_commit_sha = None;
+          }
         in
         let observation =
           Patch_controller.
@@ -1267,7 +1299,9 @@ let () =
               | Orchestrator.Respond (action_pid, kind) ->
                   Patch_id.equal action_pid pid
                   && Operation_kind.equal kind Operation_kind.Pr_body
-              | Orchestrator.Start _ | Orchestrator.Rebase _ -> false)
+              | Orchestrator.Start _ | Orchestrator.Rebase _
+              | Orchestrator.Reconcile_branch _ ->
+                  false)
           in
           if not has_pr_body_action then false
           else
@@ -1290,7 +1324,9 @@ let () =
                  (List.exists actions2 ~f:(function
                    | Orchestrator.Respond (action_pid, _kind) ->
                        Patch_id.equal action_pid pid
-                   | Orchestrator.Start _ | Orchestrator.Rebase _ -> false))
+                   | Orchestrator.Start _ | Orchestrator.Rebase _
+                   | Orchestrator.Reconcile_branch _ ->
+                       false))
         with _ -> false
         end)
   in
@@ -1426,7 +1462,9 @@ let () =
           |> List.exists ~f:(function
             | Orchestrator.Rebase (action_pid, base) ->
                 Patch_id.equal action_pid pid && Branch.equal base main
-            | Orchestrator.Start _ | Orchestrator.Respond _ -> false)
+            | Orchestrator.Start _ | Orchestrator.Respond _
+            | Orchestrator.Reconcile_branch _ ->
+                false)
         in
         paused && resumed)
   in
@@ -1446,23 +1484,24 @@ let () =
             ~native_stack:true ()
         in
         let poll =
-          Poller.
-            {
-              queue = [];
-              merged = false;
-              closed = false;
-              is_draft = true;
-              merge_state = Pr_state.Mergeable;
-              merge_ready = false;
-              head_oid = None;
-              review_decision = None;
-              unresolved_comment_count = 0;
-              merge_queue_required = false;
-              merge_queue_entry = None;
-              checks_passing = false;
-              ci_checks = [];
-              merge_commit_sha = None;
-            }
+          {
+            Poller.queue = [];
+            merged = false;
+            closed = false;
+            is_draft = true;
+            merge_state = Pr_state.Mergeable;
+            merge_ready = false;
+            base_branch = None;
+            base_oid = None;
+            head_oid = None;
+            review_decision = None;
+            unresolved_comment_count = 0;
+            merge_queue_required = false;
+            merge_queue_entry = None;
+            checks_passing = false;
+            ci_checks = [];
+            merge_commit_sha = None;
+          }
         in
         let observe orch native_stack =
           let observation =
@@ -1533,23 +1572,24 @@ let () =
           Patch_controller.
             {
               poll_result =
-                Poller.
-                  {
-                    queue = [];
-                    merged = false;
-                    closed = false;
-                    is_draft = false;
-                    merge_state = Pr_state.Mergeable;
-                    merge_ready = false;
-                    head_oid = None;
-                    review_decision = None;
-                    unresolved_comment_count = 0;
-                    merge_queue_required = false;
-                    merge_queue_entry = None;
-                    checks_passing = false;
-                    ci_checks = [];
-                    merge_commit_sha = None;
-                  };
+                {
+                  Poller.queue = [];
+                  merged = false;
+                  closed = false;
+                  is_draft = false;
+                  merge_state = Pr_state.Mergeable;
+                  merge_ready = false;
+                  base_branch = None;
+                  base_oid = None;
+                  head_oid = None;
+                  review_decision = None;
+                  unresolved_comment_count = 0;
+                  merge_queue_required = false;
+                  merge_queue_entry = None;
+                  checks_passing = false;
+                  ci_checks = [];
+                  merge_commit_sha = None;
+                };
               base_branch = Some new_base;
               native_stack = false;
               branch_in_root = false;
@@ -1678,7 +1718,9 @@ let () =
               ~f:(fun (msg : Orchestrator.patch_agent_message) ->
                 match msg.action with
                 | Orchestrator.Start _ -> false
-                | Orchestrator.Respond _ | Orchestrator.Rebase _ -> true)
+                | Orchestrator.Respond _ | Orchestrator.Rebase _
+                | Orchestrator.Reconcile_branch _ ->
+                    true)
           in
           Patch_agent.needs_intervention agent
           && Patch_agent.is_pr_missing agent
@@ -1717,6 +1759,8 @@ let () =
               ci_checks = [];
               checks_passing = true;
               merge_ready = false;
+              base_branch = None;
+              base_oid = None;
               head_oid = None;
               review_decision = None;
               unresolved_comment_count = 0;
@@ -1791,7 +1835,9 @@ let () =
              ~f:(fun (msg : Orchestrator.patch_agent_message) ->
                match msg.action with
                | Orchestrator.Start (pid, _) -> Patch_id.equal pid child_pid
-               | Orchestrator.Respond _ | Orchestrator.Rebase _ -> false)))
+               | Orchestrator.Respond _ | Orchestrator.Rebase _
+               | Orchestrator.Reconcile_branch _ ->
+                   false)))
   in
 
   let merge_queue_entry ?(state = Pr_state.Mq_queued) ?(position = 1) id =
@@ -2397,23 +2443,24 @@ let () =
         | Ok restored ->
             let orch = make_orch patch restored in
             let poll checks =
-              Poller.
-                {
-                  queue = [ Operation_kind.Ci ];
-                  merged = false;
-                  closed = false;
-                  is_draft = false;
-                  merge_state = Pr_state.Mergeable;
-                  merge_ready = false;
-                  head_oid = None;
-                  review_decision = None;
-                  unresolved_comment_count = 0;
-                  merge_queue_required = false;
-                  merge_queue_entry = None;
-                  checks_passing = false;
-                  ci_checks = checks;
-                  merge_commit_sha = None;
-                }
+              {
+                Poller.queue = [ Operation_kind.Ci ];
+                merged = false;
+                closed = false;
+                is_draft = false;
+                merge_state = Pr_state.Mergeable;
+                merge_ready = false;
+                base_branch = None;
+                base_oid = None;
+                head_oid = None;
+                review_decision = None;
+                unresolved_comment_count = 0;
+                merge_queue_required = false;
+                merge_queue_entry = None;
+                checks_passing = false;
+                ci_checks = checks;
+                merge_commit_sha = None;
+              }
             in
             let same, _, _ =
               Patch_controller.apply_poll_result orch pid

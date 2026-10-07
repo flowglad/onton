@@ -43,6 +43,7 @@ val reconcile_patch :
 
 val apply_poll_result :
   ?merge_queue_ejection_confirmed:bool ->
+  ?confirmed_remote_head:string ->
   Orchestrator.t ->
   Patch_id.t ->
   poll_observation ->
@@ -284,6 +285,7 @@ val is_integration_candidate :
     it can admit a duplicate integration. *)
 
 val apply_branch_observation :
+  ?confirmed_remote_head:string ->
   Orchestrator.t ->
   Patch_id.t ->
   head_sha:string ->

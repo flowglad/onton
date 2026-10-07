@@ -96,3 +96,13 @@ val with_patch_write : t -> patch_id:Patch_id.t -> (unit -> 'a) -> 'a
 (** Serialize operations on a patch, also taking the root-write lock for the
     integration root. Acquire patch ownership before root ownership; callbacks
     must not reacquire either lock. Releases both on error or cancellation. *)
+
+type patch_write
+(** Write ownership scoped to one [with_patch_ownership] callback. Do not share
+    this capability with concurrent fibers. *)
+
+val with_patch_ownership : t -> patch_id:Patch_id.t -> (patch_write -> 'a) -> 'a
+
+val with_owned_patch : patch_write -> (t -> Patch_id.t -> 'a) -> 'a
+(** Run under existing ownership. Rejects use after the owning callback returns.
+    The runtime and patch identity come from the capability itself. *)

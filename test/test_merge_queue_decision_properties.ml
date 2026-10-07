@@ -74,6 +74,8 @@ let gen_poll_result =
         is_draft;
         merge_state;
         merge_ready;
+        base_branch = None;
+        base_oid = None;
         head_oid = None;
         review_decision = None;
         unresolved_comment_count = 0;
@@ -106,6 +108,8 @@ let base_ejection_poll =
       is_draft = false;
       merge_state = Pr_state.Mergeable;
       merge_ready = true;
+      base_branch = None;
+      base_oid = None;
       head_oid = None;
       review_decision = Some "APPROVED";
       unresolved_comment_count = 0;

@@ -548,6 +548,20 @@ module type S = sig
     message:string ->
     (unit, string) Result.t
 
+  val materialization :
+    path:string ->
+    project_name:string ->
+    branch:Types.Branch.t ->
+    (Branch_reconcile.materialization option, string) Result.t
+
+  val reconcile :
+    path:string ->
+    project_name:string ->
+    branch:Types.Branch.t ->
+    operation:Branch_reconcile.operation ->
+    Branch_reconcile.command ->
+    Branch_reconcile.result
+
   val rebase_in_progress : path:string -> bool
 end
 

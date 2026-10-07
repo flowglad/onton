@@ -12,6 +12,7 @@ let authorizes t ~branch ~local_sha ~remote_sha =
 
 let valid_sha s =
   (String.length s = 40 || String.length s = 64)
+  && (not (String.for_all s ~f:(Char.equal '0')))
   && String.for_all s ~f:(function
     | '0' .. '9' | 'a' .. 'f' -> true
     | _ -> false)

@@ -241,6 +241,7 @@ let scenario_branch_switched env =
              reason)
   | Worktree.Push_rejected
       ( Push_reject_classify.Workflow_scope_missing
+      | Push_reject_classify.Permission_denied
       | Push_reject_classify.Branch_protection
       | Push_reject_classify.Push_pattern_block
       | Push_reject_classify.Lease_violation
@@ -350,6 +351,7 @@ let scenario_local_missing_remote env =
              reason)
   | Worktree.Push_rejected
       ( Push_reject_classify.Workflow_scope_missing
+      | Push_reject_classify.Permission_denied
       | Push_reject_classify.Branch_protection
       | Push_reject_classify.Push_pattern_block
       | Push_reject_classify.Lease_violation
@@ -431,6 +433,7 @@ let scenario_happy_path env =
   | Worktree.Push_up_to_date | Worktree.Push_no_commits
   | Worktree.Push_rejected
       ( Push_reject_classify.Workflow_scope_missing
+      | Push_reject_classify.Permission_denied
       | Push_reject_classify.Branch_protection
       | Push_reject_classify.Push_pattern_block
       | Push_reject_classify.Lease_violation
@@ -1047,6 +1050,7 @@ let to_rejection_partition =
           | _ -> false)
       | Some
           ( Push_reject_classify.Workflow_scope_missing
+          | Push_reject_classify.Permission_denied
           | Push_reject_classify.Branch_protection
           | Push_reject_classify.Push_pattern_block
           | Push_reject_classify.Merge_queue_locked

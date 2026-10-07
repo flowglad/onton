@@ -73,6 +73,7 @@ type t = {
       (** Whether GitHub linked this PR into a native pull request stack.
           Distinct from Onton's patch dependency graph. *)
   head_branch : Branch.t option;
+  base_oid : string option;
   head_oid : string option;
   merge_commit_sha : string option;
       (** For a merged PR, the squash/merge commit SHA on the base branch

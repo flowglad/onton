@@ -142,6 +142,27 @@ let authority () =
 let properties =
   [
     Test.make
+      ~name:"branch creation markers terminate lineage without a Git probe"
+      ~count:100 Gen.bool (fun sha256 ->
+        let width = if sha256 then 64 else 40 in
+        let zero = String.make width '0' in
+        let local = String.make width 'a' in
+        let remote = String.make width 'b' in
+        let calls = ref 0 in
+        let result =
+          Rewrite_lineage.of_reflog ~branch:"patch" ~local_sha:local
+            ~remote_sha:remote
+            ~reflog:
+              (raw_reflog [ entry zero local "branch: Created from main" ])
+            ~content_oracle:(fun ~remote_sha:_ ~target:_ ~result_sha:_ ->
+              Int.incr calls;
+              false)
+            ~ancestor_oracle:(fun _ ~descendant:_ ->
+              Int.incr calls;
+              false)
+        in
+        Option.is_none result && !calls = 0);
+    Test.make
       ~name:"content evidence belongs to the rebase result before later edits"
       ~count:500
       Gen.(pair bool bool)

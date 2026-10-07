@@ -332,7 +332,9 @@ let () =
               List.exists actions ~f:(function
                 | Orchestrator.Start (pid, _) ->
                     Types.Patch_id.equal pid first.Types.Patch.id
-                | Orchestrator.Respond (_, _) | Orchestrator.Rebase (_, _) ->
+                | Orchestrator.Respond (_, _)
+                | Orchestrator.Rebase (_, _)
+                | Orchestrator.Reconcile_branch _ ->
                     false)
         with _ -> false)
   in
@@ -427,7 +429,9 @@ let () =
       | Orchestrator.Respond (p, k) ->
           Types.Patch_id.equal p pid
           && Types.Operation_kind.equal k Types.Operation_kind.Ci
-      | Orchestrator.Start _ | Orchestrator.Rebase _ -> false));
+      | Orchestrator.Start _ | Orchestrator.Rebase _
+      | Orchestrator.Reconcile_branch _ ->
+          false));
 
   (* orchestrator: mark_merged makes has_merged true *)
   let orch2 = Orchestrator.create ~patches ~main_branch:main in

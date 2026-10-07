@@ -50,7 +50,9 @@ let starts runtime =
       List.filter_map
         (function
           | Orchestrator.Start (pid, _) -> Some (Patch_id.to_string pid)
-          | Orchestrator.Rebase _ | Orchestrator.Respond _ -> None)
+          | Orchestrator.Rebase _ | Orchestrator.Respond _
+          | Orchestrator.Reconcile_branch _ ->
+              None)
         actions)
 
 let state_and_resume () =
@@ -222,7 +224,7 @@ module Fake_forge : Forge.S with type error = string = struct
   let check_repo_access () = Ok ()
 end
 
-let runner_without_backend env ~feature =
+let runner_without_backend env ~feature ~retry =
   Git.with_temp_repo (fun path ->
       let origin = Filename.temp_dir "onton-publication-origin-" "" in
       Fun.protect
@@ -240,8 +242,112 @@ let runner_without_backend env ~feature =
             (val Worktree.make ~fs ~config:Worktree_lifecycle.git ~clock
                    ~process_mgr ~repo_root:path)
           in
+          let publications = ref [] in
+          let published = ref None in
+          let failed_base_push = ref false in
           let module W : Worktree.S = struct
             include Real_worktree
+
+            let force_push_with_lease ~path:_ ~branch:_ ~base:_ =
+              failwith "Gameplan publication must use durable reconciliation"
+
+            let reconcile ~path ~project_name ~branch ~operation command =
+              let fail_push =
+                match command.Branch_reconcile.kind with
+                | Branch_reconcile.Publish { candidate; expected } ->
+                    let snapshot =
+                      get
+                        (Persistence.load
+                           ~path:(Project_store.snapshot_path project_name))
+                    in
+                    let agent =
+                      Orchestrator.agent snapshot.Runtime.orchestrator (id "0")
+                    in
+                    let completion =
+                      Option.get agent.Patch_agent.session_completion
+                    in
+                    assert (
+                      completion.Session_result.result
+                      = Session_result.Session_ok);
+                    (match
+                       operation.Branch_reconcile.intent
+                         .Branch_reconcile.purpose
+                     with
+                    | Branch_reconcile.Publish_revision _
+                    | Branch_reconcile.Publish_session _ ->
+                        assert (
+                          completion.Session_result.head
+                          = Some (Branch_reconcile.Commit.to_string candidate))
+                    | Branch_reconcile.Reconcile_base
+                    | Branch_reconcile.Reconcile_request _
+                    | Branch_reconcile.Integrate_revision _ ->
+                        let receipt =
+                          List.hd
+                            (Branch_reconcile.integrations
+                               agent.Patch_agent.branch_reconcile)
+                        in
+                        assert (
+                          receipt.Branch_reconcile.integrated_revision
+                          = candidate);
+                        assert (
+                          agent.Patch_agent.branch_rebased_onto_sha
+                          = Some
+                              (Branch_reconcile.Commit.to_string
+                                 receipt.Branch_reconcile.capture
+                                   .Branch_reconcile.target_revision)));
+                    assert (
+                      Branch_reconcile.pending
+                        agent.Patch_agent.branch_reconcile
+                      = Some command);
+                    assert (agent.Patch_agent.push_failure_count = 0);
+                    assert (expected = !published);
+                    let first = !publications = [] in
+                    publications := candidate :: !publications;
+                    let base_failure =
+                      match
+                        operation.Branch_reconcile.intent
+                          .Branch_reconcile.purpose
+                      with
+                      | Branch_reconcile.Reconcile_base
+                      | Branch_reconcile.Reconcile_request _
+                      | Branch_reconcile.Integrate_revision _ ->
+                          if retry && not !failed_base_push then (
+                            failed_base_push := true;
+                            true)
+                          else false
+                      | Branch_reconcile.Publish_revision _
+                      | Branch_reconcile.Publish_session _ ->
+                          false
+                    in
+                    (retry && first) || base_failure
+                | Branch_reconcile.Commit_merge _
+                | Branch_reconcile.Plan_remote_replay _
+                | Branch_reconcile.Checkout_remote _ | Branch_reconcile.Observe
+                | Branch_reconcile.Pin _ | Branch_reconcile.Integrate _
+                | Branch_reconcile.Inspect | Branch_reconcile.Verify_recovery
+                | Branch_reconcile.Continue _ | Branch_reconcile.Confirm _ ->
+                    false
+              in
+              if fail_push then
+                Branch_reconcile.Retryable
+                  { reason = "transport unavailable"; retry_after = None }
+              else
+                let result =
+                  Real_worktree.reconcile ~path ~project_name ~branch ~operation
+                    command
+                in
+                (match command.Branch_reconcile.kind with
+                | Branch_reconcile.Publish { candidate; _ } ->
+                    if result = Branch_reconcile.Published then
+                      published := Some candidate
+                | Branch_reconcile.Commit_merge _
+                | Branch_reconcile.Plan_remote_replay _
+                | Branch_reconcile.Checkout_remote _ | Branch_reconcile.Observe
+                | Branch_reconcile.Pin _ | Branch_reconcile.Integrate _
+                | Branch_reconcile.Inspect | Branch_reconcile.Verify_recovery
+                | Branch_reconcile.Continue _ | Branch_reconcile.Confirm _ ->
+                    ());
+                result
 
             let find_for_branch branch =
               if branch = Branch.of_string "demo/patch-0" then Some path
@@ -303,16 +409,88 @@ let runner_without_backend env ~feature =
             in
             loop ()
           in
-          Eio.Time.with_timeout_exn clock 10. (fun () ->
+          Eio.Time.with_timeout_exn clock 25. (fun () ->
               Eio.Fiber.first (fun () -> Runner.run ()) wait);
           assert (!backend_calls = 0);
+          assert (List.length !publications = if retry then 2 else 1);
+          assert (
+            List.for_all
+              (Branch_reconcile.Commit.equal (List.hd !publications))
+              !publications);
+          assert (
+            Git.git_capture ~cwd:path [ "rev-list"; "--count"; "main..HEAD" ]
+            = "1");
+          let final_agent =
+            Runtime.read runtime (fun snap ->
+                Orchestrator.agent snap.Runtime.orchestrator (id "0"))
+          in
+          assert (final_agent.Patch_agent.push_failure_count = 0);
+          assert (
+            Branch_reconcile.phase final_agent.Patch_agent.branch_reconcile
+            = Some Branch_reconcile.Settled);
           assert (starts runtime = []);
           assert (
             Git.git_capture ~cwd:origin
               [
                 "show"; "demo/patch-0:" ^ Gameplan_publication.path publication;
               ]
-            = String.trim source)))
+            = String.trim source);
+          (* Later scheduling requests must observe a fresh base even after the
+             preceding operation settled. A failed push retains the receipt and
+             candidate checked by the executor wrapper above. *)
+          let advance_and_rebase ?(kind = Operation_kind.Rebase) parent =
+            let tree =
+              Git.git_capture ~cwd:path [ "rev-parse"; parent ^ "^{tree}" ]
+            in
+            let target =
+              Git.git_capture ~cwd:path
+                [ "commit-tree"; tree; "-p"; parent; "-m"; "Advance base" ]
+            in
+            Git.run_git ~cwd:path
+              [ "push"; "origin"; target ^ ":refs/heads/main" ];
+            Runtime.update_orchestrator runtime (fun orch ->
+                let orch =
+                  if kind = Operation_kind.Merge_conflict then
+                    Orchestrator.set_has_conflict orch (id "0")
+                  else orch
+                in
+                Orchestrator.enqueue orch (id "0") kind);
+            let rec wait_rebase () =
+              let ready =
+                Runtime.read runtime (fun snap ->
+                    let agent =
+                      Orchestrator.agent snap.Runtime.orchestrator (id "0")
+                    in
+                    agent.Patch_agent.branch_rebased_onto_sha = Some target
+                    && Branch_reconcile.phase agent.Patch_agent.branch_reconcile
+                       = Some Branch_reconcile.Settled)
+              in
+              if not ready then (
+                Eio.Time.sleep clock 0.02;
+                wait_rebase ())
+            in
+            Eio.Time.with_timeout_exn clock 25. (fun () ->
+                Eio.Fiber.first (fun () -> Runner.run ()) wait_rebase);
+            Git.run_git ~cwd:origin
+              [ "merge-base"; "--is-ancestor"; target; "demo/patch-0" ];
+            assert (
+              Git.git_capture ~cwd:origin
+                [
+                  "show";
+                  "demo/patch-0:" ^ Gameplan_publication.path publication;
+                ]
+              = String.trim source);
+            assert (!backend_calls = 0);
+            target
+          in
+          let original_base =
+            Git.git_capture ~cwd:path [ "rev-parse"; "main" ]
+          in
+          let next_base = advance_and_rebase original_base in
+          let third_base = advance_and_rebase next_base in
+          ignore
+            (advance_and_rebase ~kind:Operation_kind.Merge_conflict third_base);
+          assert (List.length !publications = if retry then 6 else 4)))
 
 let () =
   let data = Filename.temp_dir "onton-publication-" "" in
@@ -331,6 +509,8 @@ let () =
           commit env ~yaml:false
             ~content:"{\n  \"preserve\": \"formatting\"\n}\n";
           refuses_symlink env ();
-          runner_without_backend env ~feature:false;
-          runner_without_backend env ~feature:true));
+          runner_without_backend env ~feature:false ~retry:false;
+          runner_without_backend env ~feature:true ~retry:false;
+          runner_without_backend env ~feature:false ~retry:true;
+          runner_without_backend env ~feature:true ~retry:true));
   print_endline "test_gameplan_publication: OK"

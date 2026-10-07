@@ -16,8 +16,13 @@ let write_file_atomically ~path ~content =
       ~finally:(fun () -> Stdlib.close_out oc)
       (fun () ->
         Stdlib.output_string oc content;
-        Stdlib.flush oc);
+        Stdlib.flush oc;
+        Unix.fsync (Unix.descr_of_out_channel oc));
     Stdlib.Sys.rename tmp_path path;
+    let fd = Unix.openfile dir [ Unix.O_RDONLY ] 0 in
+    Stdlib.Fun.protect
+      ~finally:(fun () -> Unix.close fd)
+      (fun () -> Unix.fsync fd);
     Ok ()
   with exn ->
     (try Stdlib.Sys.remove tmp_path with _ -> ());
@@ -159,6 +164,11 @@ let try_of_yojson = Json.try_of_yojson
 let patch_agent_to_yojson (a : Patch_agent.t) =
   `Assoc
     [
+      ("branch_reconcile", Branch_reconcile.yojson_of_t a.branch_reconcile);
+      ( "session_completion",
+        match a.session_completion with
+        | None -> `Null
+        | Some completion -> Session_result.yojson_of_completion completion );
       ("patch_id", Patch_id.yojson_of_t a.patch_id);
       ("branch", Branch.yojson_of_t a.branch);
       ("pr_status", Patch_pr_status.yojson_of_t a.pr_status);
@@ -302,262 +312,286 @@ let patch_agent_of_yojson ~gameplan json =
     result_all
       (List.map ci_checks_raw ~f:(fun j -> try_of_yojson Ci_check.t_of_yojson j))
   in
+  let* branch_reconcile =
+    match Json.field "branch_reconcile" json with
+    | None -> Ok Branch_reconcile.empty
+    | Some checkpoint -> Branch_reconcile.decode checkpoint
+  in
+  let* session_completion =
+    match Json.field "session_completion" json with
+    | None | Some `Null -> Ok None
+    | Some completion ->
+        let* completion = Session_result.decode_completion completion in
+        Ok (Some completion)
+  in
   let has_session = bool_member "has_session" json in
   Ok
-    (Patch_agent.restore
-       ~patch_id:(Patch_id.of_string (string_member "patch_id" json))
-       ~branch:
-         (let pid = string_member "patch_id" json in
-          (* Backward compat: old ad-hoc agents stored a synthetic "adhoc-N"
+    ( Patch_agent.restore ~session_completion ~branch_reconcile
+        ~patch_id:(Patch_id.of_string (string_member "patch_id" json))
+        ~branch:
+          (let pid = string_member "patch_id" json in
+           (* Backward compat: old ad-hoc agents stored a synthetic "adhoc-N"
              branch and the real branch in head_branch. Prefer head_branch
              when present to migrate to the unified branch field. *)
-          let raw = string_member_opt "branch" json in
-          let head = string_member_opt "head_branch" json in
-          (* Treat synthetic "adhoc-N" raw values as unresolvable so they
+           let raw = string_member_opt "branch" json in
+           let head = string_member_opt "head_branch" json in
+           (* Treat synthetic "adhoc-N" raw values as unresolvable so they
              fall through to the gameplan/pid default instead of creating
              ghost worktrees that silently block worktree creation. *)
-          let resolved =
-            match head with
-            | Some _ -> head
-            | None -> (
-                match raw with
-                | Some r
-                  when String.is_prefix r ~prefix:"adhoc-"
-                       && String.for_all (String.drop_prefix r 6)
-                            ~f:Char.is_digit ->
-                    None
-                | _ -> raw)
-          in
-          Branch.of_string
-            (Option.value resolved
-               ~default:
-                 (match
-                    List.find gameplan.Gameplan.patches ~f:(fun p ->
-                        String.equal (Patch_id.to_string p.Patch.id) pid)
-                  with
-                 | Some p -> Branch.to_string p.Patch.branch
-                 | None -> pid)))
-       ~pr_status:
-         (match member "pr_status" json with
-         | `Null -> (
-             (* Legacy snapshot: no [pr_status] field. Derive from the legacy
+           let resolved =
+             match head with
+             | Some _ -> head
+             | None -> (
+                 match raw with
+                 | Some r
+                   when String.is_prefix r ~prefix:"adhoc-"
+                        && String.for_all (String.drop_prefix r 6)
+                             ~f:Char.is_digit ->
+                     None
+                 | _ -> raw)
+           in
+           Branch.of_string
+             (Option.value resolved
+                ~default:
+                  (match
+                     List.find gameplan.Gameplan.patches ~f:(fun p ->
+                         String.equal (Patch_id.to_string p.Patch.id) pid)
+                   with
+                  | Some p -> Branch.to_string p.Patch.branch
+                  | None -> pid)))
+        ~pr_status:
+          (match member "pr_status" json with
+          | `Null -> (
+              (* Legacy snapshot: no [pr_status] field. Derive from the legacy
                 [pr_number] field: int -> Present, null -> Absent. Missing
                 cannot appear in legacy data (the field was added with the
                 state). *)
-             match int_member_opt "pr_number" json with
-             | None -> Patch_pr_status.Absent
-             | Some n -> Patch_pr_status.Present (Pr_number.of_int n))
-         | v -> (
-             match Patch_pr_status.t_of_yojson_compat v with
-             | Ok s -> s
-             | Error _ -> (
-                 (* Malformed [pr_status] — fall back to the legacy field as
+              match int_member_opt "pr_number" json with
+              | None -> Patch_pr_status.Absent
+              | Some n -> Patch_pr_status.Present (Pr_number.of_int n))
+          | v -> (
+              match Patch_pr_status.t_of_yojson_compat v with
+              | Ok s -> s
+              | Error _ -> (
+                  (* Malformed [pr_status] — fall back to the legacy field as
                      a last resort so a single bad write doesn't lose the
                      agent entirely. *)
-                 match int_member_opt "pr_number" json with
-                 | None -> Patch_pr_status.Absent
-                 | Some n -> Patch_pr_status.Present (Pr_number.of_int n))))
-       ~complexity:(int_member_opt "complexity" json)
-       ~branch_published:
-         (Option.value (bool_member_opt "branch_published" json) ~default:false)
-       ~has_session ~busy:(bool_member "busy" json)
-       ~merged:(bool_member "merged" json)
-       ~queue
-       ~satisfies:(bool_member "satisfies" json)
-       ~changed:(bool_member "changed" json)
-       ~has_conflict:(bool_member "has_conflict" json)
-       ~base_branch:
-         (string_member_opt "base_branch" json |> Option.map ~f:Branch.of_string)
-       ~notified_base_branch:
-         (match string_member_opt "notified_base_branch" json with
-         | Some s -> Some (Branch.of_string s)
-         | None ->
-             (* Backward compat: only infer "already notified" for agents with
+                  match int_member_opt "pr_number" json with
+                  | None -> Patch_pr_status.Absent
+                  | Some n -> Patch_pr_status.Present (Pr_number.of_int n))))
+        ~complexity:(int_member_opt "complexity" json)
+        ~branch_published:
+          (Option.value
+             (bool_member_opt "branch_published" json)
+             ~default:false)
+        ~has_session ~busy:(bool_member "busy" json)
+        ~merged:(bool_member "merged" json)
+        ~queue
+        ~satisfies:(bool_member "satisfies" json)
+        ~changed:(bool_member "changed" json)
+        ~has_conflict:(bool_member "has_conflict" json)
+        ~base_branch:
+          (string_member_opt "base_branch" json
+          |> Option.map ~f:Branch.of_string)
+        ~notified_base_branch:
+          (match string_member_opt "notified_base_branch" json with
+          | Some s -> Some (Branch.of_string s)
+          | None ->
+              (* Backward compat: only infer "already notified" for agents with
                 an active/established session. *)
-             if has_session then
-               string_member_opt "base_branch" json
-               |> Option.map ~f:Branch.of_string
-             else None)
-       ~ci_failure_count:(int_member "ci_failure_count" json)
-       ~max_ci_failures:
-         (* Legacy snapshots predate the field; the built-in default matches
+              if has_session then
+                string_member_opt "base_branch" json
+                |> Option.map ~f:Branch.of_string
+              else None)
+        ~ci_failure_count:(int_member "ci_failure_count" json)
+        ~max_ci_failures:
+          (* Legacy snapshots predate the field; the built-in default matches
             their behavior. [Runtime.create] restamps from config right after
             restore either way. *)
-         (Option.value
-            (int_member_opt "max_ci_failures" json)
-            ~default:Patch_agent.default_max_ci_failures)
-       ~session_fallback
-       ~wontdo_reason:(string_member_opt "wontdo_reason" json)
-       ~human_messages ~inflight_human_messages ~ci_checks
-       ~merge_ready:(bool_member "merge_ready" json)
-       ~head_oid:(string_member_opt "head_oid" json)
-       ~expected_remote_head_oid:
-         (string_member_opt "expected_remote_head_oid" json)
-       ~review_decision:(string_member_opt "review_decision" json)
-       ~unresolved_comment_count:
-         (Option.value
-            (int_member_opt "unresolved_comment_count" json)
-            ~default:0)
-       ~mergeability_unknown:
-         (match bool_member_opt "mergeability_unknown" json with
-         | Some v -> v
-         | None -> legacy_mergeability_unknown json)
-       ~merge_queue_required:
-         (Option.value
-            (bool_member_opt "merge_queue_required" json)
-            ~default:false)
-       ~merge_queue_entry:
-         (match member "merge_queue_entry" json with
-         | `Null -> None
-         | v -> Result.ok (try_of_yojson Pr_state.merge_queue_entry_of_yojson v))
-       ~native_stack:
-         (Option.value (bool_member_opt "native_stack" json) ~default:false)
-       ~native_stack_absent_polls:
-         (Option.value
-            (int_member_opt "native_stack_absent_polls" json)
-            ~default:0)
-       ~merge_commit_sha:(string_member_opt "merge_commit_sha" json)
-       ~base_contains_merged_siblings:
-         (* Default [false] (fail-closed) when the key is absent — an older
+          (Option.value
+             (int_member_opt "max_ci_failures" json)
+             ~default:Patch_agent.default_max_ci_failures)
+        ~session_fallback
+        ~wontdo_reason:(string_member_opt "wontdo_reason" json)
+        ~human_messages ~inflight_human_messages ~ci_checks
+        ~merge_ready:(bool_member "merge_ready" json)
+        ~head_oid:(string_member_opt "head_oid" json)
+        ~expected_remote_head_oid:
+          (string_member_opt "expected_remote_head_oid" json)
+        ~review_decision:(string_member_opt "review_decision" json)
+        ~unresolved_comment_count:
+          (Option.value
+             (int_member_opt "unresolved_comment_count" json)
+             ~default:0)
+        ~mergeability_unknown:
+          (match bool_member_opt "mergeability_unknown" json with
+          | Some v -> v
+          | None -> legacy_mergeability_unknown json)
+        ~merge_queue_required:
+          (Option.value
+             (bool_member_opt "merge_queue_required" json)
+             ~default:false)
+        ~merge_queue_entry:
+          (match member "merge_queue_entry" json with
+          | `Null -> None
+          | v ->
+              Result.ok (try_of_yojson Pr_state.merge_queue_entry_of_yojson v))
+        ~native_stack:
+          (Option.value (bool_member_opt "native_stack" json) ~default:false)
+        ~native_stack_absent_polls:
+          (Option.value
+             (int_member_opt "native_stack_absent_polls" json)
+             ~default:0)
+        ~merge_commit_sha:(string_member_opt "merge_commit_sha" json)
+        ~base_contains_merged_siblings:
+          (* Default [false] (fail-closed) when the key is absent — an older
             snapshot predating this field must not fail-open the Start/Rebase
             gate for a fan-in patch on load. Snapshots written by this version
             always include the key, so round-trip identity is preserved; the
             first poll recomputes the live value either way. *)
-         (Option.value
-            (bool_member_opt "base_contains_merged_siblings" json)
-            ~default:false)
-       ~is_draft:(bool_member "is_draft" json)
-       ~pr_body_refresh_pending:
-         (match bool_member_opt "pr_body_refresh_pending" json with
-         | Some pending -> pending
-         | None -> (
-             (* Legacy snapshots cannot prove that the root body covers integrated
+          (Option.value
+             (bool_member_opt "base_contains_merged_siblings" json)
+             ~default:false)
+        ~is_draft:(bool_member "is_draft" json)
+        ~pr_body_refresh_pending:
+          (match bool_member_opt "pr_body_refresh_pending" json with
+          | Some pending -> pending
+          | None -> (
+              (* Legacy snapshots cannot prove that the root body covers integrated
               descendants. Conservatively require publication at the inferred
               implementation root, excluding a publication prerequisite. *)
-             match Execution_mode.infer_gameplan gameplan with
-             | Ok mode ->
-                 Execution_mode.is_root mode
-                   (Patch_id.of_string (string_member "patch_id" json))
-             | Error _ -> false))
-       ~pr_body_refresh_version:
-         (Option.value
-            (int_member_opt "pr_body_refresh_version" json)
-            ~default:0)
-       ~pr_body_delivered:
-         (Option.value (bool_member_opt "pr_body_delivered" json) ~default:true)
-       ~pr_body_artifact_miss_count:
-         (Option.value
-            (int_member_opt "pr_body_artifact_miss_count" json)
-            ~default:0)
-       ~review_unresolved_cycle_count:
-         (Option.value
-            (int_member_opt "review_unresolved_cycle_count" json)
-            ~default:0)
-       ~start_attempts_without_pr:(int_member "start_attempts_without_pr" json)
-       ~conflict_noop_count:
-         (Option.value (int_member_opt "conflict_noop_count" json) ~default:0)
-       ~no_commits_push_count:
-         (Option.value (int_member_opt "no_commits_push_count" json) ~default:0)
-       ~context_exhaustion_count:
-         (Option.value
-            (int_member_opt "context_exhaustion_count" json)
-            ~default:0)
-       ~push_failure_count:
-         (Option.value (int_member_opt "push_failure_count" json) ~default:0)
-       ~rebase_failure_count:
-         (Option.value (int_member_opt "rebase_failure_count" json) ~default:0)
-       ~branch_rebased_onto_sha:
-         (string_member_opt "branch_rebased_onto_sha" json)
-       ~anchor_history:
-         (match member "anchor_history" json with
-         | `Null -> Anchor_history.empty
-         | v -> (
-             match Anchor_history.of_yojson_opt v with
-             | Some h -> h
-             | None -> Anchor_history.empty))
-       ~branch_rebased_onto:
-         (match string_member_opt "branch_rebased_onto" json with
-         | Some s -> Some (Branch.of_string s)
-         | None ->
-             (* Backward compat: assume existing PR agents are rebased onto
+              match Execution_mode.infer_gameplan gameplan with
+              | Ok mode ->
+                  Execution_mode.is_root mode
+                    (Patch_id.of_string (string_member "patch_id" json))
+              | Error _ -> false))
+        ~pr_body_refresh_version:
+          (Option.value
+             (int_member_opt "pr_body_refresh_version" json)
+             ~default:0)
+        ~pr_body_delivered:
+          (Option.value
+             (bool_member_opt "pr_body_delivered" json)
+             ~default:true)
+        ~pr_body_artifact_miss_count:
+          (Option.value
+             (int_member_opt "pr_body_artifact_miss_count" json)
+             ~default:0)
+        ~review_unresolved_cycle_count:
+          (Option.value
+             (int_member_opt "review_unresolved_cycle_count" json)
+             ~default:0)
+        ~start_attempts_without_pr:(int_member "start_attempts_without_pr" json)
+        ~conflict_noop_count:
+          (Option.value (int_member_opt "conflict_noop_count" json) ~default:0)
+        ~no_commits_push_count:
+          (Option.value
+             (int_member_opt "no_commits_push_count" json)
+             ~default:0)
+        ~context_exhaustion_count:
+          (Option.value
+             (int_member_opt "context_exhaustion_count" json)
+             ~default:0)
+        ~push_failure_count:
+          (Option.value (int_member_opt "push_failure_count" json) ~default:0)
+        ~rebase_failure_count:
+          (Option.value (int_member_opt "rebase_failure_count" json) ~default:0)
+        ~branch_rebased_onto_sha:
+          (string_member_opt "branch_rebased_onto_sha" json)
+        ~anchor_history:
+          (match member "anchor_history" json with
+          | `Null -> Anchor_history.empty
+          | v -> (
+              match Anchor_history.of_yojson_opt v with
+              | Some h -> h
+              | None -> Anchor_history.empty))
+        ~branch_rebased_onto:
+          (match string_member_opt "branch_rebased_onto" json with
+          | Some s -> Some (Branch.of_string s)
+          | None ->
+              (* Backward compat: assume existing PR agents are rebased onto
                 their current base_branch so drift detection activates if
                 GitHub later auto-retargets the PR. *)
-             if Option.is_some (int_member_opt "pr_number" json) then
-               string_member_opt "base_branch" json
-               |> Option.map ~f:Branch.of_string
-             else None)
-       ~checks_passing:(bool_member "checks_passing" json)
-       ~current_op:
-         (match member "current_op" json with
-         | `Null -> None
-         | v -> (
-             match try_of_yojson Operation_kind.t_of_yojson_compat v with
-             | Ok op -> Some op
-             | Error _ -> None))
-       ~current_op_state:
-         (match member "current_op_state" json with
-         | `Null ->
-             (* Field absent in snapshots predating this feature (missing key
+              if Option.is_some (int_member_opt "pr_number" json) then
+                string_member_opt "base_branch" json
+                |> Option.map ~f:Branch.of_string
+              else None)
+        ~checks_passing:(bool_member "checks_passing" json)
+        ~current_op:
+          (match member "current_op" json with
+          | `Null -> None
+          | v -> (
+              match try_of_yojson Operation_kind.t_of_yojson_compat v with
+              | Ok op -> Some op
+              | Error _ -> None))
+        ~current_op_state:
+          (match member "current_op_state" json with
+          | `Null ->
+              (* Field absent in snapshots predating this feature (missing key
                 returns [`Null]) — default to [Queued]. A live agent will be
                 re-promoted to [Running] when its fiber resumes after restart.
                 An explicit JSON [null] would also land here and is treated
                 the same way. *)
-             Patch_agent.Queued
-         | v -> (
-             match try_of_yojson Patch_agent.op_state_of_yojson v with
-             | Ok s -> s
-             | Error _ -> Patch_agent.Queued))
-       ~current_message_id:
-         (string_member_opt "current_message_id" json
-         |> Option.map ~f:Message_id.of_string)
-       ~generation:(int_member "generation" json)
-       ~worktree_path:(string_member_opt "worktree_path" json)
-       ~branch_blocked:(bool_member "branch_blocked" json)
-       ~llm_session_id:(string_member_opt "llm_session_id" json)
-       ~automerge_enabled:
-         (Option.value
-            (bool_member_opt "automerge_enabled" json)
-            ~default:false)
-       ~automerge_deadline:
-         (match member "automerge_deadline" json with
-         | `Null -> None
-         | `Float f -> Some f
-         | `Int i -> Some (Float.of_int i)
-         | `Intlit s ->
-             (* Yojson emits [`Intlit] for integers that don't fit in an OCaml
+              Patch_agent.Queued
+          | v -> (
+              match try_of_yojson Patch_agent.op_state_of_yojson v with
+              | Ok s -> s
+              | Error _ -> Patch_agent.Queued))
+        ~current_message_id:
+          (string_member_opt "current_message_id" json
+          |> Option.map ~f:Message_id.of_string)
+        ~generation:(int_member "generation" json)
+        ~worktree_path:(string_member_opt "worktree_path" json)
+        ~branch_blocked:(bool_member "branch_blocked" json)
+        ~llm_session_id:(string_member_opt "llm_session_id" json)
+        ~automerge_enabled:
+          (Option.value
+             (bool_member_opt "automerge_enabled" json)
+             ~default:false)
+        ~automerge_deadline:
+          (match member "automerge_deadline" json with
+          | `Null -> None
+          | `Float f -> Some f
+          | `Int i -> Some (Float.of_int i)
+          | `Intlit s ->
+              (* Yojson emits [`Intlit] for integers that don't fit in an OCaml
                 int. Unix timestamps fit in a [float] on all supported
                 platforms, so conversion effectively always succeeds. If the
                 literal is malformed (corrupted snapshot), drop the deadline
                 rather than raise — [reconcile_automerge] will re-arm a fresh
                 idle window on the next tick once the patch is a candidate. *)
-             Float.of_string_opt s
-         | _ ->
-             (* Unexpected JSON shape (e.g. [`String], [`Bool], [`List]) — the
+              Float.of_string_opt s
+          | _ ->
+              (* Unexpected JSON shape (e.g. [`String], [`Bool], [`List]) — the
                 snapshot is corrupted or was written by an incompatible version.
                 Treat as absent; reconcile re-arms on the next tick. *)
-             None)
-       ~automerge_inflight:
-         (* Reset inflight on restore: any inflight flag persisted across a
+              None)
+        ~automerge_inflight:
+          (* Reset inflight on restore: any inflight flag persisted across a
             supervisor restart refers to a merge call that cannot still be
             running. Assuming [false] is the safe recovery default. *)
-         false
-       ~review_requested_for_oid:
-         (string_member_opt "review_requested_for_oid" json)
-       ~review_request_inflight:
-         (Option.value
-            (bool_member_opt "review_request_inflight" json)
-            ~default:false)
-       ~automerge_failure_count:
-         (Option.value
-            (int_member_opt "automerge_failure_count" json)
-            ~default:0)
-       ~delivered_ci_run_ids:
-         (match member "delivered_ci_run_ids" json with
-         | `List items ->
-             List.filter_map items ~f:(fun j -> Json.int j)
-             |> List.dedup_and_sort ~compare:Int.compare
-         | _ -> [])
-       ())
+          false
+        ~review_requested_for_oid:
+          (string_member_opt "review_requested_for_oid" json)
+        ~review_request_inflight:
+          (Option.value
+             (bool_member_opt "review_request_inflight" json)
+             ~default:false)
+        ~automerge_failure_count:
+          (Option.value
+             (int_member_opt "automerge_failure_count" json)
+             ~default:0)
+        ~delivered_ci_run_ids:
+          (match member "delivered_ci_run_ids" json with
+          | `List items ->
+              List.filter_map items ~f:(fun j -> Json.int j)
+              |> List.dedup_and_sort ~compare:Int.compare
+          | _ -> [])
+        ()
+    |> fun agent ->
+      if Option.is_none (Json.field "branch_reconcile" json) then
+        Patch_agent.migrate_legacy_branch_state agent
+      else agent )
 
 (* ---------- Activity_log ---------- *)
 
@@ -624,6 +658,13 @@ let orchestrator_to_yojson (o : Orchestrator.t) =
                         ( "operation_kind",
                           Operation_kind.yojson_of_t operation_kind );
                       ]
+                | Orchestrator.Reconcile_branch (patch_id, operation) ->
+                    `Assoc
+                      [
+                        ("kind", `String "reconcile_branch");
+                        ("patch_id", Patch_id.yojson_of_t patch_id);
+                        ("operation", `Int operation);
+                      ]
                 | Orchestrator.Rebase (patch_id, base_branch) ->
                     `Assoc
                       [
@@ -675,6 +716,13 @@ let action_of_yojson json =
       Ok
         (Orchestrator.Respond
            (Patch_id.of_string (string_member "patch_id" json), op_kind))
+  | "reconcile_branch" ->
+      let operation = int_member "operation" json in
+      if operation <= 0 then Error "invalid reconciliation operation"
+      else
+        Ok
+          (Orchestrator.Reconcile_branch
+             (Patch_id.of_string (string_member "patch_id" json), operation))
   | "rebase" ->
       Ok
         (Orchestrator.Rebase
@@ -857,7 +905,7 @@ let snapshot_to_yojson (snap : Runtime.snapshot) =
   in
   `Assoc
     [
-      ("version", `Int 1);
+      ("version", `Int 2);
       ("runnable", `Bool runnable);
       ("orchestrator", orchestrator_to_yojson snap.orchestrator);
       ("activity_log", activity_log_to_yojson snap.activity_log);
@@ -870,7 +918,7 @@ let snapshot_to_yojson (snap : Runtime.snapshot) =
 let snapshot_of_yojson json =
   try
     let version = int_member "version" json in
-    if version <> 1 then
+    if version <> 1 && version <> 2 then
       Error (Printf.sprintf "unsupported version: %d" version)
     else
       Result.bind
@@ -948,6 +996,15 @@ let load ~path =
         (fun () -> Stdlib.In_channel.input_all ic)
     in
     let json = Yojson.Safe.from_string content in
+    let backup = path ^ ".pre-v2" in
+    (if
+       Option.equal Int.equal (Json.int_field "version" json) (Some 1)
+       && not (Stdlib.Sys.file_exists backup)
+     then
+       match write_file_atomically ~path:backup ~content with
+       | Ok () -> ()
+       | Error message ->
+           raise (Decode_error ("cannot preserve legacy snapshot: " ^ message)));
     let result =
       Result.map (snapshot_of_yojson json)
         ~f:(overlay_session_id_sidecars ~snapshot_path:path)

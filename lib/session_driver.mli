@@ -6,7 +6,7 @@
     [run] is the layer above [Llm_backend.run_streaming]: it owns the session
     lifecycle (resume vs fresh, fallback chain), worktree provisioning,
     transcript buffer accumulation, PR-number sniffing from streamed text,
-    activity-log streaming, post-session push, and result classification.
+    activity-log streaming, durable publication, and result classification.
 
     The function is large because it ties together all of those concerns —
     splitting it would scatter the supervisor's view of one session across
@@ -45,6 +45,30 @@ module Make (_ : Worktree.S) (_ : ENV) : sig
   (** The context renderer receives the ensured worktree path and is called once
       for a fresh session, including fallback, and never when resuming, giving
       up, or failing to provision a worktree. *)
+
+  val publish_completion :
+    write_owner:Runtime.patch_write ->
+    patch_id:Types.Patch_id.t ->
+    agent:Patch_agent.t ->
+    path:string ->
+    Session_result.completion ->
+    [ `Published | `No_work | `Pending ]
+  (** Reconcile a checkpointed local completion. Scripted gameplan publication
+      and backend sessions use the same captured-revision publication protocol.
+      Pending publication never changes the recorded implementation outcome. *)
+
+  val run_owned :
+    write_owner:Runtime.patch_write ->
+    kind:Types.Operation_kind.t option ->
+    delivery_mode:Patch_decision.delivery_mode ->
+    patch_id:Types.Patch_id.t ->
+    prompt:prompt ->
+    agent:Patch_agent.t ->
+    on_pr_detected:(Types.Pr_number.t -> unit) ->
+    backend:Llm_backend.t ->
+    complexity:int option ->
+    run_result
+  (** Reuse the session action's scoped patch ownership. *)
 
   val run :
     kind:Types.Operation_kind.t option ->

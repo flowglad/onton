@@ -370,8 +370,11 @@ let classify_push_result ~code ~stdout ~stderr =
     | Some '=' -> Push_up_to_date
     | _ -> Push_ok
   else
+    let rejection = Push_reject_classify.classify ~stderr ~stdout in
     match parse_push_porcelain stdout with
-    | Some '!' -> Push_rejected (Push_reject_classify.classify ~stderr ~stdout)
+    | Some '!' -> Push_rejected rejection
+    | _ when Push_reject_classify.equal_rejection rejection Permission_denied ->
+        Push_rejected rejection
     | _ ->
         Push_error
           (Printf.sprintf "push failed (exit %d): %s" code (String.strip stderr))

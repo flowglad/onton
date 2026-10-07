@@ -36,6 +36,7 @@ let make_view ~id ~title =
     base_branch = None;
     worktree_path = None;
     intervention_reason = None;
+    reconciliation_details = [];
     wontdo_reason = None;
     automerge_enabled = false;
     automerge_deadline = None;
@@ -504,3 +505,46 @@ let () =
       [ active ]
   in
   assert (line_contains (plain_lines frame) "Old transcript")
+
+let () =
+  let module B = Onton_core.Branch_reconcile in
+  let initial, _ =
+    B.step B.empty
+      (B.Request
+         { B.base = "main"; policy = B.Rewrite; purpose = B.Reconcile_base })
+  in
+  let pending = Option.value_exn (B.pending initial) in
+  List.iter [ false; true ] ~f:(fun permanent ->
+      let state, _ =
+        B.step initial
+          (B.Result
+             {
+               token = pending.B.token [@warning "-42"];
+               at = 100.;
+               result =
+                 (if permanent then B.Permanent "permission_denied"
+                  else
+                    B.Retryable
+                      { reason = "transport_unavailable"; retry_after = None });
+             })
+      in
+      let pv =
+        {
+          (make_view ~id:"1" ~title:"reconciliation") with
+          Tui.reconciliation_details = B.diagnostics state;
+        }
+      in
+      let lines =
+        plain_lines
+          (render ~width:100 ~height:60
+             ~view_mode:(Tui.Detail_view pv.Tui.patch_id) [ pv ])
+      in
+      assert (
+        line_contains lines
+          (if permanent then "Reconcile: intervention" else "Reconcile: waiting"));
+      assert (
+        line_contains lines
+          (if permanent then "permission_denied" else "transport_unavailable"));
+      assert (line_contains lines "Operation: 1");
+      assert (line_contains lines "Source SHA: unknown");
+      assert (line_contains lines "Remote lease: unknown"))

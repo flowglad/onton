@@ -116,7 +116,9 @@ let publication_lifecycle () =
     Patch_controller.plan_actions (orch ()) ~patches:gameplan.Gameplan.patches
     |> List.filter_map ~f:(function
       | Orchestrator.Start (p, b) -> Some (p, b)
-      | Orchestrator.Respond _ | Orchestrator.Rebase _ -> None)
+      | Orchestrator.Respond _ | Orchestrator.Rebase _
+      | Orchestrator.Reconcile_branch _ ->
+          None)
   in
   let check_starts label expected =
     check label
@@ -196,7 +198,9 @@ let () =
         (List.exists actions ~f:(function
           | Orchestrator.Start (p, b) ->
               Patch_id.equal p (id 2) && Branch.equal b (branch 1)
-          | Orchestrator.Respond _ | Orchestrator.Rebase _ -> false));
+          | Orchestrator.Respond _ | Orchestrator.Rebase _
+          | Orchestrator.Reconcile_branch _ ->
+              false));
       check "root waits for descendants"
         (not (Patch_controller.ready_for_review orch (id 1)));
       let orch = ready_branch orch 2 in
@@ -254,7 +258,9 @@ let () =
           | Orchestrator.Respond (p, kind) ->
               Patch_id.equal p (id 2)
               && Operation_kind.equal kind Operation_kind.Pr_body
-          | Orchestrator.Start _ | Orchestrator.Rebase _ -> false));
+          | Orchestrator.Start _ | Orchestrator.Rebase _
+          | Orchestrator.Reconcile_branch _ ->
+              false));
       let claimed, decisions =
         Patch_controller.reconcile_automerge orch ~now:0.
       in
@@ -273,7 +279,9 @@ let () =
                  ~patches)
               ~f:(function
                 | Orchestrator.Respond (p, _) -> Patch_id.equal p (id 2)
-                | Orchestrator.Start _ | Orchestrator.Rebase _ -> false)));
+                | Orchestrator.Start _ | Orchestrator.Rebase _
+                | Orchestrator.Reconcile_branch _ ->
+                    false)));
       let paused = Orchestrator.set_automerge_enabled orch (id 2) false in
       check "toggle pauses integration"
         (List.is_empty
@@ -415,23 +423,24 @@ let () =
         Patch_controller.
           {
             poll_result =
-              Poller.
-                {
-                  queue = [];
-                  merged = false;
-                  closed = false;
-                  is_draft = true;
-                  merge_state = Pr_state.Mergeable;
-                  merge_ready = true;
-                  head_oid = Some head;
-                  review_decision = None;
-                  unresolved_comment_count = 0;
-                  merge_queue_required = false;
-                  merge_queue_entry = None;
-                  checks_passing = true;
-                  ci_checks = [];
-                  merge_commit_sha = None;
-                };
+              {
+                Poller.queue = [];
+                merged = false;
+                closed = false;
+                is_draft = true;
+                merge_state = Pr_state.Mergeable;
+                merge_ready = true;
+                base_branch = None;
+                base_oid = None;
+                head_oid = Some head;
+                review_decision = None;
+                unresolved_comment_count = 0;
+                merge_queue_required = false;
+                merge_queue_entry = None;
+                checks_passing = true;
+                ci_checks = [];
+                merge_commit_sha = None;
+              };
             base_branch = Some main;
             native_stack = false;
             branch_in_root = false;
@@ -654,3 +663,91 @@ let () =
          [ Orchestrator.Push_branch ]
     && (not a.busy) && (not a.has_conflict)
     && not (Patch_agent.needs_intervention a))
+
+let () =
+  let module B = Branch_reconcile in
+  let open B in
+  let commit digit =
+    match B.Commit.make (String.make 40 digit) with
+    | Some sha -> sha
+    | None -> assert false
+  in
+  let source = commit 'a'
+  and revision = commit 'b'
+  and candidate = commit 'c' in
+  List.iter [ false; true ] ~f:(fun changed ->
+      let orch = ready_branch (ready_branch (fresh ()) 2) 3 in
+      let orch =
+        Orchestrator.set_head_oid orch (id 2)
+          (Some (B.Commit.to_string revision))
+      in
+      let orch = Orchestrator.set_automerge_inflight orch (id 2) true in
+      let orch, _ =
+        Orchestrator.reconcile_branch orch (id 1)
+          (B.Request
+             {
+               base = "main";
+               policy = Preserve_ancestry;
+               purpose = Integrate_revision { contributor = "2"; revision };
+             })
+      in
+      let state orch =
+        (Orchestrator.agent orch (id 1)).Patch_agent.branch_reconcile
+      in
+      let reply orch result =
+        match B.pending (state orch) with
+        | None -> failwith "missing integration command"
+        | Some { B.kind = _; B.token; _ } ->
+            fst
+              (Orchestrator.reconcile_branch orch (id 1)
+                 (B.Result { token; at = 100.; result }))
+      in
+      check "pending root reconciliation serializes sibling integration"
+        (not (Patch_controller.is_integration_candidate orch (id 3)));
+      let orch =
+        reply orch
+          (B.Observed
+             {
+               completed_integration = false;
+               destination =
+                 Branch_reconcile.Remote_id.of_destination "fixture-origin";
+               B.head = source;
+               B.source;
+               B.target = revision;
+               remote = Some source;
+               B.boundary = Plain;
+               topology = Equal;
+               clean = true;
+               B.sequencer = None;
+               B.conflicts = 0;
+               target_included = false;
+             })
+      in
+      let orch = reply orch B.Pinned in
+      let orch = reply orch (B.Integrated candidate) in
+      check "local root integration cannot complete descendant"
+        (not (Orchestrator.agent orch (id 2)).Patch_agent.merged);
+      let orch = reply orch B.Published in
+      check
+        "push acknowledgement cannot complete descendant before confirmation"
+        (not (Orchestrator.agent orch (id 2)).Patch_agent.merged);
+      let orch =
+        if changed then
+          Orchestrator.set_head_oid orch (id 2)
+            (Some (B.Commit.to_string (commit 'd')))
+        else orch
+      in
+      let orch =
+        reply orch (B.Remote { sha = Some candidate; topology = Equal })
+      in
+      let child = Orchestrator.agent orch (id 2) in
+      check "confirmation completes only the captured descendant revision"
+        (Bool.equal child.Patch_agent.merged (not changed)
+        && not child.Patch_agent.automerge_inflight);
+      check "root integration retains its base lineage"
+        (Option.equal Branch.equal
+           (Orchestrator.agent orch (id 1)).Patch_agent.branch_rebased_onto
+           (Some main));
+      check "confirmed publication remains recorded on destination root"
+        (List.length (B.publications (state orch)) = 1))
+[@@warning "-42"]

@@ -9,40 +9,44 @@ module type ENV = sig
 end
 
 module Make (Env : ENV) = struct
-  let run ~patch_id ~message_id f =
+  let run ?(with_capacity = fun f -> f ()) ~patch_id ~message_id f =
     let cancelled = ref false in
     let exception_raised = ref false in
     Stdlib.Fun.protect
       ~finally:(fun () ->
-        let reason =
-          if !cancelled then Orchestrator.Cancelled
-          else if !exception_raised then Orchestrator.Unexpected_exception
-          else Orchestrator.Cancelled
-        in
-        let snapshot = ref None in
-        Runtime.update_orchestrator Env.runtime (fun orch ->
-            match Orchestrator.find_agent orch patch_id with
-            | None -> orch
-            | Some before ->
-                if before.Patch_agent.busy then (
-                  let orch' =
-                    Orchestrator.apply_force_complete ~message_id orch patch_id
-                      reason
-                  in
-                  let after = Orchestrator.agent orch' patch_id in
-                  if not (Patch_agent.equal before after) then
-                    snapshot := Some (before, after);
-                  orch')
-                else orch);
-        Option.iter !snapshot ~f:(fun (before, after) ->
-            Event_log.log_force_complete Env.event_log ~patch_id ~reason
-              ~agent_before:before ~agent_after:after;
-            Runtime_logging.log_event Env.runtime ~patch_id
-              (Printf.sprintf
-                 "Forced complete (%s) — runner fiber exited with busy=true"
-                 (Orchestrator.show_force_complete_reason reason))))
+        Eio.Cancel.protect (fun () ->
+            let reason =
+              if !cancelled then Orchestrator.Cancelled
+              else if !exception_raised then Orchestrator.Unexpected_exception
+              else Orchestrator.Cancelled
+            in
+            let snapshot = ref None in
+            Runtime.update_orchestrator Env.runtime (fun orch ->
+                match Orchestrator.find_agent orch patch_id with
+                | None -> orch
+                | Some before ->
+                    if before.Patch_agent.busy then (
+                      let orch' =
+                        Orchestrator.apply_force_complete ~message_id orch
+                          patch_id reason
+                      in
+                      let after = Orchestrator.agent orch' patch_id in
+                      if not (Patch_agent.equal before after) then
+                        snapshot := Some (before, after);
+                      orch')
+                    else orch);
+            Option.iter !snapshot ~f:(fun (before, after) ->
+                Event_log.log_force_complete Env.event_log ~patch_id ~reason
+                  ~agent_before:before ~agent_after:after;
+                Runtime_logging.log_event Env.runtime ~patch_id
+                  (Printf.sprintf
+                     "Forced complete (%s) — runner fiber exited with busy=true"
+                     (Orchestrator.show_force_complete_reason reason)))))
       (fun () ->
-        try Runtime.with_patch_write Env.runtime ~patch_id f with
+        try
+          with_capacity (fun () ->
+              Runtime.with_patch_ownership Env.runtime ~patch_id f)
+        with
         | Eio.Cancel.Cancelled _ as exn ->
             cancelled := true;
             raise exn

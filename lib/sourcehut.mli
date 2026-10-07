@@ -13,6 +13,21 @@ type error =
 
 val show_error : error -> string
 
+val make_with_builds :
+  read_builds:(unit -> (Sourcehut_builds.job list, error) result) ->
+  net:_ Eio.Net.t ->
+  clock:_ Eio.Time.clock ->
+  process_mgr:_ Eio.Process.mgr ->
+  token:string ->
+  owner:string ->
+  repo:string ->
+  repo_root:string ->
+  main_branch:Types.Branch.t ->
+  changes:(Types.Pr_number.t option * Types.Branch.t * Types.Branch.t) list ->
+  (module Forge.S with type error = error)
+(** Construct the forge with a supplied build-observation handler. Git
+    observations and mutations retain the normal implementation. *)
+
 val make :
   net:_ Eio.Net.t ->
   clock:_ Eio.Time.clock ->

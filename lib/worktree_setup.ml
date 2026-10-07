@@ -50,6 +50,33 @@ module Make (W : Worktree.S) (Env : ENV) : S = struct
     | Ok ready -> ready
     | Error msg -> failwith msg
 
+  exception Provenance_unavailable of string
+
+  let checkpoint_provenance ~patch_id ~path ~branch =
+    let state =
+      Runtime.read Env.runtime (fun snap ->
+          (Orchestrator.agent snap.Runtime.orchestrator patch_id)
+            .Patch_agent.branch_reconcile)
+    in
+    if Option.is_none (Branch_reconcile.materialization state) then
+      match W.materialization ~path ~project_name:Env.project_name ~branch with
+      | Error message -> raise (Provenance_unavailable message)
+      | Ok None -> ()
+      | Ok (Some receipt) -> (
+          let checkpoint = Project_store.snapshot_path Env.project_name in
+          Project_store.ensure_dir (Stdlib.Filename.dirname checkpoint);
+          match
+            Runtime.update_persisting Env.runtime
+              ~persist:(Persistence.save_snapshot ~path:checkpoint) (fun snap ->
+                let orchestrator, _ =
+                  Orchestrator.reconcile_branch snap.Runtime.orchestrator
+                    patch_id (Branch_reconcile.Materialized receipt)
+                in
+                ({ snap with Runtime.orchestrator }, ()))
+          with
+          | Ok () -> ()
+          | Error message -> raise (Provenance_unavailable message))
+
   let ensure_worktree_impl ~patch_id ~(agent : Patch_agent.t) ?branch ?base_ref
       () =
     let runtime = Env.runtime in
@@ -69,6 +96,7 @@ module Make (W : Worktree.S) (Env : ENV) : S = struct
     let path = resolve_worktree_path ~patch_id ~agent ?branch () in
     let br = Option.value branch ~default:agent.Patch_agent.branch in
     if is_ready ~path ~branch:br then (
+      checkpoint_provenance ~patch_id ~path ~branch:br;
       Runtime.update_orchestrator runtime (fun orch ->
           Orchestrator.set_worktree_path orch patch_id path);
       Path path)
@@ -99,6 +127,7 @@ module Make (W : Worktree.S) (Env : ENV) : S = struct
       in
       match live_existing with
       | Some existing ->
+          checkpoint_provenance ~patch_id ~path:existing ~branch:br;
           log_event runtime ~patch_id
             (Printf.sprintf "Found existing worktree for branch at %s" existing);
           Runtime.update_orchestrator runtime (fun orch ->
@@ -271,6 +300,7 @@ module Make (W : Worktree.S) (Env : ENV) : S = struct
                a refusal after provisioning has already succeeded. *)
             match created with
             | true ->
+                checkpoint_provenance ~patch_id ~path ~branch:br;
                 Runtime.update_orchestrator runtime (fun orch ->
                     Orchestrator.set_worktree_path orch patch_id path);
                 (match
@@ -321,6 +351,8 @@ module Make (W : Worktree.S) (Env : ENV) : S = struct
                  path above. *)
                     match W.find_for_branch br with
                     | Some existing when is_ready ~path:existing ~branch:br ->
+                        checkpoint_provenance ~patch_id ~path:existing
+                          ~branch:br;
                         log_event runtime ~patch_id
                           (Printf.sprintf
                              "Adopting concurrently-created worktree at %s"
@@ -334,6 +366,10 @@ module Make (W : Worktree.S) (Env : ENV) : S = struct
   let ensure_worktree ~patch_id ~agent ?branch ?base_ref () =
     try ensure_worktree_impl ~patch_id ~agent ?branch ?base_ref () with
     | exn when Worktree.has_cancellation exn -> raise exn
+    | Provenance_unavailable reason ->
+        Runtime_logging.log_event Env.runtime ~patch_id
+          ("Materialization checkpoint unavailable — " ^ reason);
+        Refused
     | exn ->
         let reason = Exn.to_string exn in
         Runtime_logging.log_event Env.runtime ~patch_id

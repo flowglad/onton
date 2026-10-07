@@ -19,6 +19,7 @@ type op =
       (** Materialize the worktree on disk if missing. Must precede any
           subsequent op in the plan. *)
   | Fetch_origin  (** [git fetch origin] inside the worktree. *)
+  | Capture_materialization of { slot : int }
   | Capture_anchor of { ref_name : string; slot : int }
       (** Resolve [ref_name] (e.g. ["origin/main"]) to a SHA via
           [Worktree.read_branch_sha] and store it in [slot]. The slot is
@@ -56,13 +57,11 @@ val for_merge_conflict : base:Types.Branch.t -> t
 
 val for_start : base:Types.Branch.t -> materialized:bool -> t
 (** Plan executed by the runner Start path BEFORE the LLM session begins: ensure
-    the worktree and, when [materialized = false], fetch, capture
-    [origin/<base>]'s tip into slot 0, then record an anchor referencing that
-    SHA. This records the initial anchor for a freshly-branched-off-dep patch —
-    closing the production bug blind spot where Start never wrote an anchor and
-    the first rebase (post-squash) had nothing safe to fall back to. A
-    materialized retry emits no anchor operations because it does not physically
-    rebase the existing checkout. *)
+    the worktree and, when [materialized = false], derive its initial anchor
+    from checkpointed materialization provenance. A later fetch cannot change
+    the revision recorded as the branch's actual replay boundary. Adopting an
+    existing branch does not prove a boundary. Materialized retries preserve
+    their previously recorded anchors. *)
 
 val ensures_worktree_before_fs : t -> bool
 (** Returns [true] iff every non-{!Ensure_worktree} op is preceded by an

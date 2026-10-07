@@ -117,6 +117,7 @@ type patch_view = {
   base_branch : Branch.t option;
   worktree_path : string option;
   intervention_reason : string option;
+  reconciliation_details : (string * string) list;
   wontdo_reason : string option;
       (** Full opt-out contents, rendered in the scrollable detail pane while
           the patch waits for a human reprompt. *)

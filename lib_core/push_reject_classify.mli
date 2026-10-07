@@ -26,6 +26,10 @@ type rejection =
       (** [refusing to allow an OAuth App to create or update workflow] — the
           token lacks the [workflow] OAuth scope and the push includes a change
           to a file under [.github/workflows/]. *)
+  | Permission_denied
+      (** Explicit server denial of write access. Authentication expiry and
+          transport failures remain retryable unless write denial is
+          established. *)
   | Branch_protection
       (** [GH006: Protected branch update failed] /
           [protected branch hook declined] — a branch protection rule rejected
@@ -70,7 +74,7 @@ remote: associated pull request.
           missing remote commits, etc.). Permanent: a retry without human action
           cannot fix it. [reason] is a short human-readable label drawn from
           [Push_plan.short_label]. *)
-[@@deriving show, eq, sexp_of, compare]
+[@@deriving show, eq, sexp_of, compare, yojson]
 
 val classify : stderr:string -> stdout:string -> rejection
 (** Decide why a push was rejected, given the captured stderr and stdout from

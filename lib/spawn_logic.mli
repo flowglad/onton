@@ -34,7 +34,10 @@ val plan_spawns : Orchestrator.t -> patches:Patch.t list -> spawn list
 
 val classify :
   spawn ->
-  [ `Start of Patch_id.t | `Respond of Patch_id.t | `Rebase of Patch_id.t ]
+  [ `Start of Patch_id.t
+  | `Respond of Patch_id.t
+  | `Rebase of Patch_id.t
+  | `Reconcile_branch of Patch_id.t ]
 (** Extract the patch id and action kind from a spawn. *)
 
 val patch_id_of : spawn -> Patch_id.t

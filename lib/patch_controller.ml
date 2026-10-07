@@ -4,38 +4,7 @@
 open Base
 open Types
 
-let action_identity = function
-  | Orchestrator.Start (patch_id, base) ->
-      Printf.sprintf "start:%s:%s"
-        (Patch_id.to_string patch_id)
-        (Branch.to_string base)
-  | Orchestrator.Respond (patch_id, kind) ->
-      Printf.sprintf "respond:%s:%s"
-        (Patch_id.to_string patch_id)
-        (Operation_kind.to_label kind)
-  | Orchestrator.Rebase (patch_id, base) ->
-      Printf.sprintf "rebase:%s:%s"
-        (Patch_id.to_string patch_id)
-        (Branch.to_string base)
-
-let message_of_action (patch_agent : Patch_agent.t) action =
-  let identity =
-    Printf.sprintf "%d:%s" patch_agent.generation (action_identity action)
-  in
-  let digest = Stdlib.Digest.to_hex (Stdlib.Digest.string identity) in
-  let msg_id =
-    Message_id.of_string
-      (Printf.sprintf "%s:%s" (Patch_id.to_string patch_agent.patch_id) digest)
-  in
-  Orchestrator.
-    {
-      message_id = msg_id;
-      patch_id = patch_agent.patch_id;
-      generation = patch_agent.generation;
-      action;
-      payload_hash = digest;
-      status = Pending;
-    }
+let message_of_action = Orchestrator.message_of_action
 
 type github_effect =
   | Set_pr_draft of {
@@ -108,7 +77,8 @@ let enqueue_pr_body_if_needed t patch_id (agent : Patch_agent.t) =
     if already_queued then t
     else Orchestrator.enqueue t patch_id Operation_kind.Pr_body
 
-let apply_poll_result ?(merge_queue_ejection_confirmed = false) t patch_id
+let apply_poll_result ?(merge_queue_ejection_confirmed = false)
+    ?confirmed_remote_head t patch_id
     ({ poll_result; base_branch; native_stack; branch_in_root; worktree_path } :
       poll_observation) =
   let logs = ref [] in
@@ -117,10 +87,49 @@ let apply_poll_result ?(merge_queue_ejection_confirmed = false) t patch_id
     (Orchestrator.agent t patch_id).Patch_agent.native_stack
   in
   let deferred_head =
-    Execution_mode.observation_pending
-      (Orchestrator.execution_mode t)
-      (Orchestrator.agent t patch_id)
-      poll_result.Poller.head_oid
+    (not
+       (Option.is_some confirmed_remote_head
+       && Option.equal String.equal confirmed_remote_head
+            poll_result.Poller.head_oid))
+    && Execution_mode.observation_pending
+         (Orchestrator.execution_mode t)
+         (Orchestrator.agent t patch_id)
+         poll_result.Poller.head_oid
+  in
+  let poll_result =
+    let satisfied =
+      match
+        ( poll_result.Poller.head_oid,
+          poll_result.base_oid,
+          base_branch,
+          confirmed_remote_head )
+      with
+      | Some head, Some base, Some branch, Some remote
+        when String.equal head remote -> (
+          match
+            ( Branch_reconcile.Commit.make head,
+              Branch_reconcile.Commit.make base )
+          with
+          | Some head, Some base ->
+              Branch_reconcile.conflict_satisfied
+                (Orchestrator.agent t patch_id).Patch_agent.branch_reconcile
+                ~head ~base ~base_branch:(Branch.to_string branch)
+          | _ -> false)
+      | _ -> false
+    in
+    if satisfied && Poller.has_conflict poll_result then (
+      log
+        "Local integration and remote publication satisfy this head/base pair; \
+         waiting for forge mergeability refresh";
+      {
+        poll_result with
+        queue =
+          List.filter poll_result.queue ~f:(fun k ->
+              not (Operation_kind.equal k Operation_kind.Merge_conflict));
+        merge_state = Pr_state.Unknown;
+        merge_ready = false;
+      })
+    else poll_result
   in
   let poll_result =
     if deferred_head && Orchestrator.is_integration_root t patch_id then
@@ -408,7 +417,8 @@ let ready_for_review t patch_id =
   let agent = Orchestrator.agent t patch_id in
   let graph = Orchestrator.graph t in
   let has_merged pid = (Orchestrator.agent t pid).Patch_agent.merged in
-  List.length (Orchestrator.open_deps t patch_id) <= 1
+  (not (Branch_reconcile.is_unsettled agent.Patch_agent.branch_reconcile))
+  && List.length (Orchestrator.open_deps t patch_id) <= 1
   &&
   let expected_base =
     Option.value
@@ -452,6 +462,7 @@ let ready_for_review t patch_id =
 let open_dep_review_ready t pid =
   let a = Orchestrator.agent t pid in
   a.Patch_agent.pr_body_delivered
+  && (not (Branch_reconcile.is_unsettled a.branch_reconcile))
   && (not a.Patch_agent.has_conflict)
   && a.Patch_agent.checks_passing
 
@@ -602,7 +613,13 @@ let plan_action_for_patch t ~branch_map:_ patch_id =
              (Graph.open_pr_deps (Orchestrator.graph t) patch_id ~has_merged)
              ~f:(fun dep -> open_dep_review_ready t dep)
   in
-  if
+  if Option.is_some (Patch_agent.reconciliation_hold_reason agent) then None
+  else if Branch_reconcile.is_pending agent.branch_reconcile then
+    if agent.busy then None
+    else
+      Option.map (Branch_reconcile.operation agent.branch_reconcile)
+        ~f:(fun op -> Orchestrator.Reconcile_branch (patch_id, op.id))
+  else if
     Option.is_some agent.wontdo_reason
     || agent.automerge_inflight
     || native_stack_base_mismatch t patch_id
@@ -665,7 +682,8 @@ let reconcile_action_message t action =
     match action with
     | Orchestrator.Start (patch_id, _)
     | Orchestrator.Respond (patch_id, _)
-    | Orchestrator.Rebase (patch_id, _) ->
+    | Orchestrator.Rebase (patch_id, _)
+    | Orchestrator.Reconcile_branch (patch_id, _) ->
         patch_id
   in
   let agent = Orchestrator.agent t patch_id in
@@ -856,13 +874,15 @@ let automerge_transient_hold (agent : Patch_agent.t) ~main_branch =
   && agent.Patch_agent.automerge_failure_count < automerge_max_failures
   && Option.is_none agent.Patch_agent.merge_queue_entry
 
-let apply_branch_observation t patch_id ~head_sha ~checks =
+let apply_branch_observation ?confirmed_remote_head t patch_id ~head_sha ~checks
+    =
   let a = Orchestrator.agent t patch_id in
   if (not (Orchestrator.is_feature_descendant t patch_id)) || a.merged then t
   else if
-    Execution_mode.observation_pending
-      (Orchestrator.execution_mode t)
-      a (Some head_sha)
+    (not (Option.equal String.equal confirmed_remote_head (Some head_sha)))
+    && Execution_mode.observation_pending
+         (Orchestrator.execution_mode t)
+         a (Some head_sha)
   then Orchestrator.set_checks_passing t patch_id false
   else
     let t =
@@ -891,13 +911,16 @@ let apply_branch_observation t patch_id ~head_sha ~checks =
     else t
 
 let is_integration_candidate ?(ignore_inflight = false) t patch_id =
-  let root_native =
+  let root_unavailable =
     Option.value_map
       (Execution_mode.root (Orchestrator.execution_mode t))
-      ~default:false
-      ~f:(fun r -> (Orchestrator.agent t r).Patch_agent.native_stack)
+      ~default:true
+      ~f:(fun r ->
+        let root = Orchestrator.agent t r in
+        root.Patch_agent.native_stack || root.busy
+        || Branch_reconcile.is_unsettled root.branch_reconcile)
   in
-  (not root_native)
+  (not root_unavailable)
   && Execution_mode.integration_ready
        (Orchestrator.execution_mode t)
        ~construction_open:(Orchestrator.construction_open t)
@@ -1556,7 +1579,9 @@ let make_notes_gate_fixture () =
 let plans_child_start ~child_id ~patches t =
   List.exists (plan_actions t ~patches) ~f:(function
     | Orchestrator.Start (p, _) -> Patch_id.equal p child_id
-    | Orchestrator.Respond _ | Orchestrator.Rebase _ -> false)
+    | Orchestrator.Respond _ | Orchestrator.Rebase _
+    | Orchestrator.Reconcile_branch _ ->
+        false)
 
 let%test
     "plan_actions defers child Start until open dep reaches ready-for-review" =
@@ -1778,23 +1803,24 @@ let%test "no merge-conflict re-enqueue after noop" =
   let t = Orchestrator.complete t pid in
   (* First poll: conflict detected, enqueues Merge_conflict *)
   let poll_conflict =
-    Poller.
-      {
-        queue = [ Operation_kind.Merge_conflict ];
-        merged = false;
-        closed = false;
-        is_draft = false;
-        merge_state = Pr_state.Conflicting;
-        merge_ready = false;
-        head_oid = None;
-        review_decision = None;
-        unresolved_comment_count = 0;
-        merge_queue_required = false;
-        merge_queue_entry = None;
-        checks_passing = false;
-        ci_checks = [];
-        merge_commit_sha = None;
-      }
+    {
+      Poller.queue = [ Operation_kind.Merge_conflict ];
+      merged = false;
+      closed = false;
+      is_draft = false;
+      merge_state = Pr_state.Conflicting;
+      merge_ready = false;
+      base_branch = None;
+      base_oid = None;
+      head_oid = None;
+      review_decision = None;
+      unresolved_comment_count = 0;
+      merge_queue_required = false;
+      merge_queue_entry = None;
+      checks_passing = false;
+      ci_checks = [];
+      merge_commit_sha = None;
+    }
   in
   let obs =
     {
@@ -1836,23 +1862,24 @@ let%test "mergeable published head separates conflict no-op episodes" =
     Orchestrator.set_expected_remote_head_oid t pid (Some "rebased-head")
   in
   let mergeable =
-    Poller.
-      {
-        queue = [];
-        merged = false;
-        closed = false;
-        is_draft = false;
-        merge_state = Pr_state.Mergeable;
-        merge_ready = true;
-        head_oid = Some "rebased-head";
-        review_decision = None;
-        unresolved_comment_count = 0;
-        merge_queue_required = false;
-        merge_queue_entry = None;
-        checks_passing = true;
-        ci_checks = [];
-        merge_commit_sha = None;
-      }
+    {
+      Poller.queue = [];
+      merged = false;
+      closed = false;
+      is_draft = false;
+      merge_state = Pr_state.Mergeable;
+      merge_ready = true;
+      base_branch = None;
+      base_oid = None;
+      head_oid = Some "rebased-head";
+      review_decision = None;
+      unresolved_comment_count = 0;
+      merge_queue_required = false;
+      merge_queue_entry = None;
+      checks_passing = true;
+      ci_checks = [];
+      merge_commit_sha = None;
+    }
   in
   let t, _, _ =
     apply_poll_result t pid
@@ -1881,23 +1908,24 @@ let%test "conflicting poll preserves conflict no-op limit" =
     Orchestrator.apply_conflict_rebase_result t pid Worktree.Noop main
   in
   let conflicting =
-    Poller.
-      {
-        queue = [ Operation_kind.Merge_conflict ];
-        merged = false;
-        closed = false;
-        is_draft = false;
-        merge_state = Pr_state.Conflicting;
-        merge_ready = false;
-        head_oid = Some "conflicting-head";
-        review_decision = None;
-        unresolved_comment_count = 0;
-        merge_queue_required = false;
-        merge_queue_entry = None;
-        checks_passing = true;
-        ci_checks = [];
-        merge_commit_sha = None;
-      }
+    {
+      Poller.queue = [ Operation_kind.Merge_conflict ];
+      merged = false;
+      closed = false;
+      is_draft = false;
+      merge_state = Pr_state.Conflicting;
+      merge_ready = false;
+      base_branch = None;
+      base_oid = None;
+      head_oid = Some "conflicting-head";
+      review_decision = None;
+      unresolved_comment_count = 0;
+      merge_queue_required = false;
+      merge_queue_entry = None;
+      checks_passing = true;
+      ci_checks = [];
+      merge_commit_sha = None;
+    }
   in
   let t, _, _ =
     apply_poll_result t pid
@@ -1931,23 +1959,24 @@ let%test
     Orchestrator.apply_conflict_rebase_result t pid Worktree.Noop main
   in
   let poll_result =
-    Poller.
-      {
-        queue = [ Operation_kind.Merge_conflict ];
-        merged = false;
-        closed = false;
-        is_draft = false;
-        merge_state = Pr_state.Conflicting;
-        merge_ready = false;
-        head_oid = Some "old-pre-push-head";
-        review_decision = None;
-        unresolved_comment_count = 0;
-        merge_queue_required = false;
-        merge_queue_entry = None;
-        checks_passing = true;
-        ci_checks = [];
-        merge_commit_sha = None;
-      }
+    {
+      Poller.queue = [ Operation_kind.Merge_conflict ];
+      merged = false;
+      closed = false;
+      is_draft = false;
+      merge_state = Pr_state.Conflicting;
+      merge_ready = false;
+      base_branch = None;
+      base_oid = None;
+      head_oid = Some "old-pre-push-head";
+      review_decision = None;
+      unresolved_comment_count = 0;
+      merge_queue_required = false;
+      merge_queue_entry = None;
+      checks_passing = true;
+      ci_checks = [];
+      merge_commit_sha = None;
+    }
   in
   let apply t poll_result =
     let t, _, _ =
@@ -1981,6 +2010,8 @@ let%test
       {
         poll_result with
         queue = [];
+        base_branch = None;
+        base_oid = None;
         head_oid = None;
         merge_state = Pr_state.Mergeable;
         merge_ready = true;
@@ -2039,23 +2070,24 @@ let%test "apply_poll_result turns merge queue ejection into CI feedback" =
       (Some Pr_state.{ id = "MQE_1"; state = Mq_awaiting_checks; position = 1 })
   in
   let poll_result =
-    Poller.
-      {
-        queue = [];
-        merged = false;
-        closed = false;
-        is_draft = false;
-        merge_state = Pr_state.Mergeable;
-        merge_ready = true;
-        head_oid = None;
-        review_decision = Some "APPROVED";
-        unresolved_comment_count = 0;
-        merge_queue_required = true;
-        merge_queue_entry = None;
-        checks_passing = true;
-        ci_checks = [];
-        merge_commit_sha = None;
-      }
+    {
+      Poller.queue = [];
+      merged = false;
+      closed = false;
+      is_draft = false;
+      merge_state = Pr_state.Mergeable;
+      merge_ready = true;
+      base_branch = None;
+      base_oid = None;
+      head_oid = None;
+      review_decision = Some "APPROVED";
+      unresolved_comment_count = 0;
+      merge_queue_required = true;
+      merge_queue_entry = None;
+      checks_passing = true;
+      ci_checks = [];
+      merge_commit_sha = None;
+    }
   in
   let t, logs, _ =
     apply_poll_result ~merge_queue_ejection_confirmed:true t pid
@@ -2084,24 +2116,25 @@ let%test "apply_poll_result leaves an unmergeable in-queue entry untouched" =
   let _patch, t = make_orchestrator ~patch_id:pid ~main_branch:main in
   let t = make_approved_agent t in
   let poll_result =
-    Poller.
-      {
-        queue = [];
-        merged = false;
-        closed = false;
-        is_draft = false;
-        merge_state = Pr_state.Mergeable;
-        merge_ready = true;
-        head_oid = None;
-        review_decision = Some "APPROVED";
-        unresolved_comment_count = 0;
-        merge_queue_required = true;
-        merge_queue_entry =
-          Some Pr_state.{ id = "MQE_2"; state = Mq_unmergeable; position = 4 };
-        checks_passing = true;
-        ci_checks = [];
-        merge_commit_sha = None;
-      }
+    {
+      Poller.queue = [];
+      merged = false;
+      closed = false;
+      is_draft = false;
+      merge_state = Pr_state.Mergeable;
+      merge_ready = true;
+      base_branch = None;
+      base_oid = None;
+      head_oid = None;
+      review_decision = Some "APPROVED";
+      unresolved_comment_count = 0;
+      merge_queue_required = true;
+      merge_queue_entry =
+        Some Pr_state.{ id = "MQE_2"; state = Mq_unmergeable; position = 4 };
+      checks_passing = true;
+      ci_checks = [];
+      merge_commit_sha = None;
+    }
   in
   (* Irrelevant verdict on purpose: an in-queue entry is not an ejection, so
      even a [true] confirmation must not produce synthesis. *)
@@ -2134,23 +2167,24 @@ let%test "apply_poll_result leaves an unconfirmed (conflict) ejection alone" =
       (Some Pr_state.{ id = "MQE_1"; state = Mq_awaiting_checks; position = 1 })
   in
   let poll_result =
-    Poller.
-      {
-        queue = [];
-        merged = false;
-        closed = false;
-        is_draft = false;
-        merge_state = Pr_state.Mergeable;
-        merge_ready = true;
-        head_oid = None;
-        review_decision = Some "APPROVED";
-        unresolved_comment_count = 0;
-        merge_queue_required = true;
-        merge_queue_entry = None;
-        checks_passing = true;
-        ci_checks = [];
-        merge_commit_sha = None;
-      }
+    {
+      Poller.queue = [];
+      merged = false;
+      closed = false;
+      is_draft = false;
+      merge_state = Pr_state.Mergeable;
+      merge_ready = true;
+      base_branch = None;
+      base_oid = None;
+      head_oid = None;
+      review_decision = Some "APPROVED";
+      unresolved_comment_count = 0;
+      merge_queue_required = true;
+      merge_queue_entry = None;
+      checks_passing = true;
+      ci_checks = [];
+      merge_commit_sha = None;
+    }
   in
   let t, _, _ =
     apply_poll_result ~merge_queue_ejection_confirmed:false t pid

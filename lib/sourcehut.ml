@@ -293,8 +293,9 @@ let submit_query =
              visibility: $visibility) { id }
     }|}
 
-let make ~net ~clock ~process_mgr ~token ~owner ~repo ~repo_root ~main_branch
-    ~changes:initial_changes : (module Forge.S with type error = error) =
+let make_with_builds ~read_builds ~net ~clock ~process_mgr ~token ~owner ~repo
+    ~repo_root ~main_branch ~changes:initial_changes :
+    (module Forge.S with type error = error) =
   let run_git = run_git ~clock ~process_mgr in
   let git_success = git_success ~clock ~process_mgr in
   let git_stdout = git_stdout ~clock ~process_mgr in
@@ -399,7 +400,7 @@ let make ~net ~clock ~process_mgr ~token ~owner ~repo ~repo_root ~main_branch
                   match merge_state with
                   | Error _ as error -> error
                   | Ok merge_state -> (
-                      match fetch_jobs ~net ~clock ~token with
+                      match read_builds () with
                       | Error _ as error -> error
                       | Ok jobs ->
                           let ci_checks =
@@ -432,6 +433,7 @@ let make ~net ~clock ~process_mgr ~token ~owner ~repo ~repo_root ~main_branch
                               merge_queue_required = false;
                               merge_queue_entry = None;
                               head_branch = Some head;
+                              base_oid = Some base_sha;
                               head_oid = Some head_sha;
                               merge_commit_sha =
                                 (if merged then Some base_sha else None);
@@ -616,3 +618,10 @@ let make ~net ~clock ~process_mgr ~token ~owner ~repo ~repo_root ~main_branch
         | Error _ as error -> error
   end in
   (module M)
+
+let make ~net ~clock ~process_mgr ~token ~owner ~repo ~repo_root ~main_branch
+    ~changes =
+  make_with_builds
+    ~read_builds:(fun () -> fetch_jobs ~net ~clock ~token)
+    ~net ~clock ~process_mgr ~token ~owner ~repo ~repo_root ~main_branch
+    ~changes

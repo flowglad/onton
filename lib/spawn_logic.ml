@@ -9,8 +9,10 @@ let classify = function
   | Orchestrator.Start (pid, _) -> `Start pid
   | Orchestrator.Respond (pid, _) -> `Respond pid
   | Orchestrator.Rebase (pid, _) -> `Rebase pid
+  | Orchestrator.Reconcile_branch (pid, _) -> `Reconcile_branch pid
 
 let patch_id_of = function
   | Orchestrator.Start (pid, _) -> pid
   | Orchestrator.Respond (pid, _) -> pid
   | Orchestrator.Rebase (pid, _) -> pid
+  | Orchestrator.Reconcile_branch (pid, _) -> pid

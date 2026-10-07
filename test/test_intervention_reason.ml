@@ -460,3 +460,44 @@ let () =
          Bool.equal needs_from_fields (Option.is_some reason_from_fields)
          && Bool.equal rebase_needs_intervention (Option.is_some rebase_reason)));
   print_endline "PASS: patch_agent surface threaded"
+
+let () =
+  QCheck2.Test.check_exn
+    (QCheck2.Test.make
+       ~name:"terminal reconciliation hold is independent of CI failures"
+       ~count:200
+       QCheck2.Gen.(triple bool bool (int_range 0 6))
+       (fun (merged, wontdo, ci_failures) ->
+         let a =
+           apply ci_failures Patch_agent.increment_ci_failure_count (agent ())
+         in
+         let a = if wontdo then Patch_agent.set_wontdo a "stop" else a in
+         let a = if merged then Patch_agent.mark_merged a else a in
+         Patch_agent.reconciliation_hold_reason a
+         =
+         if merged then Some "patch_merged"
+         else if wontdo then Some "patch_wontdo"
+         else None))
+
+let () =
+  QCheck2.Test.check_exn
+    (QCheck2.Test.make
+       ~name:
+         "legacy migration is idempotent and preserves non-branch intervention"
+       ~count:100
+       QCheck2.Gen.(pair bool (int_range 0 5))
+       (fun (existing, count) ->
+         let a = agent () in
+         let a =
+           if existing then Patch_agent.set_pr_number a (Pr_number.of_int 7)
+           else a
+         in
+         let a = apply count Patch_agent.increment_ci_failure_count a in
+         let a = apply count Patch_agent.increment_rebase_failure_count a in
+         let migrated = Patch_agent.migrate_legacy_branch_state a in
+         Patch_agent.equal migrated
+           (Patch_agent.migrate_legacy_branch_state migrated)
+         && migrated.Patch_agent.ci_failure_count = count
+         && migrated.Patch_agent.rebase_failure_count = 0
+         && Branch_reconcile.is_pending migrated.Patch_agent.branch_reconcile
+            = existing))
