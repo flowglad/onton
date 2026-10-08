@@ -1346,3 +1346,64 @@ let () =
                  (Orchestrator.agent orch root).Patch_agent.pr_body_refresh
                    .Patch_agent.pending merge_during_publication
          with _ -> false))
+
+let () =
+  let kinds =
+    [
+      Operation_kind.Pr_body;
+      Operation_kind.Rebase;
+      Operation_kind.Findings;
+      Operation_kind.Ci;
+      Operation_kind.Review_comments;
+      Operation_kind.Human;
+      Operation_kind.Merge_conflict;
+      Operation_kind.Uncommitted_changes;
+    ]
+  in
+  QCheck2.Test.check_exn
+    (QCheck2.Test.make ~name:"response PR routing follows execution mode"
+       ~count:500
+       QCheck2.Gen.(
+         pair (triple bool bool bool)
+           (triple bool (int_range 0 1) (oneof_list kinds)))
+       (fun ((feature, root_present, child_present), (has_pr, index, kind)) ->
+         try
+           let patches = mk_patches 2 in
+           let root = pid_of_idx patches 0 in
+           let child = pid_of_idx patches 1 in
+           let orch = Orchestrator.create ~patches ~main_branch:main in
+           let orch =
+             if feature then
+               match Execution_mode.infer (Graph.of_patches patches) with
+               | Ok mode -> Orchestrator.set_execution_mode orch mode
+               | Error error -> failwith error
+             else orch
+           in
+           let orch =
+             if has_pr then
+               Orchestrator.set_pr_number orch root (Pr_number.of_int 11)
+               |> fun o ->
+               Orchestrator.set_pr_number o child (Pr_number.of_int 22)
+             else orch
+           in
+           let orch =
+             if root_present then orch else Orchestrator.remove_agent orch root
+           in
+           let orch =
+             if child_present then orch
+             else Orchestrator.remove_agent orch child
+           in
+           let route_to_root =
+             index = 0
+             || (feature && Operation_kind.equal kind Operation_kind.Pr_body)
+           in
+           let expected =
+             if has_pr && if route_to_root then root_present else child_present
+             then Some (Pr_number.of_int (if route_to_root then 11 else 22))
+             else None
+           in
+           Option.equal Pr_number.equal expected
+             (Orchestrator.respond_pr_number orch
+                (if index = 0 then root else child)
+                kind)
+         with _ -> false))
