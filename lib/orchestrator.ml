@@ -175,6 +175,17 @@ let is_integration_root t id = Execution_mode.is_root t.execution_mode id
 let is_feature_descendant t id =
   Execution_mode.is_descendant t.execution_mode id
 
+let respond_pr_number t patch_id kind =
+  let recipient =
+    if
+      Operation_kind.equal kind Operation_kind.Pr_body
+      && is_feature_descendant t patch_id
+    then Execution_mode.root t.execution_mode
+    else Some patch_id
+  in
+  Option.bind recipient ~f:(fun id ->
+      Option.bind (find_agent t id) ~f:Patch_agent.pr_number)
+
 let terminal_branch t id =
   Execution_mode.terminal t.execution_mode id
     ~branch_of:(fun p -> (agent t p).Patch_agent.branch)

@@ -252,6 +252,20 @@ let () =
         (List.mem
            (Orchestrator.agent with_notes_demand (id 2)).Patch_agent.queue
            Operation_kind.Pr_body ~equal:Operation_kind.equal);
+      check "PR-less descendant notes address integration PR"
+        (Option.equal Pr_number.equal
+           (Orchestrator.respond_pr_number with_notes_demand (id 2)
+              Operation_kind.Pr_body)
+           (Patch_agent.pr_number (Orchestrator.agent with_notes_demand (id 1))));
+      check "descendant CI does not address integration PR"
+        (Option.is_none
+           (Orchestrator.respond_pr_number with_notes_demand (id 2)
+              Operation_kind.Ci));
+      check "missing integration root has no notes recipient"
+        (Option.is_none
+           (Orchestrator.respond_pr_number
+              (Orchestrator.remove_agent with_notes_demand (id 1))
+              (id 2) Operation_kind.Pr_body));
       check "PR-less descendant can dispatch notes"
         (List.exists (Patch_controller.plan_actions with_notes_demand ~patches)
            ~f:(function

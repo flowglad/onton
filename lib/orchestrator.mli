@@ -611,6 +611,12 @@ val execution_mode : t -> Execution_mode.t
 val set_execution_mode : t -> Execution_mode.t -> t
 val is_integration_root : t -> Patch_id.t -> bool
 val is_feature_descendant : t -> Patch_id.t -> bool
+
+val respond_pr_number :
+  t -> Patch_id.t -> Operation_kind.t -> Pr_number.t option
+(** PR receiving a response. Descendant implementation notes belong to the
+    integration root PR; all other responses address the patch's own PR. *)
+
 val terminal_branch : t -> Patch_id.t -> Branch.t
 val open_deps : t -> Patch_id.t -> Patch_id.t list
 val expected_base : t -> Patch_id.t -> Branch.t option
