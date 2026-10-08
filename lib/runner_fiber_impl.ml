@@ -1867,21 +1867,8 @@ module Make (Forge : Forge.S) (W : Worktree.S) (Env : Runner_env.S) = struct
                     let is_ci = Operation_kind.equal kind Operation_kind.Ci in
                     let pr_number =
                       Runtime.read runtime (fun snap ->
-                          let orch = snap.Runtime.orchestrator in
-                          let recipient =
-                            if
-                              Operation_kind.equal kind Operation_kind.Pr_body
-                              && Orchestrator.is_feature_descendant orch
-                                   patch_id
-                            then
-                              Execution_mode.root
-                                (Orchestrator.execution_mode orch)
-                            else Some patch_id
-                          in
-                          Base.Option.bind recipient ~f:(fun id ->
-                              Base.Option.bind
-                                (Orchestrator.find_agent orch id)
-                                ~f:Patch_agent.pr_number))
+                          Orchestrator.respond_pr_number
+                            snap.Runtime.orchestrator patch_id kind)
                     in
                     let fresh_pr_state =
                       if is_review || is_ci then (
@@ -2302,7 +2289,8 @@ module Make (Forge : Forge.S) (W : Worktree.S) (Env : Runner_env.S) = struct
                                       payload;
                                     base_change;
                                   } -> (
-                                  let pr_number = Patch_agent.pr_number agent in
+                                  (* Keep the response recipient selected above:
+                                     descendant notes address the root PR. *)
                                   let base_changed_prefix =
                                     render_base_changed_prefix base_change
                                   in
