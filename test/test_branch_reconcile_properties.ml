@@ -278,7 +278,13 @@ let tests =
             let turn = Option.get (B.repair_turn state ~branch:"patch" token) in
             assert (turn.head = None);
             assert (
-              Base.String.is_substring turn.prompt ~substring:"observation-only");
+              Base.String.is_substring turn.prompt
+                ~substring:"repair local gate state"
+              && Base.String.is_substring turn.prompt
+                   ~substring:"dependencies and system tools"
+              && Base.String.is_substring turn.prompt
+                   ~substring:"does not authorize"
+              && Base.String.is_substring turn.prompt ~substring:"Git history");
             let event =
               if failed then
                 B.Repair_failed { token; at = 100.; reason = "backend timeout" }

@@ -718,3 +718,13 @@ archlint OCaml adapter. Logs: `/tmp/onton-m3-rebase-runtest-final.log` and
 observation, fetch and push cancellation/retry; the focused real-Git/checkpoint
 and dirty-recovery suites pass. The earlier isolated-prefix results retain their
 recorded pre-rebase baseline and are not claimed as new prefix qualification.
+
+## Environmental repair in fallback prompts
+
+All recovery modes now explicitly request repair of environmental blockers:
+local gate state, missing project dependencies and system tools, and environment
+or tool configuration. Diagnosis no longer imposes a blanket observation-only
+restriction. Its prompt permits environmental repair while preserving patch
+content, Git history, the index, sequencer and remote destinations. Agents must
+verify repairs, check ownership before clearing stale gate/lock state, and report
+remaining blockers. Owner reinspection and recovery budgets still apply.
