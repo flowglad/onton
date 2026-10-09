@@ -23,8 +23,7 @@ let plan ~now ~expected_head ~checks = function
       in
       let terminal_checks =
         (not (List.is_empty checks))
-        && List.for_all checks ~f:(fun check ->
-            Types.Ci_check.is_success check || Types.Ci_check.is_failure check)
+        && List.for_all checks ~f:Types.Ci_check.is_terminal
       in
       if
         (not publication_changed) && terminal_checks

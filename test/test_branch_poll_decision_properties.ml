@@ -52,8 +52,7 @@ let tests =
             | Skip | Probe { reuse_checks = true } -> false));
     property "nonterminal checks never reuse results at a probe"
       (G.pair timestamp
-         (G.oneof_list
-            [ "pending"; "queued"; "in_progress"; "cancelled"; "unknown"; "" ]))
+         (G.oneof_list [ "pending"; "queued"; "in_progress"; "unknown"; "" ]))
       (fun (n, conclusion) ->
         let now = Float.of_int n in
         let checks = [ check "failure"; check conclusion; check "success" ] in
@@ -64,6 +63,28 @@ let tests =
         with
         | Probe { reuse_checks = false } -> true
         | Skip | Probe { reuse_checks = true } -> false);
+    property
+      "cancelled and stale checks obey polling deadlines without CI delivery"
+      timestamp (fun n ->
+        let now = Float.of_int n in
+        List.for_all [ "cancelled"; "stale" ] ~f:(fun conclusion ->
+            let finished = check conclusion in
+            let poll offset =
+              Branch_poll_decision.plan ~now:(now +. offset) ~expected_head:None
+                ~checks:[ check "success"; finished ]
+                (Some (cached ~now ~checked_at:now))
+            in
+            Types.Ci_check.is_terminal finished
+            && (not (Types.Ci_check.is_success finished))
+            && (not (Types.Ci_check.is_failure finished))
+            && (match poll 30. with Skip -> true | Probe _ -> false)
+            && (match poll head_interval with
+              | Probe { reuse_checks = true } -> true
+              | Skip | Probe { reuse_checks = false } -> false)
+            &&
+            match poll checks_interval with
+            | Probe { reuse_checks = false } -> true
+            | Skip | Probe { reuse_checks = true } -> false));
     property "pending-to-failed at unchanged HEAD forces fresh probes" timestamp
       (fun n ->
         let now = Float.of_int n in
