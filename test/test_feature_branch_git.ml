@@ -390,6 +390,16 @@ let () =
               GIT_ALTERNATE_OBJECT_DIRECTORIES\n\
               git update-ref refs/heads/root " ^ race ^ "\n");
           Unix.chmod hook 0o755;
+          (* Local transport inherits the client environment; model an
+             independent remote server's hook configuration explicitly. *)
+          Git.run_git ~cwd:dir
+            [
+              "config";
+              "remote.origin.receivepack";
+              "git -c core.hooksPath="
+              ^ Stdlib.Filename.quote (bare ^ "/hooks")
+              ^ " receive-pack";
+            ];
           check "remote race rejected"
             (match B.phase (integrate "next" next_head) with
             | Some (B.Waiting _) -> true
@@ -529,8 +539,7 @@ let () =
           drive (module W) missing (request "missing-target" "missing-target");
           waiting "invalid target has command diagnostics" missing
             "missing-target";
-          (* A hook failure preserves the pending merge and stages. Recovery
-             completes it after the hook becomes healthy, without an agent turn. *)
+          (* Onton-owned integration bypasses local hooks without changing config. *)
           let hook_tip = commit dir "hook-upstream" "upstream\n" in
           Git.run_git ~cwd:dir [ "push"; "-q"; "origin"; "main" ];
           let merge_hook = dir ^ "/.git/hooks/pre-merge-commit" in
@@ -543,15 +552,13 @@ let () =
              exit 1\n";
           Unix.chmod merge_hook 0o755;
           drive (module W) owner (request "hook-upstream" "main");
-          waiting "hook failure retains stdout" owner "merge-hook-stdout";
-          waiting "hook failure retains stderr" owner "merge-hook-stderr";
-          check "hook failure preserves merge target"
-            (String.equal
-               (Git.git_capture ~cwd:root_path [ "rev-parse"; "MERGE_HEAD" ])
-               hook_tip);
+          settled "Onton integration bypasses rejecting local hooks" owner;
+          check "integration leaves the checkout clean"
+            (String.is_empty
+               (Git.git_capture ~cwd:root_path [ "status"; "--porcelain" ])
+            && Git.git_exit_code ~cwd:root_path [ "rev-parse"; "MERGE_HEAD" ]
+               <> 0);
           Unix.unlink merge_hook;
-          drive (module Restarted) owner B.Recover;
-          settled "healthy hook completes retained merge" owner;
           check "hook recovery preserves both parents"
             (String.equal
                (Git.git_capture ~cwd:root_path

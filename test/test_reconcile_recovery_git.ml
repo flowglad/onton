@@ -103,7 +103,15 @@ let publication_recovery env ~persistent ~timeout ~local_hook =
               \  if [ \"$value\" != approved ]; then echo 'validation must be \
                approved' >&2; exit 1; fi\n\
                done\n";
-            Unix.chmod (Filename.concat remote ".git/hooks/pre-receive") 0o755);
+            Unix.chmod (Filename.concat remote ".git/hooks/pre-receive") 0o755;
+            Git.run_git ~cwd:dir
+              [
+                "config";
+                "remote.origin.receivepack";
+                "git -c core.hooksPath="
+                ^ Filename.quote (remote ^ "/.git/hooks")
+                ^ " receive-pack";
+              ]);
           let io =
             E.make_io
               ~process_mgr:(Eio.Stdenv.process_mgr env)
@@ -146,77 +154,88 @@ let publication_recovery env ~persistent ~timeout ~local_hook =
                        policy = B.Preserve_ancestry;
                      })
               in
-              let outcome =
-                if timeout || local_hook then (
-                  check "first failed push backs off"
-                    (outcome = R.Waiting && !pushes = 1);
-                  run runtime (persist checkpoint) constrained (B.Tick 1000.))
-                else outcome
-              in
-              ignore (require_turn outcome);
-              let snapshot = get (Persistence.load ~path:checkpoint) in
-              let runtime =
-                Runtime.create ~gameplan
-                  ~main_branch:(Types.Branch.of_string "main")
-                  ~snapshot ()
-              in
-              let token =
-                require_turn
-                  (run runtime (persist checkpoint) constrained B.Recover)
-              in
-              let turns = ref 0 in
-              let perform ~agent:_ ~(turn : B.repair_turn) =
-                incr turns;
-                check "publication rejection receives publication repair task"
-                  (match turn.B.mode with
-                  | B.History_recovery { task = B.Repair_publication; _ } ->
-                      true
-                  | B.Diagnosis _ | B.Content_repair
-                  | B.History_recovery
-                      { task = B.Finish_local_work | B.Reconstruct_history; _ }
-                    ->
-                      false);
-                actual_push := true;
-                if persistent then
-                  Git.run_git ~cwd:dir
-                    [ "commit"; "--allow-empty"; "-qm"; "Repair attempt" ]
-                else
-                  ignore
-                    (commit dir "validation" "approved\n"
-                       "Repair publication validation");
-                B.Repair_completed { token = turn.B.token; at = 1001. }
-              in
-              let repair token =
-                R.run_repair ~runtime ~persist:(persist checkpoint) ~patch_id:id
-                  ~with_capacity:(fun f -> f ())
-                  ~now:(fun () -> 1001.)
-                  ~execute:(fun ~agent:_ ~operation command ->
-                    execute constrained ~operation command)
-                  ~perform token
-              in
-              let outcome = repair token in
-              if persistent then (
-                let outcome = repair (require_turn outcome) in
-                check "persistent rejection holds only after two agent turns"
-                  (match outcome with
-                  | R.Intervention _ -> !turns = 2 && !pushes = 3
-                  | R.Idle | R.Waiting | R.Repair_needed _
-                  | R.Checkpoint_failed _ ->
-                      false);
-                check "failed publication retains original work"
-                  (let code, _, _ =
-                     io.git [ "merge-base"; "--is-ancestor"; original; "HEAD" ]
-                   in
-                   code = 0))
-              else (
-                check "local publication repair reaches verified receipt"
-                  (outcome = R.Idle && !turns = 1
-                  && B.phase (state runtime) = Some B.Settled);
-                check "published content passes remote validation"
+              if local_hook then (
+                check "Onton publication bypasses local pre-push hooks"
+                  (outcome = R.Idle && !pushes = 1);
+                check "hook bypass publishes original content without a repair"
                   (Git.git_capture ~cwd:remote [ "show"; "patch:validation" ]
-                  = "approved");
-                check "bounded deterministic push attempts"
-                  (!pushes = if timeout || local_hook then 3 else 2)))))
+                  = "rejected"))
+              else
+                let outcome =
+                  if timeout then (
+                    check "first failed push backs off"
+                      (outcome = R.Waiting && !pushes = 1);
+                    run runtime (persist checkpoint) constrained (B.Tick 1000.))
+                  else outcome
+                in
+                ignore (require_turn outcome);
+                let snapshot = get (Persistence.load ~path:checkpoint) in
+                let runtime =
+                  Runtime.create ~gameplan
+                    ~main_branch:(Types.Branch.of_string "main")
+                    ~snapshot ()
+                in
+                let token =
+                  require_turn
+                    (run runtime (persist checkpoint) constrained B.Recover)
+                in
+                let turns = ref 0 in
+                let perform ~agent:_ ~(turn : B.repair_turn) =
+                  incr turns;
+                  check "publication rejection receives publication repair task"
+                    (match turn.B.mode with
+                    | B.History_recovery { task = B.Repair_publication; _ } ->
+                        true
+                    | B.Diagnosis _ | B.Content_repair
+                    | B.History_recovery
+                        {
+                          task = B.Finish_local_work | B.Reconstruct_history;
+                          _;
+                        } ->
+                        false);
+                  actual_push := true;
+                  if persistent then
+                    Git.run_git ~cwd:dir
+                      [ "commit"; "--allow-empty"; "-qm"; "Repair attempt" ]
+                  else
+                    ignore
+                      (commit dir "validation" "approved\n"
+                         "Repair publication validation");
+                  B.Repair_completed { token = turn.B.token; at = 1001. }
+                in
+                let repair token =
+                  R.run_repair ~runtime ~persist:(persist checkpoint)
+                    ~patch_id:id
+                    ~with_capacity:(fun f -> f ())
+                    ~now:(fun () -> 1001.)
+                    ~execute:(fun ~agent:_ ~operation command ->
+                      execute constrained ~operation command)
+                    ~perform token
+                in
+                let outcome = repair token in
+                if persistent then (
+                  let outcome = repair (require_turn outcome) in
+                  check "persistent rejection holds only after two agent turns"
+                    (match outcome with
+                    | R.Intervention _ -> !turns = 2 && !pushes = 3
+                    | R.Idle | R.Waiting | R.Repair_needed _
+                    | R.Checkpoint_failed _ ->
+                        false);
+                  check "failed publication retains original work"
+                    (let code, _, _ =
+                       io.git
+                         [ "merge-base"; "--is-ancestor"; original; "HEAD" ]
+                     in
+                     code = 0))
+                else (
+                  check "local publication repair reaches verified receipt"
+                    (outcome = R.Idle && !turns = 1
+                    && B.phase (state runtime) = Some B.Settled);
+                  check "published content passes remote validation"
+                    (Git.git_capture ~cwd:remote [ "show"; "patch:validation" ]
+                    = "approved");
+                  check "bounded deterministic push attempts"
+                    (!pushes = if timeout then 3 else 2)))))
 
 let checkout_recovery env detached =
   Git.with_temp_repo (fun remote ->

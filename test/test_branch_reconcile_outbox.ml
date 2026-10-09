@@ -75,6 +75,27 @@ let poll t n =
 
 let tests =
   [
+    QCheck2.Test.make ~count:100
+      ~name:
+        "scheduler holds queued recovery during automerge and resumes after \
+         failure" QCheck2.Gen.bool (fun merged ->
+        try
+          let t = request (create ()) in
+          let msg = one_pending t in
+          let t = Orchestrator.set_automerge_inflight t pid true in
+          assert (List.is_empty (Orchestrator.runnable_messages t));
+          let t, accepted = Orchestrator.accept_message t msg.message_id in
+          assert (Option.is_none accepted);
+          assert (not (Orchestrator.agent t pid).busy);
+          let t =
+            if merged then Orchestrator.mark_merged t pid
+            else Orchestrator.set_automerge_inflight t pid false
+          in
+          if merged then List.is_empty (Orchestrator.runnable_messages t)
+          else
+            let _, accepted = Orchestrator.accept_message t msg.message_id in
+            Option.is_some accepted
+        with _ -> false);
     QCheck2.Test.make ~count:500
       ~name:"scheduler restart resumes captured reconciliation once per runtime"
       ~print:(fun actions ->

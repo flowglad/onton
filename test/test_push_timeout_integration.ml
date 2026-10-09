@@ -66,14 +66,12 @@ let scenario env stage =
       (Stdlib.Filename.quote marker)
       (Stdlib.Filename.quote marker)
   in
-  let hooks = Stdlib.Filename.concat repo ".git/timeout-hooks" in
-  Unix.mkdir hooks 0o755;
-  write_script
-    (Stdlib.Filename.concat hooks "pre-push")
-    (Printf.sprintf "touch %s\n%s"
+  let receive_pack = Stdlib.Filename.concat repo ".git/timeout-receive-pack" in
+  write_script receive_pack
+    (Printf.sprintf "touch %s\n%s\nexec git-receive-pack \"$@\"\n"
        (Stdlib.Filename.quote push_started)
        (if String.equal stage "push" then block else ""));
-  git [ "config"; "core.hooksPath"; hooks ];
+  git [ "config"; "remote.origin.receivepack"; receive_pack ];
   let upload_pack = Stdlib.Filename.concat repo ".git/timeout-upload-pack" in
   if not (String.equal stage "push") then (
     git [ "update-ref"; "-d"; "refs/remotes/origin/feat" ];
@@ -97,6 +95,8 @@ let scenario env stage =
                       else "fetch")
                    && not (String.equal stage "push") ->
                 real.git (command :: ("--upload-pack=" ^ upload_pack) :: rest)
+            | "push" :: rest when String.equal stage "push" ->
+                real.git ("push" :: ("--receive-pack=" ^ receive_pack) :: rest)
             | _ -> real.git args);
       }
   in
@@ -210,7 +210,7 @@ let scenario env stage =
   in
   if not (String.equal remote old_remote) then
     failwith (stage ^ ": timeout changed remote history");
-  git [ "config"; "--unset"; "core.hooksPath" ];
+  git [ "config"; "--unset"; "remote.origin.receivepack" ];
   let real =
     E.make_io ~clock:(Eio.Stdenv.clock env)
       ~process_mgr:(Eio.Stdenv.process_mgr env)

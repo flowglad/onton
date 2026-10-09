@@ -34,9 +34,7 @@ let run_unlocked ~runtime ~persist ~patch_id ~now ~execute event =
         in
         match Branch_reconcile.phase state with
         | Some (Branch_reconcile.Intervention reason) -> Intervention reason
-        | Some (Branch_reconcile.Waiting _ | Branch_reconcile.Awaiting_session)
-          ->
-            Waiting
+        | Some (Branch_reconcile.Waiting _) -> Waiting
         | Some (Branch_reconcile.Repairing _) -> (
             match Branch_reconcile.operation state with
             | Some _ -> Waiting

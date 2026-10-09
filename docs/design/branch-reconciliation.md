@@ -665,9 +665,22 @@ inspection on upgrade, including intermediate snapshots that already contain
 planning counters. Captured authority and exhausted agent budgets survive.
 
 Real-Git acceptance in `test_reconcile_recovery_git` covers dirty restart/bump/
-human guidance, repeated merge validation and push timeouts, local and remote
-hook failures, exhausted publication repair, and switched/detached checkouts.
+human guidance, repeated merge validation and push timeouts, local hook bypass,
+remote hook rejection, exhausted publication repair, and switched/detached checkouts.
 Timeouts inject the executor's exit-124 outcome; they do not wait 120 wall-clock
 seconds. Recovery uses controlled fixture agents and independent Git verification,
 not a live model success-rate trial. Full qualification is recorded in the
 [M3 audit](../workstreams/branch-reconciliation-m3-audit.md).
+
+M2 `Awaiting_session` checkpoints migrate to owned reinspection with the deferred
+intent intact. Legacy retry counts seed the new observation and mutation budgets
+so upgrading cannot restart a saturated retry loop. When an agent finishes dirty
+work for base reconciliation, verified completion requests a fresh base observation
+after publication; a base that advanced during the session remains outstanding
+work. In-flight automerge defers both new recovery planning and queued message
+acceptance; a failed merge releases the same owned work.
+
+Onton-owned Git subprocesses disable local hooks through the process-scoped clean
+Git environment. User and agent Git commands retain repository hooks. Remote
+server policy still applies; local transport test fixtures must explicitly model
+the server environment rather than inherit the client's hook override.

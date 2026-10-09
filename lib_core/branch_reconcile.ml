@@ -1783,6 +1783,21 @@ let recovery_verified t op (o : observation) source_preserved remote_preserved =
             Option.equal Commit.equal op.target (Some o.target)
           in
           let source_preserved = source_preserved && target_matches in
+          let op =
+            if
+              equal_recovery_task task Finish_local_work
+              && recovery.attempt_completed && source_preserved && o.clean
+              && Option.is_none o.sequencer
+              &&
+              match op.intent.purpose with
+              | Reconcile_base | Reconcile_request _ | Reconcile_scoped _ ->
+                  true
+              | Provision_checkout _ | Integrate_revision _ | Publish_revision _
+              | Publish_session _ | Verify_publication ->
+                  false
+            then { op with reobserve_after_completion = true }
+            else op
+          in
           let target_satisfied =
             match op.local_action with
             | Publish_source -> true
@@ -2666,6 +2681,62 @@ let continuation (op : operation) (checkout : Git_observation.t) =
       Git_observation.continuation checkout
 
 let decode json =
+  (* M2 yielded dirty work to the session dispatcher. M3 owns that recovery
+     itself; retain the operation and deferred intent, then re-observe before
+     issuing a repair turn. Its undifferentiated retry count conservatively
+     seeds both budgets so an upgrade cannot restart a saturated retry loop. *)
+  let json =
+    match json with
+    | `Assoc fields ->
+        `Assoc
+          (List.map fields ~f:(fun (key, value) ->
+               if not (String.equal key "active") then (key, value)
+               else
+                 match value with
+                 | `Assoc operation ->
+                     let legacy =
+                       not
+                         (List.Assoc.mem operation "deterministic_failures"
+                            ~equal:String.equal)
+                     in
+                     let count =
+                       match
+                         List.Assoc.find operation "failures"
+                           ~equal:String.equal
+                       with
+                       | Some (`Int n) -> Int.min 2 (Int.max 0 n)
+                       | _ -> 0
+                     in
+                     let operation =
+                       List.map operation ~f:(fun (name, value) ->
+                           if
+                             String.equal name "phase"
+                             && Poly.equal value
+                                  (`List [ `String "Awaiting_session" ])
+                           then
+                             ( name,
+                               `List
+                                 [
+                                   `String "Intervention";
+                                   `String "legacy_awaiting_session";
+                                 ] )
+                           else (name, value))
+                     in
+                     let operation =
+                       if legacy then
+                         ("deterministic_failures", `Int count)
+                         ::
+                         (if
+                            List.Assoc.mem operation "observation_failures"
+                              ~equal:String.equal
+                          then operation
+                          else ("observation_failures", `Int count) :: operation)
+                       else operation
+                     in
+                     (key, `Assoc operation)
+                 | _ -> (key, value)))
+    | _ -> json
+  in
   let legacy_policy =
     Option.is_none
       (Option.bind (Json.field "active" json)
