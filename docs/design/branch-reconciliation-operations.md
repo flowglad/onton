@@ -65,5 +65,20 @@ only after that reconciliation, then start the older binary. Never change the
 version field or point an older binary at a live version-2 checkpoint. Simply
 copying the pre-upgrade snapshot over current state can repeat completed work.
 
-Recovery refs are retained conservatively for the project lifetime. Automatic
-dependency-aware reclamation and the complete forge-context model remain M3 work.
+Project pruning reclaims recovery refs only when surviving dependent checkpoints
+no longer need them as their sole recovery anchors. It checks captured ref tips
+before deletion and retains data when inventory or ancestry probes fail.
+Unfinished reconciliation prevents terminal-project pruning. A shared managed
+repository remains until every stored project using it is eligible for removal.
+
+Pruning requires exclusive project lifetime ownership, including when a worker
+was started with `--no-lock`. Project-directory removal uses a private retirement
+journal: it renames the captured directory before deleting that payload. Restart
+can finish interrupted cleanup without deleting a replacement project created at
+the original path. Preserve unrecognized journals for inspection.
+
+Forge reports carry the PR identity, head/base revisions and request identity.
+Stale or duplicate replies cannot authorize new Git work. A repeated conflict
+report for a satisfied pair remains a visible observation wait; a failed remote
+probe does not prove that a branch disappeared. Git reconciliation remains the
+publication authority even when forge metadata reports a mergeable result.

@@ -223,6 +223,12 @@
  (ocamlopt_flags (:standard -w -40-42))
  (ocamlc_flags (:standard -w -40-42)))
 
+
+
+
+
+
+
 (test
  (name test_claude_process_properties)
  (modules test_claude_process_properties)
@@ -435,6 +441,8 @@
  (libraries onton_core onton_core_test_support qcheck-core)
  (ocamlopt_flags (:standard -w -40-42-4))
  (ocamlc_flags (:standard -w -40-42-4)))
+
+
 
 (test
  (name test_worktree_spawn_retry)
@@ -907,6 +915,12 @@
  (modules test_branch_reconcile_ownership)
  (flags (:standard -w -40-42))
  (libraries onton onton_core eio_main unix))
+
+(test
+ (name test_branch_reconcile_model)
+ (modules test_branch_reconcile_model)
+ (flags (:standard -w -40-42))
+ (libraries onton_core qcheck-core qcheck-core.runner))
 
 (test
  (name test_branch_reconcile_boundaries)
