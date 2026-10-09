@@ -1,7 +1,7 @@
 # Branch reconciliation
 
 The corrected M3 recovery boundary is locally qualified. Ordinary reconciliation
-failures reach agent recovery or observation-only diagnosis before an exhausted
+failures reach agent recovery or diagnosis with environmental repair before an exhausted
 recovery hold. The current evidence is recorded in the M3 audit; earlier
 qualification did not cover this complete boundary. No PR has been opened.
 
@@ -618,7 +618,7 @@ guidance remains available for normal task delivery.
 `Attempt_failed` records an executed mutation failure, including validation
 and push timeouts. Two failed deterministic attempts request full recovery.
 Inspection, retry delay and restart retain that count; successful integration
-resets it. Repeated probe failures request observation-only diagnosis without
+resets it. Repeated probe failures request diagnosis with environmental repair without
 spending mutation attempts. A complete observation resets the separate
 `observation_failures` count; the general backoff counter cannot trigger or
 exhaust recovery. Rejected lease/queue publication attempts use the mutation
@@ -643,8 +643,14 @@ Mutation authority and agent assistance are separate. Unsupported destinations,
 legacy verification failures, provisioning refusals, uncertain hook completion,
 and protocol-result mismatches request a `Diagnosis` turn. Such turns can start
 without a checkout or HEAD, run from the project directory, and carry the intended
-checkout path. The prompt requires observation only; this is an instruction to the
-backend, not an OS-enforced sandbox. Backend final results are forwarded to the
+checkout path. All recovery prompts direct the agent to repair environmental
+blockers: local gate state, missing project dependencies and system tools, and
+environment configuration. Repairs must be verified by rerunning the failing
+command or gate. Stale gate or lock state can be cleared only after checking
+ownership and prerequisites; checks, approvals and repository policies cannot
+be bypassed. Diagnosis permits these environmental repairs while prohibiting
+changes to patch content, Git history, the index, sequencer and remote destinations.
+These are prompt instructions, not an OS-enforced sandbox. Backend final results are forwarded to the
 activity log, including diagnostic findings that require external action. Owner mutation predicates remain unchanged,
 and a diagnosis cannot grant publication authority, rebind a destination, or replay
 an unacknowledged hook. Changed HEAD is reported as failed diagnostic execution.

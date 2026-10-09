@@ -3236,6 +3236,18 @@ let repair_turn t ~branch token =
           mode = r.mode;
           prompt =
             (Printf.sprintf "Repair turn: %d/%d\n" token.operation token.command
+            ^ "Repair environmental conditions that block this operation: \
+               inspect and repair local gate state, install or restore missing \
+               project dependencies and system tools, and correct environment \
+               or tool configuration. Follow the project's documented setup \
+               and pinned versions. Re-run the failing command or gate to \
+               verify the repair. Clear stale local gate or lock state only \
+               after verifying that no live operation owns it and that its \
+               prerequisites hold. Do not disable checks, fabricate passing \
+               results, bypass approvals, or change credentials, permission \
+               scopes or repository policies. Report what you changed, the \
+               verification result, and any remaining blocker. The Git \
+               permissions below still apply.\n"
             ^ (match execution_policy op with
               | Rewrite -> "Preservation policy: verified rewrites permitted.\n"
               | Preserve_ancestry ->
@@ -3258,14 +3270,16 @@ let repair_turn t ~branch token =
                    Managed branch: %s\n\
                    Captured source: %s\n\
                    Captured target: %s\n\
-                   This turn is observation-only, including when pending \
-                   guidance asks for edits. Inspect available evidence and \
-                   explain the cause and the minimum authorized next step. Do \
-                   not modify Git, files, configuration, credentials, \
-                   permissions, hooks or repository policies. Do not publish, \
-                   rerun creation hooks, or treat a legacy publication claim \
-                   as write authorization. Onton will independently re-observe \
-                   after this turn.\n"
+                   Investigate the failure and repair environmental blockers \
+                   using the instructions above. This turn does not authorize \
+                   changes to patch content, Git history, branches, the index, \
+                   sequencer or remote destinations, even when pending \
+                   guidance requests them. Do not publish, blindly rerun \
+                   creation hooks, or treat a legacy publication claim as \
+                   write authorization. Preserve existing work. If an \
+                   environmental repair requires authority you lack, explain \
+                   the specific required action. Onton will independently \
+                   re-observe after this turn.\n"
                   reason branch (sha source) (sha target)
             | History_recovery { reason; baseline; task } ->
                 (match task with
