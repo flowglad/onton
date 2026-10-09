@@ -255,7 +255,14 @@ module Make (Forge : Forge.S) (W : Worktree.S) (Env : Poller_env.S) = struct
           in
           let expected_head = a.Patch_agent.expected_remote_head_oid in
           let schedule = Option.map previous ~f:snd in
-          match Branch_poll_decision.plan ~now ~expected_head schedule with
+          let checks =
+            Option.bind previous ~f:fst
+            |> Option.value_map ~default:[] ~f:(fun state ->
+                state.Forge_types.checks)
+          in
+          match
+            Branch_poll_decision.plan ~now ~expected_head ~checks schedule
+          with
           | Skip -> ()
           | Probe { reuse_checks } -> (
               let known_state =
