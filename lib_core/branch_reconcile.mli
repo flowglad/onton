@@ -31,7 +31,7 @@ type policy = Rewrite | Preserve_ancestry [@@deriving eq, compare, sexp_of]
 type purpose =
   | Provision_checkout of string
       (** Provision or validate a checkout without integrating or publishing.
-          Only [Checkout_ready] can settle this intent. Retry and permanent
+          Only [Checkout_ready] can settle this intent. Retry and diagnostic
           failures use the ordinary durable owner phases and command identity.
       *)
   | Reconcile_base
@@ -178,14 +178,27 @@ type command_kind =
 type command = private { token : token; kind : command_kind }
 [@@deriving eq, compare, sexp_of]
 
+type recovery_task =
+  | Finish_local_work
+  | Reconstruct_history
+  | Repair_publication
+[@@deriving eq, compare, sexp_of]
+
 type repair_mode =
+  | Diagnosis of { reason : string }
+      (** Observation-only agent assistance when mutation authority or checkout
+          evidence is unavailable. This scope grants no Git write authority. *)
   | Content_repair
-  | History_recovery of { reason : string; baseline : Commit.t option }
+  | History_recovery of {
+      reason : string;
+      baseline : Commit.t option;
+      task : recovery_task;
+    }
 [@@deriving eq, compare, sexp_of]
 
 type repair = {
   mode : repair_mode;
-  head : Commit.t;
+  head : Commit.t option;
   sequencer : string;
   conflicts : int;
   attempts_without_progress : int;
@@ -269,6 +282,16 @@ type operation = private {
   pending : command option;
   command_sequence : int;
   failures : int;
+      (** Backoff exponent only; saturation does not exhaust recovery. *)
+  deterministic_failures : int;
+      (** Failed mutation attempts in the current integration/publication
+          obligation. Probes and transport backoff do not spend this budget. *)
+  observation_failures : int;
+      (** Failed evidence reads since the last complete observation, independent
+          of mutation attempts and the general backoff counter. *)
+  publication_recovery_attempts : int;
+      (** Completed publication recovery turns, retained across rejected pushes.
+      *)
   repair : repair option;
   merge_progress : merge_progress option;
 }
@@ -284,6 +307,7 @@ type result =
           an integration or publication operation. *)
   | Observed of observation
   | Observed_active of { observation : observation; policy : policy }
+  | Observed_recovery of { observation : observation; policy : policy }
   | Pinned
   | Merge_completion_needed of merge_completion
   | Merge_completed of Commit.t
@@ -301,8 +325,15 @@ type result =
   | Published
   | Remote of { sha : Commit.t option; topology : topology }
   | Retryable of { reason : string; retry_after : float option }
+  | Publication_rejected of Push_reject_classify.rejection
+  | Attempt_failed of string
+      (** A mutation ran but did not complete. Reinspect before retrying;
+          repeated failures offer agent recovery instead of replaying forever.
+      *)
   | Recovery_required of string
-  | Permanent of string
+  | Needs_diagnosis of string
+      (** Offer bounded agent diagnosis. The diagnostic text cannot stop the
+          owner before agent recovery has been attempted. *)
 [@@deriving eq, compare, sexp_of]
 
 type publication_identity = private { operation_id : int; revision : Commit.t }
@@ -319,9 +350,9 @@ type event =
   | Request of intent
   | Result of { token : token; at : float; result : result }
   | Repair_invalidated of { token : token; reason : string }
-  | Repair_denied of { token : token; reason : string }
   | Repair_started of token
   | Repair_interrupted of { token : token; at : float; reason : string }
+  | Repair_failed of { token : token; at : float; reason : string }
   | Repair_completed of { token : token; at : float }
   | Tick of float
   | Recover
@@ -553,7 +584,7 @@ val wake_event : at:float -> t -> event option
 
 type repair_turn = private {
   token : token;
-  head : Commit.t;
+  head : Commit.t option;
   mode : repair_mode;
   prompt : string;
 }
@@ -561,10 +592,17 @@ type repair_turn = private {
 val repair_turn : t -> branch:string -> token -> repair_turn option
 (** Available only for the current durably claimed repair turn. *)
 
+val recovery_prompt :
+  context:string -> guidance:string list -> repair_turn -> string
+(** Include task context and pending guidance without acknowledging normal task
+    delivery. *)
+
 val repair_head_matches : repair_turn -> Commit.t option -> bool
+val repair_event_accepted : Types.Stream_event.t -> bool
 
 val repair_result :
   turn:repair_turn ->
+  turn_accepted:bool ->
   at:float ->
   before_head:Commit.t option ->
   after_head:Commit.t option ->
@@ -572,10 +610,12 @@ val repair_result :
   final_result:bool ->
   detail:string ->
   event
-(** Validate repair-turn observations. Unknown HEAD evidence or interrupted
-    backends retry without spending repair budget. Changed HEAD invalidates
-    content-repair authority and enters history recovery. History recovery may
-    change HEAD, but only independent verification can authorize publication. *)
+(** Validate repair-turn observations. A backend failure after accepting the
+    turn is a completed attempt, verified before charging its budget. Failures
+    before acceptance retry without spending agent attempts. Changed HEAD
+    invalidates content-repair authority and enters history recovery. History
+    recovery may change HEAD, but only independent verification can authorize
+    publication. *)
 
 val continuation :
   operation -> Git_observation.t -> Git_observation.continuation

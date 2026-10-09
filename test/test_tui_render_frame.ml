@@ -522,7 +522,7 @@ let () =
                token = pending.B.token [@warning "-42"];
                at = 100.;
                result =
-                 (if permanent then B.Permanent "permission_denied"
+                 (if permanent then B.Needs_diagnosis "permission_denied"
                   else
                     B.Retryable
                       { reason = "transport_unavailable"; retry_after = None });
@@ -541,7 +541,7 @@ let () =
       in
       assert (
         line_contains lines
-          (if permanent then "Reconcile: intervention" else "Reconcile: waiting"));
+          (if permanent then "Reconcile: diagnosis" else "Reconcile: waiting"));
       assert (
         line_contains lines
           (if permanent then "permission_denied" else "transport_unavailable"));
@@ -605,7 +605,7 @@ let[@warning "-42"] () =
       List.iter [ false; true ] ~f:(fun permanent ->
           let failed =
             reply publishing
-              (if permanent then Permanent "permission_denied"
+              (if permanent then Needs_diagnosis "permission_denied"
                else
                  Retryable
                    { reason = "transport_unavailable"; retry_after = None })
@@ -635,7 +635,7 @@ let[@warning "-42"] () =
               "Candidate: " ^ Commit.to_string candidate;
               "Remote lease: " ^ Commit.to_string source;
               "Replay proof: " ^ expected_proof;
-              ("Reconcile: " ^ if permanent then "intervention" else "waiting");
+              ("Reconcile: " ^ if permanent then "diagnosis" else "waiting");
               ("Reason: "
               ^
               if permanent then "permission_denied" else "transport_unavailable"

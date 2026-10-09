@@ -1,5 +1,10 @@
 # Workstream: Branch reconciliation
 
+The corrected M3 recovery boundary is locally qualified. Ordinary reconciliation
+failures reach agent recovery or observation-only diagnosis before an exhausted
+recovery hold. The current evidence is recorded in the M3 audit; earlier
+qualification did not cover this complete boundary. No PR has been opened.
+
 ## Vision
 
 Make branch reconciliation a first-class Onton subsystem: a pure functional core
@@ -16,9 +21,10 @@ foundation a useful, supportable release; M3 completes the full design.
 
 ## Current State
 
-M1 is complete, M2 is qualified as a release candidate, and M3 is implemented
-and locally verified in the current worktree. Merge, release publication and
-representative live-provider trials are not claimed. The
+M1 is complete, M2 is qualified as a release candidate, and M3 is locally qualified
+including the reopened core-planning correction. Dirty interrupted work, repeated
+validation timeouts and rejected publication now follow bounded agent recovery.
+Merge, release publication and representative live-provider trials are not claimed. The
 [M3 completion audit](branch-reconciliation-m3-audit.md) records A01–A24,
 formal-contract review, final gates and both isolated patch builds. The
 [M2 release evidence](branch-reconciliation-m2-release-evidence.md) retains the
@@ -113,9 +119,9 @@ with the push-failure counter, its mutators, restoration input, intervention rul
 and status projections. Old counter values are ignored in v1/v2 snapshots and
 archived event projections; new snapshots omit the field. Generated publication
 and provisioning interleavings retain work beyond the old retry cap without
-consuming implementation budgets. Permanent publication denial is an owner
-intervention and preserves the backend session; a successful implementation
-cannot clear that intervention. Independently writable compatibility fields
+consuming implementation budgets. Repeated publication and provisioning failures
+request bounded agent assistance while preserving the backend session; a
+successful implementation cannot clear an exhausted recovery hold. Independently writable compatibility fields
 still need cleanup.
 The activity-log status projection now decodes the owner checkpoint and calls
 the same intervention decision as the live agent. Generated owner histories
@@ -674,8 +680,12 @@ for completing the model. Users need not wait for the entire architecture cleanu
 
 ### Milestone 3: branch-reconciliation-complete
 
-**Status: implemented and locally verified.** A01–A24 and the final validation
-gates pass; see the [completion audit](branch-reconciliation-m3-audit.md).
+**Status: locally qualified after reopening.** The corrected obligation model
+finishes interrupted local work before base integration, bounds failed deterministic
+mutations, and offers agent recovery for repairable Git/publication states. Both
+reported loops have real-Git/restart regressions. Current full-suite, architecture,
+formal-plan and isolated-prefix checks pass; see the
+[completion audit](branch-reconciliation-m3-audit.md).
 Merge, release publication and live-provider rollout remain separate handoffs.
 
 **Scope: the complete picture.** Finish the original design after the useful

@@ -11,7 +11,7 @@ let reconciliation_result failure =
   let reason = message failure in
   match failure with
   | Temporary _ -> Branch_reconcile.Retryable { reason; retry_after = None }
-  | Unsafe _ -> Branch_reconcile.Permanent reason
+  | Unsafe _ -> Branch_reconcile.Needs_diagnosis reason
 
 let materialization_failure reason =
   if Git_observation.materialization_failure_is_unsafe reason then Unsafe reason

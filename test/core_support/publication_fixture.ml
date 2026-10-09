@@ -18,6 +18,53 @@ let completion ?(at = 100.) ~state t result =
 
 let reply ?at ~step ~state t result = step t (completion ?at ~state t result)
 
+(* Terminal fixtures must consume the owned recovery budget; a diagnostic
+   result alone never represents exhausted recovery. *)
+let exhaust_diagnosis ~step ~state initial =
+  let rec loop remaining t =
+    if remaining = 0 then t
+    else
+      match B.phase (state t) with
+      | Some (B.Repairing { mode = Diagnosis { reason }; _ }) ->
+          let t = step t B.Recover in
+          let event = completion ~state t (B.Needs_diagnosis reason) in
+          let _, effects = B.step (state t) event in
+          let token =
+            match effects with
+            | [ B.Repair token ] -> token
+            | []
+            | (B.Execute _ | B.Start_repair _ | B.Completed _) :: _
+            | B.Repair _ :: _ :: _ ->
+                failwith "fixture expected diagnosis"
+          in
+          let t = step t event in
+          let t = step t (B.Repair_started token) in
+          let t = step t (B.Repair_completed { token; at = 100. }) in
+          loop (remaining - 1) (reply ~step ~state t (B.Needs_diagnosis reason))
+      | None
+      | Some
+          ( Preparing | Integrating
+          | Repairing { mode = Content_repair | History_recovery _; _ }
+          | Publishing | Confirming | Waiting _ | Recovering | Settled
+          | Intervention _ ) ->
+          t
+  in
+  loop 2 initial
+
+let exhausted_diagnosis initial =
+  exhaust_diagnosis ~step:(fun t e -> fst (B.step t e)) ~state:Fn.id initial
+
+let is_diagnosis state =
+  match B.phase state with
+  | Some (B.Repairing { mode = Diagnosis _; _ }) -> true
+  | None
+  | Some
+      ( Preparing | Integrating
+      | Repairing { mode = Content_repair | History_recovery _; _ }
+      | Publishing | Confirming | Waiting _ | Recovering | Settled
+      | Intervention _ ) ->
+      false
+
 let publishing ~candidate ~step ~state initial =
   let revision =
     match B.Commit.make candidate with

@@ -1370,7 +1370,7 @@ let mk_started_no_pr () =
   (orch, pid)
 
 (** PI-4: Provisioning outages retain owned retries without spending session
-    budgets. Permanent checkout refusals intervene in the owner. *)
+    budgets. Diagnostic turns precede an exhausted recovery hold. *)
 let () =
   let prop_pi4 =
     QCheck2.Test.make
@@ -1400,27 +1400,29 @@ let () =
           let before = Orchestrator.agent orch pid in
           let orch =
             List.fold (List.range 0 retries) ~init:orch ~f:(fun t _ ->
-                let t =
-                  F.reply ~state ~step t
-                    (B.Retryable
-                       { reason = "checkout unavailable"; retry_after = None })
-                in
-                let t =
-                  Orchestrator.apply_start_outcome t pid
-                    Orchestrator.Start_failed
-                in
-                match B.phase (state t) with
-                | Some (Waiting { until; _ }) -> step t (B.Tick until)
-                | Some
-                    ( Preparing | Integrating | Repairing _ | Publishing
-                    | Confirming | Recovering | Settled | Intervention _ )
-                | None ->
-                    failwith "checkout retry lost backoff")
+                if F.is_diagnosis (state t) then t
+                else
+                  let t =
+                    F.reply ~state ~step t
+                      (B.Retryable
+                         { reason = "checkout unavailable"; retry_after = None })
+                  in
+                  let t =
+                    Orchestrator.apply_start_outcome t pid
+                      Orchestrator.Start_failed
+                  in
+                  match B.phase (state t) with
+                  | Some (Waiting { until; _ }) -> step t (B.Tick until)
+                  | Some (Repairing _) when F.is_diagnosis (state t) -> t
+                  | Some
+                      ( Preparing | Integrating | Repairing _ | Publishing
+                      | Confirming | Recovering | Settled | Intervention _ )
+                  | None ->
+                      failwith "checkout retry lost backoff")
           in
+          assert (F.is_diagnosis (state orch));
           let orch =
-            if permanent then
-              F.reply ~state ~step orch (B.Permanent "unsafe_checkout")
-            else orch
+            if permanent then F.exhaust_diagnosis ~state ~step orch else orch
           in
           let after = Orchestrator.agent orch pid in
           (not after.Patch_agent.busy)
@@ -1722,19 +1724,23 @@ let () =
            let identity = B.publication_observation_target (state publishing) in
            let failed =
              List.fold (List.range 0 failures) ~init:publishing ~f:(fun t i ->
-                 let at = 100. +. (Float.of_int i *. 10000.) in
-                 let t =
-                   F.reply ~at ~step ~state t
-                     (B.Retryable
-                        {
-                          reason =
-                            (if lease then "lease_violation" else "transport");
-                          retry_after = None;
-                        })
-                 in
-                 let t = step t (B.Tick (at +. 10000.)) in
-                 assert (Option.is_some (B.pending (state t)));
-                 t)
+                 if F.is_diagnosis (state t) then t
+                 else
+                   let at = 100. +. (Float.of_int i *. 10000.) in
+                   let t =
+                     F.reply ~at ~step ~state t
+                       (B.Retryable
+                          {
+                            reason =
+                              (if lease then "lease_violation" else "transport");
+                            retry_after = None;
+                          })
+                   in
+                   let t = step t (B.Tick (at +. 10000.)) in
+                   assert (
+                     Option.is_some (B.pending (state t))
+                     || F.is_diagnosis (state t));
+                   t)
            in
            let agent = Orchestrator.agent failed pid in
            Option.equal B.equal_publication_identity identity
@@ -3105,22 +3111,25 @@ let () =
           let candidate = B.publication_observation_target (state orch) in
           let orch =
             List.fold (List.range 0 retries) ~init:orch ~f:(fun t _ ->
-                let t =
-                  match B.phase (state t) with
-                  | Some (Waiting { until; _ }) -> step t (B.Tick until)
-                  | Some
-                      ( Preparing | Integrating | Repairing _ | Publishing
-                      | Confirming | Recovering | Settled | Intervention _ )
-                  | None ->
-                      failwith "publication lost retry deadline"
-                in
-                F.reply ~state ~step t
-                  (B.Retryable { reason = "offline"; retry_after = None }))
+                if F.is_diagnosis (state t) then t
+                else
+                  let t =
+                    match B.phase (state t) with
+                    | Some (Waiting { until; _ }) -> step t (B.Tick until)
+                    | Some
+                        ( Preparing | Integrating | Repairing _ | Publishing
+                        | Confirming | Recovering | Settled | Intervention _ )
+                    | None ->
+                        failwith "publication lost retry deadline"
+                  in
+                  F.reply ~state ~step t
+                    (B.Retryable { reason = "offline"; retry_after = None }))
           in
           let after = Orchestrator.agent orch pid in
           (not after.Patch_agent.busy)
           && (not (Patch_agent.needs_intervention after))
           && B.is_pending (state orch)
+          && F.is_diagnosis (state orch)
           && Option.equal B.equal_publication_identity candidate
                (B.publication_observation_target (state orch))
           && Patch_agent.equal_session_fallback after.session_fallback
@@ -3130,13 +3139,11 @@ let () =
   QCheck2.Test.check_exn prop_cv6;
   Stdlib.print_endline "CV-6 passed"
 
-(** CV-7: Permanent publication denial is owner intervention, independent of the
-    backend's ability to continue the implementation session. *)
+(** CV-7: Publication diagnosis preserves the backend implementation session. *)
 let () =
   let prop_cv7 =
     QCheck2.Test.make
-      ~name:"CV-7: permanent publication denial preserves backend session"
-      ~count:200
+      ~name:"CV-7: publication diagnosis preserves backend session" ~count:200
       QCheck2.Gen.(
         oneof_list
           [
@@ -3154,12 +3161,12 @@ let () =
           in
           let reason = Push_reject_classify.short_label rejection in
           let orch =
-            fail_publication orch pid (Branch_reconcile.Permanent reason)
+            fail_publication orch pid (Branch_reconcile.Needs_diagnosis reason)
           in
           let after = Orchestrator.agent orch pid in
-          Option.equal String.equal
-            (Patch_agent.intervention_reason after)
-            (Some reason)
+          Onton_core_test_support.Publication_fixture.is_diagnosis
+            after.branch_reconcile
+          && (not (Patch_agent.needs_intervention after))
           && Patch_agent.equal_session_fallback after.session_fallback
                Fresh_available
           && Option.equal String.equal after.llm_session_id

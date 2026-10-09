@@ -37,7 +37,7 @@ let () =
         !called
         || not
              (B.equal_result result
-                (B.Permanent "provisioning_requires_checkout_handler"))
+                (B.Needs_diagnosis "provisioning_requires_checkout_handler"))
       then failwith "ordinary executor granted provisioning Git authority"
   | _ -> failwith "missing provisioning operation"
 
@@ -457,9 +457,36 @@ let () =
                       ~snapshot:(get (Persistence.load ~path:checkpoint))
                       ()
                   in
-                  check "restart rejects changed destination"
-                    (run runtime (persist checkpoint) io B.Recover
-                    = R.Intervention "publication_destination_changed");
+                  let turns = ref 0 in
+                  let rec diagnose remaining outcome =
+                    match outcome with
+                    | R.Repair_needed token when remaining > 0 ->
+                        let outcome =
+                          R.run_repair ~runtime ~persist:(persist checkpoint)
+                            ~patch_id:id
+                            ~with_capacity:(fun f -> f ())
+                            ~now:(fun () -> 100.)
+                            ~execute:(fun ~agent:_ -> execute io)
+                            ~perform:(fun ~agent:_ ~turn ->
+                              incr turns;
+                              check "destination diagnosis is observation-only"
+                                (match turn.B.mode with
+                                | Diagnosis _ -> true
+                                | Content_repair | History_recovery _ -> false);
+                              B.Repair_completed
+                                { token = turn.token; at = 100. })
+                            token
+                        in
+                        diagnose (remaining - 1) outcome
+                    | R.Idle | R.Waiting | R.Intervention _
+                    | R.Checkpoint_failed _ | R.Repair_needed _ ->
+                        outcome
+                  in
+                  check
+                    "changed destination receives diagnosis before intervention"
+                    (diagnose 3 (run runtime (persist checkpoint) io B.Recover)
+                     = R.Intervention "publication_destination_changed"
+                    && !turns = 2);
                   check "changed destination receives no candidate"
                     (Git.git_exit_code ~cwd:replacement
                        [ "show-ref"; "--verify"; "refs/heads/patch" ]
@@ -533,8 +560,13 @@ let () =
                       in
                       if multiple then (
                         check
-                          "ambiguous destinations stop before any publication"
-                          (outcome = R.Intervention "multiple_push_destinations"
+                          "ambiguous destinations request diagnosis before \
+                           publication"
+                          ((match outcome with
+                             | R.Repair_needed _ -> true
+                             | R.Idle | R.Waiting | R.Intervention _
+                             | R.Checkpoint_failed _ ->
+                                 false)
                           && !pushes = 0);
                         check "ambiguous publication retains local work"
                           (Git.git_capture ~cwd:dir [ "rev-parse"; "HEAD" ]
@@ -604,7 +636,7 @@ let () =
                   let captured = Option.get (B.operation (state runtime)) in
                   check "publication failures retain the captured candidate"
                     (captured.candidate = Some (sha source)
-                    && captured.repair = None);
+                    && (permission || captured.repair = None));
                   check
                     "publication failure does not increment session failure \
                      accounting"
@@ -615,10 +647,39 @@ let () =
                          agent.Patch_agent.start_attempts_without_pr = 0
                          && agent.session_completion = None));
                   if permission then
-                    check "explicit write denial is stable intervention"
-                      (outcome = R.Intervention "push_permission_denied"
-                      && run runtime (persist checkpoint) io B.Recover = outcome
-                      )
+                    let turns = ref 0 in
+                    let rec assist remaining outcome =
+                      match outcome with
+                      | R.Repair_needed token when remaining > 0 ->
+                          let outcome =
+                            R.run_repair ~runtime ~persist:(persist checkpoint)
+                              ~patch_id:id
+                              ~with_capacity:(fun f -> f ())
+                              ~now:(fun () -> 100.)
+                              ~execute:(fun ~agent:_ -> execute unavailable)
+                              ~perform:(fun ~agent:_ ~turn ->
+                                incr turns;
+                                check
+                                  "permission recovery prohibits credential \
+                                   changes"
+                                  (Base.String.is_substring turn.B.prompt
+                                     ~substring:"change credentials");
+                                B.Repair_completed
+                                  { token = turn.token; at = 100. })
+                              token
+                          in
+                          assist (remaining - 1) outcome
+                      | R.Idle | R.Waiting | R.Intervention _
+                      | R.Checkpoint_failed _ | R.Repair_needed _ ->
+                          outcome
+                    in
+                    check "write denial holds only after two agent turns"
+                      ((match assist 3 outcome with
+                         | R.Intervention _ -> true
+                         | R.Idle | R.Waiting | R.Checkpoint_failed _
+                         | R.Repair_needed _ ->
+                             false)
+                      && !turns = 2)
                   else (
                     check "transport failure leaves durable publication pending"
                       (outcome = R.Waiting);
@@ -627,9 +688,19 @@ let () =
                     Fun.protect
                       ~finally:(fun () -> Sys.rename moved dir)
                       (fun () ->
-                        check "missing checkout waits without recreating it"
+                        check "first unavailable checkout probe waits"
                           (run runtime (persist checkpoint) io (B.Tick 105.)
-                           = R.Waiting
+                          = R.Waiting);
+                        check
+                          "repeated missing checkout requests diagnosis \
+                           without recreating it"
+                          ((match
+                              run runtime (persist checkpoint) io (B.Tick 115.)
+                            with
+                             | R.Repair_needed _ -> true
+                             | R.Idle | R.Waiting | R.Intervention _
+                             | R.Checkpoint_failed _ ->
+                                 false)
                           && not (Sys.file_exists dir));
                         let op = Option.get (B.operation (state runtime)) in
                         check
@@ -642,8 +713,7 @@ let () =
                     check
                       "restored checkout resumes publication without \
                        implementation"
-                      (run runtime (persist checkpoint) io (B.Tick 110.)
-                      = R.Idle);
+                      (run runtime (persist checkpoint) io B.Recover = R.Idle);
                     check "resumed publication retains exact work"
                       (Git.git_capture ~cwd:remote [ "rev-parse"; "patch" ]
                       = source))))))
@@ -836,15 +906,15 @@ let () =
                   let outcome =
                     run restored (persist path) (make_io dir) B.Recover
                   in
-                  let expected =
-                    if active then
-                      R.Intervention "publication_during_integration"
-                    else R.Idle
-                  in
                   check
-                    "legacy publication either settles or retains active \
-                     integration"
-                    (outcome = expected);
+                    "legacy unfinished work settles or offers owned recovery"
+                    (if active then
+                       match outcome with
+                       | R.Repair_needed _ -> true
+                       | R.Idle | R.Waiting | R.Intervention _
+                       | R.Checkpoint_failed _ ->
+                           false
+                     else outcome = R.Idle);
                   if active then (
                     check "legacy active integration cannot publish"
                       (Git.git_exit_code ~cwd:remote
@@ -894,31 +964,68 @@ let () =
                         execute (make_io dir) ~operation command)
                       B.Recover
                   in
-                  check "settled migration is a restart fixed point"
-                    (outcome = expected && !calls = 0);
+                  check "migration restarts settled or reinspects recovery"
+                    (if active then
+                       !calls > 0
+                       &&
+                       match outcome with
+                       | R.Repair_needed _ -> true
+                       | R.Idle | R.Waiting | R.Intervention _
+                       | R.Checkpoint_failed _ ->
+                           false
+                     else outcome = R.Idle && !calls = 0);
                   if active then (
-                    Git.run_git ~cwd:dir [ "rebase"; "--abort" ];
-                    Runtime.update_orchestrator resumed (fun orch ->
-                        Orchestrator.reset_intervention_state orch id);
-                    let first = ref None in
+                    let token =
+                      match outcome with
+                      | R.Repair_needed token -> token
+                      | R.Idle | R.Waiting | R.Intervention _
+                      | R.Checkpoint_failed _ ->
+                          failwith "missing migrated recovery turn"
+                    in
                     let outcome =
-                      R.run ~runtime:resumed ~persist:(persist path)
+                      R.run_repair ~runtime:resumed ~persist:(persist path)
                         ~patch_id:id
                         ~now:(fun () -> 300.)
-                        ~execute:(fun ~operation command ->
-                          if Option.is_none !first then
-                            first := Some command.B.kind;
+                        ~with_capacity:(fun f -> f ())
+                        ~execute:(fun ~agent:_ ~operation command ->
                           execute (make_io dir) ~operation command)
-                        B.Recover
+                        ~perform:(fun ~agent:_ ~turn ->
+                          Git.run_git ~cwd:dir [ "rebase"; "--abort" ];
+                          ignore
+                            (Git.git_exit_code ~cwd:dir
+                               [ "merge"; "--no-commit"; initial_checkout.head ]);
+                          let oc = open_out_bin (Filename.concat dir "base") in
+                          Fun.protect
+                            ~finally:(fun () -> close_out oc)
+                            (fun () ->
+                              output_string oc
+                                "local base edit\nremote base edit\n");
+                          Git.run_git ~cwd:dir [ "add"; "base" ];
+                          Git.run_git ~cwd:dir
+                            [
+                              "commit";
+                              "-qm";
+                              "Recover retained legacy integration";
+                            ];
+                          B.Repair_completed { token = turn.B.token; at = 301. })
+                        token
                     in
-                    check "human resume inspects before mutation"
-                      (!first = Some B.Inspect);
-                    check "human repair resumes captured publication"
+                    check "migrated active work reaches verified publication"
                       (outcome = R.Idle);
-                    check "human resume retains original patch work"
-                      (Git.git_capture ~cwd:remote
-                         [ "rev-parse"; "refs/heads/patch" ]
-                      = revision))))))
+                    List.iter
+                      (fun retained ->
+                        check
+                          "legacy recovery retains original and interrupted \
+                           commits"
+                          (Git.git_exit_code ~cwd:remote
+                             [
+                               "merge-base";
+                               "--is-ancestor";
+                               retained;
+                               "refs/heads/patch";
+                             ]
+                          = 0))
+                      [ revision; initial_checkout.head ])))))
     [ (false, false); (true, false); (false, true) ];
   List.iter
     (fun (wrong_target, lost_ack) ->
@@ -1206,12 +1313,17 @@ let () =
                     = R.Waiting);
                   let runtime =
                     if history = 4 then (
-                      check "common ancestor probe failure waits"
-                        (R.run ~runtime ~persist:(persist checkpoint)
-                           ~patch_id:id
-                           ~now:(fun () -> 1000.)
-                           ~execute:(execute racing) (B.Tick 1000.)
-                        = R.Waiting);
+                      check "a fresh common ancestor probe failure waits"
+                        (match
+                           R.run ~runtime ~persist:(persist checkpoint)
+                             ~patch_id:id
+                             ~now:(fun () -> 1000.)
+                             ~execute:(execute racing) (B.Tick 1000.)
+                         with
+                        | R.Waiting -> true
+                        | R.Idle | R.Repair_needed _ | R.Intervention _
+                        | R.Checkpoint_failed _ ->
+                            false);
                       check "failed planning does not mutate checkout"
                         (!resets = 0 && !rebases = 0);
                       let snapshot = get (Persistence.load ~path:checkpoint) in
@@ -1261,7 +1373,9 @@ let () =
                               stopped := true;
                               raise Simulated_stop);
                             result)
-                          (B.Tick 2000.));
+                          (Option.value
+                             (B.wake_event ~at:2000. (state runtime))
+                             ~default:(B.Tick 2000.)));
                      failwith "expected replay interruption"
                    with Simulated_stop -> ());
                   check "replay interruption reached" !stopped;
@@ -1272,9 +1386,14 @@ let () =
                       ~snapshot ()
                   in
                   if stop_at = 4 then (
-                    check "late edits stop replay without losing work"
-                      (run restarted (persist checkpoint) racing B.Recover
-                      = R.Intervention "dirty_worktree");
+                    check "late edits offer recovery without losing work"
+                      (match
+                         run restarted (persist checkpoint) racing B.Recover
+                       with
+                      | R.Repair_needed _ -> true
+                      | R.Idle | R.Waiting | R.Intervention _
+                      | R.Checkpoint_failed _ ->
+                          false);
                     check "failed checkout retains original revision"
                       (Git.git_capture ~cwd:dir [ "rev-parse"; "HEAD" ]
                       = candidate);
@@ -1874,7 +1993,7 @@ let () =
                   check "fallback is history recovery"
                     (match turn.mode with
                     | B.History_recovery _ -> true
-                    | B.Content_repair -> false);
+                    | B.Content_repair | B.Diagnosis _ -> false);
                   check "staged resolution survives before fallback"
                     (Git.git_capture ~cwd:dir [ "show"; "HEAD:file" ]
                     = "resolved");
@@ -2175,7 +2294,7 @@ let () =
                               match policy with
                               | B.Rewrite -> "remote_replay_no_common_ancestor"
                               | B.Preserve_ancestry -> "unrelated_histories")
-                          | B.Content_repair -> false);
+                          | B.Content_repair | B.Diagnosis _ -> false);
                         token
                     | R.Idle | R.Waiting | R.Intervention _
                     | R.Checkpoint_failed _ ->
@@ -2316,7 +2435,7 @@ let () =
                   check "fallback has distinct durable authority"
                     (match turn.B.mode with
                     | B.History_recovery _ -> true
-                    | B.Content_repair -> false);
+                    | B.Content_repair | B.Diagnosis _ -> false);
                   let calls = ref 0 in
                   let active_token = ref token in
                   let backend =
@@ -2370,7 +2489,9 @@ let () =
                   let probes = ref 0 in
                   let invoke (turn : B.repair_turn) =
                     active_token := turn.token;
-                    Branch_repair_session.run ~backend
+                    Branch_repair_session.run
+                      ~on_event:(fun _ -> ())
+                      ~context:"" ~guidance:[] ~backend
                       ~cwd:Eio.Path.(Eio.Stdenv.fs env / dir)
                       ~project_name:"demo" ~patch_id:id ~complexity:None ~turn
                       ~read_head:(fun () ->
@@ -2455,8 +2576,8 @@ let () =
       (false, true, false);
       (false, true, true);
     ];
-  (* History recovery must not hand uncommitted external work to an agent,
-     including work introduced while the turn waited for capacity. *)
+  (* Recovery owns and completes uncommitted work, including edits introduced
+     while its turn waited for capacity. *)
   List.iter
     (fun during_wait ->
       Git.with_temp_repo (fun remote ->
@@ -2508,54 +2629,66 @@ let () =
                     write "extra" "unstaged external work\n";
                     write "untracked" "untracked external work\n"
                   in
-                  let outcome =
-                    if during_wait then
-                      let token =
-                        match run runtime (persist checkpoint) io B.Recover with
-                        | R.Repair_needed token -> token
-                        | R.Idle | R.Waiting | R.Intervention _
-                        | R.Checkpoint_failed _ ->
-                            failwith "expected recovery turn"
-                      in
-                      R.run_repair ~runtime ~persist:(persist checkpoint)
-                        ~patch_id:id
-                        ~with_capacity:(fun f ->
-                          dirty ();
-                          f ())
-                        ~now:(fun () -> 100.)
-                        ~execute:(fun ~agent:_ ~operation command ->
-                          execute io ~operation command)
-                        ~perform:(fun ~agent:_ ~turn:_ ->
-                          failwith "dirty work cannot reach recovery agent")
-                        token
-                    else (
-                      dirty ();
-                      run runtime (persist checkpoint) io B.Recover)
-                  in
-                  check "dirty history recovery stops specifically"
-                    (outcome = R.Intervention "history_recovery_dirty_worktree");
-                  check "new external commit is pinned before intervention"
-                    (Base.String.is_substring
-                       (Git.git_capture ~cwd:dir
-                          [ "for-each-ref"; "--format=%(objectname)"; prefix ])
-                       ~substring:head);
-                  check "staged external bytes survive"
-                    (Git.git_capture ~cwd:dir [ "show"; ":extra" ]
-                    = "staged external work");
                   let read name =
                     let ic = open_in_bin (Filename.concat dir name) in
                     Fun.protect
                       ~finally:(fun () -> close_in ic)
                       (fun () -> really_input_string ic (in_channel_length ic))
                   in
-                  check "unstaged external bytes survive"
-                    (read "extra" = "unstaged external work\n");
-                  check "untracked external bytes survive"
-                    (read "untracked" = "untracked external work\n");
-                  check "unsafe recovery never publishes"
-                    (Git.git_exit_code ~cwd:remote
-                       [ "show-ref"; "--verify"; "refs/heads/patch" ]
-                    <> 0)))))
+                  if not during_wait then dirty ();
+                  let token =
+                    match run runtime (persist checkpoint) io B.Recover with
+                    | R.Repair_needed token -> token
+                    | R.Idle | R.Waiting | R.Intervention _
+                    | R.Checkpoint_failed _ ->
+                        failwith "expected recovery turn"
+                  in
+                  let calls = ref 0 in
+                  let outcome =
+                    R.run_repair ~runtime ~persist:(persist checkpoint)
+                      ~patch_id:id
+                      ~with_capacity:(fun f ->
+                        if during_wait then dirty ();
+                        f ())
+                      ~now:(fun () -> 100.)
+                      ~execute:(fun ~agent:_ ~operation command ->
+                        execute io ~operation command)
+                      ~perform:(fun ~agent:_ ~turn ->
+                        incr calls;
+                        check "staged bytes reach the recovery agent"
+                          (Git.git_capture ~cwd:dir [ "show"; ":extra" ]
+                          = "staged external work");
+                        check "unstaged bytes reach the recovery agent"
+                          (read "extra" = "unstaged external work\n");
+                        check "untracked bytes reach the recovery agent"
+                          (read "untracked" = "untracked external work\n");
+                        Git.run_git ~cwd:dir [ "add"; "extra"; "untracked" ];
+                        Git.run_git ~cwd:dir
+                          [ "commit"; "-qm"; "Finish interrupted changes" ];
+                        Git.run_git ~cwd:dir
+                          [ "merge"; "--no-edit"; "origin/main" ];
+                        B.Repair_completed { token = turn.B.token; at = 100. })
+                      token
+                  in
+                  check "dirty recovery completes through one owned agent turn"
+                    (outcome = R.Idle && !calls = 1);
+                  check "external commit remains pinned"
+                    (Base.String.is_substring
+                       (Git.git_capture ~cwd:dir
+                          [ "for-each-ref"; "--format=%(objectname)"; prefix ])
+                       ~substring:head);
+                  List.iter
+                    (fun (file, bytes) ->
+                      check
+                        ("recovered publication retains " ^ file)
+                        (Git.git_capture ~cwd:remote [ "show"; "patch:" ^ file ]
+                        = bytes))
+                    [
+                      ("extra", "unstaged external work");
+                      ("untracked", "untracked external work");
+                      ("patch", "patch");
+                      ("upstream", "upstream");
+                    ]))))
     [ false; true ];
   (* A repair's expected detached HEAD is durable. Losing the post-agent
      probe cannot turn an unexpected agent commit into authorized continuation. *)
@@ -2623,7 +2756,9 @@ let () =
                   in
                   let probes = ref 0 in
                   let event =
-                    Branch_repair_session.run ~backend
+                    Branch_repair_session.run
+                      ~on_event:(fun _ -> ())
+                      ~context:"" ~guidance:[] ~backend
                       ~cwd:Eio.Path.(Eio.Stdenv.fs env / dir)
                       ~project_name:"demo" ~patch_id:id ~complexity:None ~turn
                       ~read_head:(fun () ->
@@ -2889,7 +3024,9 @@ let () =
             }
         in
         let result =
-          Branch_repair_session.run ~backend
+          Branch_repair_session.run
+            ~on_event:(fun _ -> ())
+            ~context:"" ~guidance:[] ~backend
             ~cwd:Eio.Path.(Eio.Stdenv.fs env / repair_dir)
             ~project_name:"demo" ~patch_id:id ~complexity:None ~turn
             ~read_head:(fun () ->

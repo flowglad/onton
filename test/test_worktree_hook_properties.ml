@@ -98,6 +98,10 @@ let tests =
             step initial (B.Worktree_hook (H.Plan (request "hook")))
           in
           let rejected = reply planned B.Checkout_ready in
+          let rejected =
+            Onton_core_test_support.Publication_fixture.exhausted_diagnosis
+              rejected
+          in
           B.phase rejected
           = Some (B.Intervention "worktree_create_hook_incomplete")
           &&
@@ -107,7 +111,11 @@ let tests =
               let running = Result.get_ok (B.decode (B.yojson_of_t running)) in
               let stopped =
                 reply running
-                  (B.Permanent "worktree_create_hook_outcome_unknown")
+                  (B.Needs_diagnosis "worktree_create_hook_outcome_unknown")
+              in
+              let stopped =
+                Onton_core_test_support.Publication_fixture.exhausted_diagnosis
+                  stopped
               in
               let resumed = step stopped B.Resume in
               B.is_unsettled stopped

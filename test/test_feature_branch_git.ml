@@ -249,14 +249,13 @@ let () =
                   [ "status"; "--porcelain=v1"; "--untracked-files=all" ]
               in
               check
-                ("dirty root refused: " ^ shape)
+                ("dirty root requests recovery: " ^ shape)
                 (match B.phase (integrate name dirty_head) with
-                | Some (B.Intervention "dirty_worktree") -> true
+                | Some (B.Repairing _) -> true
                 | None
                 | Some
-                    ( B.Preparing | Integrating | Repairing _ | Publishing
-                    | Confirming | Waiting _ | Recovering | Settled
-                    | Intervention _ ) ->
+                    ( B.Preparing | Integrating | Publishing | Confirming
+                    | Waiting _ | Recovering | Settled | Intervention _ ) ->
                     false);
               check "root index remains byte-equivalent"
                 (String.equal index
@@ -296,7 +295,7 @@ let () =
                   "shared";
                 ];
               if untracked then Unix.unlink (root_path ^ "/user-change");
-              drive (module W) publication B.Resume;
+              drive (module W) publication B.Recover;
               ignore (integrated !publication);
               check "explicit resume publishes the retained contribution"
                 (Git.git_exit_code ~cwd:bare
@@ -349,7 +348,7 @@ let () =
             | None
             | Some
                 ( B.Preparing | Integrating
-                | Repairing { mode = History_recovery _; _ }
+                | Repairing { mode = Diagnosis _ | History_recovery _; _ }
                 | Publishing | Confirming | Waiting _ | Recovering | Settled
                 | Intervention _ ) ->
                 false);

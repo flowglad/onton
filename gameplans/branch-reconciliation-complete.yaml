@@ -56,18 +56,12 @@ mergabilityStrategy:
     guarantees; shared test wiring is extended only after its sources exist.
 
 currentStateAnalysis: >-
-  Grounded in the cumulative M3 worktree after M2 merge e72f695. The isolated
-  first-prefix build disproved the original four-patch split because owner consumers
-  require the forge identity, lifecycle and provisioning interfaces together. The atomic
-  cutover therefore owns these mutually dependent changes and their migrated regression
-  tests; independent-model and endpoint qualification follows. The completion audit
-  assesses A01–A24 against current code and executable assertions. All 211 changed
-  non-cache paths have declared frames. Both patch prefixes have compiled, with the
-  qualification model stanza deferred until its source exists. Final projection and
-  gates pass with the latest test and runbook updates. The two checklist exceptions are
-  intentional: the first patch is BEHAVIOR and its regression stubs/implementations are
-  colocated, because a separate inert API split did not compile and the approved
-  endpoint has no feature flag.
+  The reopened M3 fallback boundary is locally qualified. Generic terminal result/event
+  inputs and the gameplan-publication refusal are removed. Ordered obligations select
+  deterministic work, full recovery or observation-only diagnosis; independent evidence
+  and mutation budgets survive restart. Unexhausted historical stops are re-evaluated.
+  Both reported deadlocks, remaining diagnostic routes, the independent model, the full
+  regression suite, architecture gates and both isolated prefixes pass. No PR is open.
 
 operationalConsiderations:
   externalSystemAccess: >-
@@ -79,9 +73,10 @@ operationalConsiderations:
     receipts survive process restart. Preserve v2 checkpoint semantics and reject
     unsupported snapshot versions rather than silently discarding evidence.
   failureBehavior: >-
-    Failed probes retry; permission failures intervene specifically; ambiguous command
-    completion inspects captured state. Unknown hook outcomes require explicit resume.
-    Infrastructure outages do not consume completed content-repair turns.
+    Repeated failed probes request diagnosis; permission failures receive bounded agent
+    assistance; ambiguous command completion inspects captured state. Unknown hook
+    outcomes require explicit resume. Infrastructure outages do not consume completed
+    content-repair turns.
   concurrencyAndIdempotency: >-
     Runtime patch/root ownership serializes mutations; project kernel leases and drain
     guards outlive descendant processes. Tokens reject stale results; explicit leases
@@ -556,9 +551,18 @@ patches:
         description: >-
           Migrate this owner API, consumer or regression fixture to owner-derived
           reconciliation and retained evidence.
+      - path: lib/branch_reconcile_runner.ml
+        action: modify
+        description: Report missing durable operation identity as checkpoint failure.
       - path: lib/branch_repair_session.ml
         action: modify
         description: Complete the owned milestone guarantee and its direct verification.
+      - path: lib/branch_reconcile_runner.ml
+        action: modify
+        description: Report missing durable operation identity as checkpoint failure.
+      - path: lib/branch_repair_session.mli
+        action: modify
+        description: Require project context and retained human guidance for owned recovery.
       - path: lib/claude_runner.ml
         action: modify
         description: >-
@@ -795,6 +799,15 @@ patches:
         description: >-
           Migrate this owner API, consumer or regression fixture to owner-derived
           reconciliation and retained evidence.
+      - path: lib_core/reconcile_plan.ml
+        action: create
+        description: Select recovery work from obligations, authority and execution state.
+      - path: lib_core/reconcile_plan.mli
+        action: create
+        description: Define the pure recovery planning contract independently of diagnostics.
+      - path: test/test_reconcile_plan_properties.ml
+        action: create
+        description: Verify recovery ordering, authority, totality and agent-result verification.
       - path: lib_core/branch_reconcile.ml
         action: modify
         description: Complete the owned milestone guarantee and its direct verification.
@@ -919,6 +932,9 @@ patches:
         description: >-
           Migrate this owner API, consumer or regression fixture to owner-derived
           reconciliation and retained evidence.
+      - path: lib_core/push_reject_classify.mli
+        action: modify
+        description: Separate rejection evidence from the owner's bounded recovery decision.
       - path: lib_core/rebase_decision.ml
         action: delete
         description: >-
@@ -1527,7 +1543,14 @@ patches:
       owner-structural-progress? s: OwnerState, e: OwnerEvent => Bool.
       owner-infrastructure-only? e: OwnerEvent => Bool.
       owner-deterministic-exhausted? s: OwnerState => Bool.
+      owner-recoverable-work? s: OwnerState => Bool.
+      owner-manage-authority? s: OwnerState => Bool.
+      owner-agent-recovery-exhausted? s: OwnerState => Bool.
+      owner-mutation-failures s: OwnerState => Nat0.
+      owner-dirty-local-work? s: OwnerState => Bool.
+      owner-finish-work-next? s: OwnerState => Bool.
       owner-probe-failed? s: OwnerState => Bool.
+      owner-diagnostic-turn? s: OwnerState => Bool.
       owner-retry? s: OwnerState => Bool.
       owner-no-progress-turns s: OwnerState => Nat0.
       owner-intervention? s: OwnerState => Bool.
@@ -1553,9 +1576,13 @@ patches:
       all s: OwnerState, c: OwnerCommand, owner-emits? s c and owner-mutation? c | owner-durable? c and owner-exclusive? s c and owner-inputs-pinned? c.
       all s: OwnerState, c: OwnerCommand, owner-verification-only? s and owner-emits? s c | ~owner-mutation? c.
       all s: OwnerState, owner-history-turn? s | owner-deterministic-exhausted? s and owner-no-progress-turns s < 2.
-      all s: OwnerState, owner-probe-failed? s | owner-retry? s and ~owner-history-turn? s.
-      > Content repair can escalate to history recovery; only the history budget exhausts into intervention.
+      all s: OwnerState, owner-probe-failed? s | (owner-retry? s or owner-diagnostic-turn? s or owner-agent-recovery-exhausted? s) and ~owner-history-turn? s.
+      > Content repair escalates to history recovery; full recovery and diagnosis have bounded agent budgets.
       all s: OwnerState, owner-history-mode? s and owner-no-progress-turns s >= 2 | owner-intervention? s.
+      > Recoverable Git facts cannot give up before agent assistance; missing mutation authority selects diagnosis.
+      all s: OwnerState, owner-recoverable-work? s and ~owner-agent-recovery-exhausted? s | ~owner-intervention? s.
+      all s: OwnerState, owner-mutation-failures s >= 2 | owner-deterministic-exhausted? s.
+      all s: OwnerState, owner-dirty-local-work? s and owner-manage-authority? s and ~owner-agent-recovery-exhausted? s | owner-finish-work-next? s.
       > Budget changes are scoped to one repair mode and captured repair context.
       all s: OwnerState, e: OwnerEvent, owner-same-repair? s e and owner-infrastructure-only? e | owner-no-progress-turns (owner-next s e) = owner-no-progress-turns s.
       all s: OwnerState, e: OwnerEvent, owner-same-repair? s e and owner-completed-no-progress? s e | owner-no-progress-turns (owner-next s e) = owner-no-progress-turns s + 1.
@@ -1629,6 +1656,7 @@ patches:
       all s: LifeState, life-prune? s | life-required-revisions s subset life-protected-revisions s.
       all s: LifeState, life-delete-payload? s | life-deleted-payload s = life-retiring-payload s.
     testStubsIntroduced:
+      - test_reconcile_plan_properties.exe
       - test_branch_reconcile_boundaries.exe
       - test_branch_reconcile_ownership.exe
       - test_branch_replay_evidence.exe
@@ -1643,6 +1671,7 @@ patches:
       - test_process_tree_cancellation.exe
       - test_tui_render_frame.exe
     testStubsImplemented:
+      - test_reconcile_plan_properties.exe
       - test_branch_reconcile_boundaries.exe
       - test_branch_reconcile_ownership.exe
       - test_branch_replay_evidence.exe
@@ -1693,6 +1722,11 @@ patches:
       - path: test/dune
         action: modify
         description: Complete the owned milestone guarantee and its direct verification.
+      - path: test/test_reconcile_recovery_git.ml
+        action: create
+        description: >-
+          Verify dirty restart and repeated validation timeout recovery through the
+          scheduler and real Git.
       - path: test/test_branch_reconcile_model.ml
         action: create
         description: Complete the owned milestone guarantee and its direct verification.
@@ -1739,10 +1773,20 @@ patches:
       all r: ModelRun, model-infrastructure-only? r | model-content-budget-after r = model-content-budget-before r.
     testStubsIntroduced:
       - test_branch_reconcile_model.exe
+      - test_reconcile_recovery_git.exe
     testStubsImplemented:
       - test_branch_reconcile_model.exe
+      - test_reconcile_recovery_git.exe
 
 testMap:
+  - testName: test_reconcile_recovery_git.exe
+    file: test/test_reconcile_recovery_git.ml
+    stubPatch: 2
+    implPatch: 2
+  - testName: test_reconcile_plan_properties.exe
+    file: test/test_reconcile_plan_properties.ml
+    stubPatch: 1
+    implPatch: 1
   - testName: test_branch_reconcile_boundaries.exe
     file: test/test_branch_reconcile_boundaries.ml
     stubPatch: 1
@@ -1847,7 +1891,14 @@ finalStateSpec: |
   owner-structural-progress? s: OwnerState, e: OwnerEvent => Bool.
   owner-infrastructure-only? e: OwnerEvent => Bool.
   owner-deterministic-exhausted? s: OwnerState => Bool.
+  owner-recoverable-work? s: OwnerState => Bool.
+  owner-manage-authority? s: OwnerState => Bool.
+  owner-agent-recovery-exhausted? s: OwnerState => Bool.
+  owner-mutation-failures s: OwnerState => Nat0.
+  owner-dirty-local-work? s: OwnerState => Bool.
+  owner-finish-work-next? s: OwnerState => Bool.
   owner-probe-failed? s: OwnerState => Bool.
+  owner-diagnostic-turn? s: OwnerState => Bool.
   owner-retry? s: OwnerState => Bool.
   owner-no-progress-turns s: OwnerState => Nat0.
   owner-intervention? s: OwnerState => Bool.
@@ -1873,9 +1924,13 @@ finalStateSpec: |
   all s: OwnerState, c: OwnerCommand, owner-emits? s c and owner-mutation? c | owner-durable? c and owner-exclusive? s c and owner-inputs-pinned? c.
   all s: OwnerState, c: OwnerCommand, owner-verification-only? s and owner-emits? s c | ~owner-mutation? c.
   all s: OwnerState, owner-history-turn? s | owner-deterministic-exhausted? s and owner-no-progress-turns s < 2.
-  all s: OwnerState, owner-probe-failed? s | owner-retry? s and ~owner-history-turn? s.
-  > Content repair can escalate to history recovery; only the history budget exhausts into intervention.
+  all s: OwnerState, owner-probe-failed? s | (owner-retry? s or owner-diagnostic-turn? s or owner-agent-recovery-exhausted? s) and ~owner-history-turn? s.
+  > Content repair escalates to history recovery; full recovery and diagnosis have bounded agent budgets.
   all s: OwnerState, owner-history-mode? s and owner-no-progress-turns s >= 2 | owner-intervention? s.
+  > Recoverable Git facts cannot give up before agent assistance; missing mutation authority selects diagnosis.
+  all s: OwnerState, owner-recoverable-work? s and ~owner-agent-recovery-exhausted? s | ~owner-intervention? s.
+  all s: OwnerState, owner-mutation-failures s >= 2 | owner-deterministic-exhausted? s.
+  all s: OwnerState, owner-dirty-local-work? s and owner-manage-authority? s and ~owner-agent-recovery-exhausted? s | owner-finish-work-next? s.
   > Budget changes are scoped to one repair mode and captured repair context.
   all s: OwnerState, e: OwnerEvent, owner-same-repair? s e and owner-infrastructure-only? e | owner-no-progress-turns (owner-next s e) = owner-no-progress-turns s.
   all s: OwnerState, e: OwnerEvent, owner-same-repair? s e and owner-completed-no-progress? s e | owner-no-progress-turns (owner-next s e) = owner-no-progress-turns s + 1.

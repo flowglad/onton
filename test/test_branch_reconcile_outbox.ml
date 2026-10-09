@@ -285,7 +285,7 @@ let tests =
                           {
                             token = command.token;
                             at = 100.;
-                            result = Permanent "policy";
+                            result = Needs_diagnosis "policy";
                           }))
             else fail_transport t
           in
@@ -561,8 +561,13 @@ let () =
          {
            token = command.token;
            at = 100.;
-           result = B.Permanent "permissions";
+           result = B.Needs_diagnosis "permissions";
          })
+  in
+  let stopped =
+    Onton_core_test_support.Publication_fixture.exhaust_diagnosis ~state
+      ~step:(fun t e -> fst (Orchestrator.reconcile_branch t pid e))
+      stopped
   in
   assert (List.is_empty (pending stopped));
   List.iter [ false; true ] ~f:(fun human ->

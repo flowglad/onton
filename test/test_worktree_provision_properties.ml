@@ -45,7 +45,7 @@ let tests =
     QCheck2.Test.make
       ~name:
         "creation probe failures retry while checkout ownership refusals \
-         intervene"
+         request diagnosis"
       ~count:500
       G.(triple string string (int_range 0 2))
       (fun (local_sha, remote_sha, kind) ->
@@ -65,7 +65,7 @@ let tests =
           in
           let expected =
             if kind = 0 then B.Retryable { reason; retry_after = None }
-            else B.Permanent reason
+            else B.Needs_diagnosis reason
           in
           let state =
             reply (request "checkout") (P.reconciliation_result failure)
@@ -76,7 +76,9 @@ let tests =
           if kind = 0 then
             P.next ~intent:(intent "later") ~at:14. state
             = P.Wait "checkout_provisioning_pending"
-          else P.next ~intent:(intent "later") ~at:14. state = P.Stop reason
+          else
+            Onton_core_test_support.Publication_fixture.is_diagnosis state
+            && P.next ~intent:(intent "later") ~at:14. state = P.Run B.Recover
         with _ -> false);
     QCheck2.Test.make
       ~name:
@@ -91,7 +93,7 @@ let tests =
           && (reason = "" || text = reason)
           && B.equal_result
                (P.reconciliation_result failure)
-               (if unsafe then B.Permanent text
+               (if unsafe then B.Needs_diagnosis text
                 else B.Retryable { reason = text; retry_after = None })
         with _ -> false);
     QCheck2.Test.make
@@ -152,10 +154,19 @@ let tests =
           P.next ~intent:desired ~at:100. state = expected
         with _ -> false);
     QCheck2.Test.make
-      ~name:"permanent owner intervention is sticky across checkout requests"
-      ~count:500 G.string (fun reason ->
+      ~name:"exhausted diagnosis is sticky across checkout requests" ~count:500
+      G.string (fun reason ->
         try
-          let state = reply (request "first") (B.Permanent reason) in
+          let state = reply (request "first") (B.Needs_diagnosis reason) in
+          let state =
+            Onton_core_test_support.Publication_fixture.exhausted_diagnosis
+              state
+          in
+          let reason =
+            if Base.String.is_empty (Base.String.strip reason) then
+              "reconciliation_context_unavailable"
+            else reason
+          in
           P.next ~intent:(intent "next") ~at:100000. state = P.Stop reason
           && P.next ~intent:(intent "") ~at:0. B.empty
              = P.Stop "provisioning_intent_required"

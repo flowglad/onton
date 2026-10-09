@@ -7,17 +7,19 @@ module G = Git_observation
 type io = { git : string list -> int * string * string }
 
 exception Probe_failed of string
+exception Mutation_failed of string
 exception Unsupported_destination of string
 
-let checked io args =
+let checked ?(mutation = false) io args =
   let code, out, err = io.git args in
   if code = 0 then String.strip out
   else
-    raise
-      (Probe_failed
-         (Printf.sprintf "git %s (exit %d): %s"
-            (String.concat ~sep:" " args)
-            code (String.strip err)))
+    let detail =
+      Printf.sprintf "git %s (exit %d): %s"
+        (String.concat ~sep:" " args)
+        code (String.strip err)
+    in
+    raise (if mutation then Mutation_failed detail else Probe_failed detail)
 
 let commit s =
   match Branch_reconcile.Commit.make s with
@@ -238,11 +240,6 @@ let reconstruct_boundary io ~source boundaries =
 let observation io ~destination ~branch ~intent ~policy ~boundaries ~target
     ~original_source =
   let checkout = observe_checkout io in
-  (match (checkout.branch, checkout.sequencer) with
-  | Some actual, G.None_active when not (String.equal actual branch) ->
-      raise (Probe_failed "managed branch is not checked out")
-  | Some _, G.None_active | _, (G.Rebase _ | G.Merge _ | G.Cherry_pick _) -> ()
-  | None, G.None_active -> raise (Probe_failed "unexpected detached checkout"));
   let source = resolve io ("refs/heads/" ^ branch) in
   let target =
     match target with
@@ -576,12 +573,12 @@ let complete_initial_tracking io ~destination ~branch ~operation ~remote =
 let execute ~io ~prefix ~branch ~(operation : Branch_reconcile.operation)
     (command : Branch_reconcile.command) =
   if Branch_reconcile.is_provisioning operation.intent.purpose then
-    Branch_reconcile.Permanent "provisioning_requires_checkout_handler"
+    Branch_reconcile.Needs_diagnosis "provisioning_requires_checkout_handler"
   else if
     not
       (Branch_reconcile.command_allowed_for_purpose operation.intent.purpose
          command.kind)
-  then Branch_reconcile.Permanent "command_not_allowed_for_purpose"
+  then Branch_reconcile.Needs_diagnosis "command_not_allowed_for_purpose"
   else
     try
       if
@@ -722,7 +719,10 @@ let execute ~io ~prefix ~branch ~(operation : Branch_reconcile.operation)
                     ~local_sha:(Branch_reconcile.Commit.to_string o.source)
                     ~remote_sha:(Branch_reconcile.Commit.to_string original)
           in
-          let ready = G.clean checkout && Option.is_none o.sequencer in
+          let ready =
+            G.clean checkout && Option.is_none o.sequencer
+            && Option.equal String.equal checkout.branch (Some branch)
+          in
           Branch_reconcile.Recovery_verified
             {
               observation = o;
@@ -742,7 +742,14 @@ let execute ~io ~prefix ~branch ~(operation : Branch_reconcile.operation)
                       _;
                     } ->
                     Option.for_all baseline ~f:preserved
-                | Some { mode = Branch_reconcile.Content_repair; _ } | None ->
+                | Some
+                    {
+                      mode =
+                        ( Branch_reconcile.Content_repair
+                        | Branch_reconcile.Diagnosis _ );
+                      _;
+                    }
+                | None ->
                     false);
               remote_preserved =
                 ready
@@ -836,7 +843,7 @@ let execute ~io ~prefix ~branch ~(operation : Branch_reconcile.operation)
                     "remote_replay_prior_work_unverified"
                 else (
                   ignore
-                    (checked io
+                    (checked ~mutation:true io
                        [
                          "reset";
                          "--keep";
@@ -863,8 +870,7 @@ let execute ~io ~prefix ~branch ~(operation : Branch_reconcile.operation)
           | Error reason -> Branch_reconcile.Recovery_required reason
           | Ok () -> (
               let code, _, err = io.git [ "commit"; "--no-edit" ] in
-              if code <> 0 then
-                Branch_reconcile.Retryable { reason = err; retry_after = None }
+              if code <> 0 then Branch_reconcile.Attempt_failed err
               else
                 match
                   completed_merge io ~branch capture (observe_checkout io)
@@ -1029,15 +1035,9 @@ let execute ~io ~prefix ~branch ~(operation : Branch_reconcile.operation)
                 | Worktree_parser.Push_ok | Worktree_parser.Push_up_to_date ->
                     Branch_reconcile.Published
                 | Worktree_parser.Push_rejected rejection ->
-                    if Push_reject_classify.is_permanent rejection then
-                      Branch_reconcile.Permanent
-                        (Push_reject_classify.short_label rejection)
-                    else
-                      Branch_reconcile.Retryable
-                        { reason = err; retry_after = None }
-                | Worktree_parser.Push_error _ ->
-                    Branch_reconcile.Retryable
-                      { reason = err; retry_after = None }))
+                    Branch_reconcile.Publication_rejected rejection
+                | Worktree_parser.Push_error detail ->
+                    Branch_reconcile.Attempt_failed detail))
       | Branch_reconcile.Confirm candidate ->
           pin_captured ();
           if
@@ -1046,7 +1046,9 @@ let execute ~io ~prefix ~branch ~(operation : Branch_reconcile.operation)
             && not
                  (Branch_reconcile.verification_checkout_valid ~branch
                     ~candidate (observe_checkout io))
-          then Branch_reconcile.Permanent "legacy_publication_checkout_changed"
+          then
+            Branch_reconcile.Needs_diagnosis
+              "legacy_publication_checkout_changed"
           else if not (ancestry_preserved io operation candidate) then
             Branch_reconcile.Recovery_required "ancestry_not_preserved"
           else
@@ -1056,7 +1058,8 @@ let execute ~io ~prefix ~branch ~(operation : Branch_reconcile.operation)
             Branch_reconcile.Remote
               { sha; topology = topology io candidate sha }
     with
-    | Unsupported_destination reason -> Branch_reconcile.Permanent reason
+    | Mutation_failed reason -> Branch_reconcile.Attempt_failed reason
+    | Unsupported_destination reason -> Branch_reconcile.Needs_diagnosis reason
     | Probe_failed reason ->
         Branch_reconcile.Retryable { reason; retry_after = None }
     | exn when Process_tree.has_cancellation exn -> raise exn

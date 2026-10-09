@@ -503,7 +503,7 @@ let () =
                         {
                           token = command.B.token;
                           at = 100.;
-                          result = B.Permanent "permission_denied";
+                          result = B.Needs_diagnosis "permission_denied";
                         }))
           in
           List.for_all [ agent; pending; stopped ] ~f:(fun agent ->

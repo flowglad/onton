@@ -710,7 +710,7 @@ let () =
                     B.Retryable
                       { reason = "merge_queue_locked"; retry_after = None }
                 | 4 -> B.Retryable { reason = "transport"; retry_after = None }
-                | _ -> B.Permanent "permission_denied"
+                | _ -> B.Needs_diagnosis "permission_denied"
               in
               let event = F.completion ~state publishing result in
               let after = step publishing event in
@@ -721,10 +721,7 @@ let () =
                   Option.equal B.equal_phase
                     (B.phase (state after))
                     (Some B.Confirming)
-                else if outcome = 5 then
-                  Option.equal B.equal_phase
-                    (B.phase (state after))
-                    (Some (B.Intervention "permission_denied"))
+                else if outcome = 5 then F.is_diagnosis (state after)
                 else
                   Option.is_none (B.pending (state after))
                   && (not (B.can_execute_git ~at:100. (state after)))
@@ -738,7 +735,7 @@ let () =
               && (not (Patch_agent.has_conflict agent))
               && List.is_empty agent.Patch_agent.queue
               && agent.Patch_agent.start_attempts_without_pr = 0
-              && Bool.equal (Patch_agent.needs_intervention agent) (outcome = 5)
+              && not (Patch_agent.needs_intervention agent)
         with _ -> false)
   in
 

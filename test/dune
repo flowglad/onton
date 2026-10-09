@@ -513,7 +513,7 @@
  (deps (package onton))
  (action (setenv ONTON_SETSID_EXEC %{bin:onton-setsid-exec} (run %{test})))
  (locks git-integration)
- (libraries onton onton_core onton_test_support eio eio_main eio.unix unix)
+ (libraries onton_core_test_support onton onton_core onton_test_support eio eio_main eio.unix unix)
  (ocamlopt_flags (:standard -w -40-42))
  (ocamlc_flags (:standard -w -40-42)))
 
@@ -705,7 +705,7 @@
 (test
  (name test_telemetry_migration)
  (modules test_telemetry_migration)
- (libraries onton onton_core unix))
+ (libraries onton_core_test_support onton onton_core unix))
 
 (test
  (name test_session_driver_telemetry)
@@ -902,7 +902,7 @@
  (name test_branch_reconcile_outbox)
  (modules test_branch_reconcile_outbox)
  (flags (:standard -w -40-42))
- (libraries onton onton_core onton_test_support qcheck-core qcheck-core.runner))
+ (libraries onton_core_test_support onton onton_core onton_test_support qcheck-core qcheck-core.runner))
 
 (test
  (name test_session_result_properties)
@@ -984,18 +984,18 @@
  (name test_branch_provisioning_properties)
  (modules test_branch_provisioning_properties)
  (flags (:standard -w -42))
- (libraries onton_core qcheck-core qcheck-core.runner))
+ (libraries onton_core_test_support onton_core qcheck-core qcheck-core.runner))
 
 (test
  (name test_worktree_provision_properties)
  (modules test_worktree_provision_properties)
- (libraries onton_core qcheck-core qcheck-core.runner)
+ (libraries onton_core_test_support onton_core qcheck-core qcheck-core.runner)
  (flags (:standard -w -42)))
 
 (test
  (name test_worktree_hook_properties)
  (modules test_worktree_hook_properties)
- (libraries onton_core qcheck-core qcheck-core.runner)
+ (libraries onton_core_test_support onton_core qcheck-core qcheck-core.runner)
  (flags (:standard -w -40-42)))
 
 (test
@@ -1051,6 +1051,22 @@
  (name test_poller_revision_context)
  (modules test_poller_revision_context)
  (libraries onton onton_core onton_test_support base eio_main unix)
+ (deps (package onton))
+ (action
+  (setenv ONTON_SETSID_EXEC
+   %{bin:onton-setsid-exec}
+   (run %{test}))))
+
+(test
+ (name test_reconcile_plan_properties)
+ (modules test_reconcile_plan_properties)
+ (libraries onton_core qcheck-core qcheck-core.runner))
+
+(test
+ (name test_reconcile_recovery_git)
+ (modules test_reconcile_recovery_git)
+ (flags (:standard -w -40-42))
+ (libraries onton onton_core onton_test_support eio_main unix)
  (deps (package onton))
  (action
   (setenv ONTON_SETSID_EXEC

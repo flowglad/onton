@@ -218,7 +218,12 @@ let scenario ?(materialize_first = true) ?(observe_settled = fun _ -> ()) policy
       | Wake -> (step state (B.Tick !now), repo)
       | Advance | Lose_ack | Outage -> (
           match B.pending state with
-          | None -> (step state (B.Tick !now), repo)
+          | None ->
+              ( step state
+                  (Option.value
+                     (B.wake_event ~at:!now state)
+                     ~default:(B.Tick !now)),
+                repo )
           | Some command ->
               let repo, result =
                 if fault = Outage then
@@ -292,7 +297,11 @@ let scenario ?(materialize_first = true) ?(observe_settled = fun _ -> ()) policy
     assert (
       B.publication_status state <> `Published || repo.remote = Some integrated);
     (match B.operation state with
-    | Some op -> assert (op.repair = None)
+    | Some op ->
+        assert (
+          match op.repair with
+          | None | Some { mode = B.Diagnosis _; _ } -> true
+          | Some { mode = B.Content_repair | B.History_recovery _; _ } -> false)
     | None -> ());
     (state, repo)
   in
@@ -461,7 +470,7 @@ module Conflicting_sequencer = struct
             | None -> (
                 match !offered with
                 | None -> step state (B.Tick !now)
-                | Some token ->
+                | Some token -> (
                     offered := None;
                     let claimed, effects =
                       B.step state (B.Repair_started token)
@@ -475,21 +484,32 @@ module Conflicting_sequencer = struct
                         effects
                     in
                     if not started then claimed
-                    else (
-                      assert (!active && not !staged);
-                      if action = 4 then
-                        step claimed
-                          (B.Repair_interrupted
-                             { token; at = !now; reason = "backend outage" })
-                      else (
-                        staged := true;
-                        step (roundtrip claimed)
-                          (B.Repair_completed { token; at = !now })))))
+                    else
+                      let turn =
+                        Option.get (B.repair_turn claimed ~branch:"model" token)
+                      in
+                      match turn.mode with
+                      | B.Diagnosis _ ->
+                          (* Diagnostic assistance cannot stage or rewrite model work. *)
+                          step claimed (B.Repair_completed { token; at = !now })
+                      | B.Content_repair | B.History_recovery _ ->
+                          assert (!active && not !staged);
+                          if action = 4 then
+                            step claimed
+                              (B.Repair_interrupted
+                                 { token; at = !now; reason = "backend outage" })
+                          else (
+                            staged := true;
+                            step (roundtrip claimed)
+                              (B.Repair_completed { token; at = !now })))))
       in
       (match B.operation next with
-      | Some { repair = Some repair; _ } ->
-          assert (repair.mode = B.Content_repair);
-          assert (repair.attempts_without_progress = 0)
+      | Some { repair = Some repair; _ } -> (
+          match repair.mode with
+          | B.Content_repair -> assert (repair.attempts_without_progress = 0)
+          | B.Diagnosis _ -> assert (repair.attempts_without_progress <= 2)
+          | B.History_recovery _ -> failwith "unexpected model history recovery"
+          )
       | Some { repair = None; _ } | None -> ());
       assert (!continuations <= steps && !starts <= 1);
       assert (!repo.remote <> Some integrated || (!cursor = steps && not !active));
@@ -499,7 +519,23 @@ module Conflicting_sequencer = struct
     let rec finish state fuel =
       if B.phase state = Some B.Settled then state
       else if fuel = 0 then failwith "staged sequencer failed to converge"
-      else finish (act state 5) (fuel - 1)
+      else
+        let state =
+          match B.phase state with
+          | Some (B.Intervention _) ->
+              let op = Option.get (B.operation state) in
+              let repair = Option.get op.repair in
+              assert (
+                repair.attempts_without_progress >= 2
+                && Option.is_some repair.last_turn);
+              step state B.Resume
+          | None
+          | Some
+              ( Preparing | Integrating | Repairing _ | Publishing | Confirming
+              | Waiting _ | Recovering | Settled ) ->
+              state
+        in
+        finish (act state 5) (fuel - 1)
     in
     let settled = finish state (30 + (steps * 10)) in
     assert (!starts = 1 && !continuations = steps);
@@ -837,6 +873,13 @@ module Remote_writers = struct
                        | B.Execute _ | B.Repair _ | B.Completed _ -> false)
                      effects)
               then (state, repo)
+              else if
+                match
+                  (Option.get (B.repair_turn state ~branch:"model" token)).mode
+                with
+                | B.Diagnosis _ -> true
+                | B.Content_repair | B.History_recovery _ -> false
+              then (step state (B.Repair_completed { token; at = !now }), repo)
               else
                 (* A successful fallback agent retains all checkpointed work;
                    its report alone does not authorize publication. *)
@@ -887,12 +930,18 @@ module Remote_writers = struct
            agent budget; runtime must not retry that intervention itself. *)
         let action =
           match B.phase state with
-          | Some (B.Intervention "recovery_preservation_unproven") -> Resume
+          | Some (B.Intervention _) ->
+              let op = Option.get (B.operation state) in
+              let repair = Option.get op.repair in
+              assert (
+                repair.attempts_without_progress >= 2
+                || op.publication_recovery_attempts >= 2);
+              assert (Option.is_some repair.last_turn);
+              Resume
           | None
           | Some
-              ( B.Intervention _ | B.Preparing | B.Integrating | B.Repairing _
-              | B.Publishing | B.Confirming | B.Waiting _ | B.Recovering
-              | B.Settled ) ->
+              ( B.Preparing | B.Integrating | B.Repairing _ | B.Publishing
+              | B.Confirming | B.Waiting _ | B.Recovering | B.Settled ) ->
               Step
         in
         let state, repo = act (state, repo) action in
@@ -1281,7 +1330,11 @@ module Stack = struct
               states.(i) <- roundtrip states.(i);
               step i B.Recover)
             else step i event
-        | None, _ | Some _, None -> step i (B.Tick !now)
+        | None, _ | Some _, None ->
+            step i
+              (Option.value
+                 (B.wake_event ~at:!now states.(i))
+                 ~default:(B.Tick !now))
     in
     List.iter
       (fun (owner, action) ->

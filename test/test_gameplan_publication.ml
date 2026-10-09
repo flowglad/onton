@@ -224,7 +224,7 @@ module Fake_forge : Forge.S with type error = string = struct
   let check_repo_access () = Ok ()
 end
 
-let runner_without_backend env ~feature ~retry =
+let runner_without_backend ?(repair = false) env ~feature ~retry =
   Git.with_temp_repo (fun path ->
       let origin = Filename.temp_dir "onton-publication-origin-" "" in
       Fun.protect
@@ -392,7 +392,47 @@ let runner_without_backend env ~feature ~retry =
 
             let pick_backend ~complexity:_ =
               incr backend_calls;
-              failwith "Publication must never select an agent backend"
+              if not repair then
+                failwith "Deterministic publication selected an agent backend";
+              let backend =
+                Llm_backend.
+                  {
+                    name = "publication-recovery-fixture";
+                    run_streaming =
+                      (fun ~project_name:_
+                        ~cwd:_
+                        ~patch_id
+                        ~prompt
+                        ~resume_session:_
+                        ~session_uuid:_
+                        ~complexity:_
+                        ~on_event
+                      ->
+                        assert (patch_id = id "0");
+                        assert (
+                          Base.String.is_substring prompt
+                            ~substring:"First finish the interrupted local work");
+                        on_event Types.Stream_event.Turn_started;
+                        Git.run_git ~cwd:path [ "add"; "recovery-work" ];
+                        Git.run_git ~cwd:path
+                          [
+                            "commit";
+                            "-qm";
+                            "Finish interrupted publication work";
+                          ];
+                        {
+                          exit_code = 0;
+                          stdout = "";
+                          stderr = "";
+                          got_events = true;
+                          saw_final_result = true;
+                          timed_out = false;
+                        });
+                  }
+              in
+              ( backend,
+                Backend_routing.
+                  { backend = "fixture"; model = None; effort = None } )
 
             let register_pr ~patch_id:_ ~pr_number:_ = ()
           end in
@@ -440,7 +480,13 @@ let runner_without_backend env ~feature ~retry =
           (* Later scheduling requests must observe a fresh base even after the
              preceding operation settled. A failed push retains the receipt and
              candidate checked by the executor wrapper above. *)
+          let recovery_injected = ref false in
           let advance_and_rebase ?(kind = Operation_kind.Rebase) parent =
+            if repair && not !recovery_injected then (
+              recovery_injected := true;
+              let channel = open_out (Filename.concat path "recovery-work") in
+              output_string channel "retained interrupted work\n";
+              close_out channel);
             let tree =
               Git.git_capture ~cwd:path [ "rev-parse"; parent ^ "^{tree}" ]
             in
@@ -494,7 +540,12 @@ let runner_without_backend env ~feature ~retry =
                   "demo/patch-0:" ^ Gameplan_publication.path publication;
                 ]
               = String.trim source);
-            assert (!backend_calls = 0);
+            assert (!backend_calls = if repair then 1 else 0);
+            if repair then
+              assert (
+                Git.git_capture ~cwd:origin
+                  [ "show"; "demo/patch-0:recovery-work" ]
+                = "retained interrupted work");
             target
           in
           let original_base =
@@ -526,5 +577,7 @@ let () =
           runner_without_backend env ~feature:false ~retry:false;
           runner_without_backend env ~feature:true ~retry:false;
           runner_without_backend env ~feature:false ~retry:true;
-          runner_without_backend env ~feature:true ~retry:true));
+          runner_without_backend env ~feature:true ~retry:true;
+          runner_without_backend ~repair:true env ~feature:false ~retry:false;
+          runner_without_backend ~repair:true env ~feature:true ~retry:false));
   print_endline "test_gameplan_publication: OK"

@@ -275,7 +275,8 @@ let scenario env entrypoint policy interruption unrelated =
                              B.repair_turn owner ~branch:"patch" !active_token
                            with
                           | Some { mode = B.History_recovery _; _ } -> ()
-                          | Some { mode = B.Content_repair; _ } | None ->
+                          | Some { mode = B.Content_repair | B.Diagnosis _; _ }
+                          | None ->
                               failwith "history repair was not durably claimed");
                           check
                             "repair prompt omitted attempted remote integration"
@@ -307,7 +308,9 @@ let scenario env entrypoint policy interruption unrelated =
                       execute ~operation command)
                     ~perform:(fun ~agent:_ ~turn ->
                       active_token := turn.B.token;
-                      Branch_repair_session.run ~backend
+                      Branch_repair_session.run
+                        ~on_event:(fun _ -> ())
+                        ~context:"" ~guidance:[] ~backend
                         ~cwd:Eio.Path.(Eio.Stdenv.fs env / dir)
                         ~project_name:"demo" ~patch_id:id ~complexity:None ~turn
                         ~read_head:(fun () ->

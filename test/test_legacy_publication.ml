@@ -62,6 +62,9 @@ let drive ?(on_effects = fun _ -> ()) io ~cut ~after ~before_command initial =
   loop 0 0. initial
 
 let resume_reconciliation io state =
+  let state =
+    Onton_core_test_support.Publication_fixture.exhausted_diagnosis state
+  in
   let requested, effects =
     B.step (restart state)
       B.(
@@ -175,19 +178,12 @@ let () =
                              scenario cut after
                              (Yojson.Safe.to_string (B.yojson_of_t final)));
                       check
-                        ("verification reaches the expected terminal state: "
-                       ^ scenario ^ " "
-                        ^ Yojson.Safe.to_string (B.yojson_of_t final))
-                        (B.phase final
-                        = Some
-                            (if expected then B.Settled
-                             else
-                               B.Intervention
-                                 (if scenario = "dirty" then
-                                    "legacy_publication_requires_clean_checkout"
-                                  else if scenario = "retired-remote" then
-                                    "ancestry_not_preserved"
-                                  else "legacy_publication_not_confirmed")));
+                        "verification settles or requests observation-only \
+                         diagnosis"
+                        (if expected then B.phase final = Some B.Settled
+                         else
+                           Onton_core_test_support.Publication_fixture
+                           .is_diagnosis final);
                       check "verification never mutates checkout or pushes"
                         (not !mutated);
                       check "checkout retained"
@@ -261,9 +257,9 @@ let () =
                     ~before_command:(fun _ -> ())
                     (B.import_legacy_publication B.empty ~base:"main")
                 in
-                check "unconfirmed legacy publication stops"
-                  (B.phase stopped
-                 = Some (B.Intervention "legacy_publication_not_confirmed"));
+                check "unconfirmed legacy publication requests diagnosis"
+                  (Onton_core_test_support.Publication_fixture.is_diagnosis
+                     stopped);
                 ignore (resume_reconciliation raw stopped);
                 let published =
                   Git.git_capture ~cwd:remote
@@ -281,9 +277,13 @@ let () =
                       ~before_command:(fun _ -> ())
                       (B.import_legacy_publication B.empty ~base:"main")
                   in
-                  check "independent remote requires intervention"
-                    (B.phase stopped
-                   = Some (B.Intervention "ancestry_not_preserved"));
+                  check "independent remote requires diagnosis"
+                    (Onton_core_test_support.Publication_fixture.is_diagnosis
+                       stopped);
+                  let stopped =
+                    Onton_core_test_support.Publication_fixture
+                    .exhausted_diagnosis stopped
+                  in
                   Git.run_git ~cwd:remote
                     [ "update-ref"; "refs/heads/patch"; base ];
                   let requested, _ =
@@ -318,7 +318,9 @@ let () =
                   check "retained independent work reaches history recovery"
                     (match operation.B.repair with
                     | Some { B.mode = B.History_recovery _; _ } -> true
-                    | Some { B.mode = B.Content_repair; _ } | None -> false);
+                    | Some { B.mode = B.Content_repair | B.Diagnosis _; _ }
+                    | None ->
+                        false);
                   let retained_commit = Option.get (B.Commit.make retained) in
                   check "old remote obligation survives restart"
                     (List.mem retained_commit operation.B.recovery_revisions);
@@ -385,7 +387,7 @@ let () =
               check "forged verification push rejected before I/O"
                 ((not !called)
                 && B.equal_result result
-                     (B.Permanent "command_not_allowed_for_purpose")))))
+                     (B.Needs_diagnosis "command_not_allowed_for_purpose")))))
     [
       "matched"; "contained"; "missing"; "different"; "dirty"; "retired-remote";
     ];
@@ -485,9 +487,13 @@ let () =
               check "verification wrapper outcome"
                 (if existing then outcome = Branch_reconcile_runner.Idle
                  else
-                   outcome
-                   = Branch_reconcile_runner.Intervention
-                       "legacy_publication_checkout_missing");
+                   match outcome with
+                   | Branch_reconcile_runner.Repair_needed _ -> true
+                   | Branch_reconcile_runner.Idle
+                   | Branch_reconcile_runner.Waiting
+                   | Branch_reconcile_runner.Intervention _
+                   | Branch_reconcile_runner.Checkpoint_failed _ ->
+                       false);
               if existing then
                 check "registered checkout replaces stale snapshot path"
                   (Runtime.read Env.runtime (fun snap ->
@@ -521,7 +527,7 @@ let () =
                     ~patch_id
                     ~now:(fun () -> 2.)
                     ~execute:(Verification.execute_reconciliation ~patch_id)
-                    B.Resume
+                    B.Recover
                 in
                 check "restored checkout leaves legacy intervention"
                   (resumed = Branch_reconcile_runner.Idle && not !unwanted);
