@@ -65,12 +65,14 @@ let observation (repo : repository) : B.observation =
     completed_integration = repo.integrated;
   }
 
-let execute ~captured ~verification repo (command : B.command) =
+let execute ~request ~captured ~verification repo (command : B.command) =
   let observe () =
     let observed = observation repo in
     if verification then { observed with B.target = repo.head } else observed
   in
   match command.kind with
+  | B.Verify_scope candidate ->
+      (repo, Onton_core_test_support.Scope_fixture.verified request candidate)
   | B.Observe -> (repo, B.Observed (observe ()))
   | B.Inspect ->
       ( { repo with pinned = repo.pinned || captured },
@@ -240,9 +242,10 @@ let scenario ?(materialize_first = true) ?(observe_settled = fun _ -> ()) policy
                                !published_operations));
                         published_operations :=
                           command.token.operation :: !published_operations
-                    | B.Observe | B.Pin _ | B.Integrate _ | B.Inspect
-                    | B.Confirm _ | B.Commit_merge _ | B.Plan_remote_replay _
-                    | B.Checkout_remote _ | B.Verify_recovery | B.Continue _ ->
+                    | B.Verify_scope _ | B.Observe | B.Pin _ | B.Integrate _
+                    | B.Inspect | B.Confirm _ | B.Commit_merge _
+                    | B.Plan_remote_replay _ | B.Checkout_remote _
+                    | B.Verify_recovery | B.Continue _ ->
                         ()
                   in
                   let captured =
@@ -264,13 +267,19 @@ let scenario ?(materialize_first = true) ?(observe_settled = fun _ -> ()) policy
                     if provisioning then
                       match command.kind with
                       | B.Observe | B.Inspect -> (repo, B.Checkout_ready)
-                      | B.Pin _ | B.Integrate _ | B.Publish _ | B.Confirm _
-                      | B.Commit_merge _ | B.Plan_remote_replay _
+                      | B.Verify_scope _ | B.Pin _ | B.Integrate _ | B.Publish _
+                      | B.Confirm _ | B.Commit_merge _ | B.Plan_remote_replay _
                       | B.Checkout_remote _ | B.Verify_recovery | B.Continue _
                         ->
                           failwith
                             "provisioning attempted a reconciliation mutation"
-                    else execute ~captured ~verification repo command
+                    else
+                      execute
+                        ~request:
+                          (match B.operation state with
+                          | Some op -> op.approved_scope
+                          | None -> Replay_scope.Unproven)
+                        ~captured ~verification repo command
                   in
                   (match B.operation state with
                   | Some op
@@ -388,7 +397,7 @@ module Conflicting_sequencer = struct
       step state
         (B.Request B.{ base = "main"; policy; purpose = Reconcile_base })
     in
-    let execute ~captured command =
+    let execute ~request ~captured command =
       match command.B.kind with
       | B.Observe -> B.Observed (observe ())
       | B.Inspect ->
@@ -418,9 +427,9 @@ module Conflicting_sequencer = struct
             repo := { !repo with head = commit (Char.chr (48 + !cursor)) };
             B.Conflict
               { head = !repo.head; sequencer = sequencer (); conflicts = 1 })
-      | B.Pin _ | B.Publish _ | B.Confirm _ ->
+      | B.Verify_scope _ | B.Pin _ | B.Publish _ | B.Confirm _ ->
           let next, result =
-            execute ~captured:true ~verification:false !repo command
+            execute ~request ~captured:true ~verification:false !repo command
           in
           repo := next;
           result
@@ -459,7 +468,12 @@ module Conflicting_sequencer = struct
                       | Some op -> Option.is_some op.source
                       | None -> false
                     in
-                    execute ~captured command
+                    execute
+                      ~request:
+                        (match B.operation state with
+                        | Some op -> op.approved_scope
+                        | None -> Replay_scope.Unproven)
+                      ~captured command
                 in
                 let event =
                   B.Result { token = command.token; at = !now; result }
@@ -652,8 +666,91 @@ module Remote_writers = struct
           repo.integrations;
     }
 
-  let execute repo (op : B.operation) (command : B.command) =
+  let scope_inputs repo request =
+    let rev s = Option.get (B.Commit.make s) in
+    match request with
+    | Replay_scope.Unproven -> None
+    | Identity source -> Some ([ rev source ], content repo (rev source))
+    | Replay { source; boundary; target } ->
+        let delta =
+          List.filter
+            (fun item -> not (List.mem item (content repo (rev boundary))))
+            (content repo (rev source))
+        in
+        Some ([ rev target ], union delta (content repo (rev target)))
+    | Merge { source; target } ->
+        Some
+          ( [ rev source; rev target ],
+            union (content repo (rev source)) (content repo (rev target)) )
+
+  let scope_evidence repo request candidate =
+    let module S = Replay_scope in
+    let rev s = Option.get (B.Commit.make s) in
+    let history tip excluded =
+      List.filter
+        (fun node ->
+          ancestor repo node.sha tip
+          && not
+               (List.exists (fun root -> ancestor repo node.sha root) excluded))
+        repo.nodes
+      |> List.map (fun node ->
+          Printf.sprintf "%s\000%s\n"
+            (B.Commit.to_string node.sha)
+            (String.concat " " (List.map B.Commit.to_string node.parents)))
+      |> String.concat ""
+    in
+    let tree items =
+      "00000000"
+      ^ Digest.to_hex
+          (Digest.string
+             (String.concat ","
+                (List.map string_of_int (List.sort_uniq Int.compare items))))
+    in
+    match scope_inputs repo request with
+    | None -> B.Recovery_required "model scope missing"
+    | Some (parents, expected) -> (
+        let expected_tree = tree expected in
+        let plan =
+          match request with
+          | S.Unproven -> Error "model scope missing"
+          | S.Identity source -> S.prepare_identity ~source ~tree:expected_tree
+          | S.Merge { source; target } ->
+              S.prepare_merge ~source ~target ~status:0 (expected_tree ^ "\000")
+          | S.Replay { source; boundary; target } -> (
+              match
+                S.capture ~boundary:(Some boundary) ~source
+                  (history (rev source) [ rev boundary ])
+              with
+              | Error reason -> Error (S.error_reason reason)
+              | Ok scope ->
+                  S.prepare scope ~target ~status:0 (expected_tree ^ "\000"))
+        in
+        let actual = content repo candidate in
+        let changed_paths =
+          union expected actual
+          |> List.filter (fun item ->
+              List.mem item expected <> List.mem item actual)
+          |> List.map (fun item ->
+              "contribution-" ^ string_of_int item ^ "\000")
+          |> String.concat ""
+        in
+        match plan with
+        | Error reason -> B.Recovery_required reason
+        | Ok plan -> (
+            match
+              S.verify plan
+                ~candidate:(B.Commit.to_string candidate)
+                ~tree:(tree actual)
+                ~history:(history candidate parents)
+                ~changed_paths
+            with
+            | Ok proof -> B.Scope_verified proof
+            | Error reason -> B.Recovery_required reason))
+
+  let[@warning "-4"] execute repo (op : B.operation) (command : B.command) =
     match command.kind with
+    | B.Verify_scope candidate ->
+        (repo, scope_evidence repo op.approved_scope candidate)
     | B.Observe -> (repo, B.Observed (observation repo op))
     | B.Inspect ->
         ( repo,
@@ -664,7 +761,11 @@ module Remote_writers = struct
         ignore (find repo target);
         (repo, B.Pinned)
     | B.Integrate { source; target; policy; boundary = _ } ->
-        assert (source = repo.head);
+        assert (
+          (match (op.remote_replay, policy) with
+            | Some replay, B.Rewrite -> replay.preserved
+            | Some _, B.Preserve_ancestry | None, _ -> source)
+          = repo.head);
         let parents =
           match policy with
           | B.Rewrite -> [ target ]
@@ -716,16 +817,16 @@ module Remote_writers = struct
               topology = topology repo candidate repo.remote;
             } )
     | B.Verify_recovery ->
-        let retained =
-          op.recovery_revisions @ Option.to_list op.source
-          @ Option.to_list op.candidate
-        in
         let preserved = preserved repo (B.execution_policy op) repo.head in
         ( repo,
           B.Recovery_verified
             {
               observation = observation repo op;
-              source_preserved = List.for_all preserved retained;
+              local_extension = None;
+              source_preserved =
+                (match scope_evidence repo op.approved_scope repo.head with
+                | B.Scope_verified _ -> true
+                | _ -> false);
               remote_preserved =
                 preserved repo.remote
                 && List.for_all preserved (Option.to_list op.expected);
@@ -846,9 +947,10 @@ module Remote_writers = struct
                       ( repo,
                         B.Recovery_required
                           "model deterministic recovery exhausted" )
-                  | B.Observe | B.Inspect | B.Pin _ | B.Publish _ | B.Confirm _
-                  | B.Plan_remote_replay _ | B.Checkout_remote _
-                  | B.Verify_recovery | B.Commit_merge _ | B.Continue _ ->
+                  | B.Verify_scope _ | B.Observe | B.Inspect | B.Pin _
+                  | B.Publish _ | B.Confirm _ | B.Plan_remote_replay _
+                  | B.Checkout_remote _ | B.Verify_recovery | B.Commit_merge _
+                  | B.Continue _ ->
                       execute repo op command
                 else execute repo op command
               in
@@ -881,19 +983,12 @@ module Remote_writers = struct
                 | B.Content_repair | B.History_recovery _ -> false
               then (step state (B.Repair_completed { token; at = !now }), repo)
               else
-                (* A successful fallback agent retains all checkpointed work;
-                   its report alone does not authorize publication. *)
-                let parents =
-                  List.sort_uniq B.Commit.compare
-                    ((repo.head :: repo.remote :: base :: op.recovery_revisions)
-                    @ Option.to_list op.source @ Option.to_list op.target
-                    @ Option.to_list op.candidate
-                    @ Option.to_list op.expected)
-                in
-                let all =
-                  List.fold_left
-                    (fun acc revision -> union acc (content repo revision))
-                    [] parents
+                (* Repair constructs precisely the contract's contribution set;
+                   retained backups do not become implicit content inputs. *)
+                let parents, all =
+                  Option.value
+                    (scope_inputs repo op.approved_scope)
+                    ~default:([ root ], [])
                 in
                 let parents, all =
                   if action = Bad_repair then (
@@ -1297,7 +1392,19 @@ module Stack = struct
               {
                 observed with
                 B.target;
-                boundary = B.Recorded (if i = 0 then R.root else starts.(i - 1));
+                boundary =
+                  (match
+                     List.find_opt
+                       (function
+                         | B.Recorded revision ->
+                             R.ancestor repo revision repo.head
+                         | B.Plain | B.Inferred _ | B.Reconstructed _
+                         | B.Patch_equivalent _ | B.Subject_inferred _ ->
+                             false)
+                       (B.observation_boundaries op)
+                   with
+                  | Some boundary -> boundary
+                  | None -> B.Plain);
                 target_included = R.ancestor repo target repo.head;
                 base_contains_source = R.ancestor repo repo.head target;
                 completed_integration =
@@ -1319,7 +1426,8 @@ module Stack = struct
                       else B.Inspected (observation ()) )
                 | B.Pin _ | B.Integrate _ | B.Publish _ | B.Confirm _
                 | B.Plan_remote_replay _ | B.Checkout_remote _
-                | B.Verify_recovery | B.Commit_merge _ | B.Continue _ ->
+                | B.Verify_scope _ | B.Verify_recovery | B.Commit_merge _
+                | B.Continue _ ->
                     R.execute repo op command
             in
             repos.(i) <- repo;

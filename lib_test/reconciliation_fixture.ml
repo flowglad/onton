@@ -73,8 +73,14 @@ let step t pid event = fst (Orchestrator.reconcile_branch t pid event)
 let reply t pid result =
   P.reply ~step:(fun t e -> step t pid e) ~state:(fun t -> state t pid) t result
 
+let verify_scope t pid =
+  P.verify_scope ~step:(fun t e -> step t pid e) ~state:(fun t -> state t pid) t
+
 let confirm t pid candidate =
-  let t = reply t pid (B.Remote { sha = Some candidate; topology = B.Equal }) in
+  let t =
+    reply t pid (B.Remote { sha = Some candidate; topology = B.Equal })
+    |> fun t -> verify_scope t pid
+  in
   if not (Option.equal B.equal_phase (B.phase (state t pid)) (Some B.Settled))
   then QCheck2.Test.fail_reportf "fixture reconciliation did not settle";
   let head = B.Commit.to_string candidate in
@@ -87,7 +93,8 @@ let rebase ?(noop = false) t pid base =
   let t =
     if noop then t
     else
-      reply t pid (B.Integrated candidate) |> fun t -> reply t pid B.Published
+      reply t pid (B.Integrated candidate) |> fun t ->
+      verify_scope t pid |> fun t -> reply t pid B.Published
   in
   confirm t pid candidate
 
@@ -132,6 +139,9 @@ let resolve_conflict t pid =
                      ~sequencer:"fixture-rebase" ~conflicts:0)
               in
               let candidate = R.commit (100000 + op.B.id) in
-              let t = reply t pid (B.Integrated candidate) in
+              let t =
+                reply t pid (B.Integrated candidate) |> fun t ->
+                verify_scope t pid
+              in
               let t = reply t pid B.Published in
               confirm t pid candidate))

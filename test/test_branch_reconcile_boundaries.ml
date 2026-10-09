@@ -66,6 +66,7 @@ let command_name = function
   | B.Inspect -> "inspect"
   | B.Continue _ -> "continue"
   | B.Verify_recovery -> "verify-recovery"
+  | B.Verify_scope _ -> "verify-scope"
   | B.Plan_remote_replay _ -> "plan-remote"
   | B.Checkout_remote _ -> "checkout-remote"
   | B.Commit_merge _ -> "commit-merge"
@@ -86,12 +87,13 @@ let scenario env selected boundary =
     | "merge-continue" -> "continue"
     | "replay-integrate" -> "integrate"
     | "replay-publish" -> "publish"
+    | "replay-scope" -> "verify-scope"
     | name -> name
   in
   let recovery = selected = "verify-recovery" in
   let remote_replay =
     List.mem selected
-      [ "plan-remote"; "checkout-remote"; "replay-integrate"; "replay-publish" ]
+      [ "plan-remote"; "replay-scope"; "replay-integrate"; "replay-publish" ]
   in
   Git.with_temp_repo (fun remote ->
       let base = commit remote "base" in
@@ -136,7 +138,8 @@ let scenario env selected boundary =
                   (fun args ->
                     if List.mem "--continue" args then incr continuations;
                     (match args with
-                    | "rebase" :: _ | "merge" :: _ -> incr integrations
+                    | "rebase" :: _ | "merge" :: _ | "cherry-pick" :: _ ->
+                        incr integrations
                     | "push" :: _ ->
                         incr pushes;
                         if remote_replay && !pushes = 1 then (
@@ -155,9 +158,9 @@ let scenario env selected boundary =
           let execute ~operation command =
             (match command.B.kind with
             | B.Verify_recovery -> incr verifications
-            | B.Observe | B.Pin _ | B.Integrate _ | B.Publish _ | B.Confirm _
-            | B.Inspect | B.Continue _ | B.Commit_merge _
-            | B.Plan_remote_replay _ | B.Checkout_remote _ ->
+            | B.Verify_scope _ | B.Observe | B.Pin _ | B.Integrate _
+            | B.Publish _ | B.Confirm _ | B.Inspect | B.Continue _
+            | B.Commit_merge _ | B.Plan_remote_replay _ | B.Checkout_remote _ ->
                 ());
             E.execute ~io ~prefix:"refs/onton/reconcile/boundary-test"
               ~branch:"patch" ~operation command
@@ -193,7 +196,12 @@ let scenario env selected boundary =
                 | R.Repair_needed token -> token
                 | R.Idle | R.Waiting | R.Intervention _ | R.Checkpoint_failed _
                   ->
-                    failwith "fixture did not reach content repair"
+                    failwith
+                      (Printf.sprintf
+                         "fixture %s conflict=%b merge=%b did not reach \
+                          content repair: %s"
+                         selected conflict merge
+                         (Yojson.Safe.to_string (B.yojson_of_t (owner runtime))))
               in
               let turn =
                 match B.repair_turn (owner runtime) ~branch:"patch" token with
@@ -354,8 +362,8 @@ let scenario env selected boundary =
           check "restart never repeats integration or publication"
             ((!integrations = if remote_replay then 2 else 1)
             && !pushes = if remote_replay then 2 else 1);
-          check "remote replay checkout executes once"
-            (!checkouts = if remote_replay then 1 else 0);
+          check "remote replay never resets the managed checkout"
+            (!checkouts = 0);
           check "restart continues a staged repair exactly once"
             (!continuations = if conflict then 1 else 0)))
 
@@ -374,7 +382,8 @@ let () =
           "continue";
           "verify-recovery";
           "plan-remote";
-          "checkout-remote";
+          "replay-scope";
+          "verify-scope";
           "repair-completion";
           "merge-inspect";
           "merge-continue";

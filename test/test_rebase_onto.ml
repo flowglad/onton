@@ -19,7 +19,7 @@ module E = Branch_reconcile_executor
     [commit_file] to read back the new commit's SHA). The env is scrubbed via
     {!Git_env.clean_env} so tests are unaffected when run inside a git hook
     (which would otherwise leak [GIT_DIR] / [GIT_WORK_TREE]). *)
-let git ~process_mgr ~dir args =
+let run_git ~process_mgr ~dir args =
   let stdout_buf = Buffer.create 64 in
   let stderr_buf = Buffer.create 64 in
   Eio.Switch.run (fun sw ->
@@ -40,6 +40,19 @@ let git ~process_mgr ~dir args =
                (Buffer.contents stderr_buf))
       | `Signaled s -> failwith (Printf.sprintf "git signaled %d" s));
   String.strip (Buffer.contents stdout_buf)
+
+(* Record actual branch creation, just as production materialization does.
+   Integration fixtures must not infer ownership later from a merge base. *)
+let materializations = Hashtbl.create (module String)
+
+let git ~process_mgr ~dir args =
+  let output = run_git ~process_mgr ~dir args in
+  (match args with
+  | "checkout" :: "-b" :: branch :: _ ->
+      let source = run_git ~process_mgr ~dir [ "rev-parse"; "HEAD" ] in
+      Hashtbl.set materializations ~key:(dir ^ "/" ^ branch) ~data:source
+  | _ -> ());
+  output
 
 (** Create a fresh git repo in a temp dir. No initial commit — callers add their
     own commits via [commit_file] to build a precise graph. *)
@@ -70,7 +83,8 @@ type reconciliation = {
   dirty_after : string;
 }
 
-let reconcile ~process_mgr ~clock ~path ~target ~project_name ~ancestor_ids () =
+let reconcile ?(recorded = true) ~process_mgr ~clock ~path ~target ~project_name
+    ~ancestor_ids () =
   (* Give every standalone history fixture a real publication destination. Its
      object store lives under .git so it cannot dirty the checkout. *)
   let git args = git ~process_mgr ~dir:path args in
@@ -116,7 +130,19 @@ let reconcile ~process_mgr ~clock ~path ~target ~project_name ~ancestor_ids () =
                 (B.Result { token = command.token; at = 100.; result })))
     | None, _ | _, None -> state
   in
-  let state = run 100 (fst (B.step B.empty (B.Request intent))) in
+  let initial =
+    match
+      if recorded then Hashtbl.find materializations (path ^ "/" ^ branch)
+      else None
+    with
+    | Some revision -> (
+        match B.Commit.make revision with
+        | Some revision ->
+            fst (B.step B.empty (B.Materialized (B.New_branch revision)))
+        | None -> failwith "invalid materialization fixture")
+    | None -> B.empty
+  in
+  let state = run 100 (fst (B.step initial (B.Request intent))) in
   {
     state;
     before;
@@ -194,7 +220,7 @@ let read_file ~dir ~filename =
   Stdlib.close_in ic;
   content
 
-let () =
+let[@warning "-4"] () =
   Eio_main.run @@ fun env ->
   let process_mgr = Eio.Stdenv.process_mgr env in
 
@@ -568,51 +594,28 @@ let () =
           "test10: cherry-pick alone should still list drifted Patch 1 (%s)"
           patch1_sha);
    let result =
-     reconcile ~process_mgr ~clock:(Eio.Stdenv.clock env) ~path:dir
+     reconcile ~recorded:false ~process_mgr ~clock:(Eio.Stdenv.clock env)
+       ~path:dir
        ~target:(Types.Branch.of_string "main")
        ~project_name:"proj"
        ~ancestor_ids:[ Types.Patch_id.of_string "1" ]
        ()
    in
-   let expected_boundary =
-     match B.Commit.make patch1_sha with
-     | Some revision -> B.Subject_inferred revision
-     | None -> failwith "invalid fixture dependency revision"
-   in
-   if
-     not
-       (List.exists (B.integrations result.state) ~f:(fun receipt ->
-            B.equal_boundary receipt.B.capture.replay_boundary expected_boundary))
-   then failwith "test10: owner did not record the drifted dependency boundary";
-   (* Subject inference cannot authorize dropping the drifted dependency from
-      an already-published branch. Deterministic remote replay must try to
-      restore that work before agent recovery; this fixture has a real content
-      conflict between the drifted dependency and the captured base. *)
-   (match B.phase result.state with
-   | Some (B.Repairing { mode = B.Content_repair; _ }) ->
-       if
-         not
-           (List.mem
-              (String.split_lines
-                 (git ~process_mgr ~dir
-                    [ "diff"; "--name-only"; "--diff-filter=U" ]))
-              "dep.txt" ~equal:String.equal)
-       then failwith "test10: remote replay omitted the dependency conflict"
-   | None
-   | Some
-       ( B.Preparing | Integrating | Publishing | Confirming | Waiting _
-       | Recovering | Settled | Intervention _
-       | Repairing { mode = B.Diagnosis _ | B.History_recovery _; _ } ) ->
-       failwith
-         ("test10: unproven dependency ownership must attempt remote replay: "
-         ^ Yojson.Safe.to_string (B.yojson_of_t result.state)));
    (match B.operation result.state with
-   | Some { remote_integration = Some capture; _ }
-     when String.equal
-            (B.Commit.to_string capture.source_revision)
-            result.before ->
-       ()
-   | Some _ | None -> failwith "test10: remote replay lost its captured source");
+   | Some
+       {
+         boundary = B.Subject_inferred revision;
+         repair = Some { mode = B.History_recovery _; _ };
+         _;
+       } ->
+       assert (String.equal (B.Commit.to_string revision) patch1_sha);
+       assert (List.is_empty (B.integrations result.state));
+       assert_eq "test10: inferred ownership cannot rewrite the checkout"
+         result.before result.after
+   | _ ->
+       failwith
+         "test10: missing scoped agent recovery for unproven dependency \
+          ownership");
    assert_eq "test10: inferred ownership does not authorize publication"
      result.before
      (Git_env.git_capture
@@ -630,28 +633,6 @@ let () =
                 ]))
           result.before ~equal:String.equal)
    then failwith "test10: original drifted work must stay pinned";
-   let base_receipt =
-     match B.integrations result.state with
-     | [ receipt ] -> receipt
-     | [] | _ :: _ :: _ ->
-         failwith "test10: missing original base integration receipt"
-   in
-   let preserved = B.Commit.to_string base_receipt.integrated_revision in
-   assert_eq "test10: own change survives base replay" "mine"
-     (git ~process_mgr ~dir [ "show"; preserved ^ ":mine.txt" ]);
-   assert_eq "test10: base replay uses merged trunk version" "dep-v1"
-     (git ~process_mgr ~dir [ "show"; preserved ^ ":dep.txt" ]);
-   assert_eq "test10: conflict retains merged trunk version" "dep-v1"
-     (git ~process_mgr ~dir [ "show"; ":2:dep.txt" ]);
-   assert_eq "test10: conflict retains drifted remote version" "dep-v1-drift"
-     (git ~process_mgr ~dir [ "show"; ":3:dep.txt" ]);
-   (match base_receipt.capture.replay_boundary with
-   | B.Subject_inferred boundary
-     when String.equal (B.Commit.to_string boundary) patch1_sha ->
-       ()
-   | B.Subject_inferred _ | B.Recorded _ | B.Inferred _ | B.Reconstructed _
-   | B.Patch_equivalent _ | B.Plain ->
-       failwith "test10: base receipt lost its inferred provenance");
    Stdlib.Sys.command (Printf.sprintf "rm -rf %s" dir) |> ignore);
 
   (* ── Test 11: dirty worktree is preserved for intervention ──────────── *)
@@ -727,7 +708,7 @@ let () =
    core module directly.
    ─────────────────────────────────────────────────────────────────────── *)
 
-let () =
+let[@warning "-4"] () =
   let open QCheck2 in
   (* normalize_path: an absolute path is left as-is up to trailing-slash /
      trailing "/." normalization, and the result never ends in a bare "/"

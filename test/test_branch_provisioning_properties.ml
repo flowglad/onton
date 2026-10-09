@@ -32,8 +32,8 @@ let inspections_only ?state commands =
           {
             kind =
               ( Commit_merge _ | Plan_remote_replay _ | Checkout_remote _
-              | Pin _ | Integrate _ | Verify_recovery | Continue _ | Publish _
-              | Confirm _ );
+              | Pin _ | Integrate _ | Verify_scope _ | Verify_recovery
+              | Continue _ | Publish _ | Confirm _ );
             _;
           }
       | B.Repair _ | B.Start_repair _ ->

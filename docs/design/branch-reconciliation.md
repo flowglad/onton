@@ -81,26 +81,20 @@ The captured remote lease and any completed candidate are retained there too,
 including before integration or repair can change the checkout. Background fetches
 cannot remove the only ref keeping that remote evidence reachable.
 Integration checks the checkout identity, captured HEAD, index, and sequencer
-before using the captured target. Recorded replay boundaries precede inferred replay. If a recorded boundary is
-unreachable after a rewrite, reconciliation first attempts exact-tree
-reconstruction in the captured source's complete first-parent history. It
-retains both the original revision and reconstructed upstream in the checkpoint
-and private refs. Missing or inconsistent topology retries as a failed probe.
-Reconstructed ownership remains best effort and grants no recorded-boundary
-publication authority. When reconstruction is unavailable, initial base
-reconciliation probes patch equivalence against the captured target. A complete linear history may exclude its leading equivalent
-commits, retaining the selected upstream as `Patch_equivalent` in the operation
-and integration receipt. This is explicitly best-effort ownership evidence and
-cannot grant recorded-boundary publication authority. Failed or malformed probes
-retry; non-linear history supplies no such boundary. Plain rebase remains the
-fallback when inference is unavailable. Scheduled reconciliation requests capture
-the project name and transitive dependency IDs in their durable intent. If
-patch-equivalence cannot select a prefix, those scoped requests can infer a
-leading dependency prefix from Onton's commit-subject convention. The selected
-`Subject_inferred` boundary is labelled best effort and confers no recorded
-publication authority. Unscoped requests do not guess dependency ownership.
-Subject probe failures remain errors, and resumed operations retain the captured
-scope and boundary rather than reading a changed graph. History-preserving integration uses merge. Recovery refs are retained;
+before using the captured target. `Replay_scope` binds each operation to an
+immutable contribution contract: unchanged publication, replay from a recorded
+boundary onto an exact target, or merge of two explicitly captured inputs.
+Deterministic replay requires the complete source range to be linear; merges
+and their side parents cannot silently become patch contributions. Plain rebase
+and merge-base or commit-subject guesses do not authorize mutation.
+
+Boundary observation can still report exact-tree reconstruction, patch-equivalent
+prefixes and scoped dependency-subject prefixes as diagnostic evidence. These
+remain best effort. Missing recorded provenance requests owned agent recovery
+before any rewrite. Failed probes retry without discarding existing evidence.
+A no-op can confirm the unchanged captured commit without inventing ownership
+of a replay range. History-preserving integration merges only its captured inputs.
+Recovery refs are retained;
 project pruning removes the project namespace only after surviving checkpoints
 no longer depend on those refs as their sole recovery anchors. The pruner holds
 the relevant project locks, probes revision ancestry, and compare-and-deletes
@@ -147,32 +141,28 @@ and an explicit expected remote SHA, including the empty lease for an absent
 remote branch. PR #482's content-checked `Rewrite_lineage` proof is shared by
 the existing publisher and the new executor through
 `Git_publication_evidence`. A refreshed lease alone never grants rewrite
-permission. The release contract requires rewrite branches to replay newly
-identified remote work into the preserved candidate, and history-preserving
-branches to merge that work. A rewrite race first captures the incoming remote,
-original candidate, previous lease, and recorded base boundaries in a planning
-command. It selects a reachable recorded boundary whose preceding work is
-preserved in the candidate. If none qualifies, a unique Git common ancestor
-provides an explicitly inferred boundary. Probe failures retry rather than
-masquerading as missing ancestry. The selected boundary and its inputs are
-checkpointed before checkout; planning never replaces the captured pair with a
-later remote tip.
+permission. Remote integration first verifies the preserved local candidate,
+then captures a read-only boundary request. The verified candidate, previous
+lease, verified publications and recorded base boundaries are possible anchors.
+A selected anchor must be reachable from the incoming revision and already
+preserved locally. A unique merge base is not ownership evidence.
 
-The executor pins the captured revisions before a separately checkpointed
-checkout, then replays incoming commits onto the preserved candidate. Checkout
-uses Git's keep mode so late staged changes can prevent the transition without
-being discarded. Restart distinguishes an untouched checkout, a completed
-checkout, and a completed replay, including a replay whose changes were already
-present. Remote replay preserves merge topology through Git's merge-preserving
-rebase sequencer; its content conflicts use the same staged-resolution protocol.
-Managed rebases explicitly disable automatic ref updates and autostash, so user
-Git configuration cannot silently move other branches or change dirty-work
-handling.
-History-preserving races retain merge integration. No common ancestor and
-ambiguous common ancestors currently enter agent recovery; further deterministic
-reconstruction and patch-equivalence recovery
-remain required before cutover. A completed candidate must never be discarded
-to refresh a lease.
+The selected range, policy and exact revision pair survive restart. Rewrite
+applies only that range's ordinary commits onto the existing verified checkout;
+it never resets the checkout to the incoming branch. A proven linear descendant
+can fast-forward. History-preserving remote integration also verifies the new
+remote range before permitting a merge. Unknown ranges and side ancestry request
+agent repair. Legacy checkout/reset and merge-todo checkpoint commands cannot
+bypass these checks. Managed rebases explicitly disable automatic ref updates,
+autostash, merge recreation, autosquash and fork-point inference.
+
+`Verify_scope` is a separate owned observation before an integration receipt or
+publication is accepted. Its private certificate binds the exact contract and
+candidate. The executor predicts the tree independently from immutable inputs,
+checks the complete candidate history, and permits differences from the
+prediction only on Git-reported conflict paths. Publication repeats this check
+before the lease-protected push. Stale results, changed requests and a backend's
+success report cannot substitute for this certificate.
 
 Remote replay records a separate durable integration receipt before publication,
 including source, preserved candidate, chosen boundary, resulting revision, and
@@ -188,8 +178,10 @@ verified reachable from the captured source. A failed ancestry probe retries;
 it does not discard a boundary as unreachable. Restart during observation
 retains the complete captured candidate list.
 
-Confirmation directly observes the remote and its topology. Equality or a
-remote descendant containing the candidate completes publication. Lost push
+Confirmation directly observes the remote and its topology. Exact equality
+completes publication after candidate scope verification. A remote descendant
+requires its own bounded contribution check; ancestry alone cannot acknowledge
+unknown added work. Lost push
 acknowledgements therefore do not repeat implementation. PR #483's
 agent-published resolution with a stale remote-tracking ref is the same
 confirmation contract: direct remote equality settles publication without
@@ -276,23 +268,31 @@ later turns and restarts. Recovery may change
 HEAD; staged content repair may not. Both modes share duplicate-safe claims,
 interruption handling and structural-progress accounting.
 
-After a recovery turn, Onton verifies a clean named checkout, the required
-integration target, preservation of the original candidate (or source), and
-preservation of both the captured and freshly observed remote revisions. The
-first recovery inspection also captures the current checkout HEAD as an immutable
-recovery baseline: newer commits discovered after interruption must survive too.
-Ancestry or revision-bound rewrite-lineage evidence must establish preservation
-of every retained revision. Capacity acquisition is followed by another owned
-inspection before an agent runs. Dirty history-recovery checkouts remain eligible
-for an owned agent turn that finishes and commits the interrupted work.
-A lost backend acknowledgement or failed probe resumes verification rather than
-repeating successful agent work. Two completed recovery turns without structural
-progress stop with `recovery_preservation_unproven`, retaining the recovery refs.
-If a recovery turn proves preservation of all retained work and its integration
-target, but verification discovers a new remote revision, Onton captures that
-revision for deterministic integration with the recovered candidate. Fresh external work cannot spend
-the no-progress budget for a successful repair of the captured work. The captured
-remote remains an explicit preservation obligation across this transition.
+After a recovery turn, Onton verifies a clean named checkout, the captured
+integration target and the contribution contract. For replay repair it follows
+the recorded first-parent range, omits merge commits and side-parent history,
+and composes an independent tree prediction from the remaining commits. For a
+merge it predicts exactly the two authorized inputs. A repaired candidate must
+have the authorized ancestry and match that prediction outside conflict paths.
+
+Retention and inclusion are separate. Original inputs, observed remote heads and
+rejected repair commits stay pinned and in the pruning inventory. Retaining a
+revision does not grant permission to merge it into the patch. A newly observed
+remote is compared with the captured lease, not the set of retained backups;
+a valid local repair can therefore proceed to a separately verified remote
+integration even if that remote was already observed before the agent ran.
+Capacity acquisition and completion remain fenced by owned observations.
+
+`Finish_local_work` authorizes ordinary commits extending the captured source.
+`Repair_publication` can authorize ordinary source fixes extending a candidate
+that already passed scope verification. Both require a private certificate of
+the complete linear continuation; a merge cannot widen their authority.
+History reconstruction has no such permission to add content. These checks
+establish the scope of Git history transformations, while source edits explicitly
+requested by an implementation or publication-repair task remain that task's
+responsibility. Dirty work finishes before deferred base reconciliation, and
+completed local work causes the deferred base to be freshly observed.
+
 Live reconciliation paths route exhausted recovery through this owner. The
 legacy conflict-info/reset/rebase prompt renderers are removed; the captured
 repair turn supplies the content or history recovery prompt.
@@ -309,8 +309,8 @@ incoming remote revision, preserved candidate, policy and selected boundary. Thi
 capture survives publication, interruption and recovery; a failed preservation
 check after the attempt reaches history recovery instead of repeating integration.
 New remote work can create a successor attempt with a new captured pair. Rewrite
-uses verified replay boundaries and merge-base inference; ancestry-preserving mode
-merges. Both policies record remote integration receipts separately from base
+uses recorded replay ranges; ancestry-preserving mode merges only after the
+incoming contribution range passes the same preflight. Both policies record remote integration receipts separately from base
 receipts, without creating a new base replay boundary. Duplicate publication
 retries retain the first receipt for the same captured pair and candidate, including
 its original execution/recovery evidence. Diagnostics and repair prompts include
@@ -612,7 +612,12 @@ strings describe decisions; they are not a fallback allowlist.
 and durable progress. A recovery task distinguishes finishing local work,
 reconstructing history, and repairing rejected publication. Finishing local work
 unlocks deterministic base integration only after independent verification.
-Recovery sessions receive patch/project context and queued human guidance;
+A repair reservation is distinct from backend dispatch. Newly discovered dirty
+work during a capacity wait can select finishing local work; the owner checkpoints
+an execution fence immediately before invoking the backend. Once dispatched,
+history reconstruction cannot gain source-extension authority by leaving dirty
+files and restarting. Legacy checkpoints default to the conservative dispatched
+state. Recovery sessions receive patch/project context and queued human guidance;
 guidance remains available for normal task delivery.
 
 `Attempt_failed` records an executed mutation failure, including validation

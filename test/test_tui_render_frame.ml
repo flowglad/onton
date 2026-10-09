@@ -580,7 +580,11 @@ let[@warning "-42"] () =
         fst
           (step empty
              (Request
-                { base = "main"; policy = Rewrite; purpose = Reconcile_base }))
+                {
+                  base = "main";
+                  policy = Preserve_ancestry;
+                  purpose = Reconcile_base;
+                }))
       in
       let captured =
         reply initial
@@ -602,6 +606,11 @@ let[@warning "-42"] () =
              })
       in
       let publishing = reply (reply captured Pinned) (Integrated candidate) in
+      let publishing =
+        Onton_core_test_support.Publication_fixture.verify_scope
+          ~step:(fun state event -> fst (B.step state event))
+          ~state:Fn.id publishing
+      in
       List.iter [ false; true ] ~f:(fun permanent ->
           let failed =
             reply publishing

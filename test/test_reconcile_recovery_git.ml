@@ -271,15 +271,19 @@ let checkout_recovery env detached =
                 execute io ~operation command)
               ~perform:(fun ~agent:_ ~(turn : B.repair_turn) ->
                 Git.run_git ~cwd:dir [ "checkout"; "-q"; "patch" ];
-                Git.run_git ~cwd:dir [ "merge"; "--ff-only"; observed ];
+                (* Retaining the unexpected checkout does not authorize adding
+                   its commits to the managed patch. Restore the captured branch. *)
                 B.Repair_completed { token = turn.token; at = 100. })
               token
           in
           check "valid unexpected checkout reaches owned recovery"
             (outcome = R.Idle && B.phase (state runtime) = Some B.Settled);
-          check "unexpected checkout HEAD survives publication"
-            (Git.git_capture ~cwd:remote [ "show"; "patch:interrupted" ]
-            = "retained")))
+          check
+            "unexpected checkout is retained without entering the patch diff"
+            (List.mem (sha observed) (B.required_revisions (state runtime))
+            && Git.git_exit_code ~cwd:remote
+                 [ "cat-file"; "-e"; "patch:interrupted" ]
+               <> 0)))
 
 let () =
   Eio_main.run @@ fun env ->

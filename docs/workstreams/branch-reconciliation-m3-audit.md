@@ -728,3 +728,63 @@ restriction. Its prompt permits environmental repair while preserving patch
 content, Git history, the index, sequencer and remote destinations. Agents must
 verify repairs, check ownership before clearing stale gate/lock state, and report
 remaining blockers. Owner reinspection and recovery budgets still apply.
+
+## Contribution-scope audit
+
+The rebase/merge audit found that recorded boundaries, ancestry preservation and
+retention alone did not prove that a repaired candidate contained only the
+intended patch contribution. Plain/inferred replay, remote checkout resets and
+accepting an agent's preservation report could widen the contribution set.
+
+`Replay_scope` now represents a captured contribution contract and produces a
+private verification value. The owner requires that value before integration
+receipts or publication; the executor independently verifies it again immediately
+before pushing. A replay requires a recorded boundary and a complete linear
+range before deterministic mutation. Recovery may project ordinary first-parent
+commits from that recorded range, excluding merge commits and side parents.
+Independent per-commit tree predictions restrict repair changes to the captured
+conflict paths. Ancestry-preserving integration binds its exact two inputs.
+
+Incoming remote work first receives a read-only boundary decision. A certified
+local candidate, captured lease or recorded receipt supplies the boundary; an
+arbitrary merge base does not. Remote replay applies the selected commits onto
+the existing checkout, or fast-forwards a proven linear descendant. No remote
+checkout reset remains executable. Legacy reset/merge-todo commands request
+owned recovery. An observed revision can be retained without authorizing its
+inclusion. The recovery inventory survives subsequent operations, while new
+remote work is compared with the captured lease rather than with that inventory.
+
+Only finishing interrupted work and repairing publication after a verified
+candidate can extend the source contract through ordinary linear commits.
+A queued repair can switch to finishing newly discovered dirty work before
+backend dispatch. Dispatch is durably fenced, so reconstruction cannot acquire
+that permission after an agent has run, including across restart. Old checkpoints
+conservatively assume dispatch. Checkpoint import
+invalidates uncertified publication commands and cannot manufacture remote
+integration authority from an explicit null capture. Missing provenance and
+rejected candidates retain their inputs and request owned repair.
+
+Coverage includes 34 scope properties, eight generated interleaving properties,
+137 owner properties, and the independent 27-property model. The new real-Git
+suite has 14 scenarios covering unknown boundaries, side merges, rejected and
+corrected repairs, dirty completion with a moving base, both integration
+policies, normal versus contaminated remote contributions, and side merges hidden by
+replacement refs or graft files. Onton-owned Git disables these local object and
+ancestry overrides so proofs inspect the objects actually sent to the remote. Existing real-Git
+fixtures retain timeout, publication, restart and interruption behavior. The
+model derives scope evidence from its actual graph and contents rather than
+assuming that an agent's success report is sufficient.
+
+This guarantee concerns Onton's local branch reconciliation and publication.
+Forge-side PR merging does not mutate the patch branch; its separate provider
+race semantics are not strengthened by this change. Conflict-path resolutions
+and explicitly requested implementation edits still require ordinary code
+review. Agent fixtures exercise controlled repairs, not live-model success rates.
+
+Contribution-scope qualification on this implementation passed:
+`opam exec -- dune build @all @fmt @check`, `opam exec -- dune runtest`,
+`bash scripts/check-no-raw-yojson.sh`, and the pinned architecture checker
+(`archlint` revision `855690`, OCaml adapter). The full run includes the
+publication interleavings and real-Git/checkpoint matrices. The optional simgit
+backend integration remained skipped because `ONTON_TEST_SIMGIT` was unset;
+Git-backed reconciliation scenarios ran successfully.

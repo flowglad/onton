@@ -170,6 +170,7 @@ type command_kind =
     }
   | Inspect
   | Verify_recovery
+  | Verify_scope of Commit.t
   | Continue of { head : Commit.t; target : Commit.t; sequencer : string }
   | Publish of { candidate : Commit.t; expected : Commit.t option }
   | Confirm of Commit.t
@@ -278,6 +279,20 @@ type operation = private {
   candidate : Commit.t option;
   expected : Commit.t option;
   recovery_revisions : Commit.t list;
+  retained_revisions : Commit.t list;
+      (** Recovery inventory only. Retention never grants inclusion authority.
+      *)
+  agent_dispatched : bool;
+      (** Durable execution fence: reservation alone does not grant agent work.
+      *)
+  approved_scope : Replay_scope.request;
+      (** Captured Git inputs. Only explicitly authorized linear local work may
+          extend this contract; reconstructed history cannot widen it. *)
+  scope_revision : Commit.t option;
+      (** Candidate independently verified against [approved_scope]. *)
+  deferred_remote : Commit.t option;
+      (** Incoming head waiting for certification of the preserved candidate. *)
+  candidate_evidence : integration_evidence option;
   phase : phase;
   pending : command option;
   command_sequence : int;
@@ -314,9 +329,11 @@ type result =
   | Remote_replay_selected of boundary
   | Remote_checked_out
   | Integrated of Commit.t
+  | Scope_verified of Replay_scope.verified
   | Conflict of { head : Commit.t; sequencer : string; conflicts : int }
   | Recovery_verified of {
       observation : observation;
+      local_extension : Replay_scope.t option;
       source_preserved : bool;
       remote_preserved : bool;
     }
@@ -350,6 +367,7 @@ type event =
   | Request of intent
   | Result of { token : token; at : float; result : result }
   | Repair_invalidated of { token : token; reason : string }
+  | Repair_dispatched of token
   | Repair_started of token
   | Repair_interrupted of { token : token; at : float; reason : string }
   | Repair_failed of { token : token; at : float; reason : string }
@@ -419,6 +437,16 @@ val execution_policy : operation -> policy
 (** The preservation requirement is at least as strong as the request and
     captured integration strategy. An existing rebase cannot weaken a request to
     preserve ancestry; an existing merge can strengthen a rewrite request. *)
+
+val integration_scope_matches :
+  operation ->
+  source:Commit.t ->
+  target:Commit.t ->
+  boundary:boundary ->
+  policy:policy ->
+  bool
+(** Integration inputs must exactly match the captured contribution contract. A
+    remote observation or recovery-head change cannot expand that contract. *)
 
 val ancestry_requirements : operation -> Commit.t list
 (** Revisions that must remain ancestors under an ancestry-preserving contract.
@@ -559,8 +587,18 @@ val integration_result :
 (** Interpret post-command ancestry observations against the captured
     integration. *)
 
+val local_extension_contract :
+  operation -> (Commit.t * Replay_scope.request) option
+(** A linear source extension is permitted only when finishing interrupted work
+    or repairing a rejected publication whose candidate already passed scope
+    verification. History reconstruction cannot widen its input contract. *)
+
 val check_checkout :
-  command -> branch:string -> Git_observation.t -> (unit, string) Result.t
+  ?operation:operation ->
+  command ->
+  branch:string ->
+  Git_observation.t ->
+  (unit, string) Result.t
 (** Validate a fresh checkout observation against the captured command before
     mutation. The core owns branch, revision, index and sequencer preconditions.
     A matching continuation may still need content repair; [Git_observation]

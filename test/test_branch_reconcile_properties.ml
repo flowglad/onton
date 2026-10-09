@@ -41,11 +41,57 @@ let inspected (observation : B.observation) =
 
 let request () = B.step B.empty (B.Request intent)
 
-let reply state result =
+let reply_raw state result =
   match B.pending state with
   | None -> (state, [])
   | Some command ->
       B.step state (B.Result { token = command.token; at = 100.; result })
+
+(* These existing protocol properties assume a healthy scope observer. The
+   dedicated scope interleaving suite exercises withheld, stale and false proofs. *)
+let[@warning "-4"] reply state result =
+  let result =
+    match (result, B.operation state) with
+    | ( B.Recovery_verified evidence,
+        Some
+          {
+            source = Some source;
+            repair =
+              Some
+                {
+                  mode = B.History_recovery { task = B.Finish_local_work; _ };
+                  _;
+                };
+            _;
+          } )
+      when evidence.source_preserved ->
+        B.Recovery_verified
+          {
+            evidence with
+            local_extension =
+              Onton_core_test_support.Scope_fixture.local_extension ~source
+                ~candidate:evidence.observation.source;
+          }
+    | _ -> result
+  in
+  let state, effects = reply_raw state result in
+  match (B.pending state, B.operation state) with
+  | Some { kind = B.Verify_scope candidate; _ }, Some operation ->
+      reply_raw state
+        (Onton_core_test_support.Scope_fixture.verified
+           operation.B.approved_scope candidate)
+  | ( Some
+        {
+          kind =
+            ( Observe | Inspect | Pin _ | Integrate _ | Continue _ | Publish _
+            | Confirm _ | Verify_recovery | Commit_merge _
+            | Plan_remote_replay _ | Checkout_remote _ );
+          _;
+        },
+      _ )
+  | None, _
+  | _, None ->
+      (state, effects)
 
 let is_diagnosis state =
   match B.phase state with
@@ -105,11 +151,22 @@ let settled () =
   let state, _ = reply (publishing ()) B.Published in
   reply state (B.Remote { sha = Some candidate; topology = Equal }) |> fst
 
-let progress_result command =
+let progress_result state command =
   match command.B.kind with
+  | B.Verify_scope revision ->
+      Onton_core_test_support.Scope_fixture.verified
+        (match B.operation state with
+        | Some op -> op.B.approved_scope
+        | None -> Replay_scope.Unproven)
+        revision
   | B.Verify_recovery ->
       B.Recovery_verified
-        { observation; source_preserved = false; remote_preserved = false }
+        {
+          observation;
+          local_extension = None;
+          source_preserved = false;
+          remote_preserved = false;
+        }
   | B.Commit_merge _ -> B.Merge_completed candidate
   | B.Plan_remote_replay _ -> B.Remote_replay_selected (B.Recorded source)
   | B.Checkout_remote _ -> B.Remote_checked_out
@@ -139,6 +196,7 @@ let unverified =
   B.Recovery_verified
     {
       observation = { observation with source = candidate; head = candidate };
+      local_extension = None;
       source_preserved = false;
       remote_preserved = false;
     }
@@ -402,6 +460,7 @@ let tests =
                        remote = Some candidate;
                        target_included = true;
                      };
+                   local_extension = None;
                    source_preserved = true;
                    remote_preserved = true;
                  })
@@ -441,6 +500,7 @@ let tests =
                     head = candidate;
                     target_included = true;
                   };
+                local_extension = None;
                 source_preserved = true;
                 remote_preserved = true;
               }
@@ -510,10 +570,10 @@ let tests =
                   | Some
                       {
                         kind =
-                          ( B.Observe | B.Inspect | B.Pin _ | B.Integrate _
-                          | B.Verify_recovery | B.Continue _ | B.Confirm _
-                          | B.Commit_merge _ | B.Plan_remote_replay _
-                          | B.Checkout_remote _ );
+                          ( B.Observe | B.Verify_scope _ | B.Inspect | B.Pin _
+                          | B.Integrate _ | B.Verify_recovery | B.Continue _
+                          | B.Confirm _ | B.Commit_merge _
+                          | B.Plan_remote_replay _ | B.Checkout_remote _ );
                         _;
                       } ->
                       false);
@@ -595,9 +655,9 @@ let tests =
             | Some
                 {
                   kind =
-                    ( B.Observe | B.Inspect | B.Pin _ | B.Integrate _
-                    | B.Verify_recovery | B.Continue _ | B.Confirm _
-                    | B.Commit_merge _ | B.Plan_remote_replay _
+                    ( B.Observe | B.Verify_scope _ | B.Inspect | B.Pin _
+                    | B.Integrate _ | B.Verify_recovery | B.Continue _
+                    | B.Confirm _ | B.Commit_merge _ | B.Plan_remote_replay _
                     | B.Checkout_remote _ );
                   _;
                 } ->
@@ -614,6 +674,7 @@ let tests =
                        head = candidate;
                        target_included = true;
                      };
+                   local_extension = None;
                    source_preserved = true;
                    remote_preserved = true;
                  })
@@ -1096,7 +1157,8 @@ let tests =
                 | 14 -> reply !state unverified
                 | _ -> (
                     match B.pending !state with
-                    | Some command -> reply !state (progress_result command)
+                    | Some command ->
+                        reply !state (progress_result !state command)
                     | None -> B.step !state B.Reconfirm_publication)
               in
               state := fst next;
@@ -1579,6 +1641,7 @@ let tests =
             (B.Recovery_verified
                {
                  observation = active;
+                 local_extension = None;
                  source_preserved = false;
                  remote_preserved = false;
                })
@@ -1606,6 +1669,7 @@ let tests =
             (B.Recovery_verified
                {
                  observation = { observation with clean = false };
+                 local_extension = None;
                  source_preserved = false;
                  remote_preserved = false;
                })
@@ -1617,6 +1681,7 @@ let tests =
                {
                  observation =
                    { observation with source = candidate; head = candidate };
+                 local_extension = None;
                  source_preserved = preserved;
                  remote_preserved = preserved;
                })
@@ -1748,6 +1813,7 @@ let tests =
             (B.Recovery_verified
                {
                  observation;
+                 local_extension = None;
                  source_preserved = false;
                  remote_preserved = false;
                })
@@ -1803,6 +1869,7 @@ let tests =
                            source = head;
                            remote = Some remote;
                          };
+                       local_extension = None;
                        source_preserved = false;
                        remote_preserved = false;
                      })
@@ -1816,7 +1883,7 @@ let tests =
             B.equal state restored
             && List.for_all
                  (fun sha ->
-                   List.exists (B.Commit.equal sha) op.recovery_revisions)
+                   List.exists (B.Commit.equal sha) op.retained_revisions)
                  required
             &&
             match op.repair with
@@ -2002,6 +2069,7 @@ let tests =
             (B.Recovery_verified
                {
                  observation;
+                 local_extension = None;
                  source_preserved = false;
                  remote_preserved = false;
                })
@@ -2206,8 +2274,8 @@ let tests =
                       kind =
                         ( B.Observe | B.Pin _ | B.Plan_remote_replay _
                         | B.Checkout_remote _ | B.Commit_merge _ | B.Integrate _
-                        | B.Inspect | B.Verify_recovery | B.Publish _
-                        | B.Confirm _ );
+                        | B.Verify_scope _ | B.Inspect | B.Verify_recovery
+                        | B.Publish _ | B.Confirm _ );
                       _;
                     } ),
                 _ )
@@ -2220,7 +2288,7 @@ let tests =
                effects
         with _ -> false);
     QCheck2.Test.make
-      ~name:"BR replay boundary evidence survives checkpoint and checkout"
+      ~name:"BR only recorded remote boundaries authorize replay across restart"
       ~count:100 Gen.bool (fun inferred ->
         try
           let state, _ = reply (publishing ()) B.Published in
@@ -2232,69 +2300,44 @@ let tests =
             if inferred then B.Inferred source else B.Recorded source
           in
           let state, _ = reply state (B.Remote_replay_selected boundary) in
-          let state =
-            match B.decode (B.yojson_of_t state) with
-            | Ok state -> state
-            | Error e -> failwith e
-          in
-          let state, _ = B.step state B.Recover in
-          let state, _ =
-            reply state
-              (inspected
-                 {
-                   observation with
-                   source = candidate;
-                   head = candidate;
-                   target = candidate;
-                   remote = Some incoming;
-                   target_included = true;
-                   base_contains_source = false;
-                 })
-          in
-          let state, _ = reply state B.Remote_checked_out in
-          match B.pending state with
-          | Some { kind = B.Integrate actual; _ } -> (
-              actual.source = incoming && actual.target = candidate
-              && actual.boundary = boundary && actual.policy = B.Rewrite
-              &&
-              let result = sha 'e' in
-              let state, _ = reply state (B.Integrated result) in
-              let receipts = B.remote_integrations state in
-              let state, _ = reply state (B.Integrated result) in
-              let state, _ = reply state B.Published in
-              let state, _ =
-                reply state (B.Remote { sha = Some result; topology = Equal })
-              in
-              let state, _ =
-                B.step state
-                  (B.Request
-                     { intent with purpose = Publish_session "later-session" })
-              in
-              let state =
-                match B.decode (B.yojson_of_t state) with
-                | Ok state -> state
-                | Error e -> failwith e
-              in
-              B.remote_integrations state = receipts
-              &&
-              match receipts with
-              | [ receipt ] ->
-                  receipt.B.capture.source_revision = incoming
-                  && receipt.capture.target_revision = candidate
-                  && receipt.capture.replay_boundary = boundary
-                  && receipt.integrated_revision = result
-              | [] | _ :: _ :: _ -> false)
-          | None
-          | Some
-              {
-                kind =
-                  ( B.Observe | B.Commit_merge _ | B.Plan_remote_replay _
-                  | B.Checkout_remote _ | B.Pin _ | B.Inspect
-                  | B.Verify_recovery | B.Continue _ | B.Publish _ | B.Confirm _
-                    );
-                _;
-              } ->
-              false
+          let state = Result.get_ok (B.decode (B.yojson_of_t state)) in
+          if inferred then
+            Option.map (fun c -> c.B.kind) (B.pending state)
+            = Some B.Verify_recovery
+            && B.remote_integrations state = []
+          else
+            let expected =
+              B.Integrate
+                {
+                  source = incoming;
+                  target = candidate;
+                  boundary;
+                  policy = B.Rewrite;
+                }
+            in
+            let ready =
+              Option.map (fun c -> c.B.kind) (B.pending state) = Some expected
+            in
+            let result = sha 'e' in
+            let state, _ = reply state (B.Integrated result) in
+            let receipts = B.remote_integrations state in
+            let state, _ = reply state B.Published in
+            let state, _ =
+              reply state (B.Remote { sha = Some result; topology = Equal })
+            in
+            ready
+            && B.phase state = Some B.Settled
+            && B.remote_integrations
+                 (Result.get_ok (B.decode (B.yojson_of_t state)))
+               = receipts
+            &&
+            match receipts with
+            | [ receipt ] ->
+                receipt.B.capture.source_revision = incoming
+                && receipt.capture.target_revision = candidate
+                && receipt.capture.replay_boundary = boundary
+                && receipt.integrated_revision = result
+            | [] | _ :: _ :: _ -> false
         with _ -> false);
     QCheck2.Test.make
       ~name:
@@ -2438,9 +2481,9 @@ let tests =
                 {
                   kind =
                     ( B.Commit_merge _ | B.Plan_remote_replay _
-                    | B.Checkout_remote _ | B.Observe | B.Pin _ | B.Inspect
-                    | B.Verify_recovery | B.Continue _ | B.Publish _
-                    | B.Confirm _
+                    | B.Checkout_remote _ | B.Verify_scope _ | B.Observe
+                    | B.Pin _ | B.Inspect | B.Verify_recovery | B.Continue _
+                    | B.Publish _ | B.Confirm _
                     | B.Integrate { policy = Rewrite; _ } );
                   _;
                 } ->
@@ -2510,9 +2553,9 @@ let tests =
                 {
                   kind =
                     ( B.Commit_merge _ | B.Plan_remote_replay _
-                    | B.Checkout_remote _ | B.Observe | B.Pin _ | B.Integrate _
-                    | B.Inspect | B.Verify_recovery | B.Publish _ | B.Confirm _
-                      );
+                    | B.Checkout_remote _ | B.Verify_scope _ | B.Observe
+                    | B.Pin _ | B.Integrate _ | B.Inspect | B.Verify_recovery
+                    | B.Publish _ | B.Confirm _ );
                   _;
                 } ->
                 false
@@ -2532,9 +2575,9 @@ let tests =
               {
                 kind =
                   ( B.Commit_merge _ | B.Plan_remote_replay _
-                  | B.Checkout_remote _ | B.Pin _ | B.Integrate _ | B.Inspect
-                  | B.Verify_recovery | B.Continue _ | B.Publish _ | B.Confirm _
-                    );
+                  | B.Checkout_remote _ | B.Pin _ | B.Integrate _
+                  | B.Verify_scope _ | B.Inspect | B.Verify_recovery
+                  | B.Continue _ | B.Publish _ | B.Confirm _ );
                 _;
               } ->
               false
@@ -2607,8 +2650,9 @@ let tests =
               {
                 kind =
                   ( B.Commit_merge _ | B.Plan_remote_replay _
-                  | B.Checkout_remote _ | B.Observe | B.Pin _ | B.Integrate _
-                  | B.Inspect | B.Verify_recovery | B.Continue _ | B.Confirm _ );
+                  | B.Checkout_remote _ | B.Verify_scope _ | B.Observe | B.Pin _
+                  | B.Integrate _ | B.Inspect | B.Verify_recovery | B.Continue _
+                  | B.Confirm _ );
                 _;
               } ->
               false
@@ -2772,6 +2816,7 @@ let tests =
                      clean;
                      target_included;
                    };
+                 local_extension = None;
                  source_preserved;
                  remote_preserved;
                })
@@ -2784,8 +2829,9 @@ let tests =
               {
                 kind =
                   ( B.Commit_merge _ | B.Plan_remote_replay _
-                  | B.Checkout_remote _ | B.Observe | B.Pin _ | B.Integrate _
-                  | B.Inspect | B.Verify_recovery | B.Continue _ | B.Confirm _ );
+                  | B.Checkout_remote _ | B.Verify_scope _ | B.Observe | B.Pin _
+                  | B.Integrate _ | B.Inspect | B.Verify_recovery | B.Continue _
+                  | B.Confirm _ );
                 _;
               } ->
               false
@@ -2830,6 +2876,7 @@ let tests =
                        clean;
                        target_included;
                      };
+                   local_extension = None;
                    source_preserved;
                    remote_preserved = false;
                  })
@@ -2842,8 +2889,8 @@ let tests =
             | Some
                 {
                   kind =
-                    ( B.Observe | B.Pin _ | B.Integrate _ | B.Inspect
-                    | B.Verify_recovery | B.Continue _ | B.Confirm _
+                    ( B.Observe | B.Pin _ | B.Integrate _ | B.Verify_scope _
+                    | B.Inspect | B.Verify_recovery | B.Continue _ | B.Confirm _
                     | B.Publish _ | B.Checkout_remote _ | B.Commit_merge _ );
                   _;
                 } ->
@@ -2856,15 +2903,13 @@ let tests =
                   (B.Publish { candidate; expected = Some remote }))
               (B.pending state)
           in
-          reconciles
-          = (retained_before && fresh_remote && source_preserved && clean
-           && target_included)
+          reconciles = (source_preserved && clean && target_included)
           && (not publishes)
           && (match B.operation state with
             | None -> false
-            | Some op ->
-                List.mem source op.B.recovery_revisions
-                && List.mem remote op.B.recovery_revisions)
+            | Some _ ->
+                List.mem source (B.required_revisions state)
+                && List.mem remote (B.required_revisions state))
           &&
           match B.decode (B.yojson_of_t state) with
           | Ok restored -> B.equal restored state
@@ -2921,6 +2966,7 @@ let tests =
                          head = candidate;
                          target_included = true;
                        };
+                     local_extension = None;
                      source_preserved = true;
                      remote_preserved = true;
                    }
@@ -3301,7 +3347,7 @@ let tests =
                    observation with
                    remote = Some target;
                    topology = Diverged;
-                   target = (if preserve then target else source);
+                   target = source;
                  })
           in
           match B.pending state with
@@ -3312,17 +3358,16 @@ let tests =
               && B.equal_policy actual.policy Preserve_ancestry
               && B.equal_boundary actual.boundary Plain
           | Some { kind = Plan_remote_replay replay; _ } ->
-              (not preserve)
-              && B.Commit.equal replay.preserved source
+              B.Commit.equal replay.preserved source
               && B.Commit.equal replay.incoming target
               && List.mem (B.Recorded source) replay.boundaries
           | None
           | Some
               {
                 kind =
-                  ( Commit_merge _ | Checkout_remote _ | Observe | Pin _
-                  | Inspect | Verify_recovery | Continue _ | Publish _
-                  | Confirm _ );
+                  ( Commit_merge _ | Checkout_remote _ | Verify_scope _
+                  | Observe | Pin _ | Inspect | Verify_recovery | Continue _
+                  | Publish _ | Confirm _ );
                 _;
               } ->
               false
@@ -3368,8 +3413,8 @@ let tests =
               {
                 kind =
                   ( Commit_merge _ | Plan_remote_replay _ | Checkout_remote _
-                  | Observe | Pin _ | Integrate _ | Inspect | Verify_recovery
-                  | Continue _ | Confirm _ );
+                  | Verify_scope _ | Observe | Pin _ | Integrate _ | Inspect
+                  | Verify_recovery | Continue _ | Confirm _ );
                 _;
               } ->
               false
@@ -3458,8 +3503,9 @@ let tests =
             {
               kind =
                 ( B.Commit_merge _ | B.Plan_remote_replay _
-                | B.Checkout_remote _ | B.Observe | B.Pin _ | B.Integrate _
-                | B.Inspect | B.Verify_recovery | B.Continue _ | B.Confirm _ );
+                | B.Checkout_remote _ | B.Verify_scope _ | B.Observe | B.Pin _
+                | B.Integrate _ | B.Inspect | B.Verify_recovery | B.Continue _
+                | B.Confirm _ );
               _;
             } ->
             false);
@@ -3485,6 +3531,7 @@ let tests =
             (B.Recovery_verified
                {
                  observation = { observation with clean = not dirty };
+                 local_extension = None;
                  source_preserved = false;
                  remote_preserved = false;
                })
@@ -3499,14 +3546,16 @@ let tests =
           else
             match B.pending state with
             | None -> state
-            | Some c -> walk (fst (reply state (progress_result c))) (n - 1)
+            | Some c ->
+                walk (fst (reply state (progress_result state c))) (n - 1)
         in
         let state = walk (fst (request ())) n in
         match B.pending state with
         | None -> true
         | Some c ->
             let event =
-              B.Result { token = c.token; at = 10.; result = progress_result c }
+              B.Result
+                { token = c.token; at = 10.; result = progress_result state c }
             in
             let after, _ = B.step state event in
             let duplicate, effects = B.step after event in
@@ -3537,7 +3586,8 @@ let tests =
             else
               match B.pending state with
               | None -> state
-              | Some c -> advance (fst (reply state (progress_result c))) (n - 1)
+              | Some c ->
+                  advance (fst (reply state (progress_result state c))) (n - 1)
           in
           let state = advance (fst (request ())) n in
           match B.decode (B.yojson_of_t state) with
@@ -3600,16 +3650,16 @@ let tests =
                 (match command.kind with
                 | B.Integrate _ -> incr mutations
                 | B.Commit_merge _ | B.Plan_remote_replay _
-                | B.Checkout_remote _ | B.Observe | B.Pin _ | B.Inspect
-                | B.Verify_recovery | B.Continue _ | B.Publish _ | B.Confirm _
-                  ->
+                | B.Checkout_remote _ | B.Verify_scope _ | B.Observe | B.Pin _
+                | B.Inspect | B.Verify_recovery | B.Continue _ | B.Publish _
+                | B.Confirm _ ->
                     ());
                 let event =
                   B.Result
                     {
                       token = command.token;
                       at = 100.;
-                      result = progress_result command;
+                      result = progress_result !state command;
                     }
                 in
                 let next, effects = B.step !state event in
@@ -3620,7 +3670,7 @@ let tests =
                     | B.Execute _ | B.Repair _ | B.Start_repair _ -> ())
                   effects;
                 if duplicate then state := fst (B.step !state event))
-          (duplicates @ [ false; false; false; false; false ]);
+          (duplicates @ [ false; false; false; false; false; false ]);
         B.phase !state = Some B.Settled && !mutations = 1 && !completed = 1);
     QCheck2.Test.make
       ~name:"BR compatible materialization and intent observations commute"
@@ -3685,8 +3735,9 @@ let tests =
             {
               kind =
                 ( B.Commit_merge _ | B.Plan_remote_replay _
-                | B.Checkout_remote _ | B.Observe | B.Pin _ | B.Integrate _
-                | B.Inspect | B.Continue _ | B.Publish _ | B.Confirm _ );
+                | B.Checkout_remote _ | B.Verify_scope _ | B.Observe | B.Pin _
+                | B.Integrate _ | B.Inspect | B.Continue _ | B.Publish _
+                | B.Confirm _ );
               _;
             } ->
             false);
@@ -3862,10 +3913,7 @@ let publication_observation_tests =
               (B.Remote { sha = Some (sha 'd'); topology = B.Diverged })
           in
           let state =
-            if preserve then state
-            else
-              reply_checked state (B.Remote_replay_selected (B.Recorded source))
-              |> fun state -> reply_checked state B.Remote_checked_out
+            reply_checked state (B.Remote_replay_selected (B.Recorded source))
           in
           let replacement = sha 'e' in
           let state = reply_checked state (B.Integrated replacement) in
@@ -4038,8 +4086,9 @@ let publication_observation_tests =
   ]
 
 let remote_attempt_fixture policy =
+  let initial = fst (B.step B.empty (B.Materialized (B.New_branch source))) in
   let state, _ =
-    B.step B.empty
+    B.step initial
       (B.Request { intent with policy; purpose = B.Publish_revision source })
   in
   let state, _ =
@@ -4096,6 +4145,7 @@ let m2_upgrade_tests =
               (B.Recovery_verified
                  {
                    observation = dirty;
+                   local_extension = None;
                    source_preserved = true;
                    remote_preserved = true;
                  })
@@ -4133,6 +4183,7 @@ let m2_upgrade_tests =
               (B.Recovery_verified
                  {
                    observation = clean;
+                   local_extension = None;
                    source_preserved = true;
                    remote_preserved = true;
                  })
@@ -4186,6 +4237,7 @@ let m2_upgrade_tests =
               (B.Recovery_verified
                  {
                    observation = dirty;
+                   local_extension = None;
                    source_preserved = true;
                    remote_preserved = true;
                  })
@@ -4281,12 +4333,7 @@ let initial_remote_integration_tests =
               (if rewrite then B.Rewrite else B.Preserve_ancestry)
           in
           let state =
-            if rewrite then
-              let state, _ =
-                reply state (B.Remote_replay_selected (B.Inferred (sha 'd')))
-              in
-              fst (reply state B.Remote_checked_out)
-            else state
+            fst (reply state (B.Remote_replay_selected (B.Recorded source)))
           in
           let original = Option.get (B.operation state) in
           let state, _ = B.step state B.Recover in
@@ -4313,6 +4360,7 @@ let initial_remote_integration_tests =
                        target = sha 'f';
                        target_included = true;
                      };
+                   local_extension = None;
                    source_preserved = true;
                    remote_preserved = true;
                  })
@@ -4333,8 +4381,9 @@ let initial_remote_integration_tests =
                 {
                   kind =
                     ( B.Observe | B.Pin _ | B.Integrate _ | B.Commit_merge _
-                    | B.Plan_remote_replay _ | B.Checkout_remote _ | B.Inspect
-                    | B.Continue _ | B.Publish _ | B.Confirm _ );
+                    | B.Plan_remote_replay _ | B.Checkout_remote _
+                    | B.Verify_scope _ | B.Inspect | B.Continue _ | B.Publish _
+                    | B.Confirm _ );
                   _;
                 }
             | None ->
@@ -4384,7 +4433,9 @@ let initial_remote_integration_tests =
             else state
           in
           let state, _ =
-            B.step B.empty (B.Request { intent with policy; purpose })
+            B.step
+              (fst (B.step B.empty (B.Materialized (B.New_branch source))))
+              (B.Request { intent with policy; purpose })
           in
           let state, _ =
             reply state (B.Observed { observation with remote = Some incoming })
@@ -4404,15 +4455,13 @@ let initial_remote_integration_tests =
           let deterministic =
             match command.kind with
             | B.Plan_remote_replay request ->
-                rewrite
-                && request.preserved = preserved
-                && request.incoming = incoming
+                request.preserved = preserved && request.incoming = incoming
             | B.Integrate { source = kept; target = remote; policy; _ } ->
                 (not rewrite) && kept = preserved && remote = incoming
                 && policy = B.Preserve_ancestry
-            | B.Observe | B.Pin _ | B.Commit_merge _ | B.Checkout_remote _
-            | B.Inspect | B.Verify_recovery | B.Continue _ | B.Publish _
-            | B.Confirm _ ->
+            | B.Verify_scope _ | B.Observe | B.Pin _ | B.Commit_merge _
+            | B.Checkout_remote _ | B.Inspect | B.Verify_recovery | B.Continue _
+            | B.Publish _ | B.Confirm _ ->
                 false
           in
           let stale, effects =
@@ -4425,13 +4474,9 @@ let initial_remote_integration_tests =
                  })
           in
           let next =
-            if rewrite then
-              let state, _ =
-                reply (restore state)
-                  (B.Remote_replay_selected (B.Inferred (sha 'd')))
-              in
-              fst (reply (restore state) B.Remote_checked_out)
-            else state
+            fst
+              (reply (restore state)
+                 (B.Remote_replay_selected (B.Recorded source)))
           in
           let next =
             if lost_completion then
@@ -4506,8 +4551,9 @@ let initial_remote_integration_tests =
               {
                 kind =
                   ( B.Observe | B.Pin _ | B.Integrate _ | B.Commit_merge _
-                  | B.Plan_remote_replay _ | B.Checkout_remote _ | B.Inspect
-                  | B.Continue _ | B.Publish _ | B.Confirm _ );
+                  | B.Plan_remote_replay _ | B.Checkout_remote _
+                  | B.Verify_scope _ | B.Inspect | B.Continue _ | B.Publish _
+                  | B.Confirm _ );
                 _;
               }
           | None ->
@@ -4523,13 +4569,13 @@ let initial_remote_integration_tests =
           let state = remote_attempt_fixture policy in
           let state =
             if stage = 0 then state
-            else if rewrite then
-              let state, _ =
-                reply state (B.Remote_replay_selected (B.Inferred source))
-              in
-              let state, _ = reply state B.Remote_checked_out in
-              fst (reply state (B.Integrated candidate))
-            else fst (reply state (B.Integrated candidate))
+            else
+              fst
+                (reply
+                   (fst
+                      (reply state
+                         (B.Remote_replay_selected (B.Recorded source))))
+                   (B.Integrated candidate))
           in
           let state =
             if stage < 2 then state else fst (reply state B.Published)
@@ -4552,9 +4598,10 @@ let initial_remote_integration_tests =
           match B.decode old with
           | Error _ -> false
           | Ok restored ->
-              if rewrite || stage > 0 then B.equal restored state
+              if stage > 0 then B.equal restored state
               else
-                (Option.get (B.operation restored)).remote_integration = None
+                (Option.get (B.operation restored)).approved_scope
+                = Replay_scope.Unproven
                 && B.pending restored = B.pending state
                 && B.remote_integrations restored = []
                 && B.required_revisions restored = B.required_revisions state
@@ -4565,7 +4612,12 @@ let initial_remote_integration_tests =
       (fun (rewrite, corruption) ->
         try
           let policy = if rewrite then B.Rewrite else B.Preserve_ancestry in
-          let state = remote_attempt_fixture policy in
+          let state =
+            fst
+              (reply
+                 (remote_attempt_fixture policy)
+                 (B.Remote_replay_selected (B.Recorded source)))
+          in
           let field, value =
             match corruption with
             | 0 -> ("source_revision", `String (B.Commit.to_string (sha 'f')))
@@ -4581,7 +4633,7 @@ let initial_remote_integration_tests =
             | _ ->
                 ( "replay_boundary",
                   `List
-                    [ `String "Recorded"; `String (B.Commit.to_string source) ]
+                    [ `String "Recorded"; `String (B.Commit.to_string target) ]
                 )
           in
           let forged =
@@ -4796,7 +4848,6 @@ let preservation_checkpoint_tests =
           let state =
             fst (reply state (B.Remote_replay_selected (B.Recorded source)))
           in
-          let state = fst (reply state B.Remote_checked_out) in
           let state = fst (reply state (B.Integrated replayed)) in
           let state =
             if confirmed then fst (reply state B.Published) else state
@@ -5002,7 +5053,7 @@ let legacy_retention_tests =
                           {
                             token = command.token;
                             at = 100.;
-                            result = progress_result command;
+                            result = progress_result baseline command;
                           }
                     | None -> B.Recover
                   in

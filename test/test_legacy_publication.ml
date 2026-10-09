@@ -350,17 +350,15 @@ let () =
                       ~before_command:(fun _ -> ())
                       completed
                   in
-                  check "preserving repair settles after verification"
-                    (B.phase final = Some B.Settled);
-                  let published =
-                    Git.git_capture ~cwd:remote
-                      [ "rev-parse"; "refs/heads/patch" ]
-                  in
-                  List.iter
-                    (fun revision ->
-                      Git.run_git ~cwd:dir
-                        [ "merge-base"; "--is-ancestor"; revision; published ])
-                    [ source; retained; base ]);
+                  check "retention alone cannot authorize an unrelated merge"
+                    (B.phase final <> Some B.Settled
+                    && B.publications final = []);
+                  check "unapproved repair cannot change the remote"
+                    (Git.git_capture ~cwd:remote
+                       [ "rev-parse"; "refs/heads/patch" ]
+                    = base);
+                  check "rejected repair retains the disappeared remote"
+                    (List.mem retained_commit (B.required_revisions final)));
               let initial = B.import_legacy_publication B.empty ~base:"main" in
               let operation = Option.get (B.operation initial) in
               let publishing =

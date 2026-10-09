@@ -2276,7 +2276,21 @@ let%test_module "owner evidence for review readiness" =
              })
       in
       let t = reply t B.Pinned in
+      let proof =
+        let source = B.Commit.to_string revision in
+        let tree = String.make 40 'f' in
+        match Replay_scope.prepare_identity ~source ~tree with
+        | Error reason -> failwith reason
+        | Ok plan -> (
+            match
+              Replay_scope.verify plan ~candidate:source ~tree ~history:""
+                ~changed_paths:""
+            with
+            | Ok proof -> proof
+            | Error reason -> failwith reason)
+      in
       let t = reply t (B.Remote { sha = Some revision; topology = Equal }) in
+      let t = reply t (B.Scope_verified proof) in
       let head = Some (B.Commit.to_string revision) in
       let t = Orchestrator.set_head_oid t pid head in
       let t = Orchestrator.observe_publication_head t pid head in

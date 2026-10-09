@@ -18,6 +18,24 @@ let completion ?(at = 100.) ~state t result =
 
 let reply ?at ~step ~state t result = step t (completion ?at ~state t result)
 
+let verify_scope ~step ~state t =
+  match (B.pending (state t), B.operation (state t)) with
+  | Some { kind = B.Verify_scope candidate; _ }, Some operation ->
+      reply ~step ~state t
+        (Scope_fixture.verified operation.approved_scope candidate)
+  | ( Some
+        {
+          kind =
+            ( Observe | Inspect | Pin _ | Integrate _ | Continue _ | Publish _
+            | Confirm _ | Verify_recovery | Commit_merge _
+            | Plan_remote_replay _ | Checkout_remote _ );
+          _;
+        },
+      _ )
+  | None, _
+  | _, None ->
+      t
+
 (* Terminal fixtures must consume the owned recovery budget; a diagnostic
    result alone never represents exhausted recovery. *)
 let exhaust_diagnosis ~step ~state initial =
@@ -100,7 +118,7 @@ let publishing ~candidate ~step ~state initial =
            base_contains_source = false;
            completed_integration = false;
          })
-    |> fun t -> reply t B.Pinned
+    |> fun t -> reply t B.Pinned |> verify_scope ~step ~state
   in
   assert (
     Option.exists
@@ -174,6 +192,7 @@ let reconciled_agent ~base t =
   in
   let t = reply t B.Pinned in
   let t = reply t (B.Remote { sha = Some revision; topology = Equal }) in
+  let t = verify_scope ~step ~state t in
   assert (Option.equal B.equal_phase (B.phase (state t)) (Some B.Settled));
   let head = Some (B.Commit.to_string revision) in
   Patch_agent.observe_publication_head (Patch_agent.set_head_oid t head) head
