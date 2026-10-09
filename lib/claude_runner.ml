@@ -42,66 +42,6 @@ let prepare_minted_session_id_with_env ~getenv_opt ~patch_id ~resume_session =
 let prepare_minted_session_id =
   prepare_minted_session_id_with_env ~getenv_opt:Stdlib.Sys.getenv_opt
 
-let run ~model ~effort ~process_mgr ~cwd ~patch_id ~prompt ~resume_session
-    ~complexity =
-  ignore (patch_id : Types.Patch_id.t);
-  let args =
-    build_args ~getenv_opt:Stdlib.Sys.getenv_opt ~model ~effort ~complexity
-      ~prompt ~resume_session
-  in
-  let stdout_content, stderr_content, exit_code =
-    Eio.Switch.run @@ fun sw ->
-    let stdin_r, stdin_w = Eio.Process.pipe ~sw process_mgr in
-    let stdout_r, stdout_w = Eio.Process.pipe ~sw process_mgr in
-    let stderr_r, stderr_w = Eio.Process.pipe ~sw process_mgr in
-    let child =
-      Eio.Process.spawn ~sw process_mgr ~cwd ~stdin:stdin_r ~stdout:stdout_w
-        ~stderr:stderr_w args
-    in
-    Eio.Switch.on_release sw (fun () ->
-        try Eio.Process.signal child Stdlib.Sys.sigterm with _ -> ());
-    Eio.Flow.close stdin_r;
-    Eio.Flow.close stdin_w;
-    Eio.Flow.close stdout_w;
-    Eio.Flow.close stderr_w;
-    let stdout_buf = Eio.Buf_read.of_flow ~max_size:(1024 * 1024) stdout_r in
-    let stderr_buf = Eio.Buf_read.of_flow ~max_size:(1024 * 1024) stderr_r in
-    let drain flow =
-      let buf = Bytes.create 4096 in
-      try
-        while true do
-          ignore (Eio.Flow.single_read flow (Cstruct.of_bytes buf))
-        done
-      with End_of_file -> ()
-    in
-    let out, err =
-      Eio.Fiber.pair
-        (fun () ->
-          try Eio.Buf_read.take_all stdout_buf
-          with Eio.Buf_read.Buffer_limit_exceeded ->
-            drain stdout_r;
-            "<stdout exceeded 1MB limit, truncated>")
-        (fun () ->
-          try Eio.Buf_read.take_all stderr_buf
-          with Eio.Buf_read.Buffer_limit_exceeded ->
-            drain stderr_r;
-            "<stderr exceeded 1MB limit, truncated>")
-    in
-    let status = Eio.Process.await child in
-    let code = match status with `Exited c -> c | `Signaled s -> 128 + s in
-    (out, err, code)
-  in
-  let cleaned_stdout = strip_ansi stdout_content in
-  let got_events = not (String.is_empty (String.strip cleaned_stdout)) in
-  {
-    Llm_backend.exit_code;
-    stdout = cleaned_stdout;
-    stderr = stderr_content;
-    got_events;
-    saw_final_result = false;
-    timed_out = false;
-  }
-
 let run_streaming ~model ~effort ~process_mgr ~clock ~timeout ~setsid_exec
     ~project_name ~cwd ~patch_id ~prompt ~resume_session ~session_uuid
     ~complexity ~on_event =

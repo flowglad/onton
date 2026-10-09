@@ -265,9 +265,41 @@ let run_ensure ?cancel_stage ?materialization_error ?(fail_checkpoint = false)
   match materialization_error with
   | Some _ -> (
       match ensure () with
-      | Worktree_setup.Refused when !hook_calls = 0 -> "refused"
-      | Worktree_setup.Refused | Worktree_setup.Missing | Worktree_setup.Path _
-        ->
+      | Worktree_setup.Unavailable (Worktree_provision.Unsafe _)
+        when !hook_calls = 0 ->
+          created := false;
+          let result =
+            Runtime.with_patch_ownership Env.runtime ~patch_id:pid (fun owner ->
+                WS.ensure_owned ~owner ())
+          in
+          (match result with
+          | Worktree_setup.Path _ ->
+              failwith "refused provisioning reported success"
+          | Worktree_setup.Unavailable _ -> ());
+          if !hook_calls <> 0 then failwith "refused provisioning ran a hook";
+          let after =
+            Runtime.read Env.runtime (fun snap ->
+                Orchestrator.agent snap.Runtime.orchestrator pid)
+          in
+          if
+            not
+              (Option.value_map
+                 (Branch_reconcile.operation after.Patch_agent.branch_reconcile)
+                 ~default:false ~f:(fun operation ->
+                   Branch_reconcile.equal_phase operation.phase
+                     (Branch_reconcile.Intervention
+                        (Option.value materialization_error ~default:""))))
+          then failwith "unsafe provisioning did not enter owner intervention";
+          if
+            (not (Poly.equal agent.session_fallback after.session_fallback))
+            || agent.context_exhaustion_count <> after.context_exhaustion_count
+            || agent.start_attempts_without_pr
+               <> after.start_attempts_without_pr
+          then failwith "unsafe provisioning consumed implementation budgets";
+          "refused"
+      | Worktree_setup.Unavailable
+          (Worktree_provision.Temporary _ | Worktree_provision.Unsafe _)
+      | Worktree_setup.Path _ ->
           failwith "unsafe materialization was not refused before hook")
   | None -> (
       if fail_checkpoint then (
@@ -275,11 +307,14 @@ let run_ensure ?cancel_stage ?materialization_error ?(fail_checkpoint = false)
         Project_store.ensure_dir (Stdlib.Filename.dirname checkpoint);
         Unix.mkdir checkpoint 0o700;
         (match ensure () with
-        | Worktree_setup.Path _ -> ()
-        | Worktree_setup.Refused | Worktree_setup.Missing ->
-            failwith "failed checkpoint refused usable checkout");
-        if !hook_calls <> 1 then
-          failwith "hook did not run after checkout creation";
+        | Worktree_setup.Unavailable (Worktree_provision.Temporary _) -> ()
+        | Worktree_setup.Path _
+        | Worktree_setup.Unavailable (Worktree_provision.Unsafe _) ->
+            failwith "failed checkpoint did not defer provisioning");
+        if !hook_calls <> 0 then
+          failwith "hook ran before the materialization checkpoint";
+        if !attempted then
+          failwith "failed hook-plan checkpoint allowed checkout creation";
         let state =
           Runtime.read Env.runtime (fun snap ->
               (Orchestrator.agent snap.Runtime.orchestrator pid)
@@ -313,32 +348,33 @@ let run_ensure ?cancel_stage ?materialization_error ?(fail_checkpoint = false)
               [ "push"; "-q"; "origin"; moved ^ ":refs/heads/" ^ base_ref ];
           Git_env.run_git ~cwd:managed_dir
             [ "update-ref"; "refs/remotes/origin/" ^ base_ref; moved ];
-          let module Executor = Worktree_plan_executor.Make (Real) (Env) in
-          let result, _, events =
-            Executor.execute ~patch_id:pid ~agent ~fetch_lock:Env.fetch_mutex
-              ~fail_label:"start" ~ancestor_ids:[]
-              (Worktree_plan.for_start
-                 ~base:(Types.Branch.of_string base_ref)
-                 ~materialized:false)
+          let module Owned = Worktree_setup.Make (Real) (Env) in
+          let result =
+            Runtime.with_patch_ownership Env.runtime ~patch_id:pid (fun owner ->
+                Owned.ensure_owned ~owner ())
           in
           (match result with
-          | Worktree.Ok | Worktree.Noop -> ()
-          | Worktree.Conflict _ | Worktree.Merge_conflict _
-          | Worktree.Uncommitted_changes _ | Worktree.Error _ ->
-              failwith "start provenance plan failed");
-          (match events with
-          | [ Worktree_plan.Anchor_recorded anchor ] ->
-              assert_string "start anchor is the materialization revision"
-                original anchor.Anchor.sha;
-              if anchor.Anchor.observed_at_remote then
-                failwith "local materialization was labeled remote evidence"
-          | []
-          | Worktree_plan.Anchor_capture_failed :: _
-          | Worktree_plan.Anchor_recorded _ :: _ ->
-              failwith "start did not derive its anchor from materialization");
+          | Worktree_setup.Path _ -> ()
+          | Worktree_setup.Unavailable failure ->
+              failwith (Worktree_provision.message failure));
+          let receipt =
+            Runtime.read Env.runtime (fun snap ->
+                Branch_reconcile.materialization
+                  (Orchestrator.agent snap.Runtime.orchestrator pid)
+                    .Patch_agent.branch_reconcile)
+          in
+          (match
+             Option.bind receipt ~f:Branch_reconcile.materialization_boundary
+           with
+          | Some boundary ->
+              assert_string "owner retains original materialization boundary"
+                original
+                (Branch_reconcile.Commit.to_string boundary)
+          | None -> failwith "missing owner materialization boundary");
+
           p
-      | Worktree_setup.Missing -> failwith "ensure_worktree: Missing"
-      | Worktree_setup.Refused -> failwith "ensure_worktree: Refused"
+      | Worktree_setup.Unavailable failure ->
+          failwith (Worktree_provision.message failure)
       | exception exn when Worktree.has_cancellation exn ->
           if Option.is_none cancel_stage then raise exn;
           if not (phys_equal exn cancellation) then
@@ -347,8 +383,36 @@ let run_ensure ?cancel_stage ?materialization_error ?(fail_checkpoint = false)
             Runtime.read Env.runtime (fun snap ->
                 Orchestrator.agent snap.Runtime.orchestrator pid)
           in
-          if not (Patch_agent.equal agent after) then
-            failwith "cancellation changed agent state";
+          let without_owner agent =
+            match Persistence.patch_agent_to_yojson agent with
+            | `Assoc fields ->
+                `Assoc
+                  (List.Assoc.remove fields ~equal:String.equal
+                     "branch_reconcile")
+            | _ -> failwith "agent checkpoint"
+          in
+          if not (Poly.equal (without_owner agent) (without_owner after)) then
+            failwith "cancellation changed unrelated agent state";
+          let without_hook =
+            match Branch_reconcile.yojson_of_t after.branch_reconcile with
+            | `Assoc fields ->
+                `Assoc
+                  (List.Assoc.remove fields ~equal:String.equal "worktree_hook")
+            | _ -> failwith "owner checkpoint"
+          in
+          if
+            not
+              (Result.equal Branch_reconcile.equal String.equal
+                 (Branch_reconcile.decode without_hook)
+                 (Ok agent.branch_reconcile))
+          then failwith "cancellation changed unrelated owner state";
+          if
+            not
+              (Bool.equal
+                 (Worktree_hook.is_pending
+                    (Branch_reconcile.worktree_hook after.branch_reconcile))
+                 (not (Poly.equal cancel_stage (Some `Ready))))
+          then failwith "cancellation lost its pending creation hook";
           "cancelled")
 
 (** Origin's main advances after the clone; both the local [main] ref and the
@@ -449,7 +513,920 @@ let scenario_checkpoint_failure env =
        ~project_name:"checkpoint-failure"
        ~pid:(Types.Patch_id.of_string "1")
        ~branch:"checkpoint-failure/patch-1" ~base_ref:"main");
-  Stdlib.print_endline "  checkpoint_failure_preserves_checkout: OK"
+  Stdlib.print_endline "  hook_plan_checkpoint_failure_prevents_creation: OK"
+
+let scenario_hook_restart env =
+  with_temp_dir @@ fun root ->
+  let origin_dir = Stdlib.Filename.concat root "origin" in
+  let managed_dir = Stdlib.Filename.concat root "managed" in
+  setup_origin_with_main ~origin_dir;
+  clone_into ~origin_dir ~managed_dir;
+  let project_name = "hook-restart" in
+  let pid = Types.Patch_id.of_string "1" in
+  let branch = "hook-restart/patch-1" in
+  let main = Types.Branch.of_string "main" in
+  let checkpoint = Project_store.snapshot_path project_name in
+  let path = Worktree.worktree_dir ~project_name ~patch_id:pid in
+  let hook_path = Worktree_backend.canonical path in
+  let gameplan = { empty_gameplan with patches = [ mk_patch ~pid ~branch ] } in
+  let load () =
+    match Persistence.load ~path:checkpoint with
+    | Ok snapshot -> snapshot
+    | Error reason -> failwith reason
+  in
+  let persisted_hook () =
+    Branch_reconcile.worktree_hook
+      (Orchestrator.agent (load ()).Runtime.orchestrator pid)
+        .Patch_agent.branch_reconcile
+  in
+  let captured_script = Stdlib.Filename.concat root "prepare-checkout" in
+  Stdlib.Out_channel.with_open_bin captured_script (fun channel ->
+      Stdlib.output_string channel "#!/bin/sh\nprintf 'hook\\n' >> hook-runs\n");
+  Unix.chmod captured_script 0o700;
+  let configured_script = ref captured_script in
+  let create_cancel = ref true and hook_cancel = ref true in
+  let hook_calls = ref 0 and creates = ref 0 in
+  let cancellation =
+    Eio.Cancel.Cancelled (Failure "hook lifecycle interruption")
+  in
+  let module Real =
+    (val Worktree.make ~fs:(Eio.Stdenv.fs env) ~config:Worktree_lifecycle.git
+           ~clock:(Eio.Stdenv.clock env)
+           ~process_mgr:(Eio.Stdenv.process_mgr env)
+           ~repo_root:managed_dir)
+  in
+  let module W = struct
+    include Real
+
+    let create ~project_name ~patch_id ~branch ~base_ref =
+      (match
+         Worktree_hook.next (persisted_hook ()) ~path:hook_path
+           ~branch:(Types.Branch.to_string branch)
+       with
+      | Worktree_hook.Run run
+        when String.equal run.request.script captured_script ->
+          ()
+      | Worktree_hook.Run _ | Worktree_hook.Ready | Worktree_hook.Stop _ ->
+          failwith "checkout creation preceded the captured hook plan");
+      Int.incr creates;
+      let result = Real.create ~project_name ~patch_id ~branch ~base_ref in
+      if !create_cancel then (
+        create_cancel := false;
+        raise cancellation);
+      result
+
+    let run_hook ~clock ~script ~cwd ~env () =
+      if not (String.equal script captured_script) then
+        failwith "restart substituted a newly configured hook";
+      if
+        not
+          (Worktree_hook.equal_decision
+             (Worktree_hook.next (persisted_hook ()) ~path:hook_path ~branch)
+             (Worktree_hook.Stop "worktree_create_hook_outcome_unknown"))
+      then failwith "hook ran without a durable attempt claim";
+      Int.incr hook_calls;
+      let result = Real.run_hook ~clock ~script ~cwd ~env () in
+      (match result with Ok () -> () | Error reason -> failwith reason);
+      if !hook_cancel then (
+        hook_cancel := false;
+        raise cancellation);
+      result
+  end in
+  let ensure runtime =
+    let module Env = struct
+      let runtime = runtime
+      let clock = Eio.Stdenv.clock env
+      let fs = Eio.Stdenv.fs env
+      let worktree_mutex = Eio.Mutex.create ()
+      let hook_mutex = Eio.Mutex.create ()
+      let fetch_mutex = Eio.Mutex.create ()
+      let project_name = project_name
+
+      let user_config =
+        { User_config.on_worktree_create = Some !configured_script }
+    end in
+    let module WS = Worktree_setup.Make (W) (Env) in
+    Runtime.with_patch_ownership runtime ~patch_id:pid (fun owner ->
+        WS.ensure_owned ~owner ())
+  in
+  let expect_cancel runtime =
+    match ensure runtime with
+    | exception exn when Worktree.has_cancellation exn -> ()
+    | Worktree_setup.Path _ ->
+        failwith "injected hook cancellation was swallowed"
+    | Worktree_setup.Unavailable failure ->
+        failwith
+          ("hook cancellation deferred: " ^ Worktree_provision.message failure)
+  in
+  let restore () =
+    Runtime.create ~gameplan ~main_branch:main ~snapshot:(load ()) ()
+  in
+  let runtime = Runtime.create ~gameplan ~main_branch:main () in
+  expect_cancel runtime;
+  if !creates <> 1 || !hook_calls <> 0 then
+    failwith "creation interruption dispatched a hook";
+  configured_script := "exit 99";
+  expect_cancel (restore ());
+  if !creates <> 1 || !hook_calls <> 1 then
+    failwith "pending hook did not resume exactly once";
+  let runtime = restore () in
+  (match ensure runtime with
+  | Worktree_setup.Unavailable
+      (Worktree_provision.Unsafe "worktree_create_hook_outcome_unknown") ->
+      ()
+  | Worktree_setup.Path _
+  | Worktree_setup.Unavailable
+      (Worktree_provision.Temporary _ | Worktree_provision.Unsafe _) ->
+      failwith "uncertain hook did not require explicit resume");
+  if !hook_calls <> 1 then failwith "uncertain hook was repeated";
+  let other_path = Stdlib.Filename.concat root "other-checkout" in
+  Runtime.update_orchestrator runtime (fun orch ->
+      let orch = Orchestrator.set_worktree_path orch pid other_path in
+      fst (Orchestrator.reconcile_branch orch pid Branch_reconcile.Resume));
+  (match ensure runtime with
+  | Worktree_setup.Unavailable
+      (Worktree_provision.Unsafe "worktree_create_hook_context_changed") ->
+      ()
+  | Worktree_setup.Path _
+  | Worktree_setup.Unavailable
+      (Worktree_provision.Temporary _ | Worktree_provision.Unsafe _) ->
+      failwith "explicit resume authorized a hook in a different checkout");
+  if !hook_calls <> 1 || Stdlib.Sys.file_exists other_path then
+    failwith "changed hook context caused checkout side effects";
+  Runtime.update_orchestrator runtime (fun orch ->
+      Orchestrator.set_worktree_path orch pid path);
+  Runtime.update_orchestrator runtime (fun orch ->
+      fst (Orchestrator.reconcile_branch orch pid Branch_reconcile.Resume));
+  (match ensure runtime with
+  | Worktree_setup.Path actual ->
+      assert_string "hook resumed checkout" hook_path
+        (Worktree_backend.canonical actual)
+  | Worktree_setup.Unavailable failure ->
+      failwith (Worktree_provision.message failure));
+  if !creates <> 1 || !hook_calls <> 2 then
+    failwith "explicit resume did not retain hook identity";
+  (match ensure (restore ()) with
+  | Worktree_setup.Path _ -> ()
+  | Worktree_setup.Unavailable failure ->
+      failwith (Worktree_provision.message failure));
+  if !hook_calls <> 2 then failwith "completed hook repeated after restart";
+  let contents =
+    Stdlib.In_channel.with_open_bin
+      (Stdlib.Filename.concat path "hook-runs")
+      Stdlib.In_channel.input_all
+  in
+  assert_string "only authorized hook attempts wrote checkout data"
+    "hook\nhook\n" contents;
+  Stdlib.print_endline "  durable_hook_creation_execution_resume_restart: OK"
+
+let scenario_hook_checkpoint_failure ?(materialization = false) env completion =
+  with_temp_dir @@ fun root ->
+  let origin_dir = Stdlib.Filename.concat root "origin" in
+  let managed_dir = Stdlib.Filename.concat root "managed" in
+  setup_origin_with_main ~origin_dir;
+  clone_into ~origin_dir ~managed_dir;
+  let project_name = "hook-checkpoint" in
+  let pid = Types.Patch_id.of_string "1" in
+  let branch = "hook-checkpoint/patch-1" in
+  let path = Worktree.worktree_dir ~project_name ~patch_id:pid in
+  let checkpoint = Project_store.snapshot_path project_name in
+  let backup = checkpoint ^ ".saved" in
+  let blocked = ref false in
+  let block_checkpoint () =
+    Unix.rename checkpoint backup;
+    Unix.mkdir checkpoint 0o700;
+    blocked := true
+  in
+  let restore_checkpoint () =
+    if !blocked then (
+      Unix.rmdir checkpoint;
+      Unix.rename backup checkpoint;
+      blocked := false)
+  in
+  let load () =
+    match Persistence.load ~path:checkpoint with
+    | Ok snapshot -> snapshot
+    | Error reason -> failwith reason
+  in
+  let script = Stdlib.Filename.concat root "prepare-checkout" in
+  Stdlib.Out_channel.with_open_bin script (fun channel ->
+      Stdlib.output_string channel "#!/bin/sh\nprintf 'hook\\n' >> hook-runs\n");
+  Unix.chmod script 0o700;
+  let hook_calls = ref 0 and creates = ref 0 in
+  let inject_materialization_failure = ref materialization in
+  let inject_completion_failure = ref completion in
+  let module Real =
+    (val Worktree.make ~fs:(Eio.Stdenv.fs env) ~config:Worktree_lifecycle.git
+           ~clock:(Eio.Stdenv.clock env)
+           ~process_mgr:(Eio.Stdenv.process_mgr env)
+           ~repo_root:managed_dir)
+  in
+  let module W = struct
+    include Real
+
+    let create ~project_name ~patch_id ~branch ~base_ref =
+      Int.incr creates;
+      Real.create ~project_name ~patch_id ~branch ~base_ref
+
+    let materialization ~path ~project_name ~branch =
+      let result = Real.materialization ~path ~project_name ~branch in
+      (match result with
+      | Ok (Some _) when !inject_materialization_failure ->
+          inject_materialization_failure := false;
+          block_checkpoint ()
+      | Ok _ | Error _ -> ());
+      result
+
+    let run_hook ~clock ~script ~cwd ~env () =
+      Int.incr hook_calls;
+      let result = Real.run_hook ~clock ~script ~cwd ~env () in
+      (match result with Ok () -> () | Error reason -> failwith reason);
+      if !inject_completion_failure then (
+        inject_completion_failure := false;
+        block_checkpoint ());
+      result
+  end in
+  let gameplan = { empty_gameplan with patches = [ mk_patch ~pid ~branch ] } in
+  let main_branch = Types.Branch.of_string "main" in
+  let runtime = Runtime.create ~gameplan ~main_branch () in
+  let hook_mutex = Eio.Mutex.create () in
+  let ensure runtime =
+    let module Env = struct
+      let runtime = runtime
+      let clock = Eio.Stdenv.clock env
+      let fs = Eio.Stdenv.fs env
+      let worktree_mutex = Eio.Mutex.create ()
+      let hook_mutex = hook_mutex
+      let fetch_mutex = Eio.Mutex.create ()
+      let project_name = project_name
+      let user_config = { User_config.on_worktree_create = Some script }
+    end in
+    let module WS = Worktree_setup.Make (W) (Env) in
+    Runtime.with_patch_ownership runtime ~patch_id:pid (fun owner ->
+        WS.ensure_owned ~owner ())
+  in
+  let expect_checkpoint_failure = function
+    | Worktree_setup.Unavailable (Worktree_provision.Temporary _) -> ()
+    | Worktree_setup.Path _
+    | Worktree_setup.Unavailable (Worktree_provision.Unsafe _) ->
+        failwith "hook checkpoint failure was not retryable"
+  in
+  Stdlib.Fun.protect ~finally:restore_checkpoint (fun () ->
+      if completion || materialization then
+        expect_checkpoint_failure (ensure runtime)
+      else
+        Eio.Switch.run (fun sw ->
+            Eio.Mutex.lock hook_mutex;
+            let held = ref true in
+            let release () =
+              if !held then (
+                held := false;
+                Eio.Mutex.unlock hook_mutex)
+            in
+            Stdlib.Fun.protect ~finally:release (fun () ->
+                let result =
+                  Eio.Fiber.fork_promise ~sw (fun () -> ensure runtime)
+                in
+                Eio.Time.with_timeout_exn (Eio.Stdenv.clock env) 10. (fun () ->
+                    while
+                      Runtime.read runtime (fun snap ->
+                          Option.is_none
+                            (Branch_reconcile.materialization
+                               (Orchestrator.agent snap.Runtime.orchestrator pid)
+                                 .Patch_agent.branch_reconcile))
+                    do
+                      Eio.Time.sleep (Eio.Stdenv.clock env) 0.001
+                    done;
+                    block_checkpoint ();
+                    release ();
+                    expect_checkpoint_failure (Eio.Promise.await_exn result)))));
+  let expected_initial = if completion then 1 else 0 in
+  if !hook_calls <> expected_initial then
+    failwith "failed hook checkpoint allowed an unauthorized execution";
+  let persisted = load () in
+  if materialization then (
+    let owner snapshot =
+      (Orchestrator.agent snapshot.Runtime.orchestrator pid)
+        .Patch_agent.branch_reconcile
+    in
+    if
+      Option.is_some (Branch_reconcile.materialization (owner persisted))
+      || Runtime.read runtime (fun snapshot ->
+          Option.is_some (Branch_reconcile.materialization (owner snapshot)))
+    then failwith "refused materialization checkpoint installed a receipt";
+    if !creates <> 1 || not (Stdlib.Sys.file_exists path) then
+      failwith "materialization refusal did not retain its created checkout");
+  let hook =
+    Branch_reconcile.worktree_hook
+      (Orchestrator.agent persisted.Runtime.orchestrator pid)
+        .Patch_agent.branch_reconcile
+  in
+  (match
+     Worktree_hook.next hook ~path:(Worktree_backend.canonical path) ~branch
+   with
+  | Worktree_hook.Run run when (not completion) && run.attempt = 1 -> ()
+  | Worktree_hook.Stop "worktree_create_hook_outcome_unknown" when completion ->
+      ()
+  | Worktree_hook.Run _ | Worktree_hook.Stop _ | Worktree_hook.Ready ->
+      failwith "checkpoint failure changed durable hook authority");
+  let restored = Runtime.create ~gameplan ~main_branch ~snapshot:persisted () in
+  if completion then (
+    (match ensure restored with
+    | Worktree_setup.Unavailable
+        (Worktree_provision.Unsafe "worktree_create_hook_outcome_unknown") ->
+        ()
+    | Worktree_setup.Path _
+    | Worktree_setup.Unavailable
+        (Worktree_provision.Temporary _ | Worktree_provision.Unsafe _) ->
+        failwith "lost completion repeated the hook after restart");
+    if !hook_calls <> 1 then failwith "unacknowledged hook repeated";
+    Runtime.update_orchestrator restored (fun orch ->
+        fst (Orchestrator.reconcile_branch orch pid Branch_reconcile.Resume)));
+  (match ensure restored with
+  | Worktree_setup.Path _ -> ()
+  | Worktree_setup.Unavailable failure ->
+      failwith (Worktree_provision.message failure));
+  let expected_final = if completion then 2 else 1 in
+  if !hook_calls <> expected_final then failwith "hook retry did not converge";
+  let restarted =
+    Runtime.create ~gameplan ~main_branch ~snapshot:(load ()) ()
+  in
+  (match ensure restarted with
+  | Worktree_setup.Path _ -> ()
+  | Worktree_setup.Unavailable failure ->
+      failwith (Worktree_provision.message failure));
+  if !hook_calls <> expected_final then failwith "acknowledged hook repeated";
+  if !creates <> 1 then
+    failwith "checkpoint recovery recreated an existing checkout";
+  let saved = load () in
+  if
+    Option.is_none
+      (Branch_reconcile.materialization
+         (Orchestrator.agent saved.Runtime.orchestrator pid)
+           .Patch_agent.branch_reconcile)
+  then failwith "checkpoint recovery lost its materialization receipt";
+  let contents =
+    Stdlib.In_channel.with_open_bin
+      (Stdlib.Filename.concat path "hook-runs")
+      Stdlib.In_channel.input_all
+  in
+  assert_string "only authorized attempts wrote checkout data"
+    (if completion then "hook\nhook\n" else "hook\n")
+    contents;
+  Stdlib.print_endline "  hook_claim_completion_checkpoint_failure_restart: OK"
+
+let scenario_hook_changes_checkout env move_checkout =
+  with_temp_dir @@ fun root ->
+  let origin_dir = Stdlib.Filename.concat root "origin" in
+  let managed_dir = Stdlib.Filename.concat root "managed" in
+  setup_origin_with_main ~origin_dir;
+  clone_into ~origin_dir ~managed_dir;
+  let project_name = "hook-checkout" in
+  let pid = Types.Patch_id.of_string "1" in
+  let branch = "hook-checkout/patch-1" in
+  let path = Worktree.worktree_dir ~project_name ~patch_id:pid in
+  let script = Stdlib.Filename.concat root "change-checkout" in
+  Stdlib.Out_channel.with_open_bin script (fun channel ->
+      Stdlib.output_string channel
+        (if move_checkout then
+           "#!/bin/sh\nexec git worktree move . ../moved-checkout\n"
+         else "#!/bin/sh\nexec git switch -c hook-other-branch\n"));
+  Unix.chmod script 0o700;
+  let gameplan = { empty_gameplan with patches = [ mk_patch ~pid ~branch ] } in
+  let module W =
+    (val Worktree.make ~fs:(Eio.Stdenv.fs env) ~config:Worktree_lifecycle.git
+           ~clock:(Eio.Stdenv.clock env)
+           ~process_mgr:(Eio.Stdenv.process_mgr env)
+           ~repo_root:managed_dir)
+  in
+  let module Env = struct
+    let runtime =
+      Runtime.create ~gameplan ~main_branch:(Types.Branch.of_string "main") ()
+
+    let clock = Eio.Stdenv.clock env
+    let fs = Eio.Stdenv.fs env
+    let worktree_mutex = Eio.Mutex.create ()
+    let hook_mutex = Eio.Mutex.create ()
+    let fetch_mutex = Eio.Mutex.create ()
+    let project_name = project_name
+    let user_config = { User_config.on_worktree_create = Some script }
+  end in
+  let module WS = Worktree_setup.Make (W) (Env) in
+  let result =
+    Runtime.with_patch_ownership Env.runtime ~patch_id:pid (fun owner ->
+        WS.ensure_owned ~owner ())
+  in
+  if move_checkout then (
+    if Stdlib.Sys.file_exists path then failwith "hook did not move checkout")
+  else
+    assert_string "hook changed branch" "hook-other-branch"
+      (git_capture ~dir:path [ "branch"; "--show-current" ]);
+  (match result with
+  | Worktree_setup.Unavailable
+      (Worktree_provision.Unsafe _ | Worktree_provision.Temporary _) ->
+      ()
+  | Worktree_setup.Path _ ->
+      failwith "hook changed checkout but provisioning reported readiness");
+  Stdlib.print_endline "  hook_checkout_mutation_refuses_readiness: OK"
+
+let scenario_hook_terminal_while_waiting env merged =
+  with_temp_dir @@ fun root ->
+  let origin_dir = Stdlib.Filename.concat root "origin" in
+  let managed_dir = Stdlib.Filename.concat root "managed" in
+  setup_origin_with_main ~origin_dir;
+  clone_into ~origin_dir ~managed_dir;
+  let project_name = "hook-capacity" in
+  let pid = Types.Patch_id.of_string "1" in
+  let branch = "hook-capacity/patch-1" in
+  let gameplan = { empty_gameplan with patches = [ mk_patch ~pid ~branch ] } in
+  let hook_calls = ref 0 in
+  let module Real =
+    (val Worktree.make ~fs:(Eio.Stdenv.fs env) ~config:Worktree_lifecycle.git
+           ~clock:(Eio.Stdenv.clock env)
+           ~process_mgr:(Eio.Stdenv.process_mgr env)
+           ~repo_root:managed_dir)
+  in
+  let module W = struct
+    include Real
+
+    let run_hook ~clock:_ ~script:_ ~cwd:_ ~env:_ () =
+      Int.incr hook_calls;
+      Ok ()
+  end in
+  let module Env = struct
+    let runtime =
+      Runtime.create ~gameplan ~main_branch:(Types.Branch.of_string "main") ()
+
+    let clock = Eio.Stdenv.clock env
+    let fs = Eio.Stdenv.fs env
+    let worktree_mutex = Eio.Mutex.create ()
+    let hook_mutex = Eio.Mutex.create ()
+    let fetch_mutex = Eio.Mutex.create ()
+    let project_name = project_name
+    let user_config = { User_config.on_worktree_create = Some "true" }
+  end in
+  let module WS = Worktree_setup.Make (W) (Env) in
+  let owner_state () =
+    Runtime.read Env.runtime (fun snap ->
+        (Orchestrator.agent snap.Runtime.orchestrator pid)
+          .Patch_agent.branch_reconcile)
+  in
+  Eio.Switch.run (fun sw ->
+      Eio.Mutex.lock Env.hook_mutex;
+      let held = ref true in
+      let release () =
+        if !held then (
+          held := false;
+          Eio.Mutex.unlock Env.hook_mutex)
+      in
+      Stdlib.Fun.protect ~finally:release (fun () ->
+          let finished =
+            Eio.Fiber.fork_promise ~sw (fun () ->
+                Runtime.with_patch_ownership Env.runtime ~patch_id:pid
+                  (fun owner -> WS.ensure_owned ~owner ()))
+          in
+          Eio.Time.with_timeout_exn Env.clock 10. (fun () ->
+              while
+                Option.is_none
+                  (Branch_reconcile.materialization (owner_state ()))
+              do
+                Eio.Time.sleep Env.clock 0.001
+              done;
+              Runtime.update_orchestrator Env.runtime (fun orch ->
+                  if merged then Orchestrator.mark_merged orch pid
+                  else
+                    Orchestrator.apply_session_result orch pid
+                      (Orchestrator.Session_wontdo "stop before initialization"));
+              release ();
+              match Eio.Promise.await_exn finished with
+              | Worktree_setup.Unavailable (Worktree_provision.Unsafe reason)
+                when String.equal reason
+                       (if merged then "patch_merged" else "patch_wontdo") ->
+                  ()
+              | Worktree_setup.Path _
+              | Worktree_setup.Unavailable
+                  (Worktree_provision.Temporary _ | Worktree_provision.Unsafe _)
+                ->
+                  failwith
+                    "terminal patch did not suspend checkout initialization")));
+  if !hook_calls <> 0 then
+    failwith "terminal patch launched a hook after waiting for capacity";
+  let path =
+    Worktree_backend.canonical
+      (Worktree.worktree_dir ~project_name ~patch_id:pid)
+  in
+  (match
+     Worktree_hook.next
+       (Branch_reconcile.worktree_hook (owner_state ()))
+       ~path ~branch
+   with
+  | Worktree_hook.Run run when run.attempt = 1 -> ()
+  | Worktree_hook.Run _ | Worktree_hook.Ready | Worktree_hook.Stop _ ->
+      failwith "terminal patch consumed or lost its unstarted hook");
+  Stdlib.print_endline "  terminal_hook_capacity_interleaving: OK"
+
+let scenario_owned_provisioning env =
+  with_temp_dir @@ fun root ->
+  let origin_dir = Stdlib.Filename.concat root "origin" in
+  let managed_dir = Stdlib.Filename.concat root "managed" in
+  setup_origin_with_main ~origin_dir;
+  clone_into ~origin_dir ~managed_dir;
+  let project_name = "owned-provision" in
+  let checkpoint = Project_store.snapshot_path project_name in
+  let pid = Types.Patch_id.of_string "1" in
+  let branch = "owned-provision/patch-1" in
+  let main = Types.Branch.of_string "main" in
+  let gameplan = { empty_gameplan with patches = [ mk_patch ~pid ~branch ] } in
+  let load () =
+    match Persistence.load ~path:checkpoint with
+    | Ok snapshot -> snapshot
+    | Error reason -> failwith reason
+  in
+  let persisted_owner () =
+    (Orchestrator.agent (load ()).Runtime.orchestrator pid)
+      .Patch_agent.branch_reconcile
+  in
+  let inspect_authority () =
+    match Branch_reconcile.operation (persisted_owner ()) with
+    | Some operation
+      when Branch_reconcile.is_provisioning operation.intent.purpose
+           && Option.is_some operation.pending ->
+        ()
+    | Some _ | None ->
+        failwith "checkout effect preceded durable provisioning command"
+  in
+  let module Real =
+    (val Worktree.make ~fs:(Eio.Stdenv.fs env) ~config:Worktree_lifecycle.git
+           ~clock:(Eio.Stdenv.clock env)
+           ~process_mgr:(Eio.Stdenv.process_mgr env)
+           ~repo_root:managed_dir)
+  in
+  let offline = ref true and probes = ref 0 and creates = ref 0 in
+  let cancel_probe = ref false in
+  let cancellation =
+    Eio.Cancel.Cancelled (Failure "interrupted provisioning")
+  in
+  let module W = struct
+    include Real
+
+    let ensure_ready ~path ~branch =
+      inspect_authority ();
+      Int.incr probes;
+      if !cancel_probe then raise cancellation;
+      if !offline then Error "checkout probe offline"
+      else Real.ensure_ready ~path ~branch
+
+    let create ~project_name ~patch_id ~branch ~base_ref =
+      inspect_authority ();
+      Int.incr creates;
+      Real.create ~project_name ~patch_id ~branch ~base_ref
+
+    let reconcile ~path:_ ~project_name:_ ~branch:_ ~operation:_ _ =
+      failwith "provisioning invoked integration or publication"
+  end in
+  let module Env = struct
+    let runtime = Runtime.create ~gameplan ~main_branch:main ()
+    let clock = Eio.Stdenv.clock env
+    let fs = Eio.Stdenv.fs env
+    let worktree_mutex = Eio.Mutex.create ()
+    let hook_mutex = Eio.Mutex.create ()
+    let fetch_mutex = Eio.Mutex.create ()
+    let project_name = project_name
+    let user_config = { User_config.on_worktree_create = None }
+  end in
+  let module WS = Worktree_setup.Make (W) (Env) in
+  let agent runtime =
+    Runtime.read runtime (fun snapshot ->
+        Orchestrator.agent snapshot.Runtime.orchestrator pid)
+  in
+  let ensure runtime run =
+    Runtime.with_patch_ownership runtime ~patch_id:pid (fun owner ->
+        run ~owner ())
+  in
+  let temporary = function
+    | Worktree_setup.Unavailable (Worktree_provision.Temporary _) -> ()
+    | Worktree_setup.Unavailable (Worktree_provision.Unsafe _)
+    | Worktree_setup.Path _ ->
+        failwith "expected deferred checkout provisioning"
+  in
+  Runtime.update_orchestrator Env.runtime (fun orch ->
+      let orch =
+        Orchestrator.send_human_message orch pid "preserve this guidance"
+      in
+      let orch = Orchestrator.set_tried_fresh orch pid in
+      let orch =
+        Orchestrator.set_llm_session_id orch pid (Some "existing-session")
+      in
+      Orchestrator.fire orch (Orchestrator.Start (pid, main)));
+  let before = agent Env.runtime in
+  let check_budgets actual =
+    if
+      (not
+         (Poly.equal before.Patch_agent.session_fallback
+            actual.Patch_agent.session_fallback))
+      || (not
+            (Option.equal String.equal before.llm_session_id
+               actual.llm_session_id))
+      || before.start_attempts_without_pr <> actual.start_attempts_without_pr
+      || before.context_exhaustion_count <> actual.context_exhaustion_count
+    then failwith "provisioning changed implementation-session budgets"
+  in
+  Project_store.ensure_dir (Stdlib.Filename.dirname checkpoint);
+  Unix.mkdir checkpoint 0o700;
+  temporary (ensure Env.runtime (WS.ensure_owned ?base_ref:None));
+  if !probes <> 0 || !creates <> 0 then
+    failwith "failed checkpoint allowed checkout effects";
+  if
+    not
+      (Branch_reconcile.equal before.branch_reconcile
+         (agent Env.runtime).branch_reconcile)
+  then failwith "failed checkpoint installed an owner operation";
+  check_budgets (agent Env.runtime);
+  Unix.rmdir checkpoint;
+  cancel_probe := true;
+  (match ensure Env.runtime (WS.ensure_owned ?base_ref:None) with
+  | Worktree_setup.Path _ | Worktree_setup.Unavailable _ ->
+      failwith "owned provisioning swallowed cancellation"
+  | exception exn when Worktree.has_cancellation exn ->
+      if not (phys_equal exn cancellation) then failwith "cancellation changed");
+  let interrupted = persisted_owner () in
+  if Option.is_none (Branch_reconcile.pending interrupted) || !creates <> 0 then
+    failwith "cancellation lost the pending command or created a checkout";
+  check_budgets (agent Env.runtime);
+  cancel_probe := false;
+  temporary (ensure Env.runtime (WS.ensure_owned ?base_ref:None));
+  let waiting = persisted_owner () in
+  if
+    not
+      (Option.equal Int.equal
+         (Option.map (Branch_reconcile.operation interrupted) ~f:(fun op ->
+              op.id))
+         (Option.map (Branch_reconcile.operation waiting) ~f:(fun op -> op.id)))
+  then failwith "retry replaced the interrupted provisioning operation";
+  let deadline =
+    match Branch_reconcile.operation waiting with
+    | Some { phase = Branch_reconcile.Waiting { until; _ }; _ } -> until
+    | Some
+        {
+          phase =
+            ( Branch_reconcile.Preparing | Integrating | Repairing _
+            | Publishing | Confirming | Recovering | Settled | Intervention _ );
+          _;
+        }
+    | None ->
+        failwith "probe failure did not persist backoff"
+  in
+  let probe_count = !probes in
+  temporary (ensure Env.runtime (WS.ensure_owned ?base_ref:None));
+  if !probes <> probe_count || !creates <> 0 then
+    failwith "retry bypassed owner backoff";
+  if not (Branch_reconcile.equal waiting (persisted_owner ())) then
+    failwith "new inspection request superseded pending retry";
+  check_budgets (agent Env.runtime);
+  Runtime.update_orchestrator Env.runtime (fun orch ->
+      Orchestrator.apply_start_outcome orch pid Orchestrator.Start_failed);
+  let after = agent Env.runtime in
+  check_budgets after;
+  if
+    after.busy
+    || (not
+          (List.equal String.equal after.human_messages
+             [ "preserve this guidance" ]))
+    || not (List.is_empty after.inflight_human_messages)
+  then failwith "deferred Start lost guidance or retained worker capacity";
+  let save snapshot = Persistence.save_snapshot ~path:checkpoint snapshot in
+  (match Runtime.read Env.runtime save with
+  | Ok () -> ()
+  | Error reason -> failwith reason);
+  let module Restored = struct
+    include Env
+
+    let runtime =
+      Runtime.create ~gameplan ~main_branch:main ~snapshot:(load ()) ()
+  end in
+  let module Resumed = Worktree_setup.Make (W) (Restored) in
+  offline := false;
+  let outcome =
+    Branch_reconcile_runner.run ~runtime:Restored.runtime ~persist:save
+      ~patch_id:pid
+      ~now:(fun () -> deadline +. 1.)
+      ~execute:(Resumed.execute_reconciliation ~patch_id:pid)
+      (Branch_reconcile.Tick (deadline +. 1.))
+  in
+  (match outcome with
+  | Branch_reconcile_runner.Idle -> ()
+  | Waiting | Repair_needed _ | Intervention _ | Checkpoint_failed _ ->
+      failwith "restored provisioning failed to settle");
+  check_budgets (agent Restored.runtime);
+  if !creates <> 1 then
+    failwith "restored provisioning did not create exactly once";
+  let settled = persisted_owner () in
+  if Option.is_none (Branch_reconcile.materialization settled) then
+    failwith "restored provisioning omitted durable materialization";
+  let probe_count = !probes in
+  (match ensure Restored.runtime (Resumed.ensure_owned ?base_ref:None) with
+  | Worktree_setup.Path _ -> ()
+  | Worktree_setup.Unavailable failure ->
+      failwith (Worktree_provision.message failure));
+  if !creates <> 1 || !probes <= probe_count then
+    failwith "later checkout request failed to reinspect existing checkout";
+  if Branch_reconcile.equal settled (persisted_owner ()) then
+    failwith "later checkout inspection reused settled request identity";
+  if Option.is_some (remote_head_sha ~dir:managed_dir ~ref_name:branch) then
+    failwith "provisioning published the patch branch";
+  Stdlib.print_endline "  owned_provisioning_checkpoint_retry_restart: OK"
+
+let scenario_adopted_publication env policy history =
+  let module B = Branch_reconcile in
+  let module R = Branch_reconcile_runner in
+  with_temp_dir @@ fun root ->
+  let origin_dir = Stdlib.Filename.concat root "origin" in
+  let managed_dir = Stdlib.Filename.concat root "managed" in
+  setup_origin_with_main ~origin_dir;
+  clone_into ~origin_dir ~managed_dir;
+  let project_name = "adopted-publication" in
+  let branch = "adopted-publication/patch-1" in
+  let pid = Types.Patch_id.of_string "1" in
+  let git args = Git_env.run_git ~cwd:managed_dir args in
+  git [ "checkout"; "-q"; "-b"; branch ];
+  if not (Poly.equal history `Ahead) then (
+    sh ~dir:managed_dir "echo remote > remote.txt";
+    git [ "add"; "remote.txt" ];
+    git [ "commit"; "-qm"; "remote contribution" ]);
+  git [ "push"; "-q"; "origin"; branch ];
+  let remote = git_capture ~dir:managed_dir [ "rev-parse"; "HEAD" ] in
+  (match history with
+  | `Ahead -> ()
+  | `Diverged -> git [ "reset"; "--hard"; "main" ]
+  | `Unrelated ->
+      git [ "checkout"; "--orphan"; "unrelated-local" ];
+      git [ "rm"; "-rf"; "." ]);
+  sh ~dir:managed_dir "echo local > local.txt";
+  git [ "add"; "local.txt" ];
+  git [ "commit"; "-qm"; "local contribution" ];
+  let local = git_capture ~dir:managed_dir [ "rev-parse"; "HEAD" ] in
+  git [ "checkout"; "-q"; "main" ];
+  git [ "update-ref"; "refs/heads/" ^ branch; local ];
+  let gameplan = { empty_gameplan with patches = [ mk_patch ~pid ~branch ] } in
+  let module W =
+    (val Worktree.make ~fs:(Eio.Stdenv.fs env) ~config:Worktree_lifecycle.git
+           ~clock:(Eio.Stdenv.clock env)
+           ~process_mgr:(Eio.Stdenv.process_mgr env)
+           ~repo_root:managed_dir)
+  in
+  let module Env = struct
+    let runtime =
+      Runtime.create ~gameplan ~main_branch:(Types.Branch.of_string "main") ()
+
+    let clock = Eio.Stdenv.clock env
+    let fs = Eio.Stdenv.fs env
+    let worktree_mutex = Eio.Mutex.create ()
+    let hook_mutex = Eio.Mutex.create ()
+    let fetch_mutex = Eio.Mutex.create ()
+    let project_name = project_name
+    let user_config = { User_config.on_worktree_create = None }
+  end in
+  let module WS = Worktree_setup.Make (W) (Env) in
+  let path =
+    match
+      Runtime.with_patch_ownership Env.runtime ~patch_id:pid (fun owner ->
+          WS.ensure_owned ~owner ())
+    with
+    | Worktree_setup.Path path -> path
+    | Unavailable failure -> failwith (Worktree_provision.message failure)
+  in
+  let state () =
+    Runtime.read Env.runtime (fun snapshot ->
+        (Orchestrator.agent snapshot.Runtime.orchestrator pid)
+          .Patch_agent.branch_reconcile)
+  in
+  assert_string "adoption preserves local tip" local
+    (git_capture ~dir:path [ "rev-parse"; "HEAD" ]);
+  assert_string "adoption preserves remote tip" remote
+    (git_capture ~dir:origin_dir [ "rev-parse"; branch ]);
+  (match B.materialization (state ()) with
+  | Some (B.Adopted_branch head)
+    when String.equal (B.Commit.to_string head) local ->
+      ()
+  | Some (B.Adopted_branch _ | B.New_branch _) | None ->
+      failwith "adoption fabricated a replay boundary");
+  if not (List.is_empty (B.publications (state ()))) then
+    failwith "provisioning granted publication authority";
+  let checkpoint = Project_store.snapshot_path project_name in
+  let persist snapshot = Persistence.save_snapshot ~path:checkpoint snapshot in
+  let now () = 100. in
+  let source =
+    match B.Commit.make local with
+    | Some source -> source
+    | None -> failwith "invalid fixture revision"
+  in
+  let outcome =
+    R.run ~runtime:Env.runtime ~persist ~patch_id:pid ~now
+      ~execute:(WS.execute_reconciliation ~patch_id:pid)
+      (B.Request B.{ base = "main"; policy; purpose = Publish_revision source })
+  in
+  let calls = ref 0 in
+  let settle = function
+    | R.Idle -> ()
+    | R.Waiting ->
+        failwith
+          ("adopted publication unexpectedly deferred: "
+          ^ Yojson.Safe.to_string (B.yojson_of_t (state ())))
+    | R.Repair_needed _ -> failwith "adopted publication still requires repair"
+    | R.Intervention reason | R.Checkpoint_failed reason -> failwith reason
+  in
+  (match (history, outcome) with
+  | `Unrelated, R.Repair_needed token ->
+      let active_token = ref token in
+      let backend =
+        Llm_backend.
+          {
+            name = "adopted-history-recovery";
+            run_streaming =
+              (fun ~project_name:_
+                ~cwd:_
+                ~patch_id:_
+                ~prompt:_
+                ~resume_session:_
+                ~session_uuid:_
+                ~complexity:_
+                ~on_event:_
+              ->
+                Int.incr calls;
+                let saved =
+                  match Persistence.load ~path:checkpoint with
+                  | Ok saved -> saved
+                  | Error reason -> failwith reason
+                in
+                let saved_state =
+                  (Orchestrator.agent saved.Runtime.orchestrator pid)
+                    .Patch_agent.branch_reconcile
+                in
+                (match B.repair_turn saved_state ~branch !active_token with
+                | Some { mode = B.History_recovery _; _ } -> ()
+                | Some { mode = B.Content_repair; _ } | None ->
+                    failwith
+                      "recovery agent lacks durable history-recovery authority");
+                Git_env.run_git ~cwd:path
+                  [
+                    "merge"; "--allow-unrelated-histories"; "--no-edit"; remote;
+                  ];
+                {
+                  exit_code = 0;
+                  stdout = "";
+                  stderr = "";
+                  got_events = true;
+                  saw_final_result = true;
+                  timed_out = false;
+                });
+          }
+      in
+      let repair () =
+        R.run_repair ~runtime:Env.runtime ~persist ~patch_id:pid
+          ~with_capacity:(fun run -> run ())
+          ~now
+          ~execute:(fun ~agent:_ ~operation command ->
+            WS.execute_reconciliation ~patch_id:pid ~operation command)
+          ~perform:(fun ~agent:_ ~turn ->
+            active_token := turn.B.token;
+            Branch_repair_session.run ~backend
+              ~cwd:Eio.Path.(Env.fs / path)
+              ~project_name ~patch_id:pid ~complexity:None ~turn
+              ~read_head:(fun () -> W.read_branch_sha ~path ~ref_name:"HEAD")
+              ~now)
+          token
+      in
+      settle (repair ());
+      settle (repair ());
+      if !calls <> 1 then failwith "duplicate recovery claim reran agent"
+  | (`Ahead | `Diverged), outcome -> settle outcome
+  | `Unrelated, (R.Idle | R.Waiting | R.Intervention _ | R.Checkpoint_failed _)
+    ->
+      failwith "unrelated adopted history did not reach agent recovery");
+  let published = git_capture ~dir:origin_dir [ "rev-parse"; branch ] in
+  List.iter
+    (if B.equal_policy policy B.Preserve_ancestry then [ local; remote ]
+     else [ local ])
+    ~f:(fun preserved ->
+      Git_env.run_git ~cwd:path
+        [ "merge-base"; "--is-ancestor"; preserved; published ]);
+  assert_string "published local work" "local"
+    (git_capture ~dir:origin_dir [ "show"; branch ^ ":local.txt" ]);
+  if not (Poly.equal history `Ahead) then
+    assert_string "published remote work" "remote"
+      (git_capture ~dir:origin_dir [ "show"; branch ^ ":remote.txt" ]);
+  if List.is_empty (B.publications (state ())) then
+    failwith "verified publication omitted receipt";
+  Stdlib.print_endline
+    ("  adopted_publication_"
+    ^ (match policy with
+      | B.Rewrite -> "rewrite_"
+      | B.Preserve_ancestry -> "merge_")
+    ^ (match history with
+      | `Ahead -> "ahead"
+      | `Diverged -> "diverged"
+      | `Unrelated -> "agent_recovery")
+    ^ ": OK")
 
 let scenario_receipt_recovery env =
   with_temp_dir @@ fun root ->
@@ -579,6 +1556,16 @@ let () =
   Stdlib.print_endline "worktree_setup base-fetch integration:";
   scenario_nested_cancellation env;
   scenario_checkpoint_failure env;
+  scenario_owned_provisioning env;
+  List.iter [ false; true ] ~f:(scenario_hook_changes_checkout env);
+  List.iter [ false; true ] ~f:(scenario_hook_checkpoint_failure env);
+  scenario_hook_checkpoint_failure ~materialization:true env false;
+  scenario_hook_restart env;
+  List.iter [ false; true ] ~f:(scenario_hook_terminal_while_waiting env);
+  List.iter [ Branch_reconcile.Rewrite; Preserve_ancestry ] ~f:(fun policy ->
+      List.iter
+        [ `Ahead; `Diverged; `Unrelated ]
+        ~f:(scenario_adopted_publication env policy));
   scenario_receipt_recovery env;
   scenario_unsafe_materialization env;
   scenario_creation_retry_reuses_base env;

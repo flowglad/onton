@@ -4,18 +4,33 @@
 open Base
 open Types
 
-(* While propagation is pending, head_oid remains the pre-push observation.
-   Missing identity retains the marker; only conflicting observations have
-   their mergeability deferred by the controller. *)
-let defer_remote_head (agent : Patch_agent.t) observed =
-  match agent.expected_remote_head_oid with
-  | None -> false
-  | Some expected -> (
-      match observed with
+(* Keep revision-bound status on the last accepted head. Owner candidates
+   require matching identity or direct Git evidence; an acknowledged head
+   cannot later revert merely because the forge returned an older response. *)
+let defer_remote_head ?confirmed_remote_head (agent : Patch_agent.t) observed =
+  match
+    Branch_reconcile.publication_observation_target agent.branch_reconcile
+  with
+  | Some publication -> (
+      match Option.bind observed ~f:Branch_reconcile.Commit.make with
       | None -> true
       | Some head ->
-          (not (String.equal head expected))
-          && Option.equal String.equal observed agent.head_oid)
+          if
+            Option.is_none
+              (Branch_reconcile.publication_observation_pending
+                 agent.branch_reconcile)
+          then
+            not
+              (Option.equal String.equal observed agent.head_oid
+              || Option.equal String.equal confirmed_remote_head observed)
+          else
+            not
+              (Branch_reconcile.can_observe_publication agent.branch_reconcile
+                 ~publication ~head
+                 ~remote:
+                   (Option.bind confirmed_remote_head
+                      ~f:Branch_reconcile.Commit.make)))
+  | None -> false
 
 (** Pure decision functions for patch agents.
 
@@ -34,11 +49,13 @@ type disposition =
   | Ready_rebase  (** Patch has a queued rebase as highest priority. *)
 [@@deriving show, eq, sexp_of, compare]
 
-let disposition (a : Patch_agent.t) : disposition =
+let disposition ?(branch_only = false) (a : Patch_agent.t) : disposition =
   if a.merged then Skip
   else if Patch_agent.needs_intervention a then Blocked
   else if a.busy then Busy
-  else if not (Patch_agent.has_pr a || a.branch_published) then Ready_start
+  else if
+    not (Patch_agent.has_pr a || (branch_only && Patch_agent.branch_published a))
+  then Ready_start
   else
     match Patch_agent.highest_priority a with
     | None -> Idle
@@ -73,14 +90,6 @@ let on_human_message (a : Patch_agent.t) : human_decision =
     Already_queued
   else Enqueue_human
 
-type conflict_decision =
-  | Enqueue_conflict  (** Queue merge conflict resolution. *)
-  | Already_conflicting  (** Conflict already tracked. *)
-[@@deriving show, eq, sexp_of, compare]
-
-let on_merge_conflict (a : Patch_agent.t) : conflict_decision =
-  if a.has_conflict then Already_conflicting else Enqueue_conflict
-
 type checks_passing_decision =
   | Reset_ci_failure_count
       (** CI checks now pass after prior failures — reset the counter. *)
@@ -92,19 +101,6 @@ let on_checks_passing (a : Patch_agent.t) ~(checks_passing : bool) :
     checks_passing_decision =
   if a.ci_failure_count > 0 && checks_passing then Reset_ci_failure_count
   else No_ci_reset
-
-let should_clear_conflict (a : Patch_agent.t) : bool =
-  not
-    (List.mem a.queue Operation_kind.Merge_conflict ~equal:Operation_kind.equal
-    || Option.equal Operation_kind.equal a.current_op
-         (Some Operation_kind.Merge_conflict))
-
-let should_reset_conflict_noop (a : Patch_agent.t) ~merge_state ~observed_head =
-  a.conflict_noop_count > 0
-  && Pr_state.equal_merge_state merge_state Pr_state.Mergeable
-  && Option.is_some observed_head
-  && (not (defer_remote_head a observed_head))
-  && should_clear_conflict a
 
 (** {2 Start delivery — pre-session decision for the runner} *)
 
@@ -151,7 +147,7 @@ let human_delivery_unaccepted ~(kind : Operation_kind.t option)
     still running. *)
 let human_acceptance_delivers_messages ~(agent : Patch_agent.t)
     ~(delivery_mode : delivery_mode) ~(kind : Operation_kind.t option) : bool =
-  (Patch_agent.is_pr_present agent || agent.branch_published)
+  (Patch_agent.is_pr_present agent || Patch_agent.branch_published agent)
   && equal_delivery_mode delivery_mode Respond
   && Option.equal Operation_kind.equal kind (Some Operation_kind.Human)
 
@@ -162,7 +158,7 @@ let human_acceptance_delivers_messages ~(agent : Patch_agent.t)
     PR association. *)
 let session_no_commits_is_ok ~(agent : Patch_agent.t)
     ~(delivery_mode : delivery_mode) ~(kind : Operation_kind.t option) : bool =
-  (Patch_agent.is_pr_present agent || agent.branch_published)
+  (Patch_agent.is_pr_present agent || Patch_agent.branch_published agent)
   && equal_delivery_mode delivery_mode Respond
   &&
   match kind with

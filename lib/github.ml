@@ -176,6 +176,7 @@ let graphql_query =
       id
     }
     pullRequest(number: $number) {
+      number
       id
       state
       isDraft
@@ -408,6 +409,7 @@ type stack_node = Stack
 let stack_node_of_yojson _ = Stack
 
 type pull_request = {
+  number : int option; [@yojson.default None]
   id : string option; [@yojson.default None]
   state : string;
   mergeable : string option; [@yojson.default None]
@@ -745,6 +747,9 @@ let pr_state_of_pull_request ~owner ~merge_queue_required (pr : pull_request) :
     (* GitHub does not produce review-service findings; the poller in
        [bin/main.ml] augments this list from configured review-service
        backends. *)
+    pr_number =
+      Option.bind pr.number ~f:(fun n ->
+          if n > 0 then Some (Types.Pr_number.of_int n) else None);
     node_id = pr.id;
     merge_queue_required;
     merge_queue_entry;

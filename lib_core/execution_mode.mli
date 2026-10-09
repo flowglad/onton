@@ -9,6 +9,10 @@ val root : t -> Patch_id.t option
 val is_root : t -> Patch_id.t -> bool
 val is_descendant : t -> Patch_id.t -> bool
 
+val branch_only_published : t -> Patch_agent.t -> bool
+(** Confirmed publication in a feature descendant workflow. Mainline and root
+    patches still require PR creation after publication. *)
+
 val infer : Graph.t -> (t, string) result
 (** Validate a nonempty graph with a sole root reachable from every patch. *)
 
@@ -88,6 +92,7 @@ val validate_terminal :
   main:Branch.t ->
   (unit, string) result
 
-val observation_pending : t -> Patch_agent.t -> string option -> bool
+val observation_pending :
+  ?confirmed_remote_head:string -> t -> Patch_agent.t -> string option -> bool
 (** Feature-mode publications require an observation of the exact expected
     commit. An intermediate head cannot settle a newer publication. *)

@@ -248,9 +248,6 @@ let runner_without_backend env ~feature ~retry =
           let module W : Worktree.S = struct
             include Real_worktree
 
-            let force_push_with_lease ~path:_ ~branch:_ ~base:_ =
-              failwith "Gameplan publication must use durable reconciliation"
-
             let reconcile ~path ~project_name ~branch ~operation command =
               let fail_push =
                 match command.Branch_reconcile.kind with
@@ -274,12 +271,15 @@ let runner_without_backend env ~feature ~retry =
                          .Branch_reconcile.purpose
                      with
                     | Branch_reconcile.Publish_revision _
-                    | Branch_reconcile.Publish_session _ ->
+                    | Branch_reconcile.Publish_session _
+                    | Branch_reconcile.Verify_publication ->
                         assert (
                           completion.Session_result.head
                           = Some (Branch_reconcile.Commit.to_string candidate))
+                    | Branch_reconcile.Provision_checkout _
                     | Branch_reconcile.Reconcile_base
                     | Branch_reconcile.Reconcile_request _
+                    | Branch_reconcile.Reconcile_scoped _
                     | Branch_reconcile.Integrate_revision _ ->
                         let receipt =
                           List.hd
@@ -290,16 +290,15 @@ let runner_without_backend env ~feature ~retry =
                           receipt.Branch_reconcile.integrated_revision
                           = candidate);
                         assert (
-                          agent.Patch_agent.branch_rebased_onto_sha
+                          operation.Branch_reconcile.target
                           = Some
-                              (Branch_reconcile.Commit.to_string
-                                 receipt.Branch_reconcile.capture
-                                   .Branch_reconcile.target_revision)));
+                              receipt.Branch_reconcile.capture
+                                .Branch_reconcile.target_revision));
                     assert (
                       Branch_reconcile.pending
                         agent.Patch_agent.branch_reconcile
                       = Some command);
-                    assert (agent.Patch_agent.push_failure_count = 0);
+                    assert (agent.Patch_agent.start_attempts_without_pr = 0);
                     assert (expected = !published);
                     let first = !publications = [] in
                     publications := candidate :: !publications;
@@ -308,15 +307,18 @@ let runner_without_backend env ~feature ~retry =
                         operation.Branch_reconcile.intent
                           .Branch_reconcile.purpose
                       with
+                      | Branch_reconcile.Provision_checkout _
                       | Branch_reconcile.Reconcile_base
                       | Branch_reconcile.Reconcile_request _
+                      | Branch_reconcile.Reconcile_scoped _
                       | Branch_reconcile.Integrate_revision _ ->
                           if retry && not !failed_base_push then (
                             failed_base_push := true;
                             true)
                           else false
                       | Branch_reconcile.Publish_revision _
-                      | Branch_reconcile.Publish_session _ ->
+                      | Branch_reconcile.Publish_session _
+                      | Branch_reconcile.Verify_publication ->
                           false
                     in
                     (retry && first) || base_failure
@@ -424,7 +426,7 @@ let runner_without_backend env ~feature ~retry =
             Runtime.read runtime (fun snap ->
                 Orchestrator.agent snap.Runtime.orchestrator (id "0"))
           in
-          assert (final_agent.Patch_agent.push_failure_count = 0);
+          assert (final_agent.Patch_agent.start_attempts_without_pr = 0);
           assert (
             Branch_reconcile.phase final_agent.Patch_agent.branch_reconcile
             = Some Branch_reconcile.Settled);
@@ -448,10 +450,13 @@ let runner_without_backend env ~feature ~retry =
             in
             Git.run_git ~cwd:path
               [ "push"; "origin"; target ^ ":refs/heads/main" ];
+            let head = Git.git_capture ~cwd:path [ "rev-parse"; "HEAD" ] in
             Runtime.update_orchestrator runtime (fun orch ->
                 let orch =
                   if kind = Operation_kind.Merge_conflict then
-                    Orchestrator.set_has_conflict orch (id "0")
+                    Onton_test_support.Forge_poll_fixture.conflicting ~head
+                      ~base:target ~base_branch:(Branch.of_string "main") orch
+                      (id "0")
                   else orch
                 in
                 Orchestrator.enqueue orch (id "0") kind);
@@ -461,7 +466,16 @@ let runner_without_backend env ~feature ~retry =
                     let agent =
                       Orchestrator.agent snap.Runtime.orchestrator (id "0")
                     in
-                    agent.Patch_agent.branch_rebased_onto_sha = Some target
+                    (match
+                       Branch_reconcile.integrations
+                         agent.Patch_agent.branch_reconcile
+                     with
+                      | receipt :: _ ->
+                          Branch_reconcile.Commit.to_string
+                            receipt.Branch_reconcile.capture
+                              .Branch_reconcile.target_revision
+                          = target
+                      | [] -> false)
                     && Branch_reconcile.phase agent.Patch_agent.branch_reconcile
                        = Some Branch_reconcile.Settled)
               in

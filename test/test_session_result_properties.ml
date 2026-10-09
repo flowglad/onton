@@ -25,9 +25,6 @@ let completion_gen =
         Session_failed { is_fresh; detail };
         Session_wontdo session_uuid;
         Session_give_up;
-        Session_worktree_missing;
-        Session_push_failed None;
-        Session_push_failed (Some (Hook_failure session_uuid));
         Session_no_commits;
         Session_context_exhausted;
       ]
@@ -47,6 +44,86 @@ let completion_gen =
 let () =
   QCheck_base_runner.run_tests_main
     [
+      QCheck2.Test.make ~count:200
+        ~name:
+          "verified legacy Start resumes PR creation without synthesizing a \
+           backend completion"
+        QCheck2.Gen.(pair completion_gen (triple bool bool bool))
+        (fun (saved, (confirmed, guidance, has_completion)) ->
+          try
+            let module B = Branch_reconcile in
+            let source =
+              match B.Commit.make (String.make 40 'a') with
+              | Some source -> source
+              | None -> assert false
+            in
+            let reply state result =
+              match B.pending state with
+              | None -> assert false
+              | Some command ->
+                  fst
+                    (B.step state
+                       (B.Result { token = command.token; at = 1.; result }))
+            in
+            let owner = B.import_legacy_publication B.empty ~base:"main" in
+            let owner =
+              reply owner
+                B.(
+                  Observed
+                    {
+                      source;
+                      head = source;
+                      target = source;
+                      remote = Some source;
+                      boundary = Plain;
+                      topology = Equal;
+                      clean = true;
+                      sequencer = None;
+                      conflicts = 0;
+                      target_included = true;
+                      base_contains_source = true;
+                      completed_integration = false;
+                      destination = Remote_id.of_destination "origin";
+                    })
+            in
+            let owner = reply owner B.Pinned in
+            let owner =
+              if confirmed then
+                reply owner B.(Remote { sha = Some source; topology = Equal })
+              else owner
+            in
+            let owner =
+              match B.decode (B.yojson_of_t owner) with
+              | Ok owner -> owner
+              | Error e -> failwith e
+            in
+            let guidance = if guidance then [ "new work" ] else [] in
+            let completion = if has_completion then Some saved else None in
+            Bool.equal
+              (S.resume_verified_legacy_start ~delivery_mode:Start ~guidance
+                 ~publication:owner ~completion)
+              (confirmed && List.is_empty guidance && not has_completion)
+            && not
+                 (S.resume_verified_legacy_start ~delivery_mode:Respond
+                    ~guidance ~publication:owner ~completion)
+          with _ -> false);
+      QCheck2.Test.make
+        ~name:
+          "local-work success distinguishes Start, Respond and empty branches"
+        ~count:100
+        QCheck2.Gen.(triple (oneof_list [ S.Start; S.Respond ]) bool bool)
+        (fun (delivery_mode, branch_changed, no_work) ->
+          let expected =
+            if
+              no_work
+              || S.equal_delivery_mode delivery_mode S.Respond
+                 && not branch_changed
+            then S.Session_no_commits
+            else S.Session_ok
+          in
+          S.equal expected
+            (S.after_local_work ~delivery_mode ~branch_changed ~no_work
+               S.Session_ok));
       QCheck2.Test.make
         ~name:"local-work classification preserves failed backend outcomes"
         ~count:300 completion_gen (fun completion ->

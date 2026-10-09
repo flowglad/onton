@@ -5,6 +5,7 @@ open Onton
 open Onton_core
 open Types
 module Git = Onton_test_support.Git_env
+module B = Branch_reconcile
 
 let check label value = if not value then failwith label
 
@@ -14,12 +15,16 @@ let failing_conflict_probe_mgr (type tag)
     (mgr : tag Eio.Process.mgr_ty Eio.Resource.t) probed =
   let (Eio.Resource.T (state, ops)) = mgr in
   let module Original = (val Eio.Resource.get ops Eio.Process.Pi.Mgr) in
+  let merge_started = ref false in
   let module Faults = struct
     include Original
 
     let spawn t ~sw ?cwd ?stdin ?stdout ?stderr ?env ?executable args =
+      if List.mem args "merge" ~equal:String.equal then merge_started := true;
       match args with
-      | [ "git"; "-C"; _; "diff"; "--name-only"; "--diff-filter=U" ] ->
+      | _
+        when !merge_started
+             && List.mem args "--porcelain=v1" ~equal:String.equal ->
           probed := true;
           Original.spawn t ~sw ?cwd ?stdin ?stdout ?stderr ?env
             ~executable:"/bin/sh"
@@ -41,11 +46,19 @@ let commit dir file content =
   Git.run_git ~cwd:dir [ "commit"; "-q"; "-m"; file ];
   Git.git_capture ~cwd:dir [ "rev-parse"; "HEAD" ]
 
-let integrated = function
-  | Worktree.Integrated sha -> sha
-  | Worktree.Integration_conflict files ->
-      failwith ("unexpected conflict: " ^ files)
-  | Worktree.Integration_error e -> failwith e
+let integrated state =
+  match (B.phase state, B.operation state) with
+  | Some B.Settled, Some { candidate = Some sha; _ } -> B.Commit.to_string sha
+  | None, _
+  | _, None
+  | Some B.Settled, Some { candidate = None; _ }
+  | ( Some
+        ( B.Preparing | Integrating | Repairing _ | Publishing | Confirming
+        | Waiting _ | Recovering | Intervention _ ),
+      Some _ ) ->
+      failwith
+        ("integration did not settle: "
+        ^ Yojson.Safe.to_string (B.yojson_of_t state))
 
 let empty_gameplan =
   Gameplan.
@@ -97,26 +110,97 @@ let () =
           let conflict_head = child "conflict" "shared" "child\n" in
           let next_head = child "next" "next-file" "next\n" in
           let client =
-            Worktree.make_with_protection
-              ~protected_branch:(Some (Branch.of_string "root"))
-              ~fs:(Eio.Stdenv.fs env) ~config:Worktree_lifecycle.git
+            Worktree.make ~fs:(Eio.Stdenv.fs env) ~config:Worktree_lifecycle.git
               ~clock:(Eio.Stdenv.clock env)
               ~process_mgr:(Eio.Stdenv.process_mgr env)
               ~repo_root:dir
           in
           let module W = (val client) in
+          let drive (module Client : Worktree.S) checkpoint event =
+            let rec execute remaining state =
+              if remaining = 0 then
+                failwith "root reconciliation did not settle";
+              let state =
+                match B.decode (B.yojson_of_t state) with
+                | Ok restored -> restored
+                | Error reason -> failwith reason
+              in
+              checkpoint := state;
+              match (B.operation state, B.pending state) with
+              | Some operation, Some command ->
+                  let result =
+                    Client.reconcile ~path:root_path ~project_name:"git-test"
+                      ~branch:(Branch.of_string "root") ~operation command
+                  in
+                  execute (remaining - 1)
+                    (fst
+                       (B.step state
+                          (B.Result
+                             { token = command.B.token; at = 100.; result })))
+              | None, _ | _, None -> state
+            in
+            checkpoint := execute 100 (fst (B.step !checkpoint event))
+          in
           let rt =
             Runtime.create ~gameplan:empty_gameplan
               ~main_branch:(Branch.of_string "main") ()
           in
+          let publication = ref B.empty in
+          let contribution name head_sha =
+            let revision =
+              match B.Commit.make head_sha with
+              | Some revision -> revision
+              | None -> failwith "invalid fixture revision"
+            in
+            B.Request
+              {
+                base = "main";
+                policy = B.Preserve_ancestry;
+                purpose = B.Integrate_revision { contributor = name; revision };
+              }
+          in
           let integrate name head_sha =
             Runtime.with_root_write rt (fun () ->
-                W.integrate ~root_path ~root_branch:(Branch.of_string "root")
-                  ~descendant_branch:(Branch.of_string name) ~head_sha)
+                drive (module W) publication (contribution name head_sha);
+                !publication)
           in
+          let lost_confirmation = ref false in
+          let module Lost_confirmation = struct
+            include W
+
+            let reconcile ~path ~project_name ~branch ~operation command =
+              let result =
+                W.reconcile ~path ~project_name ~branch ~operation command
+              in
+              match command.B.kind with
+              | B.Confirm _ when not !lost_confirmation ->
+                  lost_confirmation := true;
+                  raise Stdlib.Exit
+              | B.Observe | Inspect | Verify_recovery | Pin _ | Integrate _
+              | Continue _ | Commit_merge _ | Plan_remote_replay _
+              | Checkout_remote _ | Publish _ | Confirm _ ->
+                  result
+          end in
           let results =
             Eio.Fiber.List.map
-              (fun (name, sha) -> integrated (integrate name sha))
+              (fun (name, sha) ->
+                Runtime.with_root_write rt (fun () ->
+                    if String.equal name "child3" then (
+                      (try
+                         drive
+                           (module Lost_confirmation)
+                           publication (contribution name sha)
+                       with Stdlib.Exit -> ());
+                      check "lost confirmation exercised" !lost_confirmation;
+                      let published =
+                        Git.git_capture ~cwd:bare [ "rev-parse"; "root" ]
+                      in
+                      drive (module W) publication B.Recover;
+                      check
+                        "lost acknowledgement retains exact published commit"
+                        (String.equal published (integrated !publication)))
+                    else drive (module W) publication (contribution name sha);
+                    integrated !publication))
               [ ("child2", head2); ("child3", head3) ]
           in
           let final = Git.git_capture ~cwd:bare [ "rev-parse"; "root" ] in
@@ -135,60 +219,164 @@ let () =
           check "siblings serialized"
             (List.length (List.dedup_and_sort results ~compare:String.compare)
             = 2);
-          Git.run_git ~cwd:root_path [ "reset"; "--hard"; initial ];
-          check "crash after publication reconciles same commit"
+          check "duplicate contribution keeps published commit"
             (String.equal (integrated (integrate "child2" head2)) final);
-          check "recovery fast forwards root"
-            (String.equal
-               (Git.git_capture ~cwd:root_path [ "rev-parse"; "HEAD" ])
-               final);
-          write (root_path ^ "/user-change") "preserve me\n";
-          check "dirty root refused"
-            (match integrate "next" next_head with
-            | Worktree.Integration_error _ -> true
-            | Worktree.Integrated _ | Worktree.Integration_conflict _ -> false);
-          check "user changes retained"
-            (Stdlib.Sys.file_exists (root_path ^ "/user-change"));
-          Unix.unlink (root_path ^ "/user-change");
-          check "moved checked head refused"
-            (match integrate "next" head2 with
-            | Worktree.Integration_error _ -> true
-            | Worktree.Integrated _ | Worktree.Integration_conflict _ -> false);
+          List.iter [ "untracked"; "staged"; "unstaged"; "mixed" ]
+            ~f:(fun shape ->
+              let name = "dirty-" ^ shape in
+              let file = name ^ "-file" in
+              let dirty_head = child name file "dirty contribution\n" in
+              let before = Git.git_capture ~cwd:bare [ "rev-parse"; "root" ] in
+              let staged =
+                String.equal shape "staged" || String.equal shape "mixed"
+              in
+              let unstaged =
+                String.equal shape "unstaged" || String.equal shape "mixed"
+              in
+              let untracked =
+                String.equal shape "untracked" || String.equal shape "mixed"
+              in
+              if staged then (
+                write (root_path ^ "/shared") "staged user work\n";
+                Git.run_git ~cwd:root_path [ "add"; "shared" ]);
+              if unstaged then
+                write (root_path ^ "/shared") "unstaged user work\n";
+              if untracked then
+                write (root_path ^ "/user-change") "untracked user work\n";
+              let index = Git.git_capture ~cwd:root_path [ "write-tree" ] in
+              let status =
+                Git.git_capture ~cwd:root_path
+                  [ "status"; "--porcelain=v1"; "--untracked-files=all" ]
+              in
+              check
+                ("dirty root refused: " ^ shape)
+                (match B.phase (integrate name dirty_head) with
+                | Some (B.Intervention "dirty_worktree") -> true
+                | None
+                | Some
+                    ( B.Preparing | Integrating | Repairing _ | Publishing
+                    | Confirming | Waiting _ | Recovering | Settled
+                    | Intervention _ ) ->
+                    false);
+              check "root index remains byte-equivalent"
+                (String.equal index
+                   (Git.git_capture ~cwd:root_path [ "write-tree" ]));
+              check "root status remains unchanged"
+                (String.equal status
+                   (Git.git_capture ~cwd:root_path
+                      [ "status"; "--porcelain=v1"; "--untracked-files=all" ]));
+              let read file =
+                let channel = Stdlib.open_in_bin (root_path ^ "/" ^ file) in
+                Stdlib.Fun.protect
+                  ~finally:(fun () -> Stdlib.close_in_noerr channel)
+                  (fun () -> Stdlib.In_channel.input_all channel)
+              in
+              check "root working-tree bytes survive"
+                (String.equal (read "shared")
+                   (if unstaged then "unstaged user work\n"
+                    else if staged then "staged user work\n"
+                    else "base\n"));
+              if untracked then
+                check "untracked bytes survive"
+                  (String.equal (read "user-change") "untracked user work\n");
+              check
+                "dirty contribution changes neither checkout head nor remote"
+                (String.equal before
+                   (Git.git_capture ~cwd:bare [ "rev-parse"; "root" ])
+                && String.equal before
+                     (Git.git_capture ~cwd:root_path [ "rev-parse"; "HEAD" ]));
+              (* Only the fixture removes its injected edits before explicit resume. *)
+              Git.run_git ~cwd:root_path
+                [
+                  "restore";
+                  "--source=HEAD";
+                  "--staged";
+                  "--worktree";
+                  "--";
+                  "shared";
+                ];
+              if untracked then Unix.unlink (root_path ^ "/user-change");
+              drive (module W) publication B.Resume;
+              ignore (integrated !publication);
+              check "explicit resume publishes the retained contribution"
+                (Git.git_exit_code ~cwd:bare
+                   [ "merge-base"; "--is-ancestor"; dirty_head; "root" ]
+                = 0));
+          let captured = child "moving" "captured" "captured revision\n" in
+          Git.run_git ~cwd:dir [ "checkout"; "-q"; "moving" ];
+          let moved = commit dir "later" "unchecked revision\n" in
+          Git.run_git ~cwd:dir [ "push"; "-q"; "origin"; "moving" ];
+          Git.run_git ~cwd:dir [ "checkout"; "-q"; "main" ];
+          let pinned = integrated (integrate "moving" captured) in
+          check "captured contributor revision survives branch movement"
+            (Git.git_exit_code ~cwd:dir
+               [ "merge-base"; "--is-ancestor"; captured; pinned ]
+            = 0);
+          check "new unchecked contributor revision is not substituted"
+            (Git.git_exit_code ~cwd:dir
+               [ "merge-base"; "--is-ancestor"; moved; pinned ]
+            = 1);
           let local = commit root_path "unpublished" "local\n" in
-          check "unpublished root refused without reset"
-            (match integrate "next" next_head with
-            | Worktree.Integration_error _ -> true
-            | Worktree.Integrated _ | Worktree.Integration_conflict _ -> false);
-          check "local commit retained"
-            (String.equal
-               (Git.git_capture ~cwd:root_path [ "rev-parse"; "HEAD" ])
-               local);
+          let extra = child "extra" "extra-file" "extra contribution\n" in
+          let combined_local = integrated (integrate "extra" extra) in
+          check "unpublished root work retained during contribution"
+            (Git.git_exit_code ~cwd:dir
+               [ "merge-base"; "--is-ancestor"; local; combined_local ]
+            = 0);
+          drive
+            (module W)
+            publication
+            (B.Request
+               B.
+                 {
+                   base = "main";
+                   policy = Preserve_ancestry;
+                   purpose = Publish_session "root-publication-fixture";
+                 });
           check "root normal publication"
-            (match
-               W.force_push_with_lease ~path:root_path
-                 ~branch:(Branch.of_string "root")
-                 ~base:(Branch.of_string "main")
-             with
-            | Worktree.Push_ok | Worktree.Push_up_to_date -> true
-            | Worktree.Push_no_commits | Worktree.Push_rejected _
-            | Worktree.Push_worktree_missing | Worktree.Push_error _ ->
-                false);
+            (Option.equal B.equal_phase (B.phase !publication) (Some B.Settled));
+          check "root publication reaches destination"
+            (String.equal combined_local
+               (Git.git_capture ~cwd:bare [ "rev-parse"; "root" ]));
           let _ = commit root_path "shared" "root\n" in
           Git.run_git ~cwd:root_path [ "push"; "-q"; "origin"; "root" ];
-          check "conflict reported"
-            (match integrate "conflict" conflict_head with
-            | Worktree.Integration_conflict files ->
-                String.is_substring files ~substring:"shared"
-            | Worktree.Integrated _ | Worktree.Integration_error _ -> false);
-          check "conflict leaves root clean"
-            (String.is_empty
-               (Git.git_capture ~cwd:root_path [ "status"; "--porcelain" ]));
-          check "temporary worktrees cleaned"
-            (not
-               (String.is_substring
-                  (Git.git_capture ~cwd:dir
-                     [ "worktree"; "list"; "--porcelain" ])
-                  ~substring:"onton-integration-"));
+          let before_conflict =
+            Git.git_capture ~cwd:bare [ "rev-parse"; "root" ]
+          in
+          check "conflict reported for staged repair"
+            (match B.phase (integrate "conflict" conflict_head) with
+            | Some (B.Repairing { mode = B.Content_repair; _ }) -> true
+            | None
+            | Some
+                ( B.Preparing | Integrating
+                | Repairing { mode = History_recovery _; _ }
+                | Publishing | Confirming | Waiting _ | Recovering | Settled
+                | Intervention _ ) ->
+                false);
+          check "conflict retains captured target and unresolved file"
+            (String.equal
+               (Git.git_capture ~cwd:root_path [ "rev-parse"; "MERGE_HEAD" ])
+               conflict_head
+            && String.equal
+                 (Git.git_capture ~cwd:root_path
+                    [ "diff"; "--name-only"; "--diff-filter=U" ])
+                 "shared");
+          check "conflict does not publish"
+            (String.equal before_conflict
+               (Git.git_capture ~cwd:bare [ "rev-parse"; "root" ]));
+          write (root_path ^ "/shared") "root and child resolved\n";
+          Git.run_git ~cwd:root_path [ "add"; "shared" ];
+          drive (module W) publication B.Recover;
+          let resolved = integrated !publication in
+          List.iter [ before_conflict; conflict_head ] ~f:(fun ancestor ->
+              check "descendant repair preserves both parents"
+                (Git.git_exit_code ~cwd:dir
+                   [ "merge-base"; "--is-ancestor"; ancestor; resolved ]
+                = 0));
+          check "descendant repair publishes staged content"
+            (String.equal
+               (Git.git_capture ~cwd:bare [ "show"; "root:shared" ])
+               "root and child resolved");
           (* Race the publication using the remote's pre-receive hook. The race commit
      is already in the remote object store, so updating its ref is legal. *)
           Git.run_git ~cwd:dir [ "checkout"; "-q"; "-b"; "race"; "root" ];
@@ -203,46 +391,57 @@ let () =
               GIT_ALTERNATE_OBJECT_DIRECTORIES\n\
               git update-ref refs/heads/root " ^ race ^ "\n");
           Unix.chmod hook 0o755;
-          (* Model an independent server's hook configuration explicitly: the
-             local file transport otherwise inherits the client environment. *)
-          Git.run_git ~cwd:dir
-            [
-              "config";
-              "remote.origin.receivepack";
-              "git -c core.hooksPath="
-              ^ Stdlib.Filename.quote (bare ^ "/hooks")
-              ^ " receive-pack";
-            ];
           check "remote race rejected"
-            (match integrate "next" next_head with
-            | Worktree.Integration_error _ -> true
-            | Worktree.Integrated _ | Worktree.Integration_conflict _ -> false);
+            (match B.phase (integrate "next" next_head) with
+            | Some (B.Waiting _) -> true
+            | None
+            | Some
+                ( B.Preparing | Integrating | Repairing _ | Publishing
+                | Confirming | Recovering | Settled | Intervention _ ) ->
+                false);
           check "race commit preserved"
             (String.equal
                (Git.git_capture ~cwd:bare [ "rev-parse"; "root" ])
                race);
           Unix.unlink hook;
-          let combined = integrated (integrate "next" next_head) in
+          drive (module W) publication B.Recover;
+          let combined = integrated !publication in
           check "retry includes raced commit"
             (Git.git_exit_code ~cwd:dir
                [ "merge-base"; "--is-ancestor"; race; combined ]
             = 0);
-          (* Root upstream updates are merges, preserving every integrated parent. *)
+          (* Exercise the production reconciliation command API, including its
+             durable recovery path, rather than a second merge implementation. *)
+          let owner = publication in
+          let request label base =
+            B.Request
+              B.
+                {
+                  base;
+                  policy = B.Preserve_ancestry;
+                  purpose = B.Reconcile_request label;
+                }
+          in
+          let settled label state =
+            check label
+              (Option.equal B.equal_phase (B.phase !state) (Some B.Settled))
+          in
+          let waiting label state substring =
+            check label
+              (match B.phase !state with
+              | Some (B.Waiting { reason; _ }) ->
+                  String.is_substring reason ~substring
+              | None
+              | Some
+                  ( B.Preparing | B.Integrating | B.Repairing _ | B.Publishing
+                  | B.Confirming | B.Recovering | B.Settled | B.Intervention _
+                    ) ->
+                  false)
+          in
           let main_tip = commit dir "upstream" "main update\n" in
           Git.run_git ~cwd:dir [ "push"; "-q"; "origin"; "main" ];
-          let fetch_lock = Eio.Mutex.create () in
-          check "fetch"
-            (Result.is_ok (W.fetch_origin ~fetch_lock ~path:root_path));
-          check "root merges main"
-            (match
-               W.rebase_onto ~path:root_path
-                 ~target:(Branch.of_string "origin/main")
-                 ~upstream:base ~project_name:"git-test" ~ancestor_ids:[] ()
-             with
-            | Worktree.Ok -> true
-            | Worktree.Noop | Worktree.Conflict _ | Worktree.Merge_conflict _
-            | Worktree.Uncommitted_changes _ | Worktree.Error _ ->
-                false);
+          drive (module W) owner (request "upstream" "main");
+          settled "root merges and publishes main" owner;
           let root_tip =
             Git.git_capture ~cwd:root_path [ "rev-parse"; "HEAD" ]
           in
@@ -251,65 +450,25 @@ let () =
                 (Git.git_exit_code ~cwd:dir
                    [ "merge-base"; "--is-ancestor"; ancestor; root_tip ]
                 = 0));
-          (* The normal runner publishes the protected-root merge before the
-             next integration. Keep the fixture in that same state so the
-             cancellation test reaches its sleeping push hook on fast hosts. *)
-          Git.run_git ~cwd:root_path [ "push"; "-q"; "origin"; "root" ];
-          let _ = commit dir "shared" "upstream conflict\n" in
+          let conflicting_tip = commit dir "shared" "upstream conflict\n" in
           Git.run_git ~cwd:dir [ "push"; "-q"; "origin"; "main" ];
-          check "fetch conflicting upstream"
-            (Result.is_ok (W.fetch_origin ~fetch_lock ~path:root_path));
-          let conflicting_tip =
-            Git.git_capture ~cwd:dir [ "rev-parse"; "main" ]
-          in
-          let merge_root () =
-            W.rebase_onto ~path:root_path
-              ~target:(Branch.of_string "origin/main")
-              ~upstream:base ~project_name:"git-test" ~ancestor_ids:[] ()
-          in
-          let expect_merge_conflict result =
-            check "root conflict classified for repair"
-              (match result with
-              | Worktree.Merge_conflict sha -> String.equal sha conflicting_tip
-              | Worktree.Ok | Worktree.Noop | Worktree.Conflict _
-              | Worktree.Uncommitted_changes _ | Worktree.Error _ ->
-                  false)
-          in
           let probed = ref false in
           let module Failed_probe =
-            (val Worktree.make_with_protection
-                   ~protected_branch:(Some (Branch.of_string "root"))
-                   ~fs:(Eio.Stdenv.fs env) ~config:Worktree_lifecycle.git
-                   ~clock:(Eio.Stdenv.clock env)
+            (val Worktree.make ~fs:(Eio.Stdenv.fs env)
+                   ~config:Worktree_lifecycle.git ~clock:(Eio.Stdenv.clock env)
                    ~process_mgr:
                      (failing_conflict_probe_mgr
                         (Eio.Stdenv.process_mgr env)
                         probed)
                    ~repo_root:dir)
           in
-          check "failed conflict probe reports error without aborting"
-            (match
-               Failed_probe.rebase_onto ~path:root_path
-                 ~target:(Branch.of_string "origin/main")
-                 ~upstream:base ~project_name:"git-test" ~ancestor_ids:[] ()
-             with
-            | Worktree.Error detail ->
-                !probed
-                && String.is_substring detail
-                     ~substring:"Root merge failed (exit 1)"
-                && String.is_substring detail
-                     ~substring:
-                       "Unmerged-index probe failed (exit 23): \
-                        index-probe-stderr"
-                && String.is_substring detail
-                     ~substring:
-                       ("Pending root merge preserved (MERGE_HEAD "
-                      ^ conflicting_tip ^ ")")
-                && String.is_substring detail
-                     ~substring:"next retry will route to merge repair"
-            | Worktree.Ok | Worktree.Noop | Worktree.Conflict _
-            | Worktree.Merge_conflict _ | Worktree.Uncommitted_changes _ ->
-                false);
+          drive
+            (module Failed_probe)
+            owner
+            (request "conflicting-upstream" "main");
+          check "failed index probe exercised" !probed;
+          waiting "failed index probe waits without aborting" owner
+            "index-probe-stderr";
           check "root conflict retains merge state and unmerged file"
             (String.equal
                (Git.git_capture ~cwd:root_path [ "rev-parse"; "MERGE_HEAD" ])
@@ -318,38 +477,34 @@ let () =
                  (Git.git_capture ~cwd:root_path
                     [ "diff"; "--name-only"; "--diff-filter=U" ])
                  "shared");
-          expect_merge_conflict (merge_root ());
+          drive (module W) owner B.Recover;
+          check "root conflict classified for repair"
+            (match B.phase !owner with
+            | Some (B.Repairing _) -> true
+            | None
+            | Some
+                ( B.Preparing | B.Integrating | B.Publishing | B.Confirming
+                | B.Waiting _ | B.Recovering | B.Settled | B.Intervention _ ) ->
+                false);
           check "root conflict preserves HEAD"
             (String.equal
                (Git.git_capture ~cwd:root_path [ "rev-parse"; "HEAD" ])
                root_tip);
           let before_retry = W.conflict_diff ~path:root_path in
-          (* A fresh client models a supervisor restart; a moved target must not
-             replace the target of the merge already in progress. *)
           let module Restarted =
-            (val Worktree.make_with_protection
-                   ~protected_branch:(Some (Branch.of_string "root"))
-                   ~fs:(Eio.Stdenv.fs env) ~config:Worktree_lifecycle.git
-                   ~clock:(Eio.Stdenv.clock env)
+            (val Worktree.make ~fs:(Eio.Stdenv.fs env)
+                   ~config:Worktree_lifecycle.git ~clock:(Eio.Stdenv.clock env)
                    ~process_mgr:(Eio.Stdenv.process_mgr env)
                    ~repo_root:dir)
           in
-          expect_merge_conflict
-            (Restarted.rebase_onto ~path:root_path
-               ~target:(Branch.of_string "missing-target")
-               ~upstream:base ~project_name:"git-test" ~ancestor_ids:[] ());
+          drive (module Restarted) owner B.Recover;
           check "retry preserves conflict contents"
             (String.equal before_retry (W.conflict_diff ~path:root_path));
           write (root_path ^ "/shared") "root and upstream resolved\n";
           Git.run_git ~cwd:root_path [ "add"; "shared" ];
-          expect_merge_conflict (merge_root ());
-          check "retry preserves staged resolution"
-            (String.is_empty (Git.git_capture ~cwd:root_path [ "diff" ])
-            && not
-                 (String.is_empty
-                    (Git.git_capture ~cwd:root_path [ "diff"; "--cached" ])));
-          Git.run_git ~cwd:root_path
-            [ "-c"; "core.editor=true"; "merge"; "--continue" ];
+          (* Onton consumes the staged repair itself against the captured target. *)
+          drive (module Restarted) owner B.Recover;
+          settled "staged repair completes and publishes" owner;
           let repaired =
             Git.git_capture ~cwd:root_path [ "rev-parse"; "HEAD" ]
           in
@@ -358,40 +513,27 @@ let () =
                (Git.git_capture ~cwd:root_path
                   [ "show"; "-s"; "--format=%P"; "HEAD" ])
                (root_tip ^ " " ^ conflicting_tip));
-          check "completed repair is a noop"
-            (Worktree.equal_rebase_result (merge_root ()) Worktree.Noop);
-          check "repair publishes normally"
-            (match
-               W.force_push_with_lease ~path:root_path
-                 ~branch:(Branch.of_string "root")
-                 ~base:(Branch.of_string "main")
-             with
-            | Worktree.Push_ok -> true
-            | Worktree.Push_up_to_date | Worktree.Push_no_commits
-            | Worktree.Push_rejected _ | Worktree.Push_worktree_missing
-            | Worktree.Push_error _ ->
-                false);
+          check "repair preserves staged resolution"
+            (String.equal
+               (Git.git_capture ~cwd:root_path [ "show"; "HEAD:shared" ])
+               "root and upstream resolved");
+          drive (module W) owner B.Recover;
+          settled "completed repair remains settled" owner;
+          check "completed repair does not rewrite"
+            (String.equal repaired
+               (Git.git_capture ~cwd:root_path [ "rev-parse"; "HEAD" ]));
           check "remote contains repaired merge"
             (String.equal
                (Git.git_capture ~cwd:bare [ "rev-parse"; "root" ])
                repaired);
-          check "invalid target has command diagnostics"
-            (match
-               W.rebase_onto ~path:root_path
-                 ~target:(Branch.of_string "missing-target")
-                 ~upstream:base ~project_name:"git-test" ~ancestor_ids:[] ()
-             with
-            | Worktree.Error detail ->
-                String.is_substring detail ~substring:"missing-target"
-                && String.is_substring detail ~substring:"exit"
-            | Worktree.Ok | Worktree.Noop | Worktree.Conflict _
-            | Worktree.Merge_conflict _ | Worktree.Uncommitted_changes _ ->
-                false);
-          (* Repository hooks must not intercept Onton-owned integration. *)
-          let _ = commit dir "hook-upstream" "upstream\n" in
+          let missing = ref B.empty in
+          drive (module W) missing (request "missing-target" "missing-target");
+          waiting "invalid target has command diagnostics" missing
+            "missing-target";
+          (* A hook failure preserves the pending merge and stages. Recovery
+             completes it after the hook becomes healthy, without an agent turn. *)
+          let hook_tip = commit dir "hook-upstream" "upstream\n" in
           Git.run_git ~cwd:dir [ "push"; "-q"; "origin"; "main" ];
-          check "fetch hook upstream"
-            (Result.is_ok (W.fetch_origin ~fetch_lock ~path:root_path));
           let merge_hook = dir ^ "/.git/hooks/pre-merge-commit" in
           Git.run_git ~cwd:dir
             [ "config"; "core.hooksPath"; dir ^ "/.git/hooks" ];
@@ -401,76 +543,30 @@ let () =
              echo merge-hook-stderr >&2\n\
              exit 1\n";
           Unix.chmod merge_hook 0o755;
-          check "Onton integration bypasses the rejecting merge hook"
-            (match merge_root () with
-            | Worktree.Ok -> true
-            | Worktree.Noop | Worktree.Error _ | Worktree.Conflict _
-            | Worktree.Merge_conflict _ | Worktree.Uncommitted_changes _ ->
-                false);
+          drive (module W) owner (request "hook-upstream" "main");
+          waiting "hook failure retains stdout" owner "merge-hook-stdout";
+          waiting "hook failure retains stderr" owner "merge-hook-stderr";
+          check "hook failure preserves merge target"
+            (String.equal
+               (Git.git_capture ~cwd:root_path [ "rev-parse"; "MERGE_HEAD" ])
+               hook_tip);
           Unix.unlink merge_hook;
-          check "merge completes with a clean checkout"
-            (String.is_empty
-               (Git.git_capture ~cwd:root_path [ "status"; "--porcelain" ])
-            && Git.git_exit_code ~cwd:root_path [ "rev-parse"; "MERGE_HEAD" ]
-               <> 0);
+          drive (module Restarted) owner B.Recover;
+          settled "healthy hook completes retained merge" owner;
+          check "hook recovery preserves both parents"
+            (String.equal
+               (Git.git_capture ~cwd:root_path
+                  [ "show"; "-s"; "--format=%P"; "HEAD" ])
+               (repaired ^ " " ^ hook_tip));
           check "no temporary worktree remains"
             (not
                (String.is_substring
                   (Git.git_capture ~cwd:dir
                      [ "worktree"; "list"; "--porcelain" ])
                   ~substring:"onton-integration-"));
-          (* Publish the successful upstream merge before descendant integration. *)
-          Git.run_git ~cwd:root_path [ "push"; "-q"; "origin"; "root" ];
-          let late_head = child "late" "late-file" "late\n" in
           let marker = dir ^ "/integration-hook-started" in
           let filter_pid = dir ^ "/smudge-pid" in
           let helper_pid = dir ^ "/smudge-helper-pid" in
-          let check_cleanup () =
-            List.iter [ filter_pid; helper_pid ] ~f:(fun file ->
-                if Stdlib.Sys.file_exists file then
-                  let pid =
-                    Stdlib.In_channel.with_open_bin file
-                      Stdlib.In_channel.input_all
-                    |> String.strip |> Int.of_string
-                  in
-                  let gone =
-                    match Unix.kill pid 0 with
-                    | () -> false
-                    | exception Unix.Unix_error (Unix.ESRCH, _, _) -> true
-                  in
-                  check "subprocess tree reaped before cleanup returns" gone);
-            check "cancelled worktree cleaned"
-              (not
-                 (String.is_substring
-                    (Git.git_capture ~cwd:dir
-                       [ "worktree"; "list"; "--porcelain" ])
-                    ~substring:"onton-integration-"));
-            check "root lock released after cancellation"
-              (Runtime.with_root_write rt (fun () -> true))
-          in
-          let cancel_at_hook () =
-            let cancelled = ref false in
-            Eio.Time.with_timeout_exn (Eio.Stdenv.clock env) 10. (fun () ->
-                Eio.Fiber.first
-                  (fun () ->
-                    try
-                      ignore
-                        (integrate "late" late_head
-                          : Worktree.integration_result);
-                      failwith "integration finished before cancellation"
-                    with exn when Worktree.has_cancellation exn ->
-                      cancelled := true;
-                      raise exn)
-                  (fun () ->
-                    while not (Stdlib.Sys.file_exists marker) do
-                      Eio.Time.sleep (Eio.Stdenv.clock env) 0.001
-                    done));
-            check "integration cancellation propagates" !cancelled;
-            Unix.unlink marker;
-            check_cleanup ()
-          in
-          (* Cancel while Git is checking out files, before worktree add releases
-             its initialization lock. The marker makes this independent of host speed. *)
           let filter = dir ^ "/slow-smudge" in
           let stalled_script =
             "#!/bin/sh\necho $$ > "
@@ -483,43 +579,75 @@ let () =
           in
           write filter stalled_script;
           Unix.chmod filter 0o755;
-          write
-            (dir ^ "/.git/info/attributes")
-            "shared filter=integration-cancel\n";
-          Git.run_git ~cwd:dir
-            [ "config"; "filter.integration-cancel.smudge"; filter ];
-          (* The implementation must reap both the filter and its helper.
-             Fixture teardown only removes files; it never kills subprocesses. *)
-          let with_stalled_filter f =
-            Stdlib.Fun.protect
-              ~finally:(fun () ->
-                List.iter [ filter_pid; helper_pid; marker ] ~f:(fun file ->
-                    if Stdlib.Sys.file_exists file then Unix.unlink file))
-              f
-          in
-          with_stalled_filter cancel_at_hook;
-          with_stalled_filter cancel_at_hook;
-          with_stalled_filter (fun () ->
-              let clock = Eio.Stdenv.clock env in
-              let started = Eio.Time.now clock in
-              let result =
-                Eio.Time.with_timeout clock 10. (fun () ->
-                    Ok (integrate "late" late_head))
+          List.iteri
+            [ (false, false); (false, false); (false, true); (true, false) ]
+            ~f:(fun index (during_push, timeout) ->
+              let name = "cancel-" ^ Int.to_string index in
+              let revision = child name name (name ^ "\n") in
+              if during_push then (
+                write hook stalled_script;
+                Unix.chmod hook 0o755)
+              else (
+                write
+                  (dir ^ "/.git/info/attributes")
+                  (name ^ " filter=integration-cancel\n");
+                Git.run_git ~cwd:dir
+                  [ "config"; "filter.integration-cancel.smudge"; filter ]);
+              let before = Git.git_capture ~cwd:bare [ "rev-parse"; "root" ] in
+              let cancelled = ref false in
+              let run () =
+                try
+                  ignore (integrate name revision);
+                  failwith "integration finished before cancellation"
+                with exn when Worktree.has_cancellation exn ->
+                  cancelled := true;
+                  raise exn
               in
-              check "checkout reached before deadline"
-                (Stdlib.Sys.file_exists marker);
-              check "stalled checkout deadline propagates"
-                (match result with Error `Timeout -> true | Ok _ -> false);
-              check "deadline does not wait for stalled checkout"
-                Float.(Eio.Time.now clock -. started < 20.);
-              check_cleanup ());
-          Unix.unlink (dir ^ "/.git/info/attributes");
-          Git.run_git ~cwd:dir
-            [ "config"; "--unset"; "filter.integration-cancel.smudge" ];
-          (* Also cancel after acquisition, while publication is in progress. *)
-          write hook stalled_script;
-          Unix.chmod hook 0o755;
-          with_stalled_filter cancel_at_hook;
-          Unix.unlink hook;
+              if timeout then (
+                let clock = Eio.Stdenv.clock env in
+                let started = Eio.Time.now clock in
+                let result =
+                  Eio.Time.with_timeout clock 5. (fun () -> Ok (run ()))
+                in
+                check "stalled merge deadline propagates"
+                  (match result with Error `Timeout -> true | Ok _ -> false);
+                check "deadline reaps without waiting for sleeper"
+                  Float.(Eio.Time.now clock -. started < 10.))
+              else
+                Eio.Time.with_timeout_exn (Eio.Stdenv.clock env) 10. (fun () ->
+                    Eio.Fiber.first run (fun () ->
+                        while not (Stdlib.Sys.file_exists marker) do
+                          Eio.Time.sleep (Eio.Stdenv.clock env) 0.001
+                        done));
+              check "integration cancellation propagates" !cancelled;
+              check "selected Git phase reached" (Stdlib.Sys.file_exists marker);
+              List.iter [ filter_pid; helper_pid ] ~f:(fun file ->
+                  let pid =
+                    Stdlib.In_channel.with_open_bin file
+                      Stdlib.In_channel.input_all
+                    |> String.strip |> Int.of_string
+                  in
+                  check "cancelled process tree reaped"
+                    (match Unix.kill pid 0 with
+                    | () -> false
+                    | exception Unix.Unix_error (Unix.ESRCH, _, _) -> true));
+              check "root lock released"
+                (Runtime.with_root_write rt (fun () -> true));
+              check "cancellation preserves remote"
+                (String.equal before
+                   (Git.git_capture ~cwd:bare [ "rev-parse"; "root" ]));
+              if during_push then Unix.unlink hook
+              else (
+                Unix.unlink (dir ^ "/.git/info/attributes");
+                Git.run_git ~cwd:dir
+                  [ "config"; "--unset"; "filter.integration-cancel.smudge" ]);
+              drive (module Restarted) publication B.Recover;
+              let recovered = integrated !publication in
+              List.iter [ before; revision ] ~f:(fun ancestor ->
+                  check "cancelled contribution resumes without lost ancestry"
+                    (Git.git_exit_code ~cwd:dir
+                       [ "merge-base"; "--is-ancestor"; ancestor; recovered ]
+                    = 0));
+              List.iter [ filter_pid; helper_pid; marker ] ~f:Unix.unlink);
           Stdlib.print_endline
             "PASS local Git feature integration, races, recovery and ancestry"))

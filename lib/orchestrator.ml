@@ -186,6 +186,9 @@ let respond_pr_number t patch_id kind =
   Option.bind recipient ~f:(fun id ->
       Option.bind (find_agent t id) ~f:Patch_agent.pr_number)
 
+let branch_only_published t id =
+  Execution_mode.branch_only_published t.execution_mode (agent t id)
+
 let terminal_branch t id =
   Execution_mode.terminal t.execution_mode id
     ~branch_of:(fun p -> (agent t p).Patch_agent.branch)
@@ -247,15 +250,9 @@ let refresh_base_branch t patch_id =
       match expected_base t patch_id with
       | None -> t
       | Some fresh ->
-          (* Intentionally do NOT touch branch_rebased_onto here, even when
-           [fresh] differs from the current base. branch_rebased_onto
-           tracks where the local branch was LAST REBASED — clearing it
-           would hide the drift the detector exists to surface. The
-           rebase planner reads [anchor_history] directly and uses an
-           [is_ancestor] oracle at rebase time to decide whether the
-           recorded anchor is still safe for the new base; orchestrator-
-           level invalidation would be redundant and would also break
-           drift detection (PI-16). *)
+          (* Retargeting changes desired context, not historical integration
+             receipts. The owner verifies their boundaries against fresh Git
+             evidence; drift detection compares their base with this intent. *)
           update_agent t patch_id ~f:(fun a ->
               Patch_agent.set_base_branch a fresh))
 
@@ -350,7 +347,7 @@ let mark_merged t patch_id =
                 dep_agent.Patch_agent.merged
                 || (not
                       (Patch_agent.has_pr dep_agent
-                      || dep_agent.branch_published))
+                      || branch_only_published t dep_id))
                 || Patch_agent.in_merge_queue dep_agent
                 || List.mem dep_agent.Patch_agent.queue Operation_kind.Rebase
                      ~equal:Operation_kind.equal
@@ -397,13 +394,15 @@ let enqueue_rebase_for_stranded_dependents t patch_id =
           | Some d ->
               if
                 d.Patch_agent.merged
-                || (not (Patch_agent.has_pr d || d.branch_published))
+                || (not
+                      (Patch_agent.has_pr d || branch_only_published t dep_id))
                 || Patch_agent.in_merge_queue d
                 || List.mem d.Patch_agent.queue Operation_kind.Rebase
                      ~equal:Operation_kind.equal
                 || not
                      (Option.equal Branch.equal
-                        d.Patch_agent.branch_rebased_onto (Some rebased_branch))
+                        (Patch_agent.branch_rebased_onto d)
+                        (Some rebased_branch))
               then t
               else enqueue t dep_id Operation_kind.Rebase)
 
@@ -555,7 +554,7 @@ let start_eligibility t ~base_contains_merged_siblings base =
                cannot latch on a fresh base. *)
             let structurally_fresh =
               Option.equal Branch.equal (expected_base t bpid)
-                a.Patch_agent.branch_rebased_onto
+                (Patch_agent.branch_rebased_onto a)
               && Option.is_some (expected_base t bpid)
             in
             (* [has_conflict] extends the busy-rebase defer across the
@@ -569,7 +568,7 @@ let start_eligibility t ~base_contains_merged_siblings base =
                conflict persists. *)
             ( a.Patch_agent.merged,
               busy_rebasing,
-              a.Patch_agent.has_conflict,
+              Patch_agent.has_conflict a,
               structurally_fresh ))
   in
   Start_eligibility.decide ~base_is_main ~base_branch ~base_patch_merged
@@ -738,10 +737,6 @@ let mark_pr_missing t patch_id =
                "Orchestrator.mark_pr_missing: agent %s has no PR (Absent)"
                (Patch_id.to_string patch_id)))
 
-let set_branch_rebased_onto_sha t patch_id sha =
-  update_agent t patch_id ~f:(fun a ->
-      Patch_agent.set_branch_rebased_onto_sha a sha)
-
 let set_session_failed t patch_id =
   update_agent t patch_id ~f:Patch_agent.set_session_failed
 
@@ -758,14 +753,28 @@ let on_session_failure t patch_id ~is_fresh =
 let on_pr_discovery_failure t patch_id =
   update_agent t patch_id ~f:Patch_agent.on_pr_discovery_failure
 
-let set_has_conflict t patch_id =
-  update_agent t patch_id ~f:Patch_agent.set_has_conflict
+(* Request tickets have their own sequence. Poll bookkeeping must not bump the
+   independent implementation-message generation or invalidate its own scope. *)
+let begin_forge_observation t patch_id ~request =
+  match find_agent t patch_id with
+  | None -> (t, None)
+  | Some agent ->
+      let agent, ticket = Patch_agent.begin_forge_observation agent ~request in
+      ({ t with agents = Map.set t.agents ~key:patch_id ~data:agent }, ticket)
 
-let clear_has_conflict t patch_id =
-  update_agent t patch_id ~f:Patch_agent.clear_has_conflict
+let accept_forge_observation ?confirmed_base t patch_id ~ticket ~confirmed_head
+    observation =
+  match find_agent t patch_id with
+  | None -> (t, Error "forge_patch_removed")
+  | Some agent ->
+      let agent, result =
+        Patch_agent.accept_forge_observation ?confirmed_base agent ~ticket
+          ~confirmed_head observation
+      in
+      ({ t with agents = Map.set t.agents ~key:patch_id ~data:agent }, result)
 
-let reset_conflict_noop_count t patch_id =
-  update_agent t patch_id ~f:Patch_agent.reset_conflict_noop_count
+let defer_forge_revision_pair t patch_id =
+  update_agent t patch_id ~f:Patch_agent.defer_forge_revision_pair
 
 let set_base_branch t patch_id branch =
   update_agent t patch_id ~f:(fun a -> Patch_agent.set_base_branch a branch)
@@ -796,17 +805,16 @@ let set_merge_ready t patch_id v =
 let set_head_oid t patch_id head_oid =
   update_agent t patch_id ~f:(fun a -> Patch_agent.set_head_oid a head_oid)
 
-let set_expected_remote_head_oid t patch_id head_oid =
-  update_agent t patch_id ~f:(fun a ->
-      Patch_agent.set_expected_remote_head_oid a head_oid)
-
-let clear_pending_remote_heads t =
-  {
-    t with
-    agents =
-      Map.map t.agents ~f:(fun agent ->
-          Patch_agent.set_expected_remote_head_oid agent None);
-  }
+let observe_publication_head ?confirmed_remote_head t patch_id head_oid =
+  match Map.find t.agents patch_id with
+  | None -> t
+  | Some agent ->
+      let agent =
+        Patch_agent.observe_publication_head ?confirmed_remote_head agent
+          head_oid
+      in
+      (* Observation acknowledges owner evidence, not a new patch message. *)
+      { t with agents = Map.set t.agents ~key:patch_id ~data:agent }
 
 let set_review_decision t patch_id review_decision =
   update_agent t patch_id ~f:(fun a ->
@@ -853,9 +861,6 @@ let acknowledge_pr_body_refresh t patch_id ~publication =
 
 let reset_pr_body_artifact_miss_count t patch_id =
   update_agent t patch_id ~f:Patch_agent.reset_pr_body_artifact_miss_count
-
-let increment_conflict_noop_count t patch_id =
-  update_agent t patch_id ~f:Patch_agent.increment_conflict_noop_count
 
 let increment_start_attempts_without_pr t patch_id =
   update_agent t patch_id ~f:Patch_agent.increment_start_attempts_without_pr
@@ -982,9 +987,7 @@ let add_agent ?(complexity = None) t ~patch_id ~branch ~base_branch ~pr_number =
             | _ -> [])
         | None -> []
     in
-    (* Do not seed agent.base_branch: persistence infers branch_rebased_onto
-       from base_branch when the former is absent, which would fabricate a
-       stale-rebase state on round-trip. The poller populates it next tick. *)
+    (* The poller supplies the observed PR base on its next tick. *)
     let agent =
       Patch_agent.create_adhoc ~patch_id ~branch ~pr_number
         ~max_ci_failures:t.max_ci_failures ~complexity
@@ -1023,249 +1026,6 @@ let add_planned_patch t (patch : Patch.t) ~deps =
         agents = Map.set t.agents ~key:patch.Patch.id ~data:agent;
       }
 
-type rebase_effect = Push_branch [@@deriving show, eq, sexp_of]
-
-let apply_rebase_result t patch_id rebase_result new_base =
-  match rebase_result with
-  | Worktree.Ok ->
-      (* Successful rebase proves the worktree/git path recovered. Keep other
-         intervention counters conservative, but clear the rebase-specific
-         budget. *)
-      let t = set_base_branch t patch_id new_base in
-      let t =
-        update_agent t patch_id ~f:Patch_agent.reset_rebase_failure_count
-      in
-      let t =
-        update_agent t patch_id ~f:(fun a ->
-            Patch_agent.set_branch_rebased_onto a new_base)
-      in
-      let t = clear_has_conflict t patch_id in
-      let t = reset_conflict_noop_count t patch_id in
-      (* The rebase rewrote this branch's commits; stacked children are now on
-         dead history. [Noop] below deliberately does not cascade — the branch
-         was not rewritten. *)
-      let t = enqueue_rebase_for_stranded_dependents t patch_id in
-      (complete t patch_id, [ Push_branch ])
-  | Worktree.Noop ->
-      let t = set_base_branch t patch_id new_base in
-      let t =
-        update_agent t patch_id ~f:Patch_agent.reset_rebase_failure_count
-      in
-      (* Noop: the local branch already contains [new_base] in its history,
-         so the branch is (transitively) based on it. Record this so the
-         drift detector doesn't re-fire. Push even on Noop — the remote may
-         be stale from a prior failed push. *)
-      let t =
-        update_agent t patch_id ~f:(fun a ->
-            Patch_agent.set_branch_rebased_onto a new_base)
-      in
-      (complete t patch_id, [ Push_branch ])
-  | Worktree.Conflict _ | Worktree.Merge_conflict _ ->
-      let t = set_base_branch t patch_id new_base in
-      let t =
-        update_agent t patch_id ~f:Patch_agent.reset_rebase_failure_count
-      in
-      let t = set_has_conflict t patch_id in
-      let t = enqueue t patch_id Operation_kind.Merge_conflict in
-      (complete t patch_id, [])
-  | Worktree.Uncommitted_changes _ ->
-      let t = set_base_branch t patch_id new_base in
-      let t =
-        update_agent t patch_id ~f:Patch_agent.increment_rebase_failure_count
-      in
-      let t = enqueue t patch_id Operation_kind.Uncommitted_changes in
-      (complete t patch_id, [])
-  | Worktree.Error _ ->
-      let t =
-        update_agent t patch_id ~f:Patch_agent.increment_rebase_failure_count
-      in
-      (complete t patch_id, [])
-
-let fold_anchor_events t patch_id events =
-  List.fold events ~init:t ~f:(fun t (ev : Worktree_plan.anchor_event) ->
-      match ev with
-      | Worktree_plan.Anchor_recorded a ->
-          update_agent t patch_id ~f:(fun ag -> Patch_agent.record_anchor ag a)
-      | Worktree_plan.Anchor_capture_failed -> t)
-
-let apply_rebase_with_anchor t patch_id rebase_result new_base anchor_events =
-  let t, effects = apply_rebase_result t patch_id rebase_result new_base in
-  let t = fold_anchor_events t patch_id anchor_events in
-  (t, effects)
-
-type rebase_push_resolution =
-  | Rebase_push_ok
-  | Rebase_push_failed
-  | Rebase_push_queue_locked
-  | Rebase_push_error
-[@@deriving show, eq, sexp_of]
-
-let apply_rebase_push_result t patch_id
-    (push_outcome : Worktree.push_result option) =
-  match push_outcome with
-  | None -> (t, Rebase_push_ok) (* no push effect emitted; already handled *)
-  | Some Worktree.Push_ok | Some Worktree.Push_up_to_date -> (t, Rebase_push_ok)
-  | Some (Worktree.Push_rejected Push_reject_classify.Merge_queue_locked) ->
-      (* GitHub locked the head branch because the PR is queued in a merge
-         queue — there is no conflict and nothing to retry. Drop the push: the
-         local rebase already succeeded, so [branch_rebased_onto] is current;
-         if the PR merges from the queue nothing re-fires, and if it is
-         ejected as Conflicting the poll path enqueues [Merge_conflict], whose
-         local no-op + now-unlocked push syncs the remote. Reading this as a
-         conflict is exactly the conflict_noop_count>=2 spiral this arm
-         prevents. *)
-      (t, Rebase_push_queue_locked)
-  | Some
-      (Worktree.Push_rejected
-         ( Push_reject_classify.Workflow_scope_missing
-         | Push_reject_classify.Permission_denied
-         | Push_reject_classify.Branch_protection
-         | Push_reject_classify.Push_pattern_block
-         | Push_reject_classify.Lease_violation
-         | Push_reject_classify.Hook_failure _ | Push_reject_classify.Unknown _
-         | Push_reject_classify.Local_state_unsafe _ )) ->
-      let t = set_has_conflict t patch_id in
-      let t = enqueue t patch_id Operation_kind.Merge_conflict in
-      (t, Rebase_push_failed)
-  | Some Worktree.Push_no_commits
-  | Some (Worktree.Push_error _)
-  | Some Worktree.Push_worktree_missing ->
-      (* Push_no_commits after rebase means the rebase produced no commits —
-         the patch's work is already present on the new base (e.g. it landed
-         via the dependency's merge), so there is nothing to push. Treat as an
-         infrastructure error and retry the rebase. Push_worktree_missing lands
-         here because the next Rebase invocation re-runs through
-         [ensure_worktree], which reconstructs the missing worktree before
-         retrying. *)
-      let t = enqueue t patch_id Operation_kind.Rebase in
-      (t, Rebase_push_error)
-
-type conflict_rebase_decision =
-  | Conflict_resolved
-  | Deliver_to_agent
-  | Cleanup_needed
-  | Conflict_failed
-[@@deriving show, eq, sexp_of]
-
-let apply_conflict_rebase_result t patch_id rebase_result new_base =
-  match rebase_result with
-  | Worktree.Ok ->
-      let t = set_base_branch t patch_id new_base in
-      let t =
-        update_agent t patch_id ~f:Patch_agent.reset_rebase_failure_count
-      in
-      let t =
-        update_agent t patch_id ~f:(fun a ->
-            Patch_agent.set_branch_rebased_onto a new_base)
-      in
-      let t = clear_has_conflict t patch_id in
-      let t = reset_conflict_noop_count t patch_id in
-      (* Conflict resolution rewrote this branch's commits just like a clean
-         rebase — cascade demand to stacked children. The [Noop] arm below does
-         not cascade: the branch already contained the target. *)
-      let t = enqueue_rebase_for_stranded_dependents t patch_id in
-      let t = complete t patch_id in
-      (t, Conflict_resolved, [ Push_branch ])
-  | Worktree.Noop ->
-      (* Local branch already contains the target — just push to sync
-         the remote.  Clear has_conflict so it purely tracks GitHub
-         state; the poller will re-set it and re-enqueue Merge_conflict
-         if the conflict persists, and conflict_noop_count will
-         eventually trigger intervention. *)
-      let t = set_base_branch t patch_id new_base in
-      let t =
-        update_agent t patch_id ~f:Patch_agent.reset_rebase_failure_count
-      in
-      let t =
-        update_agent t patch_id ~f:(fun a ->
-            Patch_agent.set_branch_rebased_onto a new_base)
-      in
-      let t = clear_has_conflict t patch_id in
-      let t = increment_conflict_noop_count t patch_id in
-      let t = complete t patch_id in
-      (t, Conflict_resolved, [ Push_branch ])
-  | Worktree.Conflict _ | Worktree.Merge_conflict _ ->
-      let t = set_base_branch t patch_id new_base in
-      let t =
-        update_agent t patch_id ~f:Patch_agent.reset_rebase_failure_count
-      in
-      let t = set_has_conflict t patch_id in
-      (t, Deliver_to_agent, [])
-  | Worktree.Uncommitted_changes _ ->
-      let t = set_base_branch t patch_id new_base in
-      let t =
-        update_agent t patch_id ~f:Patch_agent.increment_rebase_failure_count
-      in
-      let t = enqueue t patch_id Operation_kind.Uncommitted_changes in
-      let t = complete t patch_id in
-      (t, Cleanup_needed, [])
-  | Worktree.Error _ ->
-      let t =
-        update_agent t patch_id ~f:Patch_agent.increment_rebase_failure_count
-      in
-      let t = complete t patch_id in
-      (t, Conflict_failed, [])
-
-let apply_conflict_rebase_with_anchor t patch_id rebase_result new_base
-    anchor_events =
-  let t, decision, effects =
-    apply_conflict_rebase_result t patch_id rebase_result new_base
-  in
-  let t = fold_anchor_events t patch_id anchor_events in
-  (t, decision, effects)
-
-let apply_anchor_events t patch_id events = fold_anchor_events t patch_id events
-
-type conflict_resolution =
-  | Conflict_done
-  | Conflict_retry_push
-  | Conflict_needs_agent
-  | Conflict_cleanup_queued
-  | Conflict_give_up
-[@@deriving show, eq, sexp_of]
-
-let apply_conflict_push_result t patch_id decision
-    (push_outcome : Worktree.push_result option) =
-  match (decision, push_outcome) with
-  | Conflict_resolved, Some Worktree.Push_ok -> (t, Conflict_done)
-  | Conflict_resolved, Some Worktree.Push_up_to_date -> (t, Conflict_done)
-  | ( Conflict_resolved,
-      Some (Worktree.Push_rejected Push_reject_classify.Merge_queue_locked) ) ->
-      (* The PR is queued in a merge queue, so there is no conflict to keep
-         chasing — treat the resolution as done rather than re-enqueueing.
-         Also undo the noop-counter increment from the [Noop] rebase arm: the
-         noop was evidence of a queued clean PR, not of a stuck conflict, and
-         with [has_conflict] already cleared no poll-path reset would undo the
-         stray increment. *)
-      let t = reset_conflict_noop_count t patch_id in
-      (t, Conflict_done)
-  | ( Conflict_resolved,
-      ( None
-      | Some
-          ( Worktree.Push_rejected
-              ( Push_reject_classify.Workflow_scope_missing
-              | Push_reject_classify.Permission_denied
-              | Push_reject_classify.Branch_protection
-              | Push_reject_classify.Push_pattern_block
-              | Push_reject_classify.Lease_violation
-              | Push_reject_classify.Hook_failure _
-              | Push_reject_classify.Unknown _
-              | Push_reject_classify.Local_state_unsafe _ )
-          | Worktree.Push_no_commits | Worktree.Push_error _
-          | Worktree.Push_worktree_missing ) ) ) ->
-      let t = set_has_conflict t patch_id in
-      let t = enqueue t patch_id Operation_kind.Merge_conflict in
-      (t, Conflict_retry_push)
-  | ( Deliver_to_agent,
-      ( None
-      | Some
-          ( Worktree.Push_ok | Worktree.Push_up_to_date
-          | Worktree.Push_no_commits | Worktree.Push_rejected _
-          | Worktree.Push_error _ | Worktree.Push_worktree_missing ) ) ) ->
-      (t, Conflict_needs_agent)
-  | Cleanup_needed, _ -> (t, Conflict_cleanup_queued)
-  | Conflict_failed, _ -> (t, Conflict_give_up)
-
 type session_result = Session_result.t =
   | Session_ok
   | Session_process_error of { is_fresh : bool; detail : string option }
@@ -1280,11 +1040,6 @@ type session_result = Session_result.t =
       (** Explicit pre-commit opt-out. Retains the explanation and pauses work
           until a human reprompt or intervention reset. *)
   | Session_give_up
-  | Session_worktree_missing
-  | Session_push_failed of Push_reject_classify.rejection option
-      (** [Some r] carries a classified server-side rejection (workflow-scope,
-          branch-protection, lease, hook, …). [None] reflects a transport/local
-          [git push] error (no server message available). *)
   | Session_no_commits
   | Session_context_exhausted
       (** The session exhausted the model's context window
@@ -1366,15 +1121,12 @@ let apply_session_result t patch_id result =
   match result with
   | Session_ok ->
       let t = clear_session_fallback t patch_id in
-      (* A healthy session that pushed commits clears the no-commits and
-         push-failure counters. *)
+      (* A healthy session clears implementation outcome counters.
+         Publication retry/intervention remains owned by reconciliation. *)
       let t =
         update_agent t patch_id ~f:Patch_agent.reset_no_commits_push_count
       in
-      let t =
-        update_agent t patch_id ~f:Patch_agent.reset_context_exhaustion_count
-      in
-      update_agent t patch_id ~f:Patch_agent.reset_push_failure_count
+      update_agent t patch_id ~f:Patch_agent.reset_context_exhaustion_count
   | Session_process_error { is_fresh; _ } ->
       let t = on_session_failure t patch_id ~is_fresh in
       let t = update_agent t patch_id ~f:Patch_agent.on_pre_session_failure in
@@ -1413,45 +1165,11 @@ let apply_session_result t patch_id result =
             Patch_agent.set_llm_session_id a None)
       in
       complete_failed t patch_id
-  | Session_worktree_missing ->
-      let t = update_agent t patch_id ~f:Patch_agent.on_pre_session_failure in
-      let t = update_agent t patch_id ~f:Patch_agent.clear_worktree_path in
-      complete_failed t patch_id
-  | Session_push_failed reason -> (
-      (* The LLM session itself ran cleanly — clear its fallback state so we
-         resume the same session next iteration. The push failure does NOT
-         use [complete_failed] directly. For a PR-backed Human Respond,
-         acceptance already consumed inflight messages and completion is
-         deferred to [apply_respond_outcome] via [Respond_retry_push]. For a
-         Human-carrying Start, inflight remains and the caller's
-         [Start_failed] follow-up restores it. Calling [complete_failed] here
-         caused an infinite Respond loop: messages were re-enqueued, the Human
-         operation re-dispatched, the session re-delivered the same messages,
-         the push failed again, ad infinitum — with [clear_session_fallback]
-         preventing escalation and the Human-in-queue exemption in
-         [needs_intervention] preventing the circuit breaker from firing.
-
-         The [push_failure_count] counter (added in P0-B) feeds
-         [needs_intervention] once it reaches 3, breaking the tight retry
-         loop for transient server-side rejections. A {e permanent}
-         rejection (workflow-scope, branch-protection, push-pattern, hook)
-         short-circuits this by setting [session_fallback = Given_up]
-         directly, since retrying cannot resolve those under the current
-         credentials/branch-protection state. *)
-      let t = clear_session_fallback t patch_id in
-      match reason with
-      | Some r when Push_reject_classify.is_permanent r ->
-          (* Two-step [set_tried_fresh] reaches [Given_up] from any starting
-             fallback state, including [Fresh_available]. *)
-          let t = set_tried_fresh t patch_id in
-          set_tried_fresh t patch_id
-      | Some _ | None ->
-          update_agent t patch_id ~f:Patch_agent.increment_push_failure_count)
   | Session_no_commits ->
       (* The LLM session ran cleanly but left no commits on the branch (HEAD
          == base), so the supervisor skipped the push. Clear session fallback
          (the LLM itself was healthy), bump the no-commits counter (which
-         feeds [needs_intervention] at >= 2). Like [Session_push_failed], do NOT
+         feeds [needs_intervention] at >= 2). Do NOT
          complete here: a Respond caller uses its normal outcome transition,
          while a Start caller uses [Start_failed], which restores retained
          Human Start guidance. *)
@@ -1467,44 +1185,6 @@ let apply_session_result t patch_id result =
          [complete_failed] to restore any still-inflight human messages. *)
       let t = update_agent t patch_id ~f:Patch_agent.on_context_exhausted in
       complete_failed t patch_id
-
-let combine_session_and_push ~delivery_mode ~branch_changed
-    ~(session : session_result) ~(push : Worktree.push_result) : session_result
-    =
-  (* Push_worktree_missing dominates every prior session outcome: even if the
-     LLM session reported [Session_ok], the worktree (and thus the local
-     commits) are gone, so the only safe action is to clear inflight state
-     and let the next session rebuild the worktree from scratch via
-     [ensure_worktree]. The [Session_push_failed] retry-push path would loop
-     forever because the deleted directory cannot be repaired by retrying. *)
-  match push with
-  | Worktree.Push_worktree_missing -> Session_worktree_missing
-  | Worktree.Push_ok | Worktree.Push_up_to_date | Worktree.Push_no_commits
-  | Worktree.Push_rejected _ | Worktree.Push_error _ -> (
-      match session with
-      | Session_ok -> (
-          match push with
-          | Worktree.Push_ok | Worktree.Push_up_to_date ->
-              (* Start admits PR publication from the whole branch. A prior
-                 failed turn may already have pushed the implementation;
-                 finishing it successfully need not manufacture another commit.
-                 Respond still measures progress in the current turn. *)
-              if
-                branch_changed
-                || Patch_decision.equal_delivery_mode delivery_mode Start
-              then Session_ok
-              else Session_no_commits
-          | Worktree.Push_no_commits -> Session_no_commits
-          | Worktree.Push_rejected reason -> Session_push_failed (Some reason)
-          | Worktree.Push_error _ -> Session_push_failed None
-          | Worktree.Push_worktree_missing ->
-              Session_worktree_missing
-              (* unreachable — outer match catches this *))
-      | Session_process_error _ | Session_no_resume | Session_timed_out _
-      | Session_failed _ | Session_wontdo _ | Session_give_up
-      | Session_worktree_missing | Session_push_failed _ | Session_no_commits
-      | Session_context_exhausted ->
-          session)
 
 type start_outcome = Start_ok | Start_failed | Start_stale
 [@@deriving show, eq, sexp_of]
@@ -1593,12 +1273,6 @@ let apply_respond_outcome t patch_id kind outcome =
         update_agent t patch_id ~f:Patch_agent.reset_no_commits_push_count
       in
       let t =
-        if Operation_kind.equal kind Operation_kind.Merge_conflict then
-          let t = clear_has_conflict t patch_id in
-          reset_conflict_noop_count t patch_id
-        else t
-      in
-      let t =
         if Operation_kind.equal kind Operation_kind.Review_comments then
           update_agent t patch_id
             ~f:Patch_agent.reset_review_unresolved_cycle_count
@@ -1613,9 +1287,6 @@ let apply_respond_outcome t patch_id kind outcome =
       in
       retry_rebase_after_cleanup t
 
-let mark_branch_published t id =
-  update_agent t id ~f:Patch_agent.mark_branch_published
-
 let reconcile_branch t patch_id event =
   match Map.find t.agents patch_id with
   | None -> (t, [])
@@ -1627,16 +1298,6 @@ let reconcile_branch t patch_id event =
         List.hd (Branch_reconcile.publications agent.branch_reconcile)
       in
       let agent, commands = Patch_agent.reconcile_branch agent event in
-      let agent =
-        match Branch_reconcile.operation agent.branch_reconcile with
-        | Some op when Branch_reconcile.equal_phase op.phase Settled -> (
-            match op.candidate with
-            | Some candidate ->
-                Patch_agent.set_expected_remote_head_oid agent
-                  (Some (Branch_reconcile.Commit.to_string candidate))
-            | None -> agent)
-        | Some _ | None -> agent
-      in
       (* Reconciliation owns its operation sequence. Checkpointing a command
          must not invalidate the independent patch-message generation. *)
       let t = { t with agents = Map.set t.agents ~key:patch_id ~data:agent } in
@@ -1706,10 +1367,13 @@ let reconcile_branch t patch_id event =
                       invalidate_root_readiness t
                     else invalidate_root_readiness t
                 | Some _ | None -> t)
+            | Branch_reconcile.Provision_checkout _
             | Branch_reconcile.Reconcile_base
             | Branch_reconcile.Reconcile_request _
+            | Branch_reconcile.Reconcile_scoped _
             | Branch_reconcile.Publish_revision _
-            | Branch_reconcile.Publish_session _ ->
+            | Branch_reconcile.Publish_session _
+            | Branch_reconcile.Verify_publication ->
                 t)
         | Some _ | None -> t
       in

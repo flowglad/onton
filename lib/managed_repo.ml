@@ -4,55 +4,17 @@
 open Base
 open Onton_core
 
-(** Run a subprocess, capture stdout, and guarantee the pipe is closed on any
-    exception path. Returns the exit status and captured output, or [None] if
-    opening the pipe itself raised. *)
-let read_process_capture open_ic =
-  match open_ic () with
-  | exception _ -> None
-  | ic ->
-      let status = ref None in
-      Stdlib.Fun.protect
-        ~finally:(fun () ->
-          if Option.is_none !status then
-            try ignore (Unix.close_process_in ic) with _ -> ())
-        (fun () ->
-          let buf = Buffer.create 128 in
-          (try
-             while true do
-               Buffer.add_char buf (Stdlib.input_char ic)
-             done
-           with End_of_file -> ());
-          let s = Unix.close_process_in ic in
-          status := Some s;
-          Some (s, Buffer.contents buf))
-
 type process_capture = {
   status : Unix.process_status;
   stdout : string;
   stderr : string;
 }
 
-let read_channel_all ic =
-  let buf = Buffer.create 128 in
-  (try
-     while true do
-       Buffer.add_char buf (Stdlib.input_char ic)
-     done
-   with End_of_file -> ());
-  Buffer.contents buf
-
-let close_fd_noerr fd = try Unix.close fd with _ -> ()
-let unlink_noerr path = try Stdlib.Sys.remove path with _ -> ()
-let iter_option opt ~f = match opt with Some x -> f x | None -> ()
-
-let read_file_noerr path =
-  match Stdlib.open_in_bin path with
-  | exception _ -> ""
-  | ic ->
-      Stdlib.Fun.protect
-        ~finally:(fun () -> Stdlib.close_in_noerr ic)
-        (fun () -> read_channel_all ic)
+let run_capture ~env args =
+  try
+    let status, stdout, stderr = Process_tree.run_sync ~env args in
+    Some { status; stdout; stderr }
+  with _ -> None
 
 let format_process_failure { stdout; stderr; _ } =
   let detail =
@@ -63,71 +25,17 @@ let format_process_failure { stdout; stderr; _ } =
   in
   if String.is_empty detail then "no output" else detail
 
-(** Spawn [git] with a clean environment and hooks disabled, capturing stdout
-    and stderr. Used for clone, remote URL probes, and remote branch discovery.
-    Callers supply [-C path] in [args] when a checkout is needed. [?extra_env]
-    is appended to the clean env (use to set, e.g., a custom [GIT_SSH_COMMAND]
-    for one-off probes that must not prompt or hang). *)
+(** Spawn [git] (not [git -C ...]) with a clean environment, capture stdout and
+    stderr. Used for [git clone] before any working tree exists. [?extra_env] is
+    appended to the clean env (use to set, e.g., a custom [GIT_SSH_COMMAND] for
+    one-off probes that must not prompt or hang). *)
 let run_git_no_cwd ?(extra_env = []) args =
-  let argv = Array.of_list ("git" :: args) in
   let env =
     let base = Git_env.clean_env () in
     if List.is_empty extra_env then base
     else Array.append base (Array.of_list extra_env)
   in
-  match Stdlib.Filename.temp_file "onton-git-stderr-" ".log" with
-  | exception _ -> None
-  | err_path -> (
-      let stdin_fd = ref None in
-      let stdout_rd = ref None in
-      let stdout_wr = ref None in
-      let stdout_ic = ref None in
-      let err_fd = ref None in
-      let pid = ref None in
-      match
-        Stdlib.Fun.protect
-          ~finally:(fun () ->
-            iter_option !stdout_ic ~f:Stdlib.close_in_noerr;
-            iter_option !stdout_rd ~f:close_fd_noerr;
-            iter_option !stdout_wr ~f:close_fd_noerr;
-            iter_option !stdin_fd ~f:close_fd_noerr;
-            iter_option !err_fd ~f:close_fd_noerr;
-            iter_option !pid ~f:(fun p ->
-                try ignore (Unix.waitpid [] p) with _ -> ());
-            unlink_noerr err_path)
-          (fun () ->
-            let stdin = Unix.openfile "/dev/null" [ Unix.O_RDONLY ] 0 in
-            stdin_fd := Some stdin;
-            let rd, wr = Unix.pipe () in
-            stdout_rd := Some rd;
-            stdout_wr := Some wr;
-            let err =
-              Unix.openfile err_path
-                [ Unix.O_WRONLY; Unix.O_TRUNC; Unix.O_CREAT ]
-                0o600
-            in
-            err_fd := Some err;
-            let child = Unix.create_process_env "git" argv env stdin wr err in
-            pid := Some child;
-            close_fd_noerr stdin;
-            stdin_fd := None;
-            close_fd_noerr wr;
-            stdout_wr := None;
-            close_fd_noerr err;
-            err_fd := None;
-            let ic = Unix.in_channel_of_descr rd in
-            stdout_rd := None;
-            stdout_ic := Some ic;
-            let stdout = read_channel_all ic in
-            Stdlib.close_in_noerr ic;
-            stdout_ic := None;
-            let _, status = Unix.waitpid [] child in
-            pid := None;
-            let stderr = read_file_noerr err_path in
-            Some { status; stdout; stderr })
-      with
-      | result -> result
-      | exception _ -> None)
+  run_capture ~env ("git" :: args)
 
 (** Read all [remote.<name>.url] entries from a clone at [path]. Best effort:
     returns the empty list on any IO error or if [path] is not a git checkout.
@@ -156,7 +64,7 @@ let read_remote_urls ~path =
   if not is_git then []
   else
     match run_git_no_cwd [ "-C"; path; "remote"; "-v" ] with
-    | Some { status = Unix.WEXITED 0; stdout = out; stderr = _ } ->
+    | Some { status = Unix.WEXITED 0; stdout = out; _ } ->
         String.split_lines out
         |> List.filter_map ~f:(fun line ->
             (* Each line is "<name>\t<url> (fetch|push)". Keep the URL field. *)
@@ -388,15 +296,16 @@ let infer_github_token () =
       | _ -> (
           try
             match
-              read_process_capture (fun () ->
-                  Unix.open_process_args_in "gh" [| "gh"; "auth"; "token" |])
+              run_capture ~env:(Unix.environment ()) [ "gh"; "auth"; "token" ]
             with
-            | Some (Unix.WEXITED 0, out) ->
+            | Some { status = Unix.WEXITED 0; stdout = out; _ } ->
                 let t = String.strip out in
                 if String.is_empty t then "" else t
-            | Some (Unix.WEXITED _, _)
-            | Some (Unix.WSIGNALED _, _)
-            | Some (Unix.WSTOPPED _, _)
+            | Some
+                {
+                  status = Unix.WEXITED _ | Unix.WSIGNALED _ | Unix.WSTOPPED _;
+                  _;
+                }
             | None ->
                 ""
           with _ -> ""))

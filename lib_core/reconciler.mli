@@ -96,7 +96,7 @@ val detect_rebases :
 
 val detect_notified_base_drift : patch_view list -> action list
 (** [detect_notified_base_drift views] returns [Enqueue_rebase] for agents whose
-    [branch_rebased_onto] is [Some b] and differs from the current
+    owner-derived [branch_rebased_onto] is absent or differs from the current
     [base_branch]. This catches the case where a dependency's branch was merged
     and deleted on GitHub, which auto-retargets the PR to [main]; the poller
     then updates [base_branch] to match, but the local branch still carries the

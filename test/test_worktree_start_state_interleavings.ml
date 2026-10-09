@@ -33,7 +33,9 @@ let bootstrap () =
   let orch = Orchestrator.create ~patches ~main_branch:main in
   let orch = Orchestrator.fire orch (Orchestrator.Start (parent, main)) in
   let orch = Orchestrator.set_pr_number orch parent (Pr_number.of_int 1) in
-  let orch = Orchestrator.complete orch parent in
+  let orch =
+    Onton_test_support.Reconciliation_fixture.rebase ~noop:true orch parent main
+  in
   (patches, parent, child, orch)
 
 let child_start_action orch ~patches ~child =
@@ -89,7 +91,7 @@ let gen_materialized_path =
 let gen_path_and_dependency_ops =
   QCheck2.Gen.pair gen_materialized_path gen_dependency_ops
 
-let apply_dependency_op orch parent = function
+let apply_dependency_op_unchecked orch parent = function
   | Pr_present ->
       let agent = Orchestrator.agent orch parent in
       if agent.Patch_agent.merged || Patch_agent.has_pr agent then orch
@@ -105,8 +107,9 @@ let apply_dependency_op orch parent = function
   | Checks_failing -> Orchestrator.set_checks_passing orch parent false
   | Notes_delivered -> Orchestrator.set_pr_body_delivered orch parent true
   | Notes_missing -> Orchestrator.set_pr_body_delivered orch parent false
-  | Conflict_detected -> Orchestrator.set_has_conflict orch parent
-  | Conflict_cleared -> Orchestrator.clear_has_conflict orch parent
+  | Conflict_detected ->
+      Onton_test_support.Conflict_fixture.conflict orch parent
+  | Conflict_cleared -> Onton_test_support.Conflict_fixture.resolve orch parent
   | Rebase_enqueued ->
       let agent = Orchestrator.agent orch parent in
       if
@@ -135,19 +138,47 @@ let apply_dependency_op orch parent = function
         agent.Patch_agent.busy
         && Option.equal Operation_kind.equal agent.Patch_agent.current_op
              (Some Operation_kind.Rebase)
-      then Orchestrator.apply_rebase_result orch parent Worktree.Ok main |> fst
+      then
+        if Patch_agent.has_conflict agent then
+          let orch = Onton_test_support.Conflict_fixture.resolve orch parent in
+          Orchestrator.complete orch parent
+        else Onton_test_support.Reconciliation_fixture.rebase orch parent main
       else orch
   | Merged ->
       let agent = Orchestrator.agent orch parent in
       if agent.Patch_agent.merged then orch
       else Orchestrator.mark_merged orch parent
 
+let apply_dependency_op orch parent op =
+  try apply_dependency_op_unchecked orch parent op
+  with exn ->
+    let name =
+      match op with
+      | Pr_present -> "PR present"
+      | Pr_absent -> "PR absent"
+      | Checks_passing -> "checks passing"
+      | Checks_failing -> "checks failing"
+      | Notes_delivered -> "notes delivered"
+      | Notes_missing -> "notes missing"
+      | Conflict_detected -> "conflict detected"
+      | Conflict_cleared -> "conflict resolved"
+      | Rebase_enqueued -> "rebase enqueued"
+      | Rebase_started -> "rebase started"
+      | Rebase_finished -> "rebase finished"
+      | Merged -> "merged"
+    in
+    let owner = (Orchestrator.agent orch parent).Patch_agent.branch_reconcile in
+    QCheck2.Test.fail_reportf "%s in %s: %s" name
+      (Option.value_map (Branch_reconcile.phase owner) ~default:"none"
+         ~f:(fun phase -> Sexp.to_string (Branch_reconcile.sexp_of_phase phase)))
+      (Exn.to_string exn)
+
 let dependency_materialization_ready orch parent =
   let agent = Orchestrator.agent orch parent in
   agent.Patch_agent.merged
   || Patch_agent.is_pr_present agent
      && agent.Patch_agent.pr_body_delivered
-     && (not agent.Patch_agent.has_conflict)
+     && (not (Patch_agent.has_conflict agent))
      && agent.Patch_agent.checks_passing
 
 let materialized_with_same_path orch child expected_path =
@@ -180,7 +211,8 @@ let prop_unmaterialized_gate_safety =
               invariant orch && loop orch rest
         in
         invariant orch && loop orch ops
-      with _ -> false)
+      with exn ->
+        QCheck2.Test.fail_reportf "interleaving raised: %s" (Exn.to_string exn))
 
 (** WSI-2: once the cut exists, every dependency-state prefix still plans the
     child's no-PR retry. This covers CI regression, missing/changed PR state,
@@ -202,7 +234,8 @@ let prop_materialized_retry_dependency_invariance =
               | op :: rest -> loop (apply_dependency_op orch parent op) rest)
         in
         loop orch ops
-      with _ -> false)
+      with exn ->
+        QCheck2.Test.fail_reportf "interleaving raised: %s" (Exn.to_string exn))
 
 type lifecycle_op =
   | Dependency of dependency_op
@@ -284,7 +317,8 @@ let prop_materialized_state_is_sticky =
               materialized_with_same_path orch child path && loop orch rest
         in
         loop orch ops
-      with _ -> false)
+      with exn ->
+        QCheck2.Test.fail_reportf "interleaving raised: %s" (Exn.to_string exn))
 
 (** WSI-4: the Patch 6 witness generalized over arbitrary dependency suffixes.
     The same unsafe dependency snapshot blocks before materialization, allows a
@@ -300,7 +334,7 @@ let prop_materialization_is_the_gate_cutover =
         let orch = Orchestrator.clear_pr orch parent in
         let orch = Orchestrator.set_checks_passing orch parent false in
         let orch = Orchestrator.set_pr_body_delivered orch parent false in
-        let orch = Orchestrator.set_has_conflict orch parent in
+        let orch = Onton_test_support.Conflict_fixture.conflict orch parent in
         if child_start_planned orch ~patches ~child then false
         else
           let orch = Orchestrator.set_worktree_path orch child path in
@@ -324,7 +358,8 @@ let prop_materialization_is_the_gate_cutover =
                     && loop orch rest
               in
               loop orch ops
-      with _ -> false)
+      with exn ->
+        QCheck2.Test.fail_reportf "interleaving raised: %s" (Exn.to_string exn))
 
 (** WSI-5: after a parent merges, the structural base for a materialized child
     retry changes to main, but firing that retry must not claim the existing
@@ -342,6 +377,10 @@ let prop_materialized_retry_preserves_rebase_anchor =
             let orch = Orchestrator.fire orch action in
             let orch = Orchestrator.set_worktree_path orch child "/tmp/child" in
             let orch =
+              Onton_test_support.Reconciliation_fixture.rebase ~noop:true orch
+                child original_base
+            in
+            let orch =
               Orchestrator.apply_session_result orch child
                 (Orchestrator.Session_failed
                    { is_fresh = true; detail = Some "retry after parent merge" })
@@ -354,7 +393,7 @@ let prop_materialized_retry_preserves_rebase_anchor =
                 Branch.equal retry_base main
                 && (not (Branch.equal original_base retry_base))
                 && Option.equal Branch.equal
-                     child_agent.Patch_agent.branch_rebased_onto
+                     (Patch_agent.branch_rebased_onto child_agent)
                      (Some original_base)
             | Some
                 ( Orchestrator.Respond _ | Orchestrator.Rebase _
@@ -366,7 +405,8 @@ let prop_materialized_retry_preserves_rebase_anchor =
             | Orchestrator.Reconcile_branch _ )
         | None ->
             false
-      with _ -> false)
+      with exn ->
+        QCheck2.Test.fail_reportf "interleaving raised: %s" (Exn.to_string exn))
 
 let () =
   let runner = QCheck_base_runner.run_tests_main in

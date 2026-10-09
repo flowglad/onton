@@ -4,6 +4,7 @@
 open Base
 open Onton_core.Types
 open Onton_core.Patch_agent
+module Ready_fixture = Onton_core_test_support.Forge_fixture
 
 let all_ops =
   Operation_kind.
@@ -54,7 +55,7 @@ let () =
           && (not t.has_session) && (not t.busy) && (not t.merged)
           && (not (needs_intervention t))
           && List.is_empty t.queue && (not t.satisfies) && (not t.changed)
-          && (not t.has_conflict)
+          && (not (has_conflict t))
           && Option.is_none t.base_branch
           && t.ci_failure_count = 0
           && equal_session_fallback t.session_fallback Fresh_available
@@ -330,10 +331,10 @@ let () =
             create ~branch:br pid |> fun a -> start_with_pr a ~base_branch:br
           in
           let a = complete a in
-          let a = set_has_conflict a in
+          let a = Onton_core_test_support.Conflict_fixture.agent a in
           let a = enqueue a Operation_kind.Merge_conflict in
           let a = respond a Operation_kind.Merge_conflict in
-          a.has_conflict);
+          has_conflict a);
       (* -- respond Review_comments always sets changed (lazy fetch) -- *)
       Test.make ~name:"respond Review_comments always sets changed (lazy fetch)"
         ~count:1
@@ -726,38 +727,6 @@ let () =
             && (not (needs_intervention a))
             && a.pr_body_artifact_miss_count = 0
           with _ -> false);
-      (* -- rebase failure counter uses its own intervention budget -- *)
-      Test.make ~name:"2 rebase failures trigger intervention" ~count:1
-        Gen.(pure (pid0, br0))
-        (fun (pid, br) ->
-          try
-            let a =
-              create ~branch:br pid |> fun a -> start_with_pr a ~base_branch:br
-            in
-            let a = complete a in
-            let a = increment_rebase_failure_count a in
-            let one_failure = not (needs_intervention a) in
-            let a = increment_rebase_failure_count a in
-            one_failure && needs_intervention a
-            && equal_session_fallback a.session_fallback Fresh_available
-          with _ -> false);
-      Test.make ~name:"reset_intervention_state clears rebase_failure_count"
-        ~count:1
-        Gen.(pure (pid0, br0))
-        (fun (pid, br) ->
-          try
-            let a =
-              create ~branch:br pid |> fun a -> start_with_pr a ~base_branch:br
-            in
-            let a = complete a in
-            let a = increment_rebase_failure_count a in
-            let a = increment_rebase_failure_count a in
-            let triggered = needs_intervention a in
-            let a = reset_intervention_state a in
-            triggered
-            && (not (needs_intervention a))
-            && a.rebase_failure_count = 0
-          with _ -> false);
       (* -- reset_intervention_state clears derived intervention -- *)
       Test.make ~name:"reset_intervention_state clears intervention" ~count:1
         Gen.(pure (pid0, br0))
@@ -809,20 +778,15 @@ let () =
             Onton_core.Patch_agent.restore ~patch_id:a.patch_id ~branch:br
               ~pr_status:Onton_core.Patch_pr_status.Absent ~has_session:false
               ~busy:false ~merged:false ~queue:[] ~satisfies:false
-              ~changed:false ~has_conflict:false ~base_branch:None
-              ~notified_base_branch:None ~ci_failure_count:0
-              ~session_fallback:Fresh_available ~human_messages:[]
-              ~inflight_human_messages:[] ~ci_checks:a.ci_checks
-              ~merge_ready:false ~mergeability_unknown:false
-              ~merge_queue_required:false ~merge_queue_entry:None
-              ~is_draft:false ~pr_body_delivered:false
+              ~changed:false ~base_branch:None ~notified_base_branch:None
+              ~ci_failure_count:0 ~session_fallback:Fresh_available
+              ~human_messages:[] ~inflight_human_messages:[]
+              ~ci_checks:a.ci_checks ~merge_ready:false
+              ~mergeability_unknown:false ~merge_queue_required:false
+              ~merge_queue_entry:None ~is_draft:false ~pr_body_delivered:false
               ~pr_body_artifact_miss_count:0 ~start_attempts_without_pr:0
-              ~conflict_noop_count:0 ~no_commits_push_count:0
-              ~context_exhaustion_count:0 ~push_failure_count:0
-              ~rebase_failure_count:0 ~branch_rebased_onto:None
-              ~branch_rebased_onto_sha:None ~merge_commit_sha:None
-              ~base_contains_merged_siblings:true
-              ~anchor_history:Onton_core.Anchor_history.empty
+              ~no_commits_push_count:0 ~context_exhaustion_count:0
+              ~merge_commit_sha:None ~base_contains_merged_siblings:true
               ~checks_passing:false ~current_op:None
               ~current_op_state:Onton_core.Patch_agent.Queued
               ~current_message_id:None ~generation:0 ~worktree_path:None
@@ -929,12 +893,12 @@ let () =
           in
           let a =
             create ~branch:br0 pid0 |> exhaust count |> set_tried_fresh
-            |> set_tried_fresh |> increment_push_failure_count
+            |> set_tried_fresh |> on_context_exhausted
           in
           let fresh = set_ci_checks a [ check (Some 12) failure ] in
           fresh.ci_failure_count = 0
           && equal_session_fallback fresh.session_fallback Given_up
-          && fresh.push_failure_count = a.push_failure_count
+          && fresh.context_exhaustion_count = a.context_exhaustion_count
           && List.for_all
                [ "success"; "pending"; "cancelled"; "skipped"; "neutral" ]
                ~f:(fun conclusion ->
@@ -989,20 +953,15 @@ let () =
               ~pr_status:
                 (Onton_core.Patch_pr_status.Present (Pr_number.of_int 1))
               ~has_session:false ~busy:false ~merged:false ~queue:[]
-              ~satisfies:true ~changed:false ~has_conflict:false
-              ~base_branch:(Some br) ~notified_base_branch:(Some br)
-              ~ci_failure_count:0 ~session_fallback:Fresh_available
-              ~human_messages:[] ~inflight_human_messages:[] ~ci_checks:[]
-              ~merge_ready:false ~mergeability_unknown:false
-              ~merge_queue_required:false ~merge_queue_entry:None
-              ~is_draft:false ~pr_body_delivered:false
+              ~satisfies:true ~changed:false ~base_branch:(Some br)
+              ~notified_base_branch:(Some br) ~ci_failure_count:0
+              ~session_fallback:Fresh_available ~human_messages:[]
+              ~inflight_human_messages:[] ~ci_checks:[] ~merge_ready:false
+              ~mergeability_unknown:false ~merge_queue_required:false
+              ~merge_queue_entry:None ~is_draft:false ~pr_body_delivered:false
               ~pr_body_artifact_miss_count:0 ~start_attempts_without_pr:0
-              ~conflict_noop_count:0 ~no_commits_push_count:0
-              ~context_exhaustion_count:0 ~push_failure_count:0
-              ~rebase_failure_count:0 ~branch_rebased_onto:None
-              ~branch_rebased_onto_sha:None ~merge_commit_sha:None
-              ~base_contains_merged_siblings:true
-              ~anchor_history:Onton_core.Anchor_history.empty
+              ~no_commits_push_count:0 ~context_exhaustion_count:0
+              ~merge_commit_sha:None ~base_contains_merged_siblings:true
               ~checks_passing:false ~current_op:None
               ~current_op_state:Onton_core.Patch_agent.Queued
               ~current_message_id:None ~generation:0 ~worktree_path:None
@@ -1057,7 +1016,7 @@ let () =
             let a = complete a in
             let a = set_is_draft a false in
             let a = set_merge_ready a true in
-            is_approved a ~main_branch:br0
+            is_approved (Ready_fixture.readiness_agent a) ~main_branch:br0
           with _ -> false);
       (* -- is_approved false without has_pr -- *)
       Test.make ~name:"is_approved false without has_pr" ~count:1
@@ -1065,7 +1024,7 @@ let () =
         (fun pid ->
           let a = create ~branch:br0 pid in
           let a = set_merge_ready a true in
-          not (is_approved a ~main_branch:br0));
+          not (is_approved (Ready_fixture.readiness_agent a) ~main_branch:br0));
       (* -- is_approved false when busy -- *)
       Test.make ~name:"is_approved false when busy" ~count:1
         Gen.(pure (pid0, br0))
@@ -1075,7 +1034,7 @@ let () =
               create ~branch:br pid |> fun a -> start_with_pr a ~base_branch:br
             in
             let a = set_merge_ready a true in
-            not (is_approved a ~main_branch:br0)
+            not (is_approved (Ready_fixture.readiness_agent a) ~main_branch:br0)
           with _ -> false);
       (* -- is_approved false when not merge_ready -- *)
       Test.make ~name:"is_approved false when not merge_ready" ~count:1
@@ -1086,7 +1045,7 @@ let () =
               create ~branch:br pid |> fun a -> start_with_pr a ~base_branch:br
             in
             let a = complete a in
-            not (is_approved a ~main_branch:br0)
+            not (is_approved (Ready_fixture.readiness_agent a) ~main_branch:br0)
           with _ -> false);
       (* -- is_approved false when needs_intervention -- *)
       Test.make ~name:"is_approved false when needs_intervention" ~count:1
@@ -1101,7 +1060,7 @@ let () =
             let a = increment_ci_failure_count a in
             let a = increment_ci_failure_count a in
             let a = set_merge_ready a true in
-            not (is_approved a ~main_branch:br0)
+            not (is_approved (Ready_fixture.readiness_agent a) ~main_branch:br0)
           with _ -> false);
       (* -- is_approved false when base_branch is not main -- *)
       Test.make ~name:"is_approved false when base_branch is not main" ~count:1
@@ -1114,7 +1073,8 @@ let () =
             let a = complete a in
             let a = set_merge_ready a true in
             let other = Branch.of_string "feature/dep" in
-            not (is_approved a ~main_branch:other)
+            not
+              (is_approved (Ready_fixture.readiness_agent a) ~main_branch:other)
           with _ -> false);
       Test.make ~name:"is_approved false when draft" ~count:1
         Gen.(pure (pid0, br0))
@@ -1126,7 +1086,7 @@ let () =
             let a = complete a in
             let a = set_merge_ready a true in
             let a = set_is_draft a true in
-            not (is_approved a ~main_branch:br0)
+            not (is_approved (Ready_fixture.readiness_agent a) ~main_branch:br0)
           with _ -> false);
       (* PENDING: Patch 5 - should_request_review properties. These stubs
          compile against the Patch 3 placeholder but do not assert the final
@@ -1150,7 +1110,9 @@ let () =
           let a = set_is_draft a false in
           let a = set_review_requested_for_oid a None in
           let a = set_review_request_inflight a false in
-          should_request_review a ~main_branch:br0);
+          should_request_review
+            (Ready_fixture.readiness_agent a)
+            ~main_branch:br0);
       Test.make ~name:"should_request_review false when checks not passing"
         ~count:1
         Gen.(pure (pid0, br0))
@@ -1163,7 +1125,10 @@ let () =
           let a = set_checks_passing a false in
           let a = set_head_oid a (Some "deadbeef") in
           let a = set_review_decision a (Some "REVIEW_REQUIRED") in
-          not (should_request_review a ~main_branch:br0));
+          not
+            (should_request_review
+               (Ready_fixture.readiness_agent a)
+               ~main_branch:br0));
       Test.make ~name:"should_request_review false with unresolved comments"
         ~count:1
         Gen.(pure (pid0, br0))
@@ -1177,7 +1142,10 @@ let () =
           let a = set_unresolved_comment_count a 1 in
           let a = set_head_oid a (Some "deadbeef") in
           let a = set_review_decision a (Some "REVIEW_REQUIRED") in
-          not (should_request_review a ~main_branch:br0));
+          not
+            (should_request_review
+               (Ready_fixture.readiness_agent a)
+               ~main_branch:br0));
       Test.make
         ~name:
           "should_request_review false when review approved or changes \
@@ -1197,7 +1165,10 @@ let () =
               let a = set_unresolved_comment_count a 0 in
               let a = set_head_oid a (Some "deadbeef") in
               let a = set_review_decision a decision in
-              not (should_request_review a ~main_branch:br0)));
+              not
+                (should_request_review
+                   (Ready_fixture.readiness_agent a)
+                   ~main_branch:br0)));
       Test.make
         ~name:
           "should_request_review false when already requested for current head \
@@ -1215,7 +1186,10 @@ let () =
           let a = set_head_oid a (Some "deadbeef") in
           let a = set_review_decision a (Some "REVIEW_REQUIRED") in
           let a = set_review_requested_for_oid a (Some "deadbeef") in
-          not (should_request_review a ~main_branch:br0));
+          not
+            (should_request_review
+               (Ready_fixture.readiness_agent a)
+               ~main_branch:br0));
       Test.make ~name:"should_request_review false when a request is inflight"
         ~count:1
         Gen.(pure (pid0, br0))
@@ -1230,7 +1204,10 @@ let () =
           let a = set_head_oid a (Some "deadbeef") in
           let a = set_review_decision a (Some "REVIEW_REQUIRED") in
           let a = set_review_request_inflight a true in
-          not (should_request_review a ~main_branch:br0));
+          not
+            (should_request_review
+               (Ready_fixture.readiness_agent a)
+               ~main_branch:br0));
       Test.make
         ~name:
           "should_request_review false when draft, busy, needs_intervention, \
@@ -1275,10 +1252,22 @@ let () =
             let a = complete a in
             make_ready a
           in
-          (not (should_request_review draft_case ~main_branch:br0))
-          && (not (should_request_review busy_case ~main_branch:br0))
-          && (not (should_request_review intervention_case ~main_branch:br0))
-          && not (should_request_review other_base_case ~main_branch:br0));
+          (not
+             (should_request_review
+                (Ready_fixture.readiness_agent draft_case)
+                ~main_branch:br0))
+          && (not
+                (should_request_review
+                   (Ready_fixture.readiness_agent busy_case)
+                   ~main_branch:br0))
+          && (not
+                (should_request_review
+                   (Ready_fixture.readiness_agent intervention_case)
+                   ~main_branch:br0))
+          && not
+               (should_request_review
+                  (Ready_fixture.readiness_agent other_base_case)
+                  ~main_branch:br0));
       Test.make ~name:"set_pr_number resets bootstrap lifecycle facts" ~count:1
         Gen.(pure pid0)
         (fun pid ->
@@ -1389,15 +1378,18 @@ let () =
             let a = rebase a ~base_branch:br in
             not a.merge_ready
           with _ -> false);
-      (* -- clear_has_conflict clears flag -- *)
-      Test.make ~name:"clear_has_conflict clears flag" ~count:1
+      (* -- Onton_core_test_support.Conflict_fixture.resolved_agent clears flag -- *)
+      Test.make
+        ~name:
+          "Onton_core_test_support.Conflict_fixture.resolved_agent clears flag"
+        ~count:1
         Gen.(pure pid0)
         (fun pid ->
           let a = create ~branch:br0 pid in
-          let a = set_has_conflict a in
-          let before = a.has_conflict in
-          let a = clear_has_conflict a in
-          before && not a.has_conflict);
+          let a = Onton_core_test_support.Conflict_fixture.agent a in
+          let before = has_conflict a in
+          let a = Onton_core_test_support.Conflict_fixture.resolved_agent a in
+          before && not (has_conflict a));
       (* -- base_branch_changed false after start -- *)
       Test.make ~name:"base_branch_changed false after start"
         Gen.(pair gen_pid gen_branch)
@@ -1470,7 +1462,6 @@ let () =
           Branch.equal a.branch br);
       Test.make ~name:"patch agent public surface is linked" Gen.unit (fun () ->
           ignore add_human_messages;
-          ignore anchor_history;
           ignore bump_generation;
           ignore clear_automerge_deadline;
           ignore clear_branch_blocked;
@@ -1479,9 +1470,7 @@ let () =
           ignore clear_session_fallback;
           ignore highest_priority;
           ignore increment_automerge_failure_count;
-          ignore increment_conflict_noop_count;
           ignore increment_no_commits_push_count;
-          ignore increment_push_failure_count;
           ignore intervention_reason;
           ignore is_approved_modulo_merge_ready;
           ignore mark_inflight_human_messages_delivered;
@@ -1489,23 +1478,19 @@ let () =
           ignore on_context_exhausted;
           ignore on_pre_session_failure;
           ignore on_session_failure;
-          ignore record_anchor;
           ignore reset_automerge_failure_count;
           ignore reset_busy;
           ignore reset_ci_failure_count;
-          ignore reset_conflict_noop_count;
           ignore reset_context_exhaustion_count;
           ignore reset_no_commits_push_count;
           ignore reset_pr_body_artifact_miss_count;
-          ignore reset_push_failure_count;
           ignore resume_current_message;
           ignore set_automerge_deadline;
           ignore set_automerge_enabled;
           ignore set_automerge_inflight;
           ignore set_base_contains_merged_siblings;
           ignore set_branch_blocked;
-          ignore set_branch_rebased_onto;
-          ignore set_branch_rebased_onto_sha;
+          ignore branch_rebased_onto;
           ignore set_checks_passing;
           ignore set_current_message_id;
           ignore set_llm_session_id;
@@ -1519,3 +1504,109 @@ let () =
   in
   List.iter tests ~f:(fun t -> QCheck2.Test.check_exn t);
   Stdlib.print_endline "patch_agent: all tests passed"
+
+(* Queued Human guidance does not erase owner intervention; explicit Resume
+   does. Live and persisted-event status must agree throughout owner history. *)
+let () =
+  let module B = Onton_core.Branch_reconcile in
+  let module G = QCheck2.Gen in
+  QCheck2.Test.check_exn
+    (QCheck2.Test.make
+       ~name:
+         "raw and live intervention projections agree across owner histories"
+       ~count:500
+       G.(triple bool bool (list_size (int_range 0 60) (int_range 0 6)))
+       (fun (merged, human, history) ->
+         try
+           let initial =
+             create
+               ~branch:(Branch.of_string "branch")
+               (Patch_id.of_string "projection")
+           in
+           let initial =
+             if human then
+               enqueue
+                 (add_human_message initial "continue")
+                 Operation_kind.Human
+             else initial
+           in
+           let initial = if merged then mark_merged initial else initial in
+           let check (agent : Onton_core.Patch_agent.t) =
+             let expected =
+               if merged then None
+               else
+                 match B.phase agent.branch_reconcile with
+                 | Some (B.Intervention reason) -> Some reason
+                 | Some
+                     ( B.Preparing | B.Integrating | B.Repairing _
+                     | B.Publishing | B.Confirming | B.Waiting _ | B.Recovering
+                     | B.Settled )
+                 | None ->
+                     None
+             in
+             let raw =
+               intervention_reason_of_fields
+                 ~branch_reconcile:agent.branch_reconcile ~merged ~has_pr:false
+                 ~is_pr_missing:false ~session_given_up:false
+                 ~wontdo_reason:None ~human_pending:human ~ci_failure_count:0
+                 ~max_ci_failures:default_max_ci_failures
+                 ~start_attempts_without_pr:0 ~no_commits_push_count:0
+                 ~context_exhaustion_count:0 ~pr_body_artifact_miss_count:0
+                 ~review_unresolved_cycle_count:0
+             in
+             let raw_needs =
+               needs_intervention_of_fields
+                 ~branch_reconcile:agent.branch_reconcile ~merged ~has_pr:false
+                 ~is_pr_missing:false ~session_given_up:false
+                 ~wontdo_reason:None ~human_pending:human ~ci_failure_count:0
+                 ~max_ci_failures:default_max_ci_failures
+                 ~start_attempts_without_pr:0 ~no_commits_push_count:0
+                 ~context_exhaustion_count:0 ~pr_body_artifact_miss_count:0
+                 ~review_unresolved_cycle_count:0
+             in
+             Option.equal String.equal expected raw
+             && Option.equal String.equal expected (intervention_reason agent)
+             && Bool.equal raw_needs (Option.is_some expected)
+             && Bool.equal (needs_intervention agent) raw_needs
+           in
+           let _, valid =
+             List.foldi history
+               ~init:(initial, check initial)
+               ~f:(fun index (agent, valid) action ->
+                 let event =
+                   match action with
+                   | 0 ->
+                       B.Request
+                         B.
+                           {
+                             base = "main";
+                             policy = B.Rewrite;
+                             purpose =
+                               B.Provision_checkout
+                                 ("request:" ^ Int.to_string index);
+                           }
+                   | 1 -> B.Resume
+                   | 2 -> B.Recover
+                   | 3 -> B.Tick (Float.of_int (index * 1000))
+                   | _ -> (
+                       match B.pending agent.branch_reconcile with
+                       | None -> B.Recover
+                       | Some command ->
+                           B.Result
+                             {
+                               token = command.B.token [@warning "-42"];
+                               at = Float.of_int index;
+                               result =
+                                 (if action = 4 then B.Checkout_ready
+                                  else if action = 5 then
+                                    B.Retryable
+                                      { reason = "offline"; retry_after = None }
+                                  else B.Permanent "permission_denied");
+                             })
+                 in
+                 let agent, _ = reconcile_branch agent event in
+                 (agent, valid && check agent))
+           in
+           valid
+         with _ -> false));
+  Stdlib.print_endline "patch_agent: owner status projection histories passed"

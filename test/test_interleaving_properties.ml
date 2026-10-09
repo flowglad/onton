@@ -44,7 +44,7 @@ let bootstrap patches =
       in
       let o = Orchestrator.fire o (Orchestrator.Start (pid, base)) in
       let o = Orchestrator.set_pr_number o pid (Pr_number.of_int (i + 1)) in
-      Orchestrator.complete o pid)
+      Onton_test_support.Reconciliation_fixture.rebase ~noop:true o pid base)
 
 (* -- Command type -- *)
 
@@ -61,7 +61,6 @@ type session_result_kind =
   | Sess_failed_fresh
   | Sess_failed_resume
   | Sess_give_up
-  | Sess_worktree_missing
   | Sess_process_error_fresh
   | Sess_process_error_resume
   | Sess_no_resume
@@ -100,7 +99,7 @@ type command =
       patch_idx : int;
       result : rebase_result_kind;
     }
-  | Apply_rebase_push_result of { patch_idx : int; result : push_result_kind }
+  | Apply_publication_result of { patch_idx : int; result : push_result_kind }
   | Add_adhoc of int
   | Remove_adhoc of int
   | Discover_pr of int
@@ -136,7 +135,6 @@ let show_session_result_kind = function
   | Sess_failed_fresh -> "Failed_fresh"
   | Sess_failed_resume -> "Failed_resume"
   | Sess_give_up -> "Give_up"
-  | Sess_worktree_missing -> "Worktree_missing"
   | Sess_process_error_fresh -> "Process_error_fresh"
   | Sess_process_error_resume -> "Process_error_resume"
   | Sess_no_resume -> "No_resume"
@@ -178,8 +176,8 @@ let show_command = function
   | Apply_conflict_rebase_result { patch_idx; result } ->
       Printf.sprintf "Apply_conflict_rebase_result(%d, %s)" patch_idx
         (show_rebase_result_kind result)
-  | Apply_rebase_push_result { patch_idx; result } ->
-      Printf.sprintf "Apply_rebase_push_result(%d, %s)" patch_idx
+  | Apply_publication_result { patch_idx; result } ->
+      Printf.sprintf "Apply_publication_result(%d, %s)" patch_idx
         (show_push_result_kind result)
   | Add_adhoc i -> Printf.sprintf "Add_adhoc(%d)" i
   | Remove_adhoc i -> Printf.sprintf "Remove_adhoc(%d)" i
@@ -248,7 +246,6 @@ let gen_session_result_kind =
       Sess_failed_fresh;
       Sess_failed_resume;
       Sess_give_up;
-      Sess_worktree_missing;
       Sess_process_error_fresh;
       Sess_process_error_resume;
       Sess_no_resume;
@@ -312,7 +309,7 @@ let gen_command ~n =
             Apply_conflict_rebase_result { patch_idx = i; result = r })
           gen_idx gen_rebase_result_kind;
         map2
-          (fun i r -> Apply_rebase_push_result { patch_idx = i; result = r })
+          (fun i r -> Apply_publication_result { patch_idx = i; result = r })
           gen_idx gen_push_result_kind;
         map (fun i -> Send_human_message i) gen_idx;
         map (fun i -> Reset_intervention i) gen_idx;
@@ -355,7 +352,7 @@ let gen_atomic_command ~n =
             Apply_conflict_rebase_result { patch_idx = i; result = r })
           gen_idx gen_rebase_result_kind;
         map2
-          (fun i r -> Apply_rebase_push_result { patch_idx = i; result = r })
+          (fun i r -> Apply_publication_result { patch_idx = i; result = r })
           gen_idx gen_push_result_kind;
         map (fun i -> Send_human_message i) gen_idx;
         map (fun i -> Reset_intervention i) gen_idx;
@@ -423,34 +420,37 @@ let to_session_result = function
   | Sess_failed_resume ->
       Orchestrator.Session_failed { is_fresh = false; detail = None }
   | Sess_give_up -> Orchestrator.Session_give_up
-  | Sess_worktree_missing -> Orchestrator.Session_worktree_missing
   | Sess_process_error_fresh ->
       Orchestrator.Session_process_error { is_fresh = true; detail = None }
   | Sess_process_error_resume ->
       Orchestrator.Session_process_error { is_fresh = false; detail = None }
   | Sess_no_resume -> Orchestrator.Session_no_resume
 
-let stub_conflict_info : Worktree.conflict_info =
-  {
-    target = "main";
-    old_base = "";
-    unique_commits = [];
-    strategy = Worktree.Plain;
-    orig_head = "";
-  }
+let apply_owned_rebase orch pid base result =
+  let module F = Onton_test_support.Reconciliation_fixture in
+  let module B = Branch_reconcile in
+  let state = F.state orch pid in
+  if B.is_pending state then orch
+  else
+    match result with
+    | Rebase_ok -> F.rebase orch pid base
+    | Rebase_noop -> F.rebase ~noop:true orch pid base
+    | Rebase_conflict -> F.conflict orch pid base
+    | Rebase_error ->
+        let orch, _, _, _ = F.prepare ~noop:false orch pid base in
+        let orch =
+          F.reply orch pid
+            (B.Retryable { reason = "transport"; retry_after = None })
+        in
+        Orchestrator.complete orch pid
 
-let to_worktree_result = function
-  | Rebase_ok -> Worktree.Ok
-  | Rebase_noop -> Worktree.Noop
-  | Rebase_conflict -> Worktree.Conflict stub_conflict_info
-  | Rebase_error -> Worktree.Error "simulated error"
-
-let to_push_result = function
-  | Push_ok_k -> Worktree.Push_ok
-  | Push_up_to_date_k -> Worktree.Push_up_to_date
+let to_publication_result = function
+  | Push_ok_k | Push_up_to_date_k -> Branch_reconcile.Published
   | Push_rejected_k ->
-      Worktree.Push_rejected Push_reject_classify.Lease_violation
-  | Push_error_k -> Worktree.Push_error "simulated error"
+      Branch_reconcile.Retryable
+        { reason = "lease_violation"; retry_after = None }
+  | Push_error_k ->
+      Branch_reconcile.Retryable { reason = "transport"; retry_after = None }
 
 let poll_params_of_kind = function
   | Poll_normal -> (false, false, false, true, false)
@@ -520,8 +520,8 @@ let rec apply_command orch patches cmd =
             Orchestrator.set_llm_session_id o pid
               (Some (Printf.sprintf "sess-%s" (Patch_id.to_string pid)))
         | Sess_failed_fresh | Sess_failed_resume | Sess_give_up
-        | Sess_worktree_missing | Sess_process_error_fresh
-        | Sess_process_error_resume | Sess_no_resume ->
+        | Sess_process_error_fresh | Sess_process_error_resume | Sess_no_resume
+          ->
             o
       with Invalid_argument _ -> orch)
   | Apply_rebase_result { patch_idx; result } -> (
@@ -540,12 +540,7 @@ let rec apply_command orch patches cmd =
               Graph.initial_base (Orchestrator.graph orch) pid ~has_merged
                 ~branch_of ~main
             in
-            let orch, _effects =
-              Orchestrator.apply_rebase_result orch pid
-                (to_worktree_result result)
-                new_base
-            in
-            orch
+            apply_owned_rebase orch pid new_base result
           with Invalid_argument _ -> orch)
       | _ -> orch)
   | Send_human_message patch_idx ->
@@ -563,6 +558,23 @@ let rec apply_command orch patches cmd =
       let pid = resolve_pid patches patch_idx in
       match Orchestrator.find_agent orch pid with
       | Some agent
+        when (not agent.Patch_agent.busy)
+             && (match result with
+               | Rebase_ok -> true
+               | Rebase_noop | Rebase_conflict | Rebase_error -> false)
+             &&
+             match
+               Branch_reconcile.phase agent.Patch_agent.branch_reconcile
+             with
+             | Some (Branch_reconcile.Repairing _) -> true
+             | None
+             | Some
+                 ( Branch_reconcile.Preparing | Integrating | Publishing
+                 | Confirming | Waiting _ | Recovering | Settled
+                 | Intervention _ ) ->
+                 false ->
+          Onton_test_support.Reconciliation_fixture.resolve_conflict orch pid
+      | Some agent
         when Option.equal Operation_kind.equal agent.Patch_agent.current_op
                (Some Operation_kind.Merge_conflict) -> (
           try
@@ -575,27 +587,35 @@ let rec apply_command orch patches cmd =
               Graph.initial_base (Orchestrator.graph orch) pid ~has_merged
                 ~branch_of ~main
             in
-            let orch', decision, _effects =
-              Orchestrator.apply_conflict_rebase_result orch pid
-                (to_worktree_result result)
-                new_base
-            in
-            match decision with
-            | Orchestrator.Deliver_to_agent -> orch'
-            | Orchestrator.Conflict_resolved | Orchestrator.Cleanup_needed
-            | Orchestrator.Conflict_failed ->
-                orch'
+            apply_owned_rebase orch pid new_base result
           with Invalid_argument _ -> orch)
       | _ -> orch)
-  | Apply_rebase_push_result { patch_idx; result } -> (
+  | Apply_publication_result { patch_idx; result } -> (
       let pid = resolve_pid patches patch_idx in
-      try
-        let orch, _resolution =
-          Orchestrator.apply_rebase_push_result orch pid
-            (Some (to_push_result result))
-        in
-        orch
-      with Invalid_argument _ -> orch)
+      match Orchestrator.find_agent orch pid with
+      | None -> orch
+      | Some agent ->
+          let module B = Branch_reconcile in
+          let module F = Onton_core_test_support.Publication_fixture in
+          let state t =
+            (Orchestrator.agent t pid).Patch_agent.branch_reconcile
+          in
+          let step t event = fst (Orchestrator.reconcile_branch t pid event) in
+          let orch =
+            if Option.is_none (B.operation agent.Patch_agent.branch_reconcile)
+            then
+              F.publishing
+                ~candidate:(F.sha (Patch_id.to_string pid))
+                ~step ~state orch
+            else orch
+          in
+          if
+            Option.equal B.equal_phase
+              (B.phase (state orch))
+              (Some B.Publishing)
+            && Option.is_some (B.pending (state orch))
+          then F.reply ~step ~state orch (to_publication_result result)
+          else orch)
   | Add_adhoc i ->
       Orchestrator.add_agent orch ~patch_id:(adhoc_pid i)
         ~branch:(adhoc_branch i) ~base_branch:main ~pr_number:(adhoc_pr i)
@@ -718,7 +738,7 @@ let rec apply_command_with_logs orch patches cmd =
       (orch, info)
   | Reconcile | Runner_tick | Complete _ | Apply_session_result _
   | Apply_rebase_result _ | Send_human_message _ | Reset_intervention _
-  | Apply_conflict_rebase_result _ | Apply_rebase_push_result _ | Add_adhoc _
+  | Apply_conflict_rebase_result _ | Apply_publication_result _ | Add_adhoc _
   | Remove_adhoc _ | Discover_pr _ | Apply_sync_outcome _ | Force_complete _
   | Mark_pr_missing_adhoc _ | Rediscover_replacement_adhoc _ ->
       (apply_command orch patches cmd, None)
@@ -739,7 +759,7 @@ let check_no_phantom_conflict_cleared (info : poll_log_info) =
     | Poll_review_comments ->
         false
   in
-  if (not info.agent_before.Patch_agent.has_conflict) && not poll_has_conflict
+  if (not (Patch_agent.has_conflict info.agent_before)) && not poll_has_conflict
   then
     if
       has_log_matching "Conflict cleared" info.logs
@@ -762,7 +782,7 @@ let check_merged_logged_at_most_once (info : poll_log_info) ~merged_logged =
 (** L-I-3: Conflict detected requires transition — if agent already had
     conflict, no "merge conflict detected" log. *)
 let check_conflict_detected_requires_transition (info : poll_log_info) =
-  if info.agent_before.Patch_agent.has_conflict then
+  if Patch_agent.has_conflict info.agent_before then
     if has_log_matching "Merge conflict detected" info.logs then
       failwith
         (Printf.sprintf
@@ -783,11 +803,24 @@ let pid_of_action = function
   | Orchestrator.Reconcile_branch (pid, _) ->
       pid
 
-(** I-1: busy -> has_session *)
-let check_busy_implies_has_session (a : Patch_agent.t) =
-  if a.busy && not a.has_session then
+(** I-1: busy work has session ownership or a revision-bound Git message. *)
+let check_busy_has_owner orch (a : Patch_agent.t) =
+  let owned_git =
+    match Orchestrator.current_message orch a.patch_id with
+    | Some message -> (
+        match message.Orchestrator.action with
+        | Orchestrator.Reconcile_branch (pid, operation) ->
+            Patch_id.equal pid a.patch_id
+            && Option.exists (Branch_reconcile.operation a.branch_reconcile)
+                 ~f:(fun op -> Int.equal op.Branch_reconcile.id operation)
+        | Orchestrator.Start _ | Orchestrator.Respond _ | Orchestrator.Rebase _
+          ->
+            false)
+    | None -> false
+  in
+  if a.busy && not (a.has_session || owned_git) then
     failwith
-      (Printf.sprintf "I-1 busy_implies_has_session violated for %s"
+      (Printf.sprintf "I-1 busy_has_owner violated for %s"
          (Patch_id.to_string a.patch_id))
 
 (** I-2: ci_failure_count >= 0 *)
@@ -895,21 +928,23 @@ let check_needs_intervention_blocks_respond orch action =
   | Orchestrator.Reconcile_branch _ ->
       ()
 
-(** I-9: conflict not cleared while Merge_conflict is queued or in-flight. *)
+(** I-9: unresolved owner repair remains visible across scheduler interleavings.
+*)
 let check_conflict_not_cleared_while_in_flight (a : Patch_agent.t) =
-  let mc_queued =
-    List.mem a.queue Operation_kind.Merge_conflict ~equal:Operation_kind.equal
+  let owner = a.branch_reconcile in
+  let unresolved =
+    match Branch_reconcile.operation owner with
+    | Some op -> Option.exists op.repair ~f:(fun repair -> repair.conflicts > 0)
+    | None -> false
   in
-  let mc_inflight =
-    Option.equal Operation_kind.equal a.current_op
-      (Some Operation_kind.Merge_conflict)
-  in
-  if mc_queued || mc_inflight then
-    if Patch_decision.should_clear_conflict a then
-      failwith
-        (Printf.sprintf
-           "I-9 conflict_not_cleared_while_in_flight violated for %s"
-           (Patch_id.to_string a.patch_id))
+  if
+    Branch_reconcile.is_unsettled owner
+    && unresolved
+    && not (Patch_agent.has_conflict a)
+  then
+    failwith
+      (Printf.sprintf "I-9 unresolved owner conflict hidden for %s"
+         (Patch_id.to_string a.patch_id))
 
 (** I-10: busy patches get no actions. *)
 let check_busy_mutual_exclusion orch action =
@@ -1100,7 +1135,7 @@ let check_sync_outcome_invariants ~patches ~prev_agents ~curr_orch cmd =
   | Apply_poll _ | Reconcile | Runner_tick | Complete _ | Apply_session_result _
   | Apply_rebase_result _ | Send_human_message _ | Reset_intervention _
   | Atomic_poll_reconcile _ | Apply_conflict_rebase_result _
-  | Apply_rebase_push_result _ | Add_adhoc _ | Remove_adhoc _ | Discover_pr _
+  | Apply_publication_result _ | Add_adhoc _ | Remove_adhoc _ | Discover_pr _
   | Force_complete _ | Mark_pr_missing_adhoc _ | Rediscover_replacement_adhoc _
     ->
       ()
@@ -1120,7 +1155,7 @@ let check_all_invariants orch patches ~prev_agents ~prev_merged ~curr_merged
   in
   (* Per-agent invariants *)
   List.iter agents ~f:(fun (a : Patch_agent.t) ->
-      check_busy_implies_has_session a;
+      check_busy_has_owner orch a;
       check_ci_failure_count_non_negative a;
       check_queue_no_duplicates a;
       check_conflict_not_cleared_while_in_flight a;
@@ -1156,7 +1191,7 @@ let delivered_pid_of_cmd cmd patches =
   | Apply_poll _ | Reconcile | Runner_tick | Apply_session_result _
   | Apply_rebase_result _ | Send_human_message _ | Reset_intervention _
   | Atomic_poll_reconcile _ | Apply_conflict_rebase_result _
-  | Apply_rebase_push_result _ | Add_adhoc _ | Remove_adhoc _ | Discover_pr _
+  | Apply_publication_result _ | Add_adhoc _ | Remove_adhoc _ | Discover_pr _
   | Apply_sync_outcome _ | Force_complete _ | Mark_pr_missing_adhoc _
   | Rediscover_replacement_adhoc _ ->
       None
@@ -1167,7 +1202,7 @@ let removed_pids_of_cmd cmd prev_removed =
   | Add_adhoc _ | Apply_poll _ | Reconcile | Runner_tick | Complete _
   | Apply_session_result _ | Apply_rebase_result _ | Send_human_message _
   | Reset_intervention _ | Atomic_poll_reconcile _
-  | Apply_conflict_rebase_result _ | Apply_rebase_push_result _ | Discover_pr _
+  | Apply_conflict_rebase_result _ | Apply_publication_result _ | Discover_pr _
   | Apply_sync_outcome _ | Force_complete _ | Mark_pr_missing_adhoc _
   | Rediscover_replacement_adhoc _ ->
       prev_removed
@@ -1195,7 +1230,7 @@ let run_sequence ?(debug = false) orch patches cmds =
           | Runner_tick | Complete _ | Apply_session_result _
           | Apply_rebase_result _ | Send_human_message _ | Reset_intervention _
           | Atomic_poll_reconcile _ | Apply_conflict_rebase_result _
-          | Apply_rebase_push_result _ | Discover_pr _ | Apply_sync_outcome _
+          | Apply_publication_result _ | Discover_pr _ | Apply_sync_outcome _
           | Force_complete _ ->
               merged_logged
         in
@@ -1267,6 +1302,7 @@ let safe_verbose cmds patches f =
         try ignore (run_sequence ~debug:true orch patches cmds)
         with Failure _ | Invalid_argument _ -> ());
       false
+  | _ -> false
 
 (* ========== Properties ========== *)
 
@@ -1333,39 +1369,75 @@ let mk_started_no_pr () =
   let orch = Orchestrator.fire orch (Orchestrator.Start (pid, main)) in
   (orch, pid)
 
-(** PI-4: Repeated worktree failure on a no-PR agent converges to
-    needs_intervention. After 2 worktree failures (each producing
-    complete_failed + on_worktree_failure), the agent must require intervention.
-*)
+(** PI-4: Provisioning outages retain owned retries without spending session
+    budgets. Permanent checkout refusals intervene in the owner. *)
 let () =
   let prop_pi4 =
     QCheck2.Test.make
-      ~name:"PI-4: repeated worktree failure converges to needs_intervention"
-      (QCheck2.Gen.return ()) (fun () ->
-        let orch, pid = mk_started_no_pr () in
-        (* First worktree failure *)
-        let orch =
-          Orchestrator.apply_session_result orch pid
-            Orchestrator.Session_worktree_missing
-        in
-        let a = Orchestrator.agent orch pid in
-        if Patch_agent.needs_intervention a then
-          failwith "needs_intervention too early after 1 failure";
-        (* Re-start and fail again *)
-        let orch = Orchestrator.fire orch (Orchestrator.Start (pid, main)) in
-        let orch =
-          Orchestrator.apply_session_result orch pid
-            Orchestrator.Session_worktree_missing
-        in
-        let a = Orchestrator.agent orch pid in
-        Patch_agent.needs_intervention a)
+      ~name:
+        "PI-4: repeated checkout outages retain owner work and implementation \
+         budget"
+      ~count:300
+      QCheck2.Gen.(pair (int_range 2 20) bool)
+      (fun (retries, permanent) ->
+        try
+          let module B = Branch_reconcile in
+          let module F = Onton_core_test_support.Publication_fixture in
+          let orch, pid = mk_started_no_pr () in
+          let state t =
+            (Orchestrator.agent t pid).Patch_agent.branch_reconcile
+          in
+          let step t event = fst (Orchestrator.reconcile_branch t pid event) in
+          let orch =
+            step orch
+              (B.Request
+                 {
+                   base = "main";
+                   policy = Rewrite;
+                   purpose = Provision_checkout "checkout";
+                 })
+          in
+          let before = Orchestrator.agent orch pid in
+          let orch =
+            List.fold (List.range 0 retries) ~init:orch ~f:(fun t _ ->
+                let t =
+                  F.reply ~state ~step t
+                    (B.Retryable
+                       { reason = "checkout unavailable"; retry_after = None })
+                in
+                let t =
+                  Orchestrator.apply_start_outcome t pid
+                    Orchestrator.Start_failed
+                in
+                match B.phase (state t) with
+                | Some (Waiting { until; _ }) -> step t (B.Tick until)
+                | Some
+                    ( Preparing | Integrating | Repairing _ | Publishing
+                    | Confirming | Recovering | Settled | Intervention _ )
+                | None ->
+                    failwith "checkout retry lost backoff")
+          in
+          let orch =
+            if permanent then
+              F.reply ~state ~step orch (B.Permanent "unsafe_checkout")
+            else orch
+          in
+          let after = Orchestrator.agent orch pid in
+          (not after.Patch_agent.busy)
+          && before.start_attempts_without_pr = after.start_attempts_without_pr
+          && Patch_agent.equal_session_fallback before.session_fallback
+               after.session_fallback
+          && Bool.equal (Patch_agent.needs_intervention after) permanent
+          && Bool.equal (B.is_pending (state orch)) (not permanent)
+          && List.is_empty (B.publications (state orch))
+        with _ -> false)
   in
   QCheck2.Test.check_exn prop_pi4;
   Stdlib.print_endline "PI-4 passed"
 
 (** PI-5: Repeated [Session_process_error { is_fresh = true }] on a no-PR agent
-    converges to needs_intervention. This tests the same liveness guarantee as
-    PI-4 but for the process-error path. *)
+    converges to needs_intervention. Unlike checkout outages, process failures
+    consume the implementation budget. *)
 let () =
   let prop_pi5 =
     QCheck2.Test.make
@@ -1403,103 +1475,160 @@ let mk_bootstrapped () =
   let pid = pid_of_idx patches 0 in
   (orch, pid, patches)
 
-(** Simulate one full conflict-noop cycle: poll(conflict) → fire
-    Respond(Merge_conflict) → apply_conflict_rebase_result(Noop) →
-    apply_conflict_push_result(Conflict_resolved, Push_ok) → done.
+(* The owner has integrated and published this exact head/base pair. *)
+let settled_conflict_owner () =
+  let module B = Branch_reconcile in
+  let module F = Onton_core_test_support.Publication_fixture in
+  let orch, pid, _ = mk_bootstrapped () in
+  let state t = (Orchestrator.agent t pid).Patch_agent.branch_reconcile in
+  let step t event = fst (Orchestrator.reconcile_branch t pid event) in
+  let reply = F.reply ~step ~state in
+  let source = String.make 40 'a'
+  and target = String.make 40 'b'
+  and candidate = String.make 40 'c' in
+  let sha s = Option.value_exn (B.Commit.make s) in
+  let orch =
+    step orch
+      (B.Request { base = "main"; policy = Rewrite; purpose = Reconcile_base })
+    |> fun t ->
+    reply t
+      (B.Observed
+         {
+           head = sha source;
+           source = sha source;
+           target = sha target;
+           remote = Some (sha source);
+           boundary = Recorded (sha source);
+           topology = Equal;
+           clean = true;
+           sequencer = None;
+           conflicts = 0;
+           target_included = false;
+           base_contains_source = false;
+           completed_integration = false;
+           destination = B.Remote_id.of_destination "fixture-origin";
+         })
+    |> fun t ->
+    reply t B.Pinned |> fun t ->
+    reply t (B.Integrated (sha candidate)) |> fun t ->
+    reply t B.Published |> fun t ->
+    reply t (B.Remote { sha = Some (sha candidate); topology = Equal })
+  in
+  (orch, pid, candidate, target)
 
-    Noop means the local branch already contains the target, so there is no
-    in-progress rebase to hand to the agent. We just push and complete. The push
-    result is [Push_ok] because [force_push_with_lease] succeeds even when the
-    rebase was a noop — it pushes the existing (conflicting) content. *)
-let conflict_noop_cycle orch pid patches =
-  let branch_of = branch_of_patches patches in
-  let gameplan = make_gameplan patches in
-  (* 1. Poll: conflict detected *)
+let conflict_observation ~head ~base =
   let poll_result =
     make_poll_result ~has_conflict:true ~merged:false ~ci_failed:false
       ~checks_passing:false ~review_comments:false
   in
-  let observation =
-    Patch_controller.
-      {
-        poll_result;
-        base_branch = None;
-        native_stack = false;
-        branch_in_root = false;
-        worktree_path = None;
-      }
-  in
-  let orch, _logs, _blocked =
-    Patch_controller.apply_poll_result orch pid observation
-  in
-  (* 2. Reconcile + fire to make agent busy with Merge_conflict *)
-  let orch, _effects, _actions =
-    Patch_controller.tick orch ~project_name:"test-project" ~gameplan
-  in
-  (* 3. Apply Noop rebase result — agent is completed, not delivered to *)
-  let has_merged dep_pid =
-    (Orchestrator.agent orch dep_pid).Patch_agent.merged
-  in
-  let new_base =
-    Graph.initial_base (Orchestrator.graph orch) pid ~has_merged ~branch_of
-      ~main
-  in
-  let orch, decision, _effects =
-    Orchestrator.apply_conflict_rebase_result orch pid Worktree.Noop new_base
-  in
-  (* 4. Apply push result — force-push succeeds even on noop rebase *)
-  let orch, resolution =
-    Orchestrator.apply_conflict_push_result orch pid decision
-      (Some Worktree.Push_ok)
-  in
-  (* Conflict_resolved + Push_ok -> Conflict_done. Agent already completed. *)
-  match resolution with
-  | Orchestrator.Conflict_done -> orch
-  | Orchestrator.Conflict_needs_agent | Orchestrator.Conflict_retry_push
-  | Orchestrator.Conflict_cleanup_queued | Orchestrator.Conflict_give_up ->
-      failwith "unexpected resolution in conflict_noop_cycle"
+  Patch_controller.
+    {
+      poll_result =
+        {
+          poll_result with
+          Poller.head_oid = Some head;
+          base_oid = Some base;
+          base_branch = Some main;
+        };
+      base_branch = Some main;
+      native_stack = false;
+      branch_in_root = false;
+      worktree_path = None;
+    }
 
-(** PI-6: Repeated Noop conflict rebase converges to needs_intervention. If the
-    rebase keeps returning Noop (stale refs or agent unable to resolve), the
-    system must eventually stop retrying. After 2 noop cycles,
-    needs_intervention must trigger. *)
 let () =
-  let prop_pi6 =
-    QCheck2.Test.make
-      ~name:"PI-6: repeated conflict noop converges to needs_intervention"
-      (QCheck2.Gen.return ()) (fun () ->
-        let orch, pid, patches = mk_bootstrapped () in
-        (* First noop cycle *)
-        let orch = conflict_noop_cycle orch pid patches in
-        let a = Orchestrator.agent orch pid in
-        if Patch_agent.needs_intervention a then
-          failwith "needs_intervention too early after 1 noop cycle";
-        (* Second noop cycle *)
-        let orch = conflict_noop_cycle orch pid patches in
-        let a = Orchestrator.agent orch pid in
-        Patch_agent.needs_intervention a)
-  in
-  QCheck2.Test.check_exn prop_pi6;
+  QCheck2.Test.check_exn
+    (QCheck2.Test.make
+       ~name:"PI-6: satisfied conflict pairs wait without repair budget"
+       ~count:200
+       QCheck2.Gen.(int_range 1 20)
+       (fun count ->
+         try
+           let initial, pid, head, base = settled_conflict_owner () in
+           let final =
+             List.fold (List.range 0 count) ~init:initial ~f:(fun t _ ->
+                 let t, logs, _ =
+                   Patch_controller.apply_poll_result
+                     ~confirmed_remote_head:head t pid
+                     (conflict_observation ~head ~base)
+                 in
+                 assert (not (List.is_empty logs));
+                 t)
+           in
+           let agent = Orchestrator.agent final pid in
+           (* The first poll acknowledges publication; later polls are fixed points. *)
+           let acknowledged =
+             Orchestrator.observe_publication_head initial pid (Some head)
+           in
+           Branch_reconcile.equal
+             (Orchestrator.agent acknowledged pid).Patch_agent.branch_reconcile
+             agent.branch_reconcile
+           && (not (Patch_agent.needs_intervention agent))
+           && not
+                (List.mem agent.queue Operation_kind.Merge_conflict
+                   ~equal:Operation_kind.equal)
+         with _ -> false));
   Stdlib.print_endline "PI-6 passed"
 
-(* A successful session-end push can race a poll of GitHub's old head. The
-   pending-head marker must span both the push call and its propagation delay,
-   so those old conflict observations cannot start conflict-noop retries. *)
+(* PI-6b drives the publication owner through pending commands, confirmation,
+   and forge acknowledgement while old or unidentified polls arrive. *)
 let () =
+  let module B = Branch_reconcile in
+  let old_head = String.make 40 'a' and new_head = String.make 40 'b' in
+  let sha value = Option.value_exn (B.Commit.make value) in
   let stale_poll =
     make_poll_result ~has_conflict:true ~merged:false ~ci_failed:false
       ~checks_passing:true ~review_comments:false
   in
   let property =
     QCheck2.Test.make ~count:200
-      ~name:"PI-6b: stale conflict polls around session push do not intervene"
+      ~name:
+        "PI-6b: owner publication isolates stale polls before and after \
+         confirmation"
       QCheck2.Gen.(pair (list_size (int_range 1 8) bool) (int_range 0 8))
       (fun (unidentified, split) ->
         try
-          let orch, pid, _ = mk_bootstrapped () in
-          let orch = ref (Orchestrator.set_head_oid orch pid (Some "old")) in
-          let update f = orch := f !orch in
-          let apply_poll result =
+          let initial, pid, _ = mk_bootstrapped () in
+          let orch =
+            ref (Orchestrator.set_head_oid initial pid (Some old_head))
+          in
+          let current () = Orchestrator.agent !orch pid in
+          let event event =
+            orch := fst (Orchestrator.reconcile_branch !orch pid event)
+          in
+          let reply result =
+            let command =
+              Option.value_exn (B.pending (current ()).branch_reconcile)
+            in
+            event (B.Result { token = command.token; at = 100.; result })
+          in
+          let before_publication = current () in
+          event
+            (B.Request
+               {
+                 base = Branch.to_string main;
+                 policy = B.Rewrite;
+                 purpose = B.Publish_revision (sha new_head);
+               });
+          reply
+            (B.Observed
+               {
+                 head = sha new_head;
+                 source = sha new_head;
+                 target = sha new_head;
+                 remote = Some (sha old_head);
+                 boundary = B.Plain;
+                 topology = B.Includes;
+                 clean = true;
+                 sequencer = None;
+                 conflicts = 0;
+                 target_included = true;
+                 base_contains_source = false;
+                 completed_integration = false;
+                 destination = B.Remote_id.of_destination "fixture-origin";
+               });
+          reply B.Pinned;
+          let poll result =
             let next, _, _ =
               Patch_controller.apply_poll_result !orch pid
                 {
@@ -1511,41 +1640,46 @@ let () =
                 }
             in
             orch := next;
-            let agent = Orchestrator.agent !orch pid in
-            (not agent.Patch_agent.has_conflict)
-            && agent.conflict_noop_count = 0
+            let agent = current () in
+            (not (Patch_agent.has_conflict agent))
             && (not (Patch_agent.needs_intervention agent))
             && not
                  (List.mem agent.queue Operation_kind.Merge_conflict
                     ~equal:Operation_kind.equal)
           in
-          let poll_old unidentified =
-            apply_poll
+          let poll_old missing =
+            poll
               {
                 stale_poll with
                 base_branch = None;
                 base_oid = None;
-                head_oid = (if unidentified then None else Some "old");
+                head_oid = (if missing then None else Some old_head);
               }
           in
-          let inside = List.take unidentified split in
-          let after = List.drop unidentified split in
-          let inside_ok = ref true in
-          let push_result =
-            Push_publication.with_pending_push ~update ~patch_id:pid
-              ~local_sha:(Some "new") (fun () ->
-                List.iter inside ~f:(fun stale ->
-                    inside_ok := poll_old stale && !inside_ok);
-                Worktree.Push_ok)
+          let pending = (current ()).branch_reconcile in
+          let inside_ok =
+            List.for_all (List.take unidentified split) ~f:poll_old
           in
-          let after_ok = List.for_all after ~f:poll_old in
-          let agent = Orchestrator.agent !orch pid in
+          let pending_unchanged =
+            B.equal pending (current ()).branch_reconcile
+          in
+          reply B.Published;
+          reply (B.Remote { sha = Some (sha new_head); topology = B.Equal });
+          let old_request_rejected =
+            not
+              (Poll_cycle.same_context ~requested:before_publication
+                 ~current:(current ()))
+          in
+          let after_ok =
+            List.for_all (List.drop unidentified split) ~f:poll_old
+          in
           let still_pending =
-            Option.equal String.equal agent.expected_remote_head_oid
-              (Some "new")
+            Option.equal String.equal
+              (Patch_agent.expected_remote_head_oid (current ()))
+              (Some new_head)
           in
-          let new_head_ok =
-            apply_poll
+          let new_ok =
+            poll
               {
                 stale_poll with
                 queue = [];
@@ -1553,141 +1687,89 @@ let () =
                 merge_ready = true;
                 base_branch = None;
                 base_oid = None;
-                head_oid = Some "new";
+                head_oid = Some new_head;
               }
           in
-          !inside_ok && after_ok && still_pending && new_head_ok
-          && Worktree.equal_push_result push_result Worktree.Push_ok
-          && Option.is_none
-               (Orchestrator.agent !orch pid).expected_remote_head_oid
+          inside_ok && pending_unchanged && old_request_rejected && after_ok
+          && still_pending && new_ok
+          && Option.is_none (Patch_agent.expected_remote_head_oid (current ()))
         with _ -> false)
   in
   QCheck2.Test.check_exn property;
   Stdlib.print_endline "PI-6b passed"
 
-(** PI-7: Rebase push failure converges to Merge_conflict retry. After a
-    successful rebase whose push is rejected, the system must enqueue
-    Merge_conflict and fire it on the next tick. *)
+(* PI-7: transport and lease failures retain the owned candidate across retries.
+   No second implementation or conflict queue is needed to retry publication. *)
 let () =
-  let prop_pi7 =
-    QCheck2.Test.make
-      ~name:"PI-7: rebase push failure converges to merge-conflict retry"
-      (QCheck2.Gen.return ()) (fun () ->
-        let orch, pid, patches = mk_bootstrapped () in
-        let branch_of = branch_of_patches patches in
-        let gameplan = make_gameplan patches in
-        (* 1. Poll with conflict so Merge_conflict gets enqueued *)
-        let poll_result =
-          make_poll_result ~has_conflict:true ~merged:false ~ci_failed:false
-            ~checks_passing:false ~review_comments:false
-        in
-        let observation =
-          Patch_controller.
-            {
-              poll_result;
-              base_branch = None;
-              native_stack = false;
-              branch_in_root = false;
-              worktree_path = None;
-            }
-        in
-        let orch, _logs, _blocked =
-          Patch_controller.apply_poll_result orch pid observation
-        in
-        (* 2. Tick to fire the Merge_conflict → agent becomes busy *)
-        let orch, _effects, _actions =
-          Patch_controller.tick orch ~project_name:"test-project" ~gameplan
-        in
-        (* 3. Rebase succeeds *)
-        let has_merged dep_pid =
-          (Orchestrator.agent orch dep_pid).Patch_agent.merged
-        in
-        let new_base =
-          Graph.initial_base (Orchestrator.graph orch) pid ~has_merged
-            ~branch_of ~main
-        in
-        let orch, effects =
-          Orchestrator.apply_rebase_result orch pid Worktree.Ok new_base
-        in
-        (* Verify Push_branch effect was emitted *)
-        if
-          not
-            (List.equal Orchestrator.equal_rebase_effect effects
-               [ Orchestrator.Push_branch ])
-        then failwith "expected [Push_branch] effect";
-        (* 4. Push fails *)
-        let orch, resolution =
-          Orchestrator.apply_rebase_push_result orch pid
-            (Some (Worktree.Push_rejected Push_reject_classify.Lease_violation))
-        in
-        if
-          not
-            (Orchestrator.equal_rebase_push_resolution resolution
-               Orchestrator.Rebase_push_failed)
-        then failwith "expected Rebase_push_failed";
-        let a = Orchestrator.agent orch pid in
-        (* Verify: has_conflict set, Merge_conflict enqueued, agent idle *)
-        if not a.Patch_agent.has_conflict then failwith "expected has_conflict";
-        if
-          not
-            (List.mem a.Patch_agent.queue Operation_kind.Merge_conflict
-               ~equal:Operation_kind.equal)
-        then failwith "expected Merge_conflict in queue";
-        if a.Patch_agent.busy then failwith "expected agent idle";
-        (* 5. Next tick fires Merge_conflict for retry *)
-        let orch, _effects, _actions =
-          Patch_controller.tick orch ~project_name:"test-project" ~gameplan
-        in
-        let a = Orchestrator.agent orch pid in
-        (* Agent is now busy handling Merge_conflict *)
-        a.Patch_agent.busy)
-  in
-  QCheck2.Test.check_exn prop_pi7;
+  QCheck2.Test.check_exn
+    (QCheck2.Test.make
+       ~name:"PI-7: publication failures retain owned retry authority"
+       ~count:200
+       QCheck2.Gen.(pair (int_range 1 8) bool)
+       (fun (failures, lease) ->
+         try
+           let module B = Branch_reconcile in
+           let module F = Onton_core_test_support.Publication_fixture in
+           let orch, pid, _ = mk_bootstrapped () in
+           let state t =
+             (Orchestrator.agent t pid).Patch_agent.branch_reconcile
+           in
+           let step t event = fst (Orchestrator.reconcile_branch t pid event) in
+           let publishing =
+             F.publishing ~candidate:(F.sha "retained-rewrite") ~step ~state
+               orch
+           in
+           let identity = B.publication_observation_target (state publishing) in
+           let failed =
+             List.fold (List.range 0 failures) ~init:publishing ~f:(fun t i ->
+                 let at = 100. +. (Float.of_int i *. 10000.) in
+                 let t =
+                   F.reply ~at ~step ~state t
+                     (B.Retryable
+                        {
+                          reason =
+                            (if lease then "lease_violation" else "transport");
+                          retry_after = None;
+                        })
+                 in
+                 let t = step t (B.Tick (at +. 10000.)) in
+                 assert (Option.is_some (B.pending (state t)));
+                 t)
+           in
+           let agent = Orchestrator.agent failed pid in
+           Option.equal B.equal_publication_identity identity
+             (B.publication_observation_target (state failed))
+           && agent.Patch_agent.start_attempts_without_pr = 0
+           && (not (Patch_agent.needs_intervention agent))
+           && not
+                (List.mem agent.Patch_agent.queue Operation_kind.Merge_conflict
+                   ~equal:Operation_kind.equal)
+         with _ -> false));
   Stdlib.print_endline "PI-7 passed"
 
-(** PI-8: After a noop cycle, has_conflict is cleared and the next poll
-    re-enqueues Merge_conflict. This ensures the system retries rather than
-    getting stuck — repeated retries increment conflict_noop_count towards the
-    intervention threshold (tested by PI-6). *)
+(* A changed base invalidates the satisfied pair, even if the published head stays unchanged. *)
 let () =
-  let prop_pi8 =
-    QCheck2.Test.make
-      ~name:
-        "PI-8: noop cycle clears has_conflict; next poll re-enqueues \
-         Merge_conflict" (QCheck2.Gen.return ()) (fun () ->
-        let orch, pid, patches = mk_bootstrapped () in
-        (* Run one full conflict-noop cycle *)
-        let orch = conflict_noop_cycle orch pid patches in
-        let a = Orchestrator.agent orch pid in
-        (* After the cycle, has_conflict must be false — it purely tracks
-           GitHub state, and the Noop path clears it. *)
-        if a.Patch_agent.has_conflict then
-          failwith
-            "has_conflict is true after conflict_noop_cycle — should be cleared";
-        (* Simulate the next poll with conflict still reported by GitHub *)
-        let poll_result =
-          make_poll_result ~has_conflict:true ~merged:false ~ci_failed:false
-            ~checks_passing:false ~review_comments:false
-        in
-        let observation =
-          Patch_controller.
-            {
-              poll_result;
-              base_branch = None;
-              native_stack = false;
-              branch_in_root = false;
-              worktree_path = None;
-            }
-        in
-        let orch, _logs, _blocked =
-          Patch_controller.apply_poll_result orch pid observation
-        in
-        let a = Orchestrator.agent orch pid in
-        (* Merge_conflict MUST be re-enqueued — this drives convergence *)
-        List.mem a.Patch_agent.queue Operation_kind.Merge_conflict
-          ~equal:Operation_kind.equal)
-  in
-  QCheck2.Test.check_exn prop_pi8;
+  QCheck2.Test.check_exn
+    (QCheck2.Test.make ~name:"PI-8: new conflict base queues reconciliation"
+       ~count:100 QCheck2.Gen.bool (fun acknowledged ->
+         try
+           let initial, pid, head, _ = settled_conflict_owner () in
+           let initial =
+             if acknowledged then
+               Orchestrator.observe_publication_head initial pid (Some head)
+             else initial
+           in
+           let final, _, _ =
+             Onton_test_support.Forge_poll_fixture.apply
+               ~confirmed_remote_head:head initial pid
+               (conflict_observation ~head ~base:(String.make 40 'd'))
+           in
+           let agent = Orchestrator.agent final pid in
+           Patch_agent.has_conflict agent
+           && List.mem agent.queue Operation_kind.Merge_conflict
+                ~equal:Operation_kind.equal
+           && not (Patch_agent.needs_intervention agent)
+         with _ -> false));
   Stdlib.print_endline "PI-8 passed"
 
 (** PI-9: Remove ad-hoc patch while busy, then complete — must not crash.
@@ -1804,7 +1886,7 @@ let () =
                 merge_ready = false;
                 base_branch = None;
                 base_oid = None;
-                head_oid = None;
+                head_oid = skipped.Patch_agent.head_oid;
                 review_decision = None;
                 unresolved_comment_count = 0;
                 merge_queue_required = false;
@@ -1885,7 +1967,7 @@ let () =
                 merge_ready = false;
                 base_branch = None;
                 base_oid = None;
-                head_oid = None;
+                head_oid = before.Patch_agent.head_oid;
                 review_decision = None;
                 unresolved_comment_count = 0;
                 merge_queue_required = false;
@@ -2004,17 +2086,23 @@ let () =
   QCheck2.Test.check_exn prop_pi12;
   Stdlib.print_endline "PI-12 passed"
 
-(** PI-13: Human messages enqueued while a Pr_body session is in flight are
-    re-delivered after the supervisor's push fails. This validates the
-    Session_push_failed contract end-to-end at the interleaving level: the LLM
-    session itself ran cleanly (so session_fallback is preserved), but
-    [complete_failed] still restored any inflight human messages so the next
-    iteration delivers them. Regression for the class of bug where a push
-    failure during a non-Human phase silently drops human messages. *)
+let fail_publication orch pid result =
+  let module F = Onton_core_test_support.Publication_fixture in
+  let state t = (Orchestrator.agent t pid).Patch_agent.branch_reconcile in
+  let step t event = fst (Orchestrator.reconcile_branch t pid event) in
+  let orch =
+    F.publishing ~candidate:(F.sha "completed-session") ~state ~step orch
+  in
+  F.reply ~state ~step orch result
+
+(** PI-13: Human messages arriving during a Pr_body session survive a deferred
+    publication. The successful session completes independently of owner retry.
+*)
 let () =
   let prop_pi13 =
     QCheck2.Test.make
-      ~name:"PI-13: human messages survive Session_push_failed during Pr_body"
+      ~name:
+        "PI-13: human messages survive owner publication retry during Pr_body"
       ~count:300
       (QCheck2.Gen.string_size (QCheck2.Gen.int_range 1 80))
       (fun msg ->
@@ -2036,29 +2124,20 @@ let () =
         let pre = Orchestrator.agent orch pid in
         if not (List.mem pre.Patch_agent.human_messages msg ~equal:String.equal)
         then failwith "human message not in inbox after send";
-        (* Session ends with Session_push_failed (LLM ok, push failed).
-           apply_session_result clears session_fallback (LLM was healthy)
-           but does NOT complete — completion is deferred to
-           apply_respond_outcome via Respond_retry_push. *)
         let orch =
-          Orchestrator.apply_session_result orch pid
-            (Orchestrator.Session_push_failed None)
+          fail_publication orch pid
+            (Branch_reconcile.Retryable
+               { reason = "offline"; retry_after = None })
+        in
+        let orch =
+          Orchestrator.apply_session_result orch pid Orchestrator.Session_ok
         in
         let mid = Orchestrator.agent orch pid in
         if not mid.Patch_agent.busy then
           failwith
             "agent should stay busy after apply_session_result — completion is \
              deferred to apply_respond_outcome";
-        (* Complete the full pipeline via apply_respond_outcome. The caller
-           maps Session_push_failed to Respond_retry_push which calls plain
-           [complete] — this does NOT restore inflight messages, preventing
-           the infinite loop that occurred when complete_failed re-enqueued
-           Human on every push failure.
-
-           Note: this models a *Pr_body* session ending in push-failure —
-           the kind passed here is [Pr_body], not [Human]. The Human-session
-           push-failure path (where the human message is inflight rather
-           than pending) is covered by CV-1. *)
+        (* Release the worker while the owner retains publication retry. *)
         let orch =
           Orchestrator.apply_respond_outcome orch pid Operation_kind.Pr_body
             Orchestrator.Respond_retry_push
@@ -2071,7 +2150,7 @@ let () =
            so it lives in human_messages throughout. *)
         if
           not (List.mem post.Patch_agent.human_messages msg ~equal:String.equal)
-        then failwith "human message lost after Session_push_failed";
+        then failwith "human message lost after publication retry";
         (* And session_fallback was reset to Fresh_available so the next
            iteration resumes the same session rather than burning its
            fallback budget on a push problem. *)
@@ -2081,75 +2160,69 @@ let () =
   QCheck2.Test.check_exn prop_pi13;
   Stdlib.print_endline "PI-13 passed"
 
-(** PI-13b: a post-session push deadline is a liveness boundary for an active
-    Review_comments operation. Polls may freely interleave while the push is
-    pending and repeatedly observe the same unresolved threads. Once the
-    deadline is represented as [Push_error], the exact production transition
-    (combine session+push → apply_session_result → apply_respond_outcome) must
-    release [busy] in that same step. Repeating the failure reaches the visible
-    intervention terminal state within the push-failure cap; it cannot remain in
-    Addressing_review forever.
-
-    This is the state-machine regression for PR 6374, where Codex exited but an
-    unbounded supervisor-owned push left current_op=Review_comments running for
-    approximately 99 minutes. *)
+(** PI-13b: publication timeout releases the worker while the owner retains the
+    candidate. Polling must not turn a transport failure into another
+    implementation session or a legacy push-failure intervention. *)
 let () =
-  let gen_wait_polls =
-    QCheck2.Gen.list_size
-      (QCheck2.Gen.int_range 0 40)
-      (QCheck2.Gen.oneof_list [ Poll_normal; Poll_review_comments ])
-  in
   let prop =
     QCheck2.Test.make
-      ~name:"PI-13b: review push timeouts release busy and converge within cap"
-      ~count:300 gen_wait_polls (fun wait_polls ->
-        let orch, pid, patches = mk_bootstrapped () in
-        let rec attempt remaining orch =
-          if
-            remaining = 0
-            || Patch_agent.needs_intervention (Orchestrator.agent orch pid)
-          then orch
-          else
-            let orch =
-              apply_command orch patches
-                (Apply_poll { patch_idx = 0; poll_kind = Poll_review_comments })
-            in
-            let a = Orchestrator.agent orch pid in
-            if a.Patch_agent.busy then orch
-            else
-              let orch =
-                Orchestrator.fire orch
-                  (Orchestrator.Respond (pid, Operation_kind.Review_comments))
-              in
-              let orch =
-                List.fold wait_polls ~init:orch ~f:(fun o poll_kind ->
-                    apply_command o patches
-                      (Apply_poll { patch_idx = 0; poll_kind }))
-              in
-              let timed_out_result =
-                Orchestrator.combine_session_and_push
-                  ~delivery_mode:Patch_decision.Respond ~branch_changed:true
-                  ~session:Orchestrator.Session_ok
-                  ~push:(Worktree.Push_error "git push timed out")
-              in
-              let orch =
-                Orchestrator.apply_session_result orch pid timed_out_result
-              in
-              let orch =
-                Orchestrator.apply_respond_outcome orch pid
-                  Operation_kind.Review_comments Orchestrator.Respond_retry_push
-              in
-              let after = Orchestrator.agent orch pid in
-              if after.Patch_agent.busy || Option.is_some after.current_op then
-                orch
-              else attempt (remaining - 1) orch
-        in
-        let orch = attempt 3 orch in
-        let final = Orchestrator.agent orch pid in
-        (not final.Patch_agent.busy)
-        && Option.is_none final.current_op
-        && Patch_agent.needs_intervention final
-        && final.push_failure_count >= 3)
+      ~name:
+        "PI-13b: review push timeout releases capacity and retains publication"
+      ~count:300
+      QCheck2.Gen.(
+        list_size (int_range 0 40)
+          (oneof_list [ Poll_normal; Poll_review_comments ]))
+      (fun wait_polls ->
+        try
+          let module B = Branch_reconcile in
+          let module F = Onton_core_test_support.Publication_fixture in
+          let orch, pid, patches = mk_bootstrapped () in
+          let orch =
+            Orchestrator.enqueue orch pid Operation_kind.Review_comments
+          in
+          let orch =
+            Orchestrator.fire orch
+              (Orchestrator.Respond (pid, Operation_kind.Review_comments))
+          in
+          let state t =
+            (Orchestrator.agent t pid).Patch_agent.branch_reconcile
+          in
+          let step t event = fst (Orchestrator.reconcile_branch t pid event) in
+          let orch =
+            F.publishing ~candidate:(F.sha "review-fix") ~state ~step orch
+          in
+          let captured = B.publication_observation_target (state orch) in
+          let orch =
+            F.reply ~state ~step orch
+              (B.Retryable { reason = "git push timed out"; retry_after = None })
+          in
+          let orch =
+            Orchestrator.apply_session_result orch pid Orchestrator.Session_ok
+          in
+          let orch =
+            Orchestrator.apply_respond_outcome orch pid
+              Operation_kind.Review_comments Orchestrator.Respond_retry_push
+          in
+          let waiting = state orch in
+          let orch =
+            List.fold wait_polls ~init:orch ~f:(fun t poll_kind ->
+                apply_command t patches
+                  (Apply_poll { patch_idx = 0; poll_kind }))
+          in
+          let agent = Orchestrator.agent orch pid in
+          (not agent.Patch_agent.busy)
+          && Option.is_none agent.Patch_agent.current_op
+          && (not (Patch_agent.needs_intervention agent))
+          && agent.Patch_agent.start_attempts_without_pr = 0
+          && B.is_pending (state orch)
+          && B.equal waiting (state orch)
+          && Option.equal B.equal_publication_identity captured
+               (B.publication_observation_target (state orch))
+          &&
+          match B.decode (B.yojson_of_t (state orch)) with
+          | Ok restored -> B.equal restored (state orch)
+          | Error _ -> false
+        with _ -> false)
   in
   QCheck2.Test.check_exn prop;
   Stdlib.print_endline "PI-13b passed"
@@ -2422,7 +2495,8 @@ let () =
         let agent_b = Orchestrator.agent orch pid_b in
         if
           not
-            (Option.equal Branch.equal agent_b.Patch_agent.branch_rebased_onto
+            (Option.equal Branch.equal
+               (Patch_agent.branch_rebased_onto agent_b)
                (Some a.branch))
         then
           failwith "patch b did not start with branch_rebased_onto = a's branch";
@@ -2449,7 +2523,7 @@ let () =
                   queue = ag.Patch_agent.queue;
                   base_branch =
                     Option.value ag.Patch_agent.base_branch ~default:main;
-                  branch_rebased_onto = ag.Patch_agent.branch_rebased_onto;
+                  branch_rebased_onto = Patch_agent.branch_rebased_onto ag;
                   base_contains_merged_siblings = true;
                   sibling_rebase_target = None;
                 })
@@ -2631,25 +2705,15 @@ let converged orch pid =
   in
   (not pending_human) || Patch_agent.needs_intervention a
 
-(** Map a session_result to the respond_outcome the runner would produce. This
-    mirrors the mapping in bin/main.ml (run_claude_and_handle →
-    combine_session_and_push → respond_outcome).
-
-    [Session_worktree_missing] only arises on the Start path in production (the
-    worktree is created before Respond actions fire), and is handled by
-    [apply_start_outcome Start_failed], never by [apply_respond_outcome].
-    Mapping it to [Respond_failed] here is a conservative over-approximation
-    used only for convergence testing on the Respond path — the termination
-    property is the same. *)
+(** Session outcome handling; publication retries are independent owner state.
+*)
 let respond_outcome_of session_result =
   match session_result with
   | Orchestrator.Session_ok -> Orchestrator.Respond_ok
-  | Orchestrator.Session_push_failed _ -> Orchestrator.Respond_retry_push
   | Orchestrator.Session_no_commits -> Orchestrator.Respond_no_commits
   | Orchestrator.Session_process_error _ | Orchestrator.Session_no_resume
   | Orchestrator.Session_timed_out _ | Orchestrator.Session_failed _
   | Orchestrator.Session_wontdo _ | Orchestrator.Session_give_up
-  | Orchestrator.Session_worktree_missing
   | Orchestrator.Session_context_exhausted ->
       Orchestrator.Respond_failed
 
@@ -2677,7 +2741,7 @@ let session_failure_for_state (a : Patch_agent.t) =
     fire(Respond(Human)) are not met (agent busy, merged, needs_intervention,
     Human not in queue, or not highest priority). Returns Some orch on success.
 *)
-let try_respond_human_pipeline orch pid session_result =
+let try_respond_human_pipeline ?publication_failure orch pid session_result =
   let a = Orchestrator.agent orch pid in
   if
     a.Patch_agent.busy || a.Patch_agent.merged
@@ -2691,12 +2755,21 @@ let try_respond_human_pipeline orch pid session_result =
     if not (Option.equal Operation_kind.equal hp (Some Operation_kind.Human))
     then None
     else
-      let respond_outcome = respond_outcome_of session_result in
+      let respond_outcome =
+        match publication_failure with
+        | None -> respond_outcome_of session_result
+        | Some _ -> Orchestrator.Respond_retry_push
+      in
       let orch =
         Orchestrator.fire orch
           (Orchestrator.Respond (pid, Operation_kind.Human))
       in
       let orch = Orchestrator.apply_session_result orch pid session_result in
+      let orch =
+        match publication_failure with
+        | None -> orch
+        | Some failure -> fail_publication orch pid failure
+      in
       let orch =
         Orchestrator.apply_respond_outcome orch pid Operation_kind.Human
           respond_outcome
@@ -2711,7 +2784,7 @@ let () =
   let prop_cv1 =
     QCheck2.Test.make
       ~name:
-        "CV-1: persistent Session_push_failed with Human converges in 1 \
+        "CV-1: owner publication retry consumes delivered Human guidance in 1 \
          iteration"
       ~count:200
       (QCheck2.Gen.string_size (QCheck2.Gen.int_range 1 80))
@@ -2719,8 +2792,11 @@ let () =
         let orch, pid, _patches = mk_bootstrapped () in
         let orch = Orchestrator.send_human_message orch pid msg in
         match
-          try_respond_human_pipeline orch pid
-            (Orchestrator.Session_push_failed None)
+          try_respond_human_pipeline
+            ~publication_failure:
+              (Branch_reconcile.Retryable
+                 { reason = "offline"; retry_after = None })
+            orch pid Orchestrator.Session_ok
         with
         | None -> QCheck2.Test.fail_report "CV-1: pipeline precondition failed"
         | Some orch ->
@@ -2914,13 +2990,13 @@ let () =
     these session_result categories, the full Respond(Human) pipeline repeated
     up to 10 times either drains the queue or reaches needs_intervention. This
     is the catch-all property that would have detected the original
-    Session_push_failed infinite loop.
+    publication-retry delivery loop.
 
     Two classes of session_result:
 
-    (a) "Session succeeded" (Session_ok, Session_push_failed,
-    Session_no_commits): the LLM ran. Messages were delivered. Converges in 1
-    iteration because inflight messages are consumed.
+    (a) "Session succeeded" (Session_ok, Session_no_commits): the LLM ran.
+    Messages were delivered. Converges in 1 iteration because inflight messages
+    are consumed.
 
     (b) "Session failed" (all other non-timeout results): the LLM could not run
     or crashed. Messages were NOT delivered. Converges via the escalation chain
@@ -2953,13 +3029,11 @@ let () =
            to model the real escalation chain. *)
         let is_success_result r =
           match r with
-          | Orchestrator.Session_ok | Orchestrator.Session_push_failed _
-          | Orchestrator.Session_no_commits ->
-              true
+          | Orchestrator.Session_ok | Orchestrator.Session_no_commits -> true
           | Orchestrator.Session_timed_out _ | Orchestrator.Session_failed _
           | Orchestrator.Session_process_error _
           | Orchestrator.Session_no_resume | Orchestrator.Session_wontdo _
-          | Orchestrator.Session_give_up | Orchestrator.Session_worktree_missing
+          | Orchestrator.Session_give_up
           | Orchestrator.Session_context_exhausted ->
               false
         in
@@ -2974,7 +3048,7 @@ let () =
             let a = Orchestrator.agent orch pid in
             (* For failure templates, use the generated template on the
                first iteration so variants like [Session_no_resume],
-               [Session_process_error], and [Session_worktree_missing]
+               [Session_process_error]
                actually exercise their [apply_session_result] branches.
                Subsequent iterations model the persistent-failure escalation
                chain via [session_failure_for_state] because those specific
@@ -3005,81 +3079,92 @@ let () =
   QCheck2.Test.check_exn prop_cv5;
   Stdlib.print_endline "CV-5 passed"
 
-(** CV-6: Persistent [Session_push_failed None] {b without} a Human message in
-    the queue still terminates. This is the regression test for the patch-6
-    incident, where 54 consecutive [Start → Session_push_failed → Start] cycles
-    never tripped [needs_intervention]. After P0-B, the [push_failure_count]
-    counter fires intervention at [>= 3] even with no Human-exemption pressure,
-    so the loop closes within 3 iterations. *)
+(** CV-6: Transient publication outages release the worker and retain captured
+    work beyond the removed push-session failure cap. *)
 let () =
   let prop_cv6 =
     QCheck2.Test.make
       ~name:
-        "CV-6: persistent Session_push_failed without Human converges via \
-         push_failure_count within 3 iterations"
-      ~count:200 (QCheck2.Gen.return ()) (fun () ->
-        let orch, pid, _patches = mk_bootstrapped () in
-        let bump o =
-          Orchestrator.apply_session_result o pid
-            (Orchestrator.Session_push_failed None)
-        in
-        let a0 = Orchestrator.agent orch pid in
-        if Patch_agent.needs_intervention a0 then
-          QCheck2.Test.fail_report
-            "CV-6: fresh agent should not need intervention";
-        let o1 = bump orch in
-        let o2 = bump o1 in
-        let o3 = bump o2 in
-        let a3 = Orchestrator.agent o3 pid in
-        if not (Patch_agent.needs_intervention a3) then
-          QCheck2.Test.fail_reportf
-            "CV-6: needs_intervention should be true after 3 \
-             Session_push_failed events (push_failure_count=%d)"
-            a3.Patch_agent.push_failure_count;
-        true)
+        "CV-6: publication outages retain candidate without session \
+         intervention"
+      ~count:200
+      QCheck2.Gen.(int_range 3 20)
+      (fun retries ->
+        try
+          let module B = Branch_reconcile in
+          let module F = Onton_core_test_support.Publication_fixture in
+          let orch, pid, _ = mk_bootstrapped () in
+          let orch =
+            fail_publication orch pid
+              (B.Retryable { reason = "offline"; retry_after = None })
+          in
+          let state t =
+            (Orchestrator.agent t pid).Patch_agent.branch_reconcile
+          in
+          let step t event = fst (Orchestrator.reconcile_branch t pid event) in
+          let candidate = B.publication_observation_target (state orch) in
+          let orch =
+            List.fold (List.range 0 retries) ~init:orch ~f:(fun t _ ->
+                let t =
+                  match B.phase (state t) with
+                  | Some (Waiting { until; _ }) -> step t (B.Tick until)
+                  | Some
+                      ( Preparing | Integrating | Repairing _ | Publishing
+                      | Confirming | Recovering | Settled | Intervention _ )
+                  | None ->
+                      failwith "publication lost retry deadline"
+                in
+                F.reply ~state ~step t
+                  (B.Retryable { reason = "offline"; retry_after = None }))
+          in
+          let after = Orchestrator.agent orch pid in
+          (not after.Patch_agent.busy)
+          && (not (Patch_agent.needs_intervention after))
+          && B.is_pending (state orch)
+          && Option.equal B.equal_publication_identity candidate
+               (B.publication_observation_target (state orch))
+          && Patch_agent.equal_session_fallback after.session_fallback
+               Fresh_available
+        with _ -> false)
   in
   QCheck2.Test.check_exn prop_cv6;
   Stdlib.print_endline "CV-6 passed"
 
-(** CV-7: A single [Session_push_failed (Some <permanent>)] (workflow scope,
-    branch protection, push pattern, or hook failure) flips [needs_intervention]
-    on the very first event, without waiting for the counter. This is the
-    SSH/HTTPS short-circuit path: the rejection cannot resolve under the current
-    credentials / branch-protection state, so retry is wasteful. *)
+(** CV-7: Permanent publication denial is owner intervention, independent of the
+    backend's ability to continue the implementation session. *)
 let () =
   let prop_cv7 =
     QCheck2.Test.make
-      ~name:
-        "CV-7: Session_push_failed with permanent rejection converges in 1 \
-         event"
+      ~name:"CV-7: permanent publication denial preserves backend session"
       ~count:200
-      (QCheck2.Gen.oneof
-         [
-           QCheck2.Gen.return Push_reject_classify.Workflow_scope_missing;
-           QCheck2.Gen.return Push_reject_classify.Branch_protection;
-           QCheck2.Gen.return Push_reject_classify.Push_pattern_block;
-           QCheck2.Gen.return (Push_reject_classify.Hook_failure "policy x");
-         ])
-      (fun reason ->
-        let orch, pid, _patches = mk_bootstrapped () in
-        let orch =
-          Orchestrator.apply_session_result orch pid
-            (Orchestrator.Session_push_failed (Some reason))
-        in
-        let a = Orchestrator.agent orch pid in
-        if not (Patch_agent.needs_intervention a) then
-          QCheck2.Test.fail_reportf
-            "CV-7: %s should escalate to Given_up immediately"
-            (Push_reject_classify.show_rejection reason);
-        if
-          not
-            (Patch_agent.equal_session_fallback a.Patch_agent.session_fallback
-               Patch_agent.Given_up)
-        then
-          QCheck2.Test.fail_reportf
-            "CV-7: session_fallback should be Given_up (got %s)"
-            (Patch_agent.show_session_fallback a.Patch_agent.session_fallback);
-        true)
+      QCheck2.Gen.(
+        oneof_list
+          [
+            Push_reject_classify.Workflow_scope_missing;
+            Permission_denied;
+            Branch_protection;
+            Push_pattern_block;
+            Hook_failure "policy x";
+          ])
+      (fun rejection ->
+        try
+          let orch, pid, _ = mk_bootstrapped () in
+          let orch =
+            Orchestrator.set_llm_session_id orch pid (Some "retained-session")
+          in
+          let reason = Push_reject_classify.short_label rejection in
+          let orch =
+            fail_publication orch pid (Branch_reconcile.Permanent reason)
+          in
+          let after = Orchestrator.agent orch pid in
+          Option.equal String.equal
+            (Patch_agent.intervention_reason after)
+            (Some reason)
+          && Patch_agent.equal_session_fallback after.session_fallback
+               Fresh_available
+          && Option.equal String.equal after.llm_session_id
+               (Some "retained-session")
+        with _ -> false)
   in
   QCheck2.Test.check_exn prop_cv7;
   Stdlib.print_endline "CV-7 passed"
@@ -3105,7 +3190,7 @@ let reconcile_views_of orch =
           in_merge_queue = Patch_agent.in_merge_queue ag;
           queue = ag.Patch_agent.queue;
           base_branch = Option.value ag.Patch_agent.base_branch ~default:main;
-          branch_rebased_onto = ag.Patch_agent.branch_rebased_onto;
+          branch_rebased_onto = Patch_agent.branch_rebased_onto ag;
           base_contains_merged_siblings = true;
           sibling_rebase_target = None;
         })
@@ -3414,7 +3499,8 @@ let happy_tick orch patches ~pr_counter =
                   Orchestrator.set_pr_number o pid
                     (Pr_number.of_int !pr_counter))
               in
-              Orchestrator.complete o pid)
+              Onton_test_support.Reconciliation_fixture.rebase ~noop:true o pid
+                (Option.value a.Patch_agent.base_branch ~default:main))
   in
   (* Fair happy path: CI passes for every landed PR. The child Start gate now
      requires each open dep to be CI-green ([open_dep_review_ready]) as well as
@@ -3518,7 +3604,10 @@ let () =
           let orch =
             Orchestrator.set_pr_number orch parent (Pr_number.of_int 1)
           in
-          let orch = Orchestrator.complete orch parent in
+          let orch =
+            Onton_test_support.Reconciliation_fixture.rebase ~noop:true orch
+              parent main
+          in
           (* Two consecutive Pr_body sessions that fail to deliver the
              artifact. *)
           let miss o =

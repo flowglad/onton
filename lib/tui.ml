@@ -387,31 +387,18 @@ let human_intervention_reason (agent : Patch_agent.t) =
               "Could not open a PR after %d attempts \xe2\x80\x94 open it \
                manually or check repo access"
               agent.Patch_agent.start_attempts_without_pr
-        | "conflict_noop_count>=2" ->
-            "Stuck resolving merge conflicts against base \xe2\x80\x94 resolve \
-             them manually"
         | "no_commits_push_count>=2" ->
             "Sessions keep producing no commits to push \xe2\x80\x94 the task \
              may be done or mis-scoped"
         | "context_exhaustion_count>=2" ->
             "Context window exhausted repeatedly \xe2\x80\x94 split the patch \
              into smaller pieces"
-        | "push_failure_count>=3" ->
-            Printf.sprintf
-              "git push failed %d times \xe2\x80\x94 check branch protection \
-               or remote state"
-              agent.Patch_agent.push_failure_count
-        | "rebase_failure_count>=2" ->
-            Printf.sprintf
-              "git rebase failed %d times \xe2\x80\x94 check the activity log \
-               for the fetch or worktree error"
-              agent.Patch_agent.rebase_failure_count
         | "pr_body_artifact_miss_count>=2" ->
             "PR body delivery blocked repeatedly \xe2\x80\x94 check the PR \
              description requirements"
         | other -> other)
 
-let patch_view_of_agent (agent : Patch_agent.t)
+let patch_view_of_agent ~execution_mode (agent : Patch_agent.t)
     ~(patches_by_id : Patch.t Map.M(Patch_id).t) ~(graph : Graph.t)
     ~(main_branch : Branch.t) ~(agents_by_id : Patch_agent.t Map.M(Patch_id).t)
     ~(terminal_branch_of : Patch_id.t -> Branch.t)
@@ -447,7 +434,9 @@ let patch_view_of_agent (agent : Patch_agent.t)
          ~value:needs_intervention
     |> State.Patch_ctx.set_busy ~patch_id ~value:agent.busy
     |> State.Patch_ctx.set_has_pr ~patch_id
-         ~value:(Patch_agent.has_pr agent || agent.branch_published)
+         ~value:
+           (Patch_agent.has_pr agent
+           || Execution_mode.branch_only_published execution_mode agent)
     |> State.Patch_ctx.set_approved ~patch_id
          ~value:(Patch_agent.is_approved agent ~main_branch)
     |> State.Patch_ctx.set_enqueued ~patch_id
@@ -486,7 +475,8 @@ let patch_view_of_agent (agent : Patch_agent.t)
                 |> State.Patch_ctx.set_has_pr ~patch_id:dep_id
                      ~value:
                        (Patch_agent.has_pr dep_agent
-                       || dep_agent.branch_published)
+                       || Execution_mode.branch_only_published execution_mode
+                            dep_agent)
                 |> State.Patch_ctx.set_approved ~patch_id:dep_id
                      ~value:
                        (Patch_agent.is_approved dep_agent
@@ -523,8 +513,10 @@ let patch_view_of_agent (agent : Patch_agent.t)
     ci_failures = agent.ci_failure_count;
     ci_failure_cap = agent.max_ci_failures;
     dep_ids;
-    has_pr = Patch_agent.has_pr agent || agent.branch_published;
-    has_conflict = agent.has_conflict;
+    has_pr =
+      Patch_agent.has_pr agent
+      || Execution_mode.branch_only_published execution_mode agent;
+    has_conflict = Patch_agent.has_conflict agent;
     needs_intervention;
     human_messages = List.length agent.human_messages;
     ci_checks = agent.ci_checks;
@@ -1435,8 +1427,9 @@ let views_of_orchestrator ~(orchestrator : Orchestrator.t)
         Orchestrator.terminal_branch orchestrator agent.Patch_agent.patch_id
       in
       let pv =
-        patch_view_of_agent agent ~patches_by_id ~graph ~main_branch
-          ~agents_by_id
+        patch_view_of_agent
+          ~execution_mode:(Orchestrator.execution_mode orchestrator)
+          agent ~patches_by_id ~graph ~main_branch ~agents_by_id
           ~terminal_branch_of:(Orchestrator.terminal_branch orchestrator)
           ~resolve_routing
       in

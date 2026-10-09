@@ -18,11 +18,6 @@ type t =
       (** Explicit pre-commit opt-out. Retains the explanation and pauses work
           until a human reprompt or intervention reset. *)
   | Session_give_up
-  | Session_worktree_missing
-  | Session_push_failed of Push_reject_classify.rejection option
-      (** [Some r] carries a classified server-side rejection (workflow-scope,
-          branch-protection, lease, hook, …). [None] reflects a transport/local
-          [git push] error (no server message available). *)
   | Session_no_commits
   | Session_context_exhausted
       (** The session exhausted the model's context window
@@ -63,6 +58,16 @@ val resume_start :
   bool
 (** Reuse completed implementation only for the same delivered guidance. An
     observed no-work publication permits another implementation attempt. *)
+
+val resume_verified_legacy_start :
+  delivery_mode:delivery_mode ->
+  guidance:string list ->
+  publication:Branch_reconcile.t ->
+  completion:completion option ->
+  bool
+(** A confirmed legacy publication without a saved completion can resume PR
+    creation. New guidance or a known backend outcome requires normal handling.
+*)
 
 val after_local_work :
   delivery_mode:delivery_mode -> branch_changed:bool -> no_work:bool -> t -> t

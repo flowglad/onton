@@ -41,7 +41,6 @@ let create ~gameplan ~(main_branch : Branch.t)
         in
         let orchestrator =
           Orchestrator.set_main_branch s.orchestrator main_branch
-          |> Orchestrator.clear_pending_remote_heads
         in
         ( { s with orchestrator; gameplan = reconciled.gameplan },
           reconciled.repairs )

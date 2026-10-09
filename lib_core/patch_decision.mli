@@ -21,8 +21,10 @@ type disposition =
   | Ready_rebase  (** Patch has a queued rebase as highest priority. *)
 [@@deriving show, eq, sexp_of, compare]
 
-val disposition : Patch_agent.t -> disposition
-(** Determine the current disposition of a patch agent. *)
+val disposition : ?branch_only:bool -> Patch_agent.t -> disposition
+(** Determine the current disposition. [branch_only] is selected by the
+    execution mode for feature descendants; publication alone never bypasses
+    mainline PR creation. *)
 
 (** {2 Event decisions} *)
 
@@ -51,27 +53,11 @@ type human_decision =
 val on_human_message : Patch_agent.t -> human_decision
 (** Decide whether to enqueue a human message. *)
 
-type conflict_decision =
-  | Enqueue_conflict  (** Queue merge conflict resolution. *)
-  | Already_conflicting  (** Conflict already tracked. *)
-[@@deriving show, eq, sexp_of, compare]
-
-val on_merge_conflict : Patch_agent.t -> conflict_decision
-(** Decide whether to enqueue merge conflict resolution. *)
-
-val should_reset_conflict_noop :
-  Patch_agent.t ->
-  merge_state:Pr_state.merge_state ->
-  observed_head:string option ->
-  bool
-(** A mergeable observation of the expected or a distinct known PR head ends the
-    current conflict episode. Preserve the no-op budget for the stale pre-push
-    head, an unidentified observation, or queued/running conflict resolution. *)
-
-val defer_remote_head : Patch_agent.t -> string option -> bool
-(** Retain the publication marker for a known pre-push head or an unidentified
-    observation. This does not suppress non-conflict PR state. The expected head
-    or a distinct known head settles the marker. *)
+val defer_remote_head :
+  ?confirmed_remote_head:string -> Patch_agent.t -> string option -> bool
+(** Owner publications wait for their expected head or a different head
+    confirmed by direct Git evidence. Unidentified observations cannot settle
+    that wait. *)
 
 type checks_passing_decision =
   | Reset_ci_failure_count
@@ -85,11 +71,6 @@ val on_checks_passing :
 (** Decide whether to reset [ci_failure_count] based on current check status.
     Returns [Reset_ci_failure_count] when failures existed and checks now pass.
 *)
-
-val should_clear_conflict : Patch_agent.t -> bool
-(** Whether it is safe to clear [has_conflict]. Returns [false] when a
-    Merge_conflict operation is queued or in-flight, since clearing would race
-    with the active resolution. *)
 
 (** {2 Start delivery — pre-session decision for the runner} *)
 

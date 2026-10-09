@@ -5,850 +5,14 @@ open Base
 open Onton
 open Onton_core
 module Git_env = Onton_test_support.Git_env
+module B = Branch_reconcile
+module E = Branch_reconcile_executor
 
 (* ───────────────────────────────────────────────────────────────────────
-   Pure tests for [Worktree.oldest_non_ancestor_commit] with no ancestors
-   (subsumes the behaviour of the former [oldest_unique_commit]).
-   ─────────────────────────────────────────────────────────────────────── *)
-
-let () =
-  let open QCheck2 in
-  let oldest =
-    Worktree.oldest_non_ancestor_commit ~project_name:"" ~ancestor_ids:[]
-  in
-  let prop_empty =
-    Test.make ~name:"oldest_non_ancestor_commit: empty -> Error" ~count:1
-      Gen.unit (fun () ->
-        match oldest "" with Result.Error _ -> true | Result.Ok _ -> false)
-  in
-  let prop_whitespace_only =
-    Test.make ~name:"oldest_non_ancestor_commit: whitespace-only -> Error"
-      ~count:1 Gen.unit (fun () ->
-        match oldest "  \n  \n" with
-        | Result.Error _ -> true
-        | Result.Ok _ -> false)
-  in
-  let prop_single_sha =
-    Test.make ~name:"oldest_non_ancestor_commit: single line -> that SHA"
-      ~count:1 Gen.unit (fun () ->
-        match oldest "abc123 subj\n" with
-        | Result.Ok sha -> String.equal sha "abc123"
-        | Result.Error _ -> false)
-  in
-  let prop_multiple_shas =
-    Test.make ~name:"oldest_non_ancestor_commit: multiple -> last line (oldest)"
-      ~count:1 Gen.unit (fun () ->
-        let output = "newest111 a\nmiddle222 b\noldest333 c\n" in
-        match oldest output with
-        | Result.Ok sha -> String.equal sha "oldest333"
-        | Result.Error _ -> false)
-  in
-  let prop_trailing_whitespace =
-    (* Trailing spaces on the subject side don't bleed into the SHA —
-       [lsplit2 ~on:' '] splits at the first space, so the SHA is always
-       the leading non-space run regardless of what follows the first
-       separator. The second all-whitespace line must also be skipped. *)
-    Test.make
-      ~name:
-        "oldest_non_ancestor_commit: trailing whitespace on subject doesn't \
-         corrupt SHA" ~count:1 Gen.unit (fun () ->
-        match oldest "abc123 subj  \n  " with
-        | Result.Ok sha -> String.equal sha "abc123"
-        | Result.Error _ -> false)
-  in
-  let prop_single_line_empty_subject =
-    (* %H %s for an empty-subject commit emits "<sha> " — lsplit2 must
-       still parse sha and subject separately (the trailing space is a
-       content-bearing separator, not stripable whitespace). *)
-    Test.make ~name:"oldest_non_ancestor_commit: single empty-subject line kept"
-      ~count:1 Gen.unit (fun () ->
-        match oldest "abc123 \n" with
-        | Result.Ok sha -> String.equal sha "abc123"
-        | Result.Error _ -> false)
-  in
-  (* Property: for any non-empty list of SHAs, returns the last one *)
-  let sha_gen =
-    Gen.string_size ~gen:(Gen.char_range 'a' 'f') (Gen.int_range 6 40)
-  in
-  let prop_always_last =
-    Test.make ~name:"oldest_non_ancestor_commit: always returns last line"
-      ~count:200
-      Gen.(list_size (int_range 1 20) sha_gen)
-      (fun shas ->
-        try
-          let output =
-            String.concat ~sep:"\n" (List.map shas ~f:(fun s -> s ^ " subj"))
-            ^ "\n"
-          in
-          match oldest output with
-          | Result.Ok sha -> String.equal sha (List.last_exn shas)
-          | Result.Error _ -> false
-        with _ -> false)
-  in
-  let suite =
-    [
-      prop_empty;
-      prop_whitespace_only;
-      prop_single_sha;
-      prop_multiple_shas;
-      prop_trailing_whitespace;
-      prop_single_line_empty_subject;
-      prop_always_last;
-    ]
-  in
-  let errcode = QCheck_base_runner.run_tests ~verbose:true suite in
-  if errcode <> 0 then Stdlib.exit errcode
-
-(* ───────────────────────────────────────────────────────────────────────
-   Pure tests for [Worktree.classify_onto_anchor] — the guard that keeps an
-   empty [--onto] old-base anchor from reaching [git rebase --onto] (which
-   aborts with "invalid upstream ''"). Regression for the CI-only failure where
-   older git resolved [<root>~1] to "" with exit 0.
-   ─────────────────────────────────────────────────────────────────────── *)
-
-let () =
-  let open QCheck2 in
-  let is_anchor expected = function
-    | Worktree.Anchor s -> String.equal s expected
-    | Worktree.No_anchor _ -> false
-  in
-  let is_no_anchor = function
-    | Worktree.No_anchor _ -> true
-    | Worktree.Anchor _ -> false
-  in
-  (* A non-blank SHA on exit 0 is the anchor, trimmed of surrounding whitespace.
-     git appends a trailing newline; classify must strip it. *)
-  let prop_ok_sha =
-    Test.make ~name:"classify_onto_anchor: exit 0 + sha -> Anchor sha"
-      ~count:200
-      Gen.(string_size ~gen:(char_range 'a' 'f') (int_range 1 40))
-      (fun sha ->
-        is_anchor sha
-          (Worktree.classify_onto_anchor ~code:0 ~stdout:(sha ^ "\n")))
-  in
-  (* The load-bearing case: exit 0 but a blank SHA (root commit on older git)
-     must be No_anchor, NOT Anchor "" — that empty string is what produced
-     "git rebase --onto target ''". *)
-  let prop_blank_on_success_is_no_anchor =
-    Test.make ~name:"classify_onto_anchor: exit 0 + blank -> No_anchor"
-      ~count:200
-      Gen.(oneof_list [ ""; "\n"; "  "; " \n "; "\t" ])
-      (fun stdout ->
-        is_no_anchor (Worktree.classify_onto_anchor ~code:0 ~stdout))
-  in
-  (* Non-zero exit is always No_anchor regardless of stdout. *)
-  let prop_nonzero_is_no_anchor =
-    Test.make ~name:"classify_onto_anchor: exit != 0 -> No_anchor" ~count:200
-      Gen.(pair (int_range 1 255) string)
-      (fun (code, stdout) ->
-        is_no_anchor (Worktree.classify_onto_anchor ~code ~stdout))
-  in
-  let suite =
-    [
-      prop_ok_sha; prop_blank_on_success_is_no_anchor; prop_nonzero_is_no_anchor;
-    ]
-  in
-  let errcode = QCheck_base_runner.run_tests ~verbose:true suite in
-  if errcode <> 0 then Stdlib.exit errcode
-
-(* ───────────────────────────────────────────────────────────────────────
-   Pure tests for [Worktree.is_ancestor_patch_subject] and
-   [Worktree.oldest_non_ancestor_commit]
-   ─────────────────────────────────────────────────────────────────────── *)
-
-let () =
-  let open QCheck2 in
-  let pid = Types.Patch_id.of_string in
-  let ancestor_ids = [ pid "1"; pid "2"; pid "6" ] in
-  let matches s =
-    Worktree.is_ancestor_patch_subject ~project_name:"proj" ~ancestor_ids s
-  in
-  let prop_matches_bare =
-    Test.make ~name:"is_ancestor_patch_subject: matches '[proj] Patch 1: title'"
-      ~count:1 Gen.unit (fun () -> matches "[proj] Patch 1: add foo")
-  in
-  let prop_matches_squash =
-    Test.make
-      ~name:
-        "is_ancestor_patch_subject: matches squash suffix '[proj] Patch 2: … \
-         (#42)'" ~count:1 Gen.unit (fun () ->
-        matches "[proj] Patch 2: bar (#42)")
-  in
-  let prop_current_not_matched =
-    Test.make
-      ~name:"is_ancestor_patch_subject: current patch id not in ancestors"
-      ~count:1 Gen.unit (fun () -> not (matches "[proj] Patch 7: impl"))
-  in
-  let prop_wrong_project =
-    Test.make
-      ~name:"is_ancestor_patch_subject: wrong project tag does not match"
-      ~count:1 Gen.unit (fun () -> not (matches "[other] Patch 1: add foo"))
-  in
-  let prop_non_convention =
-    Test.make ~name:"is_ancestor_patch_subject: agent's ad-hoc subject is safe"
-      ~count:1 Gen.unit (fun () -> not (matches "docs: fix typo"))
-  in
-  let prop_missing_colon =
-    Test.make ~name:"is_ancestor_patch_subject: missing colon still parses id"
-      ~count:1 Gen.unit (fun () -> matches "[proj] Patch 6 (HEAD -> main)")
-  in
-  let oldest =
-    Worktree.oldest_non_ancestor_commit ~project_name:"proj" ~ancestor_ids
-  in
-  let prop_filter_drops_ancestors =
-    Test.make ~name:"oldest_non_ancestor_commit: drops ancestor-subject commits"
-      ~count:1 Gen.unit (fun () ->
-        let input =
-          "feat01 [proj] Patch 7: the real work\n\
-           anc002 [proj] Patch 2: drop duplicate migration\n\
-           anc001 [proj] Patch 1: add schema\n"
-        in
-        match oldest input with
-        | Result.Ok sha -> String.equal sha "feat01"
-        | Result.Error _ -> false)
-  in
-  let prop_filter_empty_when_all_ancestors =
-    Test.make
-      ~name:"oldest_non_ancestor_commit: Error when every commit is ancestor"
-      ~count:1 Gen.unit (fun () ->
-        let input =
-          "anc002 [proj] Patch 2: bar\nanc001 [proj] Patch 1: foo\n"
-        in
-        match oldest input with Result.Error _ -> true | Result.Ok _ -> false)
-  in
-  let prop_filter_passthrough_no_ancestors =
-    Test.make
-      ~name:"oldest_non_ancestor_commit: empty ancestor list -> oldest as-is"
-      ~count:1 Gen.unit (fun () ->
-        let no_filter =
-          Worktree.oldest_non_ancestor_commit ~project_name:"proj"
-            ~ancestor_ids:[]
-        in
-        let input = "newer111 subj A\nolder222 subj B\n" in
-        match no_filter input with
-        | Result.Ok sha -> String.equal sha "older222"
-        | Result.Error _ -> false)
-  in
-  let prop_empty_subject_preserved =
-    (* Regression: %H %s for an empty-subject commit emits "<sha> ", and the
-       oldest line may have no content after the space. Stripping the full
-       input would erase that separator and drop the SHA. *)
-    Test.make
-      ~name:"oldest_non_ancestor_commit: oldest with empty subject is kept"
-      ~count:1 Gen.unit (fun () ->
-        let no_filter =
-          Worktree.oldest_non_ancestor_commit ~project_name:"proj"
-            ~ancestor_ids:[]
-        in
-        match no_filter "newer111 subj A\nolder222 \n" with
-        | Result.Ok sha -> String.equal sha "older222"
-        | Result.Error _ -> false)
-  in
-  let prop_empty_project_never_matches =
-    (* Regression: empty project_name would otherwise produce the prefix
-       "[] Patch " and match any subject that starts that way. *)
-    Test.make
-      ~name:"is_ancestor_patch_subject: empty project_name never matches"
-      ~count:1 Gen.unit (fun () ->
-        not
-          (Worktree.is_ancestor_patch_subject ~project_name:""
-             ~ancestor_ids:[ pid "1" ]
-             "[] Patch 1: boom"))
-  in
-  let prop_crlf_line_endings =
-    (* Regression: CRLF (core.autocrlf=true on Windows) leaves a trailing
-       \r on each split line. The sha must not carry the \r, or the
-       downstream rev-parse would fail. *)
-    Test.make ~name:"oldest_non_ancestor_commit: CRLF trailing \\r stripped"
-      ~count:1 Gen.unit (fun () ->
-        let no_filter =
-          Worktree.oldest_non_ancestor_commit ~project_name:"proj"
-            ~ancestor_ids:[]
-        in
-        match no_filter "newer111 subj A\r\nolder222 subj B\r\n" with
-        | Result.Ok sha -> String.equal sha "older222"
-        | Result.Error _ -> false)
-  in
-  let suite =
-    [
-      prop_matches_bare;
-      prop_matches_squash;
-      prop_current_not_matched;
-      prop_wrong_project;
-      prop_non_convention;
-      prop_missing_colon;
-      prop_filter_drops_ancestors;
-      prop_filter_empty_when_all_ancestors;
-      prop_filter_passthrough_no_ancestors;
-      prop_empty_subject_preserved;
-      prop_empty_project_never_matches;
-      prop_crlf_line_endings;
-    ]
-  in
-  let errcode = QCheck_base_runner.run_tests ~verbose:true suite in
-  if errcode <> 0 then Stdlib.exit errcode
-
-(* ───────────────────────────────────────────────────────────────────────
-   Pure tests for [Worktree.parse_push_porcelain]
-   ─────────────────────────────────────────────────────────────────────── *)
-
-let () =
-  let open QCheck2 in
-  let prop_forced_update =
-    Test.make ~name:"parse_push_porcelain: forced update -> Some '+'" ~count:1
-      Gen.unit (fun () ->
-        let output =
-          "To github.com:owner/repo.git\n\
-           +\trefs/heads/branch:refs/heads/branch\t...forced update\n\
-           Done\n"
-        in
-        Option.equal Char.equal
-          (Worktree.parse_push_porcelain output)
-          (Some '+'))
-  in
-  let prop_rejected =
-    Test.make ~name:"parse_push_porcelain: rejected -> Some '!'" ~count:1
-      Gen.unit (fun () ->
-        let output =
-          "To github.com:owner/repo.git\n\
-           !\trefs/heads/branch:refs/heads/branch\t[rejected] (stale info)\n\
-           Done\n"
-        in
-        Option.equal Char.equal
-          (Worktree.parse_push_porcelain output)
-          (Some '!'))
-  in
-  let prop_empty =
-    Test.make ~name:"parse_push_porcelain: empty -> None" ~count:1 Gen.unit
-      (fun () -> Option.is_none (Worktree.parse_push_porcelain ""))
-  in
-  let prop_up_to_date =
-    Test.make ~name:"parse_push_porcelain: up-to-date -> Some '='" ~count:1
-      Gen.unit (fun () ->
-        let output =
-          "To github.com:owner/repo.git\n\
-           =\trefs/heads/branch:refs/heads/branch\t[up to date]\n\
-           Done\n"
-        in
-        Option.equal Char.equal
-          (Worktree.parse_push_porcelain output)
-          (Some '='))
-  in
-  let prop_to_line_only =
-    Test.make ~name:"parse_push_porcelain: only To line -> None" ~count:1
-      Gen.unit (fun () ->
-        Option.is_none
-          (Worktree.parse_push_porcelain "To github.com:owner/repo.git\n"))
-  in
-  let suite =
-    [
-      prop_forced_update;
-      prop_rejected;
-      prop_up_to_date;
-      prop_empty;
-      prop_to_line_only;
-    ]
-  in
-  let errcode = QCheck_base_runner.run_tests ~verbose:true suite in
-  if errcode <> 0 then Stdlib.exit errcode
-
-(* ───────────────────────────────────────────────────────────────────────
-   Pure tests for [Worktree.classify_fetch_result]
-   ─────────────────────────────────────────────────────────────────────── *)
-
-let () =
-  let open QCheck2 in
-  let prop_exit_zero_is_ok =
-    Test.make ~name:"classify_fetch_result: exit 0 -> Ok ()" ~count:200
-      Gen.string (fun stderr ->
-        match Worktree.classify_fetch_result ~code:0 ~stderr with
-        | Result.Ok () -> true
-        | Result.Error _ -> false)
-  in
-  let prop_nonzero_is_error =
-    Test.make ~name:"classify_fetch_result: exit != 0 -> Error" ~count:200
-      Gen.(pair (int_range 1 255) string)
-      (fun (code, stderr) ->
-        match Worktree.classify_fetch_result ~code ~stderr with
-        | Result.Error _ -> true
-        | Result.Ok () -> false)
-  in
-  let prop_error_message_includes_code =
-    Test.make ~name:"classify_fetch_result: Error message embeds exit code"
-      ~count:200
-      Gen.(pair (int_range 1 255) string)
-      (fun (code, stderr) ->
-        match Worktree.classify_fetch_result ~code ~stderr with
-        | Result.Error msg ->
-            String.is_substring msg ~substring:(Printf.sprintf "exit %d" code)
-        | Result.Ok () -> false)
-  in
-  let prop_stderr_stripped =
-    Test.make ~name:"classify_fetch_result: stderr is stripped in Error msg"
-      ~count:1 Gen.unit (fun () ->
-        let stderr = "  oops  \n" in
-        match Worktree.classify_fetch_result ~code:1 ~stderr with
-        | Result.Error msg ->
-            String.is_substring msg ~substring:"oops"
-            && (not (String.is_substring msg ~substring:"  oops"))
-            && not (String.is_substring msg ~substring:"oops  ")
-        | Result.Ok () -> false)
-  in
-  let prop_regression_ref_lock_error =
-    (* Regression: this was the stderr observed in the outcome-tracking
-       run. The classifier should surface it so downstream log/telemetry
-       can still identify the race. *)
-    Test.make ~name:"classify_fetch_result: regression ref-lock stderr" ~count:1
-      Gen.unit (fun () ->
-        let stderr =
-          "error: cannot lock ref 'refs/remotes/origin/main': is at \
-           11ea3d8d67b9c481e7c8ddec7a6e1d46f2db1ba8 but expected \
-           d97cc64a88e05401a2f8fdf3624b79dbfb16671d\n\
-           From github.com:flowglad/review-service\n\
-          \ ! d97cc64..11ea3d8  main       -> origin/main  (unable to update \
-           local ref)"
-        in
-        match Worktree.classify_fetch_result ~code:1 ~stderr with
-        | Result.Error msg ->
-            String.is_substring msg ~substring:"cannot lock ref"
-            && String.is_substring msg ~substring:"exit 1"
-        | Result.Ok () -> false)
-  in
-  let prop_total_no_raise =
-    (* Totality: the classifier never raises for any (code, stderr). *)
-    Test.make ~name:"classify_fetch_result: total (never raises)" ~count:500
-      Gen.(pair (int_range (-256) 512) string)
-      (fun (code, stderr) ->
-        try
-          let _ = Worktree.classify_fetch_result ~code ~stderr in
-          true
-        with _ -> false)
-  in
-  let suite =
-    [
-      prop_exit_zero_is_ok;
-      prop_nonzero_is_error;
-      prop_error_message_includes_code;
-      prop_stderr_stripped;
-      prop_regression_ref_lock_error;
-      prop_total_no_raise;
-    ]
-  in
-  let errcode = QCheck_base_runner.run_tests ~verbose:true suite in
-  if errcode <> 0 then Stdlib.exit errcode
-
-(* ───────────────────────────────────────────────────────────────────────
-   Pure tests for [Worktree.classify_fetch_branch_result] — the typed
-   branch-scoped fetch classifier. Distinguishing the brand-new-branch
-   "couldn't find remote ref" case from real fetch failures keeps the
-   pre-create-fetch log non-alarming on the first creation of every
-   patch worktree.
-   ─────────────────────────────────────────────────────────────────────── *)
-
-let () =
-  let open QCheck2 in
-  let prop_branch_exit_zero_is_ok =
-    Test.make ~name:"classify_fetch_branch_result: exit 0 -> Fetch_branch_ok"
-      ~count:200 Gen.string (fun stderr ->
-        match Worktree.classify_fetch_branch_result ~code:0 ~stderr with
-        | Worktree.Fetch_branch_ok -> true
-        | Worktree.Fetch_branch_no_remote_ref | Worktree.Fetch_branch_error _ ->
-            false)
-  in
-  let prop_branch_couldnt_find_remote_ref =
-    (* Regression: the exact stderr produced by [git fetch origin
-       <branch>:refs/remotes/origin/<branch>] when [<branch>] has never
-       been pushed. This trips on the very first worktree create for
-       every patch in a fresh gameplan and must classify as the routine
-       no-upstream case, not as an error. *)
-    Test.make
-      ~name:
-        "classify_fetch_branch_result: 'couldn't find remote ref' -> \
-         Fetch_branch_no_remote_ref" ~count:1 Gen.unit (fun () ->
-        let stderr =
-          "fatal: couldn't find remote ref ts2pant-let-mutation-ssa/patch-2"
-        in
-        match Worktree.classify_fetch_branch_result ~code:128 ~stderr with
-        | Worktree.Fetch_branch_no_remote_ref -> true
-        | Worktree.Fetch_branch_ok | Worktree.Fetch_branch_error _ -> false)
-  in
-  let prop_branch_substring_anywhere =
-    (* The detector keys off git's canonical phrasing and must fire
-       regardless of surrounding noise in stderr. *)
-    Test.make
-      ~name:
-        "classify_fetch_branch_result: 'couldn't find remote ref' anywhere in \
-         stderr"
-      ~count:200
-      Gen.(pair string string)
-      (fun (prefix, suffix) ->
-        let stderr = prefix ^ "couldn't find remote ref " ^ suffix in
-        match Worktree.classify_fetch_branch_result ~code:128 ~stderr with
-        | Worktree.Fetch_branch_no_remote_ref -> true
-        | Worktree.Fetch_branch_ok | Worktree.Fetch_branch_error _ -> false)
-  in
-  let prop_branch_other_failures_are_error =
-    (* Stderr that does NOT contain the no-upstream marker classifies as
-       Fetch_branch_error with the exit code embedded — same shape as
-       [classify_fetch_result]. *)
-    Test.make
-      ~name:
-        "classify_fetch_branch_result: non-zero without marker -> \
-         Fetch_branch_error"
-      ~count:200
-      Gen.(pair (int_range 1 255) (string_size (int_range 0 60)))
-      (fun (code, stderr_raw) ->
-        (* Strip any accidentally-generated marker substring to keep the
-           negative property well-defined. *)
-        let stderr =
-          if
-            String.is_substring stderr_raw ~substring:"couldn't find remote ref"
-          then ""
-          else stderr_raw
-        in
-        match Worktree.classify_fetch_branch_result ~code ~stderr with
-        | Worktree.Fetch_branch_error msg ->
-            String.is_substring msg ~substring:(Printf.sprintf "exit %d" code)
-        | Worktree.Fetch_branch_ok | Worktree.Fetch_branch_no_remote_ref ->
-            false)
-  in
-  let prop_branch_ref_lock_is_error =
-    (* Regression carry-over from [classify_fetch_result]: ref-lock
-       contention is a real failure, not a no-upstream signal. *)
-    Test.make
-      ~name:
-        "classify_fetch_branch_result: ref-lock stderr -> Fetch_branch_error"
-      ~count:1 Gen.unit (fun () ->
-        let stderr =
-          "error: cannot lock ref 'refs/remotes/origin/main': is at \
-           11ea3d8d67b9c481e7c8ddec7a6e1d46f2db1ba8 but expected \
-           d97cc64a88e05401a2f8fdf3624b79dbfb16671d"
-        in
-        match Worktree.classify_fetch_branch_result ~code:1 ~stderr with
-        | Worktree.Fetch_branch_error msg ->
-            String.is_substring msg ~substring:"cannot lock ref"
-        | Worktree.Fetch_branch_ok | Worktree.Fetch_branch_no_remote_ref ->
-            false)
-  in
-  let prop_branch_total_no_raise =
-    Test.make ~name:"classify_fetch_branch_result: total (never raises)"
-      ~count:500
-      Gen.(pair (int_range (-256) 512) string)
-      (fun (code, stderr) ->
-        try
-          let _ = Worktree.classify_fetch_branch_result ~code ~stderr in
-          true
-        with _ -> false)
-  in
-  let suite =
-    [
-      prop_branch_exit_zero_is_ok;
-      prop_branch_couldnt_find_remote_ref;
-      prop_branch_substring_anywhere;
-      prop_branch_other_failures_are_error;
-      prop_branch_ref_lock_is_error;
-      prop_branch_total_no_raise;
-    ]
-  in
-  let errcode = QCheck_base_runner.run_tests ~verbose:true suite in
-  if errcode <> 0 then Stdlib.exit errcode
-
-(* ───────────────────────────────────────────────────────────────────────
-   Pure tests for [Worktree.classify_unique_commits] —
-   the new decision layer that returns BOTH the per-commit list and the
-   oldest SHA. [oldest_non_ancestor_commit] is now a thin wrapper, so the
-   properties above continue to cover its slice; these properties cover
-   the additional list-shape guarantees the prompt agent depends on.
-   ─────────────────────────────────────────────────────────────────────── *)
-
-let () =
-  let open QCheck2 in
-  let pid = Types.Patch_id.of_string in
-  let sha_gen =
-    Gen.string_size ~gen:(Gen.char_range 'a' 'f') (Gen.int_range 6 40)
-  in
-  let plain_subject_gen =
-    Gen.(
-      let* head = string_size ~gen:(char_range 'a' 'z') (int_range 3 10) in
-      let* tail = string_size ~gen:(char_range 'a' 'z') (int_range 0 20) in
-      return (head ^ " " ^ tail))
-  in
-  let classify =
-    Worktree.classify_unique_commits ~project_name:"" ~ancestor_ids:[]
-  in
-  let prop_classify_empty =
-    Test.make ~name:"classify_unique_commits: empty -> Error" ~count:1 Gen.unit
-      (fun () ->
-        match classify "" with Result.Error _ -> true | Result.Ok _ -> false)
-  in
-  let prop_classify_length_pairs_oldest =
-    Test.make
-      ~name:
-        "classify_unique_commits: length matches input + oldest is last commit"
-      ~count:200
-      Gen.(pair (list_size (int_range 1 12) sha_gen) plain_subject_gen)
-      (fun (shas, subject) ->
-        try
-          let lines =
-            List.map shas ~f:(fun s -> Printf.sprintf "%s %s" s subject)
-          in
-          let body = String.concat ~sep:"\n" lines ^ "\n" in
-          match classify body with
-          | Result.Ok (commits, oldest_sha) ->
-              List.length commits = List.length shas
-              && String.equal oldest_sha (List.last_exn shas)
-              &&
-              let actual_shas =
-                List.map commits ~f:(fun (c : Worktree.unique_commit) ->
-                    c.Worktree.sha)
-              in
-              List.equal String.equal actual_shas shas
-          | Result.Error _ -> false
-        with _ -> false)
-  in
-  let prop_classify_all_ancestors_error =
-    Test.make ~name:"classify_unique_commits: every line is ancestor -> Error"
-      ~count:1 Gen.unit (fun () ->
-        let input =
-          "anc002 [proj] Patch 2: bar\nanc001 [proj] Patch 1: foo\n"
-        in
-        match
-          Worktree.classify_unique_commits ~project_name:"proj"
-            ~ancestor_ids:[ pid "1"; pid "2" ]
-            input
-        with
-        | Result.Error _ -> true
-        | Result.Ok _ -> false)
-  in
-  let prop_classify_filter_invariant =
-    Test.make
-      ~name:
-        "classify_unique_commits: kept count + ancestor count = total lines, \
-         and no kept subject is_ancestor" ~count:1 Gen.unit (fun () ->
-        let input =
-          "feat03 [proj] Patch 7: head\n\
-           anc002 [proj] Patch 2: drop dup\n\
-           feat02 some other thing\n\
-           anc001 [proj] Patch 1: add schema\n\
-           feat01 my own commit\n"
-        in
-        let ancestor_ids = [ pid "1"; pid "2" ] in
-        match
-          Worktree.classify_unique_commits ~project_name:"proj" ~ancestor_ids
-            input
-        with
-        | Result.Ok (commits, _) ->
-            List.length commits = 3
-            && List.for_all commits ~f:(fun c ->
-                not
-                  (Worktree.is_ancestor_patch_subject ~project_name:"proj"
-                     ~ancestor_ids c.Worktree.subject))
-        | Result.Error _ -> false)
-  in
-  let prop_classify_subject_with_spaces =
-    Test.make
-      ~name:
-        "classify_unique_commits: subject with spaces survives lsplit2 boundary"
-      ~count:1 Gen.unit (fun () ->
-        let input = "abc123 add foo bar baz quux\n" in
-        match classify input with
-        | Result.Ok (commits, oldest) -> (
-            match commits with
-            | [ c ] ->
-                String.equal c.Worktree.sha "abc123"
-                && String.equal c.Worktree.subject "add foo bar baz quux"
-                && String.equal oldest "abc123"
-            | _ -> false)
-        | Result.Error _ -> false)
-  in
-  let prop_classify_crlf =
-    Test.make ~name:"classify_unique_commits: CRLF \\r is stripped from SHA"
-      ~count:1 Gen.unit (fun () ->
-        let input = "newer1 subj A\r\nolder2 subj B\r\n" in
-        match classify input with
-        | Result.Ok (commits, oldest) ->
-            List.length commits = 2
-            && String.equal oldest "older2"
-            && List.for_all commits ~f:(fun c ->
-                not (String.is_suffix c.Worktree.sha ~suffix:"\r"))
-        | Result.Error _ -> false)
-  in
-  let prop_back_compat_oldest_wrapper =
-    Test.make
-      ~name:
-        "oldest_non_ancestor_commit ≡ Result.map ~f:snd \
-         (classify_unique_commits …)"
-      ~count:200
-      Gen.(list_size (int_range 0 12) sha_gen)
-      (fun shas ->
-        try
-          let body =
-            match shas with
-            | [] -> ""
-            | _ ->
-                String.concat ~sep:"\n"
-                  (List.map shas ~f:(fun s -> s ^ " subj"))
-                ^ "\n"
-          in
-          let direct =
-            Worktree.oldest_non_ancestor_commit ~project_name:""
-              ~ancestor_ids:[] body
-          in
-          let derived =
-            Result.map
-              (Worktree.classify_unique_commits ~project_name:""
-                 ~ancestor_ids:[] body)
-              ~f:snd
-          in
-          Result.equal String.equal String.equal direct derived
-        with _ -> false)
-  in
-  let suite =
-    [
-      prop_classify_empty;
-      prop_classify_length_pairs_oldest;
-      prop_classify_all_ancestors_error;
-      prop_classify_filter_invariant;
-      prop_classify_subject_with_spaces;
-      prop_classify_crlf;
-      prop_back_compat_oldest_wrapper;
-    ]
-  in
-  let errcode = QCheck_base_runner.run_tests ~verbose:true suite in
-  if errcode <> 0 then Stdlib.exit errcode
-
-(* ───────────────────────────────────────────────────────────────────────
-   Pure tests for [Worktree.parse_rebase_merge_state]
-   ─────────────────────────────────────────────────────────────────────── *)
-
-let () =
-  let open QCheck2 in
-  let prop_basic =
-    Test.make
-      ~name:
-        "parse_rebase_merge_state: well-formed inputs -> Some Onto with N \
-         commits"
-      ~count:1 Gen.unit (fun () ->
-        let onto = "abc1234567890abc1234567890abc1234567890a\n" in
-        let upstream = "111aaaa1234567890aaaa1234567890aaaa12345\n" in
-        let orig_head = "fff1234567890fff1234567890fff1234567890f\n" in
-        let log_body = "sha111 subj A\nsha222 subj B\nsha333 subj C\n" in
-        match
-          Worktree.parse_rebase_merge_state ~onto_contents:onto
-            ~upstream_contents:upstream ~orig_head_contents:orig_head
-            ~log_format_h_s:log_body ~project_name:"" ~ancestor_ids:[]
-            ~target:"main"
-        with
-        | Some ci ->
-            String.equal ci.Worktree.target "main"
-            && String.equal ci.Worktree.old_base
-                 "111aaaa1234567890aaaa1234567890aaaa12345"
-            && String.equal ci.Worktree.orig_head
-                 "fff1234567890fff1234567890fff1234567890f"
-            && List.length ci.Worktree.unique_commits = 3
-            && Worktree.equal_rebase_strategy ci.Worktree.strategy Worktree.Onto
-        | None -> false)
-  in
-  let prop_orig_head_stripped =
-    Test.make
-      ~name:
-        "parse_rebase_merge_state: orig_head stripped of trailing whitespace"
-      ~count:1 Gen.unit (fun () ->
-        let onto = "deadbeef\n" in
-        let upstream = "1234abcd\n" in
-        let orig_head = "  cafef00d  \n" in
-        let log_body = "sha111 subj\n" in
-        match
-          Worktree.parse_rebase_merge_state ~onto_contents:onto
-            ~upstream_contents:upstream ~orig_head_contents:orig_head
-            ~log_format_h_s:log_body ~project_name:"" ~ancestor_ids:[]
-            ~target:"main"
-        with
-        | Some ci -> String.equal ci.Worktree.orig_head "cafef00d"
-        | None -> false)
-  in
-  let prop_blank_onto_none =
-    Test.make ~name:"parse_rebase_merge_state: blank onto -> None" ~count:1
-      Gen.unit (fun () ->
-        Option.is_none
-          (Worktree.parse_rebase_merge_state ~onto_contents:"  \n"
-             ~upstream_contents:"1234abcd\n" ~orig_head_contents:"abc\n"
-             ~log_format_h_s:"x subj\n" ~project_name:"" ~ancestor_ids:[]
-             ~target:"main"))
-  in
-  let prop_blank_upstream_none =
-    Test.make ~name:"parse_rebase_merge_state: blank upstream -> None" ~count:1
-      Gen.unit (fun () ->
-        Option.is_none
-          (Worktree.parse_rebase_merge_state ~onto_contents:"deadbeef\n"
-             ~upstream_contents:"  \n" ~orig_head_contents:"abc\n"
-             ~log_format_h_s:"x subj\n" ~project_name:"" ~ancestor_ids:[]
-             ~target:"main"))
-  in
-  let prop_empty_log_keeps_command =
-    (* Regression: when classify_unique_commits returns Error (empty log or
-       every commit filtered as ancestor) but onto and upstream are valid,
-       parse_rebase_merge_state must still emit Some so the agent gets the
-       recovery command. unique_commits is empty in that case; the prompt
-       renderer omits the bullet header. *)
-    Test.make
-      ~name:
-        "parse_rebase_merge_state: empty log -> Some Onto with empty commits"
-      ~count:1 Gen.unit (fun () ->
-        match
-          Worktree.parse_rebase_merge_state ~onto_contents:"abc1234567890\n"
-            ~upstream_contents:"111aaaa1234567890\n"
-            ~orig_head_contents:"def1234567890\n" ~log_format_h_s:""
-            ~project_name:"" ~ancestor_ids:[] ~target:"main"
-        with
-        | Some ci ->
-            Worktree.equal_rebase_strategy ci.Worktree.strategy Worktree.Onto
-            && String.equal ci.Worktree.old_base "111aaaa1234567890"
-            && List.is_empty ci.Worktree.unique_commits
-        | None -> false)
-  in
-  let prop_all_filtered_keeps_command =
-    (* Regression: every log line matches an ancestor subject (so
-       classify_unique_commits returns Error "no unique commits found"), but
-       the recovery command is still well-defined. Must emit Some, not None. *)
-    Test.make
-      ~name:
-        "parse_rebase_merge_state: all-ancestor log -> Some Onto with empty \
-         commits" ~count:1 Gen.unit (fun () ->
-        let pid = Types.Patch_id.of_string in
-        match
-          Worktree.parse_rebase_merge_state ~onto_contents:"abc1234567890\n"
-            ~upstream_contents:"111aaaa1234567890\n"
-            ~orig_head_contents:"def1234567890\n"
-            ~log_format_h_s:
-              "anc1 [proj] Patch 1: foo\nanc2 [proj] Patch 2: bar\n"
-            ~project_name:"proj"
-            ~ancestor_ids:[ pid "1"; pid "2" ]
-            ~target:"main"
-        with
-        | Some ci ->
-            Worktree.equal_rebase_strategy ci.Worktree.strategy Worktree.Onto
-            && List.is_empty ci.Worktree.unique_commits
-        | None -> false)
-  in
-  let suite =
-    [
-      prop_basic;
-      prop_orig_head_stripped;
-      prop_blank_onto_none;
-      prop_blank_upstream_none;
-      prop_empty_log_keeps_command;
-      prop_all_filtered_keeps_command;
-    ]
-  in
-  let errcode = QCheck_base_runner.run_tests ~verbose:true suite in
-  if errcode <> 0 then Stdlib.exit errcode
-
-(* ───────────────────────────────────────────────────────────────────────
-   Integration tests for [Worktree.rebase_onto]
+   Integration tests for owner-driven base reconciliation
 
    Each test creates a temporary git repo with a realistic branch topology,
-   then calls rebase_onto and checks the result.
+   then drives durable owner commands and checks the resulting history.
    ─────────────────────────────────────────────────────────────────────── *)
 
 (** Run a git command in [dir], fail on non-zero exit. Captures stdout (used by
@@ -898,40 +62,108 @@ let assert_eq label expected actual =
   if not (String.equal expected actual) then
     failwith (Printf.sprintf "%s: expected %s, got %s" label expected actual)
 
-let assert_rebase_ok label = function
-  | Worktree.Ok -> ()
-  | Worktree.Noop | Worktree.Conflict _ | Worktree.Merge_conflict _
-  | Worktree.Uncommitted_changes _ | Worktree.Error _ ->
-      failwith (Printf.sprintf "%s: expected Ok" label)
+type reconciliation = {
+  state : B.t;
+  before : string;
+  after : string;
+  dirty : string;
+  dirty_after : string;
+}
 
-let assert_rebase_noop label = function
-  | Worktree.Noop -> ()
-  | Worktree.Ok | Worktree.Conflict _ | Worktree.Merge_conflict _
-  | Worktree.Uncommitted_changes _ | Worktree.Error _ ->
-      failwith (Printf.sprintf "%s: expected Noop" label)
+let reconcile ~process_mgr ~clock ~path ~target ~project_name ~ancestor_ids () =
+  (* Give every standalone history fixture a real publication destination. Its
+     object store lives under .git so it cannot dirty the checkout. *)
+  let git args = git ~process_mgr ~dir:path args in
+  let remote = Stdlib.Filename.concat path ".git/fixture-origin.git" in
+  ignore (git [ "init"; "--bare"; "-q"; remote ]);
+  ignore (git [ "remote"; "add"; "origin"; remote ]);
+  let branch = git [ "symbolic-ref"; "--short"; "HEAD" ] in
+  let target = Types.Branch.to_string target in
+  ignore (git [ "push"; "-q"; "origin"; target; branch ]);
+  let before = git [ "rev-parse"; "HEAD" ] in
+  let dirty = git [ "status"; "--porcelain" ] in
+  let io = E.make_io ~process_mgr ~clock ~path in
+  let intent =
+    B.
+      {
+        base = target;
+        policy = Rewrite;
+        purpose =
+          Reconcile_scoped
+            {
+              request = "fixture";
+              project = project_name;
+              ancestors = ancestor_ids;
+            };
+      }
+  in
+  let rec run remaining state =
+    if remaining = 0 then failwith "reconciliation fixture did not terminate";
+    let state =
+      match B.decode (B.yojson_of_t state) with
+      | Ok restored -> restored
+      | Error reason -> failwith reason
+    in
+    match (B.operation state, B.pending state) with
+    | Some operation, Some command ->
+        let result =
+          E.execute ~io ~prefix:"refs/onton/reconcile/fixture" ~branch
+            ~operation command
+        in
+        run (remaining - 1)
+          (fst
+             (B.step state
+                (B.Result { token = command.token; at = 100.; result })))
+    | None, _ | _, None -> state
+  in
+  let state = run 100 (fst (B.step B.empty (B.Request intent))) in
+  {
+    state;
+    before;
+    after = git [ "rev-parse"; "HEAD" ];
+    dirty;
+    dirty_after = git [ "status"; "--porcelain" ];
+  }
 
-let assert_rebase_conflict label = function
-  | Worktree.Conflict _ -> ()
-  | Worktree.Merge_conflict _ ->
+let assert_rebase_ok label result =
+  if not (Option.equal B.equal_phase (B.phase result.state) (Some B.Settled))
+  then
+    failwith
+      (label ^ ": "
+      ^ String.concat ~sep:"; "
+          (List.map (B.diagnostics result.state) ~f:(fun (key, value) ->
+               key ^ "=" ^ value)))
+
+let assert_rebase_noop label result =
+  assert_rebase_ok label result;
+  assert_eq (label ^ ": unchanged HEAD") result.before result.after
+
+let assert_rebase_conflict label result =
+  match B.phase result.state with
+  | Some (B.Repairing { mode = B.Content_repair; _ }) -> ()
+  | None
+  | Some
+      ( B.Preparing | Integrating
+      | Repairing { mode = B.History_recovery _; _ }
+      | Publishing | Confirming | Waiting _ | Recovering | Settled
+      | Intervention _ ) ->
       failwith
-        (Printf.sprintf "%s: expected rebase conflict, got merge conflict" label)
-  | Worktree.Ok ->
-      failwith (Printf.sprintf "%s: expected Conflict, got Ok" label)
-  | Worktree.Noop ->
-      failwith (Printf.sprintf "%s: expected Conflict, got Noop" label)
-  | Worktree.Uncommitted_changes _ ->
-      failwith
-        (Printf.sprintf "%s: expected Conflict, got dirty worktree" label)
-  | Worktree.Error msg ->
-      failwith (Printf.sprintf "%s: expected Conflict, got Error: %s" label msg)
+        (label ^ ": "
+        ^ String.concat ~sep:"; "
+            (List.map (B.diagnostics result.state) ~f:(fun (key, value) ->
+                 key ^ "=" ^ value)))
 
-let assert_rebase_uncommitted label = function
-  | Worktree.Uncommitted_changes status when not (String.is_empty status) -> ()
-  | Worktree.Uncommitted_changes _ ->
-      failwith (Printf.sprintf "%s: expected non-empty status" label)
-  | Worktree.Ok | Worktree.Noop | Worktree.Conflict _
-  | Worktree.Merge_conflict _ | Worktree.Error _ ->
-      failwith (Printf.sprintf "%s: expected Uncommitted_changes" label)
+let assert_rebase_uncommitted label result =
+  assert_eq (label ^ ": preserves HEAD") result.before result.after;
+  if String.is_empty result.dirty then failwith (label ^ ": missing dirty files");
+  assert_eq
+    (label ^ ": preserves index and worktree status")
+    result.dirty result.dirty_after;
+  if
+    not
+      (Option.equal B.equal_phase (B.phase result.state)
+         (Some (B.Intervention "dirty_worktree")))
+  then failwith (label ^ ": expected recoverable dirty-worktree intervention")
 
 (** Simulate squash-merge of [branch] into main: checkout main, create a single
     new commit with the same tree diff, then delete [branch]. *)
@@ -966,9 +198,9 @@ let () =
    commit_file ~process_mgr ~dir ~filename:"c.txt" ~content:"c" ~msg:"C"
    |> ignore;
    let result =
-     Worktree.rebase_onto ~process_mgr ~path:dir
+     reconcile ~process_mgr ~clock:(Eio.Stdenv.clock env) ~path:dir
        ~target:(Types.Branch.of_string "main")
-       ~upstream:"main" ~project_name:"" ~ancestor_ids:[] ()
+       ~project_name:"" ~ancestor_ids:[] ()
    in
    assert_rebase_ok "test1: simple rebase" result;
    (* C should now be on top of B *)
@@ -987,7 +219,7 @@ let () =
      Then dep is squash-merged into main:
      main: A -- S                   (S = squash of D1+D2)
 
-     rebase_onto feat onto main should produce:
+     Reconciling feat onto main should produce:
      main: A -- S -- F1'            (only F1 replayed, not D1/D2) *)
   (let dir = init_repo () in
    commit_file ~process_mgr ~dir ~filename:"a.txt" ~content:"a" ~msg:"A"
@@ -1007,9 +239,9 @@ let () =
    (* Now rebase feat onto main *)
    git ~process_mgr ~dir [ "checkout"; "feat" ] |> ignore;
    let result =
-     Worktree.rebase_onto ~process_mgr ~path:dir
+     reconcile ~process_mgr ~clock:(Eio.Stdenv.clock env) ~path:dir
        ~target:(Types.Branch.of_string "main")
-       ~upstream:"main" ~project_name:"" ~ancestor_ids:[] ()
+       ~project_name:"" ~ancestor_ids:[] ()
    in
    assert_rebase_ok "test2: onto after squash" result;
    let log = git ~process_mgr ~dir [ "log"; "--oneline"; "--format=%s" ] in
@@ -1046,9 +278,9 @@ let () =
    squash_merge ~process_mgr ~dir ~branch:"dep";
    git ~process_mgr ~dir [ "checkout"; "feat" ] |> ignore;
    let result =
-     Worktree.rebase_onto ~process_mgr ~path:dir
+     reconcile ~process_mgr ~clock:(Eio.Stdenv.clock env) ~path:dir
        ~target:(Types.Branch.of_string "main")
-       ~upstream:"main" ~project_name:"" ~ancestor_ids:[] ()
+       ~project_name:"" ~ancestor_ids:[] ()
    in
    assert_rebase_ok "test3: multi-commit" result;
    let log = git ~process_mgr ~dir [ "log"; "--oneline"; "--format=%s" ] in
@@ -1068,14 +300,14 @@ let () =
    commit_file ~process_mgr ~dir ~filename:"f.txt" ~content:"f" ~msg:"F"
    |> ignore;
    let result =
-     Worktree.rebase_onto ~process_mgr ~path:dir
+     reconcile ~process_mgr ~clock:(Eio.Stdenv.clock env) ~path:dir
        ~target:(Types.Branch.of_string "main")
-       ~upstream:"main" ~project_name:"" ~ancestor_ids:[] ()
+       ~project_name:"" ~ancestor_ids:[] ()
    in
    assert_rebase_noop "test4: already up-to-date" result;
    Stdlib.Sys.command (Printf.sprintf "rm -rf %s" dir) |> ignore);
 
-  (* ── Test 4b: dirty worktree requests agent cleanup ─────────────── *)
+  (* ── Test 4b: dirty worktree remains recoverable ─────────────── *)
   (let dir = init_repo () in
    commit_file ~process_mgr ~dir ~filename:"a.txt" ~content:"a" ~msg:"A"
    |> ignore;
@@ -1092,9 +324,9 @@ let () =
    Stdlib.close_out oc;
    git ~process_mgr ~dir [ "add"; "dirty.txt" ] |> ignore;
    let result =
-     Worktree.rebase_onto ~process_mgr ~path:dir
+     reconcile ~process_mgr ~clock:(Eio.Stdenv.clock env) ~path:dir
        ~target:(Types.Branch.of_string "main")
-       ~upstream:"main" ~project_name:"" ~ancestor_ids:[] ()
+       ~project_name:"" ~ancestor_ids:[] ()
    in
    assert_rebase_uncommitted "test4b: dirty worktree" result;
    let rebase_merge = Stdlib.Filename.concat dir ".git/rebase-merge" in
@@ -1122,9 +354,9 @@ let () =
    |> ignore;
    git ~process_mgr ~dir [ "checkout"; "feat" ] |> ignore;
    let result =
-     Worktree.rebase_onto ~process_mgr ~path:dir
+     reconcile ~process_mgr ~clock:(Eio.Stdenv.clock env) ~path:dir
        ~target:(Types.Branch.of_string "main")
-       ~upstream:"main" ~project_name:"" ~ancestor_ids:[] ()
+       ~project_name:"" ~ancestor_ids:[] ()
    in
    assert_rebase_conflict "test5: conflict" result;
    (* Rebase should be left in progress for the agent to resolve *)
@@ -1158,9 +390,9 @@ let () =
    |> ignore;
    (* Rebase feat onto dep2 — dep2 is already ancestor, should be Noop *)
    let result =
-     Worktree.rebase_onto ~process_mgr ~path:dir
+     reconcile ~process_mgr ~clock:(Eio.Stdenv.clock env) ~path:dir
        ~target:(Types.Branch.of_string "dep2")
-       ~upstream:"dep2" ~project_name:"" ~ancestor_ids:[] ()
+       ~project_name:"" ~ancestor_ids:[] ()
    in
    assert_rebase_noop "test6: dep2 already ancestor" result;
    Stdlib.Sys.command (Printf.sprintf "rm -rf %s" dir) |> ignore);
@@ -1185,23 +417,11 @@ let () =
    git ~process_mgr ~dir [ "branch"; "-d"; "dep" ] |> ignore;
    git ~process_mgr ~dir [ "checkout"; "feat" ] |> ignore;
    let result =
-     Worktree.rebase_onto ~process_mgr ~path:dir
+     reconcile ~process_mgr ~clock:(Eio.Stdenv.clock env) ~path:dir
        ~target:(Types.Branch.of_string "main")
-       ~upstream:"main" ~project_name:"" ~ancestor_ids:[] ()
+       ~project_name:"" ~ancestor_ids:[] ()
    in
-   (* With a real merge, D1 is in main's history so cherry-pick should
-	      identify only F1 as unique. Some git versions can still reject the
-	      rebase command at this point; the contract under test is that the
-	      wrapper returns a structured result and leaves the feature commit
-	      inspectable, not that every git version produces the same success
-	      shape. *)
-   (match result with
-   | Worktree.Ok | Worktree.Noop -> ()
-   | Worktree.Error msg when not (String.is_empty msg) -> ()
-   | Worktree.Conflict _ | Worktree.Merge_conflict _ | Worktree.Error _ ->
-       failwith "test7: expected Ok, Noop, or structured Error"
-   | Worktree.Uncommitted_changes _ ->
-       failwith "test7: expected clean fixture worktree");
+   assert_rebase_ok "test7: real merge dependency" result;
    let log = git ~process_mgr ~dir [ "log"; "--oneline"; "--format=%s" ] in
    let lines = String.split_lines log in
    (* F1 should be the HEAD *)
@@ -1223,21 +443,14 @@ let () =
    squash_merge ~process_mgr ~dir ~branch:"dep";
    git ~process_mgr ~dir [ "checkout"; "feat" ] |> ignore;
    let result =
-     Worktree.rebase_onto ~process_mgr ~path:dir
+     reconcile ~process_mgr ~clock:(Eio.Stdenv.clock env) ~path:dir
        ~target:(Types.Branch.of_string "main")
-       ~upstream:"main" ~project_name:"" ~ancestor_ids:[] ()
+       ~project_name:"" ~ancestor_ids:[] ()
    in
-   (* find_old_base returns Error "no unique commits found" so we fall
-      back to plain rebase. Plain rebase should produce Ok or conflict
-      since D1 content overlaps with squash. Either way it shouldn't crash. *)
-   (match result with
-   | Worktree.Ok | Worktree.Noop | Worktree.Conflict _ -> ()
-   | Worktree.Merge_conflict _ ->
-       failwith "test8: expected a rebase outcome, got a root merge conflict"
-   | Worktree.Uncommitted_changes _ ->
-       failwith "test8: expected clean fixture worktree"
-   | Worktree.Error msg ->
-       failwith (Printf.sprintf "test8: unexpected error: %s" msg));
+   assert_rebase_ok "test8: empty replay settles" result;
+   assert_eq "test8: empty branch equals target"
+     (git ~process_mgr ~dir [ "rev-parse"; "main" ])
+     result.after;
    Stdlib.Sys.command (Printf.sprintf "rm -rf %s" dir) |> ignore);
 
   (* ── Test 9: feat modifies a dep file, squash-merge, no conflict ── *)
@@ -1258,35 +471,18 @@ let () =
    squash_merge ~process_mgr ~dir ~branch:"dep";
    git ~process_mgr ~dir [ "checkout"; "feat" ] |> ignore;
    let result =
-     Worktree.rebase_onto ~process_mgr ~path:dir
+     reconcile ~process_mgr ~clock:(Eio.Stdenv.clock env) ~path:dir
        ~target:(Types.Branch.of_string "main")
-       ~upstream:"main" ~project_name:"" ~ancestor_ids:[] ()
+       ~project_name:"" ~ancestor_ids:[] ()
    in
-   (match result with
-   | Worktree.Ok ->
-       let log = git ~process_mgr ~dir [ "log"; "--oneline"; "--format=%s" ] in
-       let lines = String.split_lines log in
-       assert_eq "test9: head" "F2" (List.hd_exn lines);
-       assert_eq "test9: F1" "F1" (List.nth_exn lines 1);
-       assert_eq "test9: squash" "squash-merge dep" (List.nth_exn lines 2);
-       (* x.txt should contain feat's version *)
-       let content = read_file ~dir ~filename:"x.txt" in
-       assert_eq "test9: x.txt content" "v2" content
-   | Worktree.Merge_conflict _ ->
-       failwith "test9: expected a rebase outcome, got a root merge conflict"
-   | Worktree.Noop | Worktree.Conflict _ ->
-       (* Git's apply/rename heuristics around a squash-merged base plus a
-          later modification vary across versions. This case remains useful as
-          an integration "does not crash / returns a structured result" check,
-          while exact clean-apply success is covered by simpler rebase cases
-          above. *)
-       ()
-   | Worktree.Uncommitted_changes _ ->
-       failwith "test9: expected clean fixture worktree"
-   | Worktree.Error msg ->
-       failwith
-         (Printf.sprintf "test9: expected Ok, Noop, or Conflict, got Error: %s"
-            msg));
+   assert_rebase_ok "test9: patch edits retained after dependency squash" result;
+   let lines =
+     String.split_lines (git ~process_mgr ~dir [ "log"; "--format=%s" ])
+   in
+   assert_eq "test9: head" "F2" (List.hd_exn lines);
+   assert_eq "test9: F1" "F1" (List.nth_exn lines 1);
+   assert_eq "test9: squash" "squash-merge dep" (List.nth_exn lines 2);
+   assert_eq "test9: x.txt content" "v2" (read_file ~dir ~filename:"x.txt");
    Stdlib.Sys.command (Printf.sprintf "rm -rf %s" dir) |> ignore);
 
   (* ── Test 10: ancestor-subject filter strips drifted dep commits ─── *)
@@ -1295,7 +491,7 @@ let () =
      [<project>] Patch N: prefix but with *modified* content — so
      git log --cherry-pick cannot equate it with the squash on main by
      patch-id. Without the ancestor_ids fallback, the old dep commit
-     would be replayed onto main; with ancestor_ids=["1"] find_old_base
+     would be replayed onto main; with ancestor_ids=["1"] the owner
      picks a newer old_base and only our own commit survives. *)
   (let dir = init_repo () in
    commit_file ~process_mgr ~dir ~filename:"a.txt" ~content:"a" ~msg:"A"
@@ -1347,8 +543,8 @@ let () =
    (* The purpose of this precondition is to show that the raw cherry-pick walk
       still includes the drifted Patch 1 commit before the subject filter runs.
       Do not assert a specific line order here: [git log --cherry-pick] can
-      vary its presentation order across environments, while the pure ordering
-      semantics of [oldest_non_ancestor_commit] are already pinned above. *)
+      vary its presentation order across environments. The owner receipt below
+      establishes which replay boundary was actually selected. *)
    let log_shas =
      List.filter_map log_lines ~f:(fun line ->
          String.lsplit2 line ~on:' ' |> Option.map ~f:fst)
@@ -1358,29 +554,94 @@ let () =
        (Printf.sprintf
           "test10: cherry-pick alone should still list drifted Patch 1 (%s)"
           patch1_sha);
-   let oldest_kept =
-     match
-       Worktree.oldest_non_ancestor_commit ~project_name:"proj"
-         ~ancestor_ids:[ Types.Patch_id.of_string "1" ]
-         raw_log
-     with
-     | Result.Ok sha -> sha
-     | Result.Error msg ->
-         failwith
-           (Printf.sprintf
-              "test10: subject-filter should keep Patch 7 and drop drifted \
-               dep: %s"
-              msg)
+   let result =
+     reconcile ~process_mgr ~clock:(Eio.Stdenv.clock env) ~path:dir
+       ~target:(Types.Branch.of_string "main")
+       ~project_name:"proj"
+       ~ancestor_ids:[ Types.Patch_id.of_string "1" ]
+       ()
    in
-   assert_eq "test10: subject-filter keeps Patch 7 as oldest surviving commit"
-     oldest_kept
-     (git ~process_mgr ~dir [ "rev-parse"; "HEAD" ]);
-   let old_base = git ~process_mgr ~dir [ "rev-parse"; oldest_kept ^ "~1" ] in
-   assert_eq "test10: old_base is drifted Patch 1 after subject filtering"
-     patch1_sha old_base;
+   let expected_boundary =
+     match B.Commit.make patch1_sha with
+     | Some revision -> B.Subject_inferred revision
+     | None -> failwith "invalid fixture dependency revision"
+   in
+   if
+     not
+       (List.exists (B.integrations result.state) ~f:(fun receipt ->
+            B.equal_boundary receipt.B.capture.replay_boundary expected_boundary))
+   then failwith "test10: owner did not record the drifted dependency boundary";
+   (* Subject inference cannot authorize dropping the drifted dependency from
+      an already-published branch. Deterministic remote replay must try to
+      restore that work before agent recovery; this fixture has a real content
+      conflict between the drifted dependency and the captured base. *)
+   (match B.phase result.state with
+   | Some (B.Repairing { mode = B.Content_repair; _ }) ->
+       if
+         not
+           (List.mem
+              (String.split_lines
+                 (git ~process_mgr ~dir
+                    [ "diff"; "--name-only"; "--diff-filter=U" ]))
+              "dep.txt" ~equal:String.equal)
+       then failwith "test10: remote replay omitted the dependency conflict"
+   | None
+   | Some
+       ( B.Preparing | Integrating | Publishing | Confirming | Waiting _
+       | Recovering | Settled | Intervention _
+       | Repairing { mode = B.History_recovery _; _ } ) ->
+       failwith
+         ("test10: unproven dependency ownership must attempt remote replay: "
+         ^ Yojson.Safe.to_string (B.yojson_of_t result.state)));
+   (match B.operation result.state with
+   | Some { remote_integration = Some capture; _ }
+     when String.equal
+            (B.Commit.to_string capture.source_revision)
+            result.before ->
+       ()
+   | Some _ | None -> failwith "test10: remote replay lost its captured source");
+   assert_eq "test10: inferred ownership does not authorize publication"
+     result.before
+     (Git_env.git_capture
+        ~cwd:(Stdlib.Filename.concat dir ".git/fixture-origin.git")
+        [ "rev-parse"; "feat" ]);
+   if
+     not
+       (List.mem
+          (String.split_lines
+             (git ~process_mgr ~dir
+                [
+                  "for-each-ref";
+                  "--format=%(objectname)";
+                  "refs/onton/reconcile/fixture/";
+                ]))
+          result.before ~equal:String.equal)
+   then failwith "test10: original drifted work must stay pinned";
+   let base_receipt =
+     match B.integrations result.state with
+     | [ receipt ] -> receipt
+     | [] | _ :: _ :: _ ->
+         failwith "test10: missing original base integration receipt"
+   in
+   let preserved = B.Commit.to_string base_receipt.integrated_revision in
+   assert_eq "test10: own change survives base replay" "mine"
+     (git ~process_mgr ~dir [ "show"; preserved ^ ":mine.txt" ]);
+   assert_eq "test10: base replay uses merged trunk version" "dep-v1"
+     (git ~process_mgr ~dir [ "show"; preserved ^ ":dep.txt" ]);
+   assert_eq "test10: conflict retains merged trunk version" "dep-v1"
+     (git ~process_mgr ~dir [ "show"; ":2:dep.txt" ]);
+   assert_eq "test10: conflict retains drifted remote version" "dep-v1-drift"
+     (git ~process_mgr ~dir [ "show"; ":3:dep.txt" ]);
+   (match base_receipt.capture.replay_boundary with
+   | B.Subject_inferred boundary
+     when String.equal (B.Commit.to_string boundary) patch1_sha ->
+       ()
+   | B.Subject_inferred _ | B.Recorded _ | B.Inferred _ | B.Reconstructed _
+   | B.Patch_equivalent _ | B.Plain ->
+       failwith "test10: base receipt lost its inferred provenance");
    Stdlib.Sys.command (Printf.sprintf "rm -rf %s" dir) |> ignore);
 
-  (* ── Test 11: dirty worktree is routed to agent cleanup ──────────── *)
+  (* ── Test 11: dirty worktree is preserved for intervention ──────────── *)
   (let dir = init_repo () in
    commit_file ~process_mgr ~dir ~filename:"a.txt" ~content:"a" ~msg:"A"
    |> ignore;
@@ -1397,17 +658,13 @@ let () =
    Stdlib.output_string oc "unstaged";
    Stdlib.close_out oc;
    let result =
-     Worktree.rebase_onto ~process_mgr ~path:dir
+     reconcile ~process_mgr ~clock:(Eio.Stdenv.clock env) ~path:dir
        ~target:(Types.Branch.of_string "main")
-       ~upstream:"main" ~project_name:"" ~ancestor_ids:[] ()
+       ~project_name:"" ~ancestor_ids:[] ()
    in
-   (match result with
-   | Worktree.Uncommitted_changes status ->
-       if not (String.is_substring status ~substring:"f.txt") then
-         failwith "test11: dirty status omitted modified file"
-   | Worktree.Ok | Worktree.Noop | Worktree.Conflict _
-   | Worktree.Merge_conflict _ | Worktree.Error _ ->
-       failwith "test11: expected Uncommitted_changes");
+   assert_rebase_uncommitted "test11: dirty worktree" result;
+   if not (String.is_substring result.dirty ~substring:"f.txt") then
+     failwith "test11: dirty status omitted file";
    assert_eq "test11: HEAD unchanged" original_head
      (git ~process_mgr ~dir [ "rev-parse"; "HEAD" ]);
    let rebase_merge = Stdlib.Filename.concat dir ".git/rebase-merge" in
@@ -1416,7 +673,7 @@ let () =
    then failwith "test11: rebase should not be in progress";
    Stdlib.Sys.command (Printf.sprintf "rm -rf %s" dir) |> ignore);
 
-  (* ── Test 12: untracked files are routed to agent cleanup ────────── *)
+  (* ── Test 12: untracked files are preserved for intervention ────────── *)
   (let dir = init_repo () in
    commit_file ~process_mgr ~dir ~filename:"a.txt" ~content:"a" ~msg:"A"
    |> ignore;
@@ -1433,17 +690,13 @@ let () =
    Stdlib.output_string oc "untracked";
    Stdlib.close_out oc;
    let result =
-     Worktree.rebase_onto ~process_mgr ~path:dir
+     reconcile ~process_mgr ~clock:(Eio.Stdenv.clock env) ~path:dir
        ~target:(Types.Branch.of_string "main")
-       ~upstream:"main" ~project_name:"" ~ancestor_ids:[] ()
+       ~project_name:"" ~ancestor_ids:[] ()
    in
-   (match result with
-   | Worktree.Uncommitted_changes status ->
-       if not (String.is_substring status ~substring:"?? scratch.txt") then
-         failwith "test12: dirty status omitted untracked file"
-   | Worktree.Ok | Worktree.Noop | Worktree.Conflict _
-   | Worktree.Merge_conflict _ | Worktree.Error _ ->
-       failwith "test12: expected Uncommitted_changes");
+   assert_rebase_uncommitted "test12: dirty worktree" result;
+   if not (String.is_substring result.dirty ~substring:"?? scratch.txt") then
+     failwith "test12: dirty status omitted file";
    assert_eq "test12: HEAD unchanged" original_head
      (git ~process_mgr ~dir [ "rev-parse"; "HEAD" ]);
    let rebase_merge = Stdlib.Filename.concat dir ".git/rebase-merge" in
@@ -1452,13 +705,12 @@ let () =
    then failwith "test12: rebase should not be in progress";
    Stdlib.Sys.command (Printf.sprintf "rm -rf %s" dir) |> ignore);
 
-  Stdlib.print_endline "All rebase_onto integration tests passed."
+  Stdlib.print_endline "All owner-driven rebase integration tests passed."
 
 (* ───────────────────────────────────────────────────────────────────────
    Pure property tests for the remaining [Worktree_parser] decision APIs
    ([normalize_path], [parse_commit_count], [push_gate_from_count],
-   [classify_push_result], plus [is_ancestor_patch_subject],
-   [parse_push_porcelain], [parse_rebase_merge_state]) referenced via the
+   [classify_push_result], [parse_push_porcelain]) referenced via the
    core module directly.
    ─────────────────────────────────────────────────────────────────────── *)
 
@@ -1522,9 +774,7 @@ let () =
         with
         | Worktree_parser.Push_up_to_date -> Char.equal flag '='
         | Worktree_parser.Push_ok -> not (Char.equal flag '=')
-        | Worktree_parser.Push_no_commits | Worktree_parser.Push_rejected _
-        | Worktree_parser.Push_worktree_missing | Worktree_parser.Push_error _
-          ->
+        | Worktree_parser.Push_rejected _ | Worktree_parser.Push_error _ ->
             false)
   in
   let prop_classify_push_result_rejection =
@@ -1546,15 +796,6 @@ let () =
              (Push_reject_classify.Unknown
                 "[rejected] (remote ref updated since checkout)")))
   in
-  (* is_ancestor_patch_subject: empty project_name never matches any subject. *)
-  let prop_is_ancestor_empty_project =
-    Test.make ~name:"is_ancestor_patch_subject: empty project never matches"
-      ~count:300 Gen.string (fun subject ->
-        not
-          (Worktree_parser.is_ancestor_patch_subject ~project_name:""
-             ~ancestor_ids:[ Types.Patch_id.of_string "1" ]
-             subject))
-  in
   (* parse_push_porcelain: feeding a single porcelain line returns that line's
      leading flag char. *)
   let prop_parse_push_porcelain_flag =
@@ -1569,27 +810,6 @@ let () =
         | Some c -> Char.equal c flag
         | None -> false)
   in
-  (* parse_rebase_merge_state: with non-blank onto + upstream, always Some, and
-     old_base is the stripped upstream contents. *)
-  let prop_parse_rebase_merge_state_some =
-    Test.make ~name:"parse_rebase_merge_state: non-blank onto/upstream -> Some"
-      ~count:300
-      Gen.(
-        pair
-          (string_size ~gen:(char_range 'a' 'f') (int_range 6 12))
-          (string_size ~gen:(char_range 'a' 'f') (int_range 6 12)))
-      (fun (onto, upstream) ->
-        match
-          Worktree_parser.parse_rebase_merge_state ~onto_contents:(onto ^ "\n")
-            ~upstream_contents:(upstream ^ "\n")
-            ~orig_head_contents:"deadbeef\n" ~log_format_h_s:"sha1 subj\n"
-            ~project_name:"" ~ancestor_ids:[] ~target:"main"
-        with
-        | Some ci ->
-            String.equal ci.Worktree_parser.old_base upstream
-            && String.equal ci.Worktree_parser.target "main"
-        | None -> false)
-  in
   let suite =
     [
       prop_normalize_path_idempotent;
@@ -1597,9 +817,7 @@ let () =
       prop_push_gate_from_count;
       prop_classify_push_result_ok;
       prop_classify_push_result_rejection;
-      prop_is_ancestor_empty_project;
       prop_parse_push_porcelain_flag;
-      prop_parse_rebase_merge_state_some;
     ]
   in
   let errcode = QCheck_base_runner.run_tests ~verbose:true suite in

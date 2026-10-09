@@ -266,5 +266,46 @@ let () =
               check "combined resume preserves implementation root"
                 (Option.equal String.equal
                    (load "new-feature").Project_store.feature_root (Some "1"));
+              let recovery_ref =
+                Branch_reconcile.recovery_prefix ~project:"new-feature"
+                  ~branch:"new-feature/patch-1"
+                ^ "/source"
+              in
+              Git.run_git ~cwd:dir [ "init"; "-b"; "main" ];
+              Git.run_git ~cwd:dir [ "config"; "user.name"; "Test" ];
+              Git.run_git ~cwd:dir
+                [ "config"; "user.email"; "test@example.com" ];
+              Git.run_git ~cwd:dir [ "commit"; "--allow-empty"; "-m"; "base" ];
+              Git.run_git ~cwd:dir [ "update-ref"; recovery_ref; "HEAD" ];
+              List.iter [ "NEW_FEATURE"; "new feature"; "new-feature!" ]
+                ~f:(fun alias ->
+                  rejects
+                    [ alias; "--token"; "unused" ]
+                    "Integration root branch must differ";
+                  let config = load alias in
+                  check "alias resume preserves the exact persisted identity"
+                    (String.equal config.Project_store.project_name
+                       "new-feature");
+                  check "alias resume retains the recovery namespace"
+                    (String.equal
+                       (Branch_reconcile.recovery_prefix
+                          ~project:config.Project_store.project_name
+                          ~branch:"new-feature/patch-1"
+                       ^ "/source")
+                       recovery_ref);
+                  Git.run_git ~cwd:dir [ "show-ref"; "--verify"; recovery_ref ]);
+              (* A copied/misfiled configuration must not redirect startup or
+                 authorize pruning another project's exact recovery namespace. *)
+              let misfiled = Project_store.config_path "misfiled" in
+              Project_store.ensure_dir (Project_store.project_dir "misfiled");
+              Stdlib.Out_channel.with_open_bin misfiled (fun channel ->
+                  Stdlib.output_string channel
+                    (Stdlib.In_channel.with_open_bin
+                       (Project_store.config_path "new-feature")
+                       Stdlib.In_channel.input_all));
+              rejects
+                [ "misfiled"; "--token"; "unused" ]
+                "stored project name does not match its storage directory";
               Stdlib.print_endline
-                "PASS feature branch CLI and config persistence")))
+                "PASS feature branch CLI, stable project identity and config \
+                 persistence")))

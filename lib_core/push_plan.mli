@@ -103,6 +103,6 @@ val to_push_reject_classify_rejection :
       [Some (Local_state_unsafe { reason = short_label_of_refusal })] — route
       through [needs_intervention].
     - [Remote_not_integrated] → [Some Lease_violation] for incorporation/retry.
-    - [No_commits_ahead_of_base] / [Worktree_missing] → [None] — the
-      orchestrator already has dedicated non-rejection handlers
-      ([Push_no_commits], [Push_worktree_missing]). *)
+    - [No_commits_ahead_of_base] / [Worktree_missing] → [None] — the these
+      describe publication eligibility or checkout availability, not a rejection
+      from an executed Git push. *)

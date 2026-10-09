@@ -66,14 +66,16 @@ val spawn_and_stream :
     covers event callbacks and waiting for process exit after EOF; timeout kills
     the subprocess and sets [timed_out].
 
-    When [setsid_exec] is supplied, [args] is prefixed with that path (a tiny
-    OCaml shim that calls [setsid(2)] before exec'ing). The child then leads its
-    own process group. After a terminal stream event, stdout and stderr remain
-    drained while the direct child gets 2 seconds to exit, followed by up to 2
-    seconds after TERM before a direct-child KILL. Once the child exits, any
-    short-lived persistence helpers get a separate 2-second grace period;
-    bounded teardown then signals the remaining group so tool-call grandchildren
-    (e.g. Bash-spawned shells) are reaped rather than reparented to PID 1. *)
+    When [setsid_exec] is supplied, that supervisor owns the command's process
+    group and monitors the spawning parent's lifetime. After a terminal stream
+    event, stdout and stderr remain drained while the command gets 2 seconds to
+    exit, followed by up to 2 seconds after TERM before a command-only KILL.
+    Once the command exits, persistence helpers get a separate 2-second grace
+    period. The supervisor retains the unreaped leader until group cleanup is
+    complete, preventing signals to a recycled process-group ID. Cancellation
+    waits for cleanup before returning; parent death bypasses flush grace and
+    tears down the group. [None] discovers the configured or installed
+    supervisor; missing supervisors fail before command dispatch. *)
 
 type t = {
   name : string;

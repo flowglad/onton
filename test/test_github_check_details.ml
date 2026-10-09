@@ -84,9 +84,10 @@ let rollup ~truncated nodes =
 let pr_response ~truncated nodes =
   Printf.sprintf
     {|{"data":{"repository":{"mergeQueue":{"id":"queue"},
-       "pullRequest":{"id":"pr","state":"OPEN","mergeable":"MERGEABLE",
+       "pullRequest":{"id":"pr","number":1,"state":"OPEN","mergeable":"MERGEABLE",
          "mergeStateStatus":"CLEAN","baseRefName":"main",
-         "headRefName":"feature","headRefOid":"head",
+         "headRefName":"feature","headRefOid":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+         "baseRefOid":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
          "mergeQueueEntry":{"id":"entry","state":"QUEUED","position":1},
          "commits":{"nodes":[{"commit":{"statusCheckRollup":%s}}]}}}}}|}
     (rollup ~truncated nodes)
@@ -108,7 +109,8 @@ let polled_orchestrator st =
       ~base_branch:main ~pr_number:(Types.Pr_number.of_int 1)
   in
   let orch, _, _ =
-    Onton.Patch_controller.apply_poll_result orch pid
+    Onton_test_support.Forge_poll_fixture.apply
+      ?confirmed_remote_head:st.Pr_state.head_oid orch pid
       {
         Onton.Patch_controller.poll_result = Poller.poll ~was_merged:false st;
         base_branch = Some main;
