@@ -144,7 +144,7 @@ let assert_rebase_conflict label result =
   | None
   | Some
       ( B.Preparing | Integrating
-      | Repairing { mode = B.History_recovery _; _ }
+      | Repairing { mode = B.Diagnosis _ | B.History_recovery _; _ }
       | Publishing | Confirming | Waiting _ | Recovering | Settled
       | Intervention _ ) ->
       failwith
@@ -159,11 +159,24 @@ let assert_rebase_uncommitted label result =
   assert_eq
     (label ^ ": preserves index and worktree status")
     result.dirty result.dirty_after;
-  if
-    not
-      (Option.equal B.equal_phase (B.phase result.state)
-         (Some (B.Intervention "dirty_worktree")))
-  then failwith (label ^ ": expected recoverable dirty-worktree intervention")
+  match B.phase result.state with
+  | Some
+      (B.Repairing
+         { mode = B.History_recovery { task = B.Finish_local_work; _ }; _ }) ->
+      ()
+  | None
+  | Some
+      ( B.Preparing | Integrating | Publishing | Confirming | Waiting _
+      | Recovering | Settled | Intervention _
+      | Repairing { mode = B.Diagnosis _ | B.Content_repair; _ }
+      | Repairing
+          {
+            mode =
+              B.History_recovery
+                { task = B.Reconstruct_history | B.Repair_publication; _ };
+            _;
+          } ) ->
+      failwith (label ^ ": expected an owned turn to finish dirty work")
 
 (** Simulate squash-merge of [branch] into main: checkout main, create a single
     new commit with the same tree diff, then delete [branch]. *)
@@ -589,7 +602,7 @@ let () =
    | Some
        ( B.Preparing | Integrating | Publishing | Confirming | Waiting _
        | Recovering | Settled | Intervention _
-       | Repairing { mode = B.History_recovery _; _ } ) ->
+       | Repairing { mode = B.Diagnosis _ | B.History_recovery _; _ } ) ->
        failwith
          ("test10: unproven dependency ownership must attempt remote replay: "
          ^ Yojson.Safe.to_string (B.yojson_of_t result.state)));

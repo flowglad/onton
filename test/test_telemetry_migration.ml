@@ -276,7 +276,11 @@ let test_activity_log_projects_owner_intervention () =
   in
   let stopped, _ =
     B.step requested
-      (B.Result { token; at = 100.; result = B.Permanent "permission_denied" })
+      (B.Result
+         { token; at = 100.; result = B.Needs_diagnosis "permission_denied" })
+  in
+  let stopped =
+    Onton_core_test_support.Publication_fixture.exhausted_diagnosis stopped
   in
   let resumed, _ = B.step stopped B.Resume in
   let json owner =
@@ -458,7 +462,9 @@ let[@warning "-42"] test_repair_session_identity () =
                 ~sink:(Onton.Event_log.sink (Onton.Event_log.create ~path))
                 (fun () ->
                   ignore
-                    (Onton.Branch_repair_session.run ~backend
+                    (Onton.Branch_repair_session.run
+                       ~on_event:(fun _ -> ())
+                       ~context:"" ~guidance:[] ~backend
                        ~cwd:(Eio.Stdenv.fs env) ~project_name:"identity"
                        ~patch_id:(Types.Patch_id.of_string "1")
                        ~complexity:None ~turn

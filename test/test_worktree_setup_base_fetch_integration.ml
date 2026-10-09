@@ -283,13 +283,9 @@ let run_ensure ?cancel_stage ?materialization_error ?(fail_checkpoint = false)
           in
           if
             not
-              (Option.value_map
-                 (Branch_reconcile.operation after.Patch_agent.branch_reconcile)
-                 ~default:false ~f:(fun operation ->
-                   Branch_reconcile.equal_phase operation.phase
-                     (Branch_reconcile.Intervention
-                        (Option.value materialization_error ~default:""))))
-          then failwith "unsafe provisioning did not enter owner intervention";
+              (Onton_core_test_support.Publication_fixture.is_diagnosis
+                 after.Patch_agent.branch_reconcile)
+          then failwith "unsafe provisioning did not request agent diagnosis";
           if
             (not (Poly.equal agent.session_fallback after.session_fallback))
             || agent.context_exhaustion_count <> after.context_exhaustion_count
@@ -632,20 +628,32 @@ let scenario_hook_restart env =
   let runtime = restore () in
   (match ensure runtime with
   | Worktree_setup.Unavailable
-      (Worktree_provision.Unsafe "worktree_create_hook_outcome_unknown") ->
+      (Worktree_provision.Temporary "branch_reconciliation_pending") ->
       ()
   | Worktree_setup.Path _
   | Worktree_setup.Unavailable
       (Worktree_provision.Temporary _ | Worktree_provision.Unsafe _) ->
       failwith "uncertain hook did not require explicit resume");
   if !hook_calls <> 1 then failwith "uncertain hook was repeated";
+  let exhaust runtime =
+    Runtime.update_orchestrator runtime (fun orch ->
+        let state orch =
+          (Orchestrator.agent orch pid).Patch_agent.branch_reconcile
+        in
+        let step orch event =
+          fst (Orchestrator.reconcile_branch orch pid event)
+        in
+        Onton_core_test_support.Publication_fixture.exhaust_diagnosis ~state
+          ~step orch)
+  in
+  exhaust runtime;
   let other_path = Stdlib.Filename.concat root "other-checkout" in
   Runtime.update_orchestrator runtime (fun orch ->
       let orch = Orchestrator.set_worktree_path orch pid other_path in
       fst (Orchestrator.reconcile_branch orch pid Branch_reconcile.Resume));
   (match ensure runtime with
   | Worktree_setup.Unavailable
-      (Worktree_provision.Unsafe "worktree_create_hook_context_changed") ->
+      (Worktree_provision.Temporary "branch_reconciliation_pending") ->
       ()
   | Worktree_setup.Path _
   | Worktree_setup.Unavailable
@@ -653,6 +661,7 @@ let scenario_hook_restart env =
       failwith "explicit resume authorized a hook in a different checkout");
   if !hook_calls <> 1 || Stdlib.Sys.file_exists other_path then
     failwith "changed hook context caused checkout side effects";
+  exhaust runtime;
   Runtime.update_orchestrator runtime (fun orch ->
       Orchestrator.set_worktree_path orch pid path);
   Runtime.update_orchestrator runtime (fun orch ->
@@ -833,7 +842,7 @@ let scenario_hook_checkpoint_failure ?(materialization = false) env completion =
   if completion then (
     (match ensure restored with
     | Worktree_setup.Unavailable
-        (Worktree_provision.Unsafe "worktree_create_hook_outcome_unknown") ->
+        (Worktree_provision.Temporary "branch_reconciliation_pending") ->
         ()
     | Worktree_setup.Path _
     | Worktree_setup.Unavailable
@@ -841,7 +850,17 @@ let scenario_hook_checkpoint_failure ?(materialization = false) env completion =
         failwith "lost completion repeated the hook after restart");
     if !hook_calls <> 1 then failwith "unacknowledged hook repeated";
     Runtime.update_orchestrator restored (fun orch ->
-        fst (Orchestrator.reconcile_branch orch pid Branch_reconcile.Resume)));
+        let state orch =
+          (Orchestrator.agent orch pid).Patch_agent.branch_reconcile
+        in
+        let step orch event =
+          fst (Orchestrator.reconcile_branch orch pid event)
+        in
+        let orch =
+          Onton_core_test_support.Publication_fixture.exhaust_diagnosis ~state
+            ~step orch
+        in
+        step orch Branch_reconcile.Resume));
   (match ensure restored with
   | Worktree_setup.Path _ -> ()
   | Worktree_setup.Unavailable failure ->
@@ -1364,7 +1383,7 @@ let scenario_adopted_publication env policy history =
                 in
                 (match B.repair_turn saved_state ~branch !active_token with
                 | Some { mode = B.History_recovery _; _ } -> ()
-                | Some { mode = B.Content_repair; _ } | None ->
+                | Some { mode = B.Content_repair | B.Diagnosis _; _ } | None ->
                     failwith
                       "recovery agent lacks durable history-recovery authority");
                 Git_env.run_git ~cwd:path
@@ -1389,7 +1408,9 @@ let scenario_adopted_publication env policy history =
             WS.execute_reconciliation ~patch_id:pid ~operation command)
           ~perform:(fun ~agent:_ ~turn ->
             active_token := turn.B.token;
-            Branch_repair_session.run ~backend
+            Branch_repair_session.run
+              ~on_event:(fun _ -> ())
+              ~context:"" ~guidance:[] ~backend
               ~cwd:Eio.Path.(Env.fs / path)
               ~project_name ~patch_id:pid ~complexity:None ~turn
               ~read_head:(fun () -> W.read_branch_sha ~path ~ref_name:"HEAD")

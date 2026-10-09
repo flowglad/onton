@@ -140,7 +140,7 @@ let require_history_repair label state =
   | Some
       ( B.Preparing | Integrating | Publishing | Confirming | Waiting _
       | Recovering | Settled | Intervention _
-      | Repairing { mode = B.Content_repair; _ } ) ->
+      | Repairing { mode = B.Diagnosis _ | B.Content_repair; _ } ) ->
       failwith (label ^ ": " ^ publication_details state)
 
 let require_content_or_history_repair label state =
@@ -152,11 +152,16 @@ let require_content_or_history_repair label state =
       | Recovering | Settled | Intervention _ ) ->
       failwith (label ^ ": " ^ publication_details state)
 
-let require_intervention label reason state =
-  if
-    not
-      (Option.equal B.equal_phase (B.phase state) (Some (B.Intervention reason)))
-  then failwith (label ^ ": " ^ publication_details state)
+let require_diagnosis label reason state =
+  match B.phase state with
+  | Some (B.Repairing { mode = Diagnosis { reason = actual }; _ })
+    when String.equal actual reason ->
+      ()
+  | None
+  | Some
+      ( Preparing | Integrating | Repairing _ | Publishing | Confirming
+      | Waiting _ | Recovering | Settled | Intervention _ ) ->
+      failwith (label ^ ": " ^ publication_details state)
 
 let require_waiting label reason state =
   match B.phase state with
@@ -241,8 +246,8 @@ let scenario_pushurl_differs_from_fetch env ~multiple =
       ()
   in
   if multiple then
-    require_intervention "ambiguous push destination"
-      "multiple_push_destinations" outcome
+    require_diagnosis "ambiguous push destination" "multiple_push_destinations"
+      outcome
   else require_settled "explicit push destination" outcome;
   let push_sha =
     git_capture ~dir:managed_dir [ "ls-remote"; push_dir; "refs/heads/feat" ]
@@ -299,7 +304,7 @@ let scenario_lineage_planning_guards env =
     (require_waiting "missing checkout" "");
   sh ~dir:managed_dir "git checkout -q -b recovery";
   check ~path:managed_dir ~base:"main" ~preserve_history:false ~reads:false
-    (require_waiting "switched branch" "managed branch is not checked out");
+    (require_history_repair "switched branch");
   sh ~dir:managed_dir "git checkout -q feat";
   List.iter
     [ ("feat", false); ("main", true); ("main", false) ]
@@ -418,8 +423,7 @@ let scenario_branch_switched env =
       ~base:(Types.Branch.of_string "main")
       ()
   in
-  require_waiting "switched checkout" "managed branch is not checked out"
-    outcome;
+  require_history_repair "switched checkout" outcome;
   (* Verify nothing was pushed to remote. *)
   let remote_has_feat =
     Git_env.git_exit_code ~cwd:managed_dir

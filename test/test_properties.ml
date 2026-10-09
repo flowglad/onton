@@ -1075,7 +1075,7 @@ let () =
           let before = Orchestrator.agent orch pid in
           let identity = B.publication_observation_target (state orch) in
           let result =
-            if permanent then B.Permanent reason
+            if permanent then B.Needs_diagnosis reason
             else B.Retryable { reason; retry_after = None }
           in
           let event = F.completion ~state orch result in
@@ -1091,7 +1091,8 @@ let () =
   let prop_publication_retry_has_no_session_cap =
     Test.make
       ~name:
-        "publication infrastructure retries retain work beyond old session cap"
+        "publication infrastructure retries reach diagnosis without spending \
+         session budget"
       ~count:300
       Gen.(int_range 3 20)
       (fun retries ->
@@ -1102,23 +1103,27 @@ let () =
           let identity = B.publication_observation_target (state orch) in
           let failed =
             List.fold (List.range 0 retries) ~init:orch ~f:(fun t _ ->
-                let t =
-                  F.reply ~state ~step t
-                    (B.Retryable
-                       { reason = "transport offline"; retry_after = None })
-                in
-                match B.phase (state t) with
-                | Some (B.Waiting { until; _ }) -> step t (B.Tick until)
-                | Some
-                    ( Preparing | Integrating | Repairing _ | Publishing
-                    | Confirming | Recovering | Settled | Intervention _ )
-                | None ->
-                    failwith "retry failed to retain owner backoff")
+                if F.is_diagnosis (state t) then t
+                else
+                  let t =
+                    F.reply ~state ~step t
+                      (B.Retryable
+                         { reason = "transport offline"; retry_after = None })
+                  in
+                  match B.phase (state t) with
+                  | Some (B.Waiting { until; _ }) -> step t (B.Tick until)
+                  | Some (B.Repairing _) when F.is_diagnosis (state t) -> t
+                  | Some
+                      ( Preparing | Integrating | Repairing _ | Publishing
+                      | Confirming | Recovering | Settled | Intervention _ )
+                  | None ->
+                      failwith "retry failed to retain owner backoff")
           in
           let after = Orchestrator.agent failed pid in
           same_budgets before after
           && (not (Patch_agent.needs_intervention after))
           && B.is_pending (state failed)
+          && F.is_diagnosis (state failed)
           && Option.equal B.equal_publication_identity identity
                (B.publication_observation_target (state failed))
         with _ -> false)
@@ -1131,7 +1136,8 @@ let () =
           let orch, pid = mk_busy_orch () in
           let orch, state, step = publication orch pid in
           let reason = "permission_denied:" ^ suffix in
-          let orch = F.reply ~state ~step orch (B.Permanent reason) in
+          let orch = F.reply ~state ~step orch (B.Needs_diagnosis reason) in
+          let orch = F.exhaust_diagnosis ~state ~step orch in
           let failed = state orch in
           let orch =
             Orchestrator.apply_session_result orch pid Orchestrator.Session_ok

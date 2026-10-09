@@ -1,5 +1,10 @@
 # Branch reconciliation
 
+The corrected M3 recovery boundary is locally qualified. Ordinary reconciliation
+failures reach agent recovery or observation-only diagnosis before an exhausted
+recovery hold. The current evidence is recorded in the M3 audit; earlier
+qualification did not cover this complete boundary. No PR has been opened.
+
 Delivery is sequenced in the [branch reconciliation workstream](../workstreams/branch-reconciliation.md):
 M1 records and stabilizes the existing foundation, M2 qualifies a useful release,
 and M3 completes this design. The intermediate release does not waive safety
@@ -31,7 +36,8 @@ checkpoints a dedicated merge-completion command before Onton commits that
 resolution, then checkpoints the resulting head before continuing the rebase.
 Recovery verifies the exact parents, unchanged tree identity, and remaining
 sequencer context to recognize a completed merge after lost acknowledgement.
-It never asks the repair agent to manufacture this commit.
+Repeated deterministic failure can escalate to independently verified history
+recovery, including completion of the interrupted merge.
 
 ## Durable protocol
 
@@ -205,7 +211,8 @@ history recovery without continuing that sequencer. Malformed or contradictory
 checkout observations retry as failed probes. An active sequencer after a failed
 Git command does not itself establish a content conflict: when no unresolved
 index entries or unstaged tracked changes remain, the operation waits and
-inspects before continuing, without dispatching or charging an agent turn. Preparation recovery refreshes
+inspects before continuing. Two failed deterministic attempts escalate to full
+agent recovery; observation failures do not spend that mutation budget. Preparation recovery refreshes
 remote refs before resolving an as-yet-uncaptured target. Each operation records
 its local action (publish the captured source, or integrate with a captured
 policy) independently of its initiating intent. A publication race can require
@@ -226,8 +233,8 @@ preservation is verified again. Failed ancestry probes retry; proved missing
 ancestry enters history recovery without publishing. An unchanged source can
 resume its captured integration. A changed source needs a completed
 named-branch reflog receipt for the captured source and target; merely containing
-the target is insufficient. Other changes stop with a specific intervention
-reason while retaining recovery refs.
+the target is insufficient. Other valid Git changes enter owned recovery with
+captured revisions retained; failed observations remain probe retries.
 
 ## Agent recovery fallback
 
@@ -238,8 +245,10 @@ outage. Lock failures and failed observations retain infrastructure backoff. Thi
 not another implementation session. Its input includes pinned source, target,
 candidate and remote revisions, provenance, and the strategies already tried.
 The agent inspects history and repairs a candidate while preserving valid patch
-and remote work. Transport outages and permanent permission failures do not
-trigger content-repair attempts.
+and remote work. Failed transport probes do not consume mutation or agent budgets. Failed push
+commands are bounded mutation attempts because their outcome may be uncertain;
+confirmation precedes another push. Explicit write-permission failures remain
+authority holds.
 
 Onton retains publication authority. The recovery agent requests publication;
 Onton inspects the actual checkout and sequencer, verifies preservation evidence,
@@ -274,8 +283,8 @@ first recovery inspection also captures the current checkout HEAD as an immutabl
 recovery baseline: newer commits discovered after interruption must survive too.
 Ancestry or revision-bound rewrite-lineage evidence must establish preservation
 of every retained revision. Capacity acquisition is followed by another owned
-inspection before an agent runs. Dirty history-recovery checkouts stop with
-`history_recovery_dirty_worktree`, retaining staged, unstaged and untracked work.
+inspection before an agent runs. Dirty history-recovery checkouts remain eligible
+for an owned agent turn that finishes and commits the interrupted work.
 A lost backend acknowledgement or failed probe resumes verification rather than
 repeating successful agent work. Two completed recovery turns without structural
 progress stop with `recovery_preservation_unproven`, retaining the recovery refs.
@@ -573,9 +582,9 @@ or WONTDO patch cannot dispatch a waiting hook or consume its attempt. The broad
 checkpoint-failure and interruption matrix remains under audit.
 Worktree availability and publication failures are no longer session-result
 variants. The old push-failure counter and its intervention rule are removed;
-old snapshot values cannot override the reconciliation checkpoint. Permanent
-publication denial leaves the resumable backend session intact, and session
-success cannot clear a reconciliation intervention.
+old snapshot values cannot override the reconciliation checkpoint. Publication
+recovery leaves the resumable backend session intact, and session success cannot
+clear an exhausted reconciliation hold.
 Live status and activity-log transitions share the owner-aware intervention
 decision. Event reconstruction decodes the captured reconciliation checkpoint;
 obsolete retry counters cannot create or hide that intervention.
@@ -589,3 +598,76 @@ publication compatibility fields, and the old conflict-info prompt reconstructio
 path. Forge request/head/base identities, provisioning recovery and dependent
 project pruning use the owner contracts described above. The requirement-by-requirement
 runtime and formal audit and final validation are recorded in the [M3 completion audit](../workstreams/branch-reconciliation-m3-audit.md).
+
+## Obligation planning and bounded recovery
+
+`Reconcile_plan` separates outstanding obligations (preserve work, finish local
+work, integrate, publish), execution availability, and authority. It chooses the
+first unsatisfied prerequisite. A missing deterministic strategy requests full
+agent recovery. Exhausted content-only repair escalates to full recovery before
+a budget hold. Satisfied obligations cannot exhaust later work. Diagnostic
+strings describe decisions; they are not a fallback allowlist.
+
+`Branch_reconcile` constructs this plan from captured intent, typed observations
+and durable progress. A recovery task distinguishes finishing local work,
+reconstructing history, and repairing rejected publication. Finishing local work
+unlocks deterministic base integration only after independent verification.
+Recovery sessions receive patch/project context and queued human guidance;
+guidance remains available for normal task delivery.
+
+`Attempt_failed` records an executed mutation failure, including validation
+and push timeouts. Two failed deterministic attempts request full recovery.
+Inspection, retry delay and restart retain that count; successful integration
+resets it. Repeated probe failures request observation-only diagnosis without
+spending mutation attempts. A complete observation resets the separate
+`observation_failures` count; the general backoff counter cannot trigger or
+exhaust recovery. Rejected lease/queue publication attempts use the mutation
+retry budget. Backend failures before turn acceptance remain infrastructure waits. A backend failure after acceptance is verified and charged
+as a completed unsuccessful attempt when it made no verified progress. Two
+completed full-recovery turns without progress hold the operation with its work
+retained. Explicit resume authorizes a new budget.
+
+A publication rejection is an unsatisfied publication obligation even when the
+Git history is valid. Hook, content and branch-policy rejections reach an agent;
+workflow-scope and write-permission denials use the same bounded publication
+recovery budget. The agent must explain any external authorization needed.
+Lease races and merge-queue locks are re-observed with backoff and request
+diagnosis if observations repeatedly fail. The publication-repair budget
+survives attempted publication and repeated rejection, preventing clean but
+unpublishable history from cycling forever. The prompt permits local repair and
+forbids disabling hooks/protections, changing credentials or permission scopes,
+dropping required work to evade authorization, changing the destination, or pushing.
+Independent remote confirmation can discharge publication without an agent.
+
+Mutation authority and agent assistance are separate. Unsupported destinations,
+legacy verification failures, provisioning refusals, uncertain hook completion,
+and protocol-result mismatches request a `Diagnosis` turn. Such turns can start
+without a checkout or HEAD, run from the project directory, and carry the intended
+checkout path. The prompt requires observation only; this is an instruction to the
+backend, not an OS-enforced sandbox. Backend final results are forwarded to the
+activity log, including diagnostic findings that require external action. Owner mutation predicates remain unchanged,
+and a diagnosis cannot grant publication authority, rebind a destination, or replay
+an unacknowledged hook. Changed HEAD is reported as failed diagnostic execution.
+
+`Needs_diagnosis` replaces the unrestricted `Permanent` input.
+`Repair_denied` is removed, including the gameplan-publication exception.
+A changed diagnostic string does not reset the two-turn budget. Restart,
+pre-dispatch reinspection and duplicate completions retain the claim and budget.
+The owner can enter intervention only through an exhausted recovery decision;
+explicit merged/WONTDO state and checkpoint persistence failures still prevent
+dispatch outside that state machine.
+
+Valid detached or wrong-branch observations also reach recovery. The observed
+HEAD, managed branch tip and remote revisions are retained before dispatch;
+verification requires the managed branch to be checked out. Old intervention
+checkpoints without evidence of an exhausted agent budget receive a fresh
+inspection on upgrade, including intermediate snapshots that already contain
+planning counters. Captured authority and exhausted agent budgets survive.
+
+Real-Git acceptance in `test_reconcile_recovery_git` covers dirty restart/bump/
+human guidance, repeated merge validation and push timeouts, local and remote
+hook failures, exhausted publication repair, and switched/detached checkouts.
+Timeouts inject the executor's exit-124 outcome; they do not wait 120 wall-clock
+seconds. Recovery uses controlled fixture agents and independent Git verification,
+not a live model success-rate trial. Full qualification is recorded in the
+[M3 audit](../workstreams/branch-reconciliation-m3-audit.md).

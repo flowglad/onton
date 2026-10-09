@@ -1,11 +1,18 @@
 # Branch reconciliation M3 completion audit
 
-M3 implementation acceptance is complete in the current worktree. This audit
-uses the full milestone and A01–A24 from [the workstream](branch-reconciliation.md)
-without narrowing its endpoint. The approved workstream status update is applied;
-merge, release publication and live-provider rollout are not claimed.
+The corrected M3 recovery boundary is locally qualified. Ordinary reconciliation
+failures reach agent recovery or observation-only diagnosis before an exhausted
+recovery hold. The current evidence is recorded in the M3 audit; earlier
+qualification did not cover this complete boundary. No PR has been opened.
 
-## Final qualification
+The earlier recovery correction was qualified only for its covered cases. Dirty interrupted
+work and repeated validation timeouts exposed missing obligations in the prior
+model; the corrected planner and current terminal-route audit are recorded below.
+The historical assessments are retained for provenance and are superseded where
+those oracles conflict with the current recovery contract. No PR has been opened;
+merge, release publication and live-provider trials remain separate handoffs.
+
+## Historical qualification before reopening
 
 The requirement assessments below cover the preserved M1/M2 contract and all
 M3-specific acceptance items. Formal contracts and checklist review are recorded
@@ -33,9 +40,8 @@ logs are `/tmp/onton-m3-final-regression.log`,
 `/tmp/onton-m3-final-architecture.log`, and `/tmp/onton-m3-final-prefix-model.log`;
 this record preserves their results without requiring those local files.
 
-Sections describing earlier gaps and “remaining proof” are investigation history;
-the explicit A01–A24 decisions and final gates above supersede those provisional
-notes. Abstract models, real Git, simulated backend outcomes, rendered frames and
+The gates and A01–A24 assessments in this historical section describe the earlier
+revision. They do not qualify the reopened recovery implementation below. Abstract models, real Git, simulated backend outcomes, rendered frames and
 live runtime fixtures are distinguished where their evidence is used.
 
 ## Preserved foundation acceptance: A01–A09
@@ -538,3 +544,147 @@ Both compile over the M2 base. Implementation acceptance leaves no endpoint
 behavior deferred to a later milestone. The approved workstream status update completes the documentation handoff.
 Release and live-provider trials remain the separate operator handoff already
 defined by the workstream.
+
+## Reopened recovery implementation and terminal-route audit
+
+The owner now asks the pure obligation planner what work remains and whether a
+deterministic or agent strategy is available. This replaces early Git-state
+rejections with ordered preservation, local completion, integration and
+publication obligations. The owner still verifies observations and emits durable
+commands; handlers perform effects. The planner never treats a diagnostic string
+as a reason to omit fallback.
+
+| Outcome at the owner boundary | Current route |
+|---|---|
+| Dirty work, changed source/target, unexpected sequencer, detached/wrong branch | Preserve captured and observed revisions, offer owned full recovery; finish local work before base integration |
+| Failed deterministic merge/rebase continuation, merge commit, replay checkout or push | Inspect after failure; full recovery after two failed mutation attempts |
+| Exhausted content-only conflict repair | Escalate to full history recovery |
+| Clean history but rejected publication | Publication repair; attempt budget survives rejected pushes |
+| Accepted agent timeout/failure | Independently verify; count no progress toward the full-recovery budget |
+| Failed observation or unavailable transport probe | Backoff, then bounded diagnosis after repeated failure; no mutation attempt is charged |
+| Backend failure before accepting a turn | Retain the owned turn for retry without charging an agent attempt |
+| Lease race or merge-queue lock | Confirm fresh remote state; repeated unavailable evidence reaches diagnosis |
+| Write permission/workflow scope | Bounded publication recovery; prompt prohibits credential/scope changes or removing work to evade authorization |
+| Changed or unsupported destination | Bounded observation-only diagnosis; captured destination remains binding |
+| Legacy verification-only intent | Observation-only diagnosis before a hold; queued mutation intent still needs explicit resume to transfer authority |
+| Stale command identity | Ignore without altering the current claim |
+| Impossible result type for the current command | Bounded diagnosis; the result cannot authorize mutation |
+| Provisioning ownership/receipt mismatch or unacknowledged creation hook | Bounded diagnosis, including without HEAD; no ownership transfer or blind hook replay |
+| Gameplan-publication patch | Same owned repair dispatcher and backend path as other patches |
+| Merged/WONTDO patch | Scheduling and dispatch remain held |
+| Exhausted full agent recovery | Hold with work retained; explicit resume renews the budget |
+
+The audit covers `Branch_reconcile.step`, `verification_result`, inspection and
+recovery planning; every executor `Needs_diagnosis` result; provisioning handoffs;
+`Branch_reconcile_runner` dispatch; `Patch_agent.reconciliation_hold_reason`; and
+`Patch_controller.plan_action`. Pending owner work precedes legacy session/CI
+intervention counters. These ordinary Git recovery paths no longer require the
+user to clear a diagnostic stop before the first full agent attempt.
+
+Upgrade decoding re-evaluates old diagnostic-only interventions once without a
+reason allowlist, retaining destination authority and exhausted full-recovery
+budgets. Recovery prompts carry patch context and human guidance. Source and
+remote preservation remain independent requirements before publication; dirty
+bytes remain in the checkout and the agent is instructed to preserve them.
+Commit refs do not constitute a byte-level backup or semantic proof of uncommitted
+edits.
+
+Focused evidence includes pure obligation and owner properties, the independent
+repository model, and real Git/checkpoint fixtures. The new fixture covers two
+existing commits plus three dirty files across restart, bump and human guidance;
+two `merge --continue` timeouts; two push timeouts; local pre-push and remote
+pre-receive validation; persistent publication rejection; and switched/detached
+HEAD recovery. Agent callbacks make actual Git edits. Exit 124 is injected for
+the timeout cases; this is not a live backend or a 120-second wall-clock trial.
+
+## Historical qualification — first recovery correction
+
+The earlier full rerun exposed an obsolete expectation that wrong-branch
+observations wait indefinitely. That fixture now requires owned history recovery,
+and real-Git fixtures independently prove recovery to publication. The final full
+regression run passes after that correction.
+
+| Gate | Current result |
+|---|---|
+| `opam exec -- dune build` | Pass |
+| `opam exec -- dune runtest` | Pass, including the full publication matrix and Git/checkpoint suite |
+| `opam exec -- dune build @fmt @check` | Pass |
+| Source-policy gate and `git diff --check` | Pass |
+| Pinned archlint OCaml adapter | Pass, including pure API property coverage |
+| Gameplan schema, Pant, dependency, reference and frame validation | Pass |
+| Atomic-cutover prefix over `7452ee3` | Builds; independent model and recovery Git test stanzas deferred until their sources exist |
+| Final prefix | Builds with no deferred executable stanzas |
+| Final-prefix properties | Planner 12, owner 130, independent model 27, scheduler/outbox 10; all pass |
+
+The final-prefix seeds are `255091383` (planner), `254983415` (owner), `60565969`
+(model), and `532761785` (outbox). The complete non-cache change inventory has
+217 paths, with implementation changes covered by declared frames and the
+gameplan itself treated as metadata. The final verification logs are
+`/tmp/onton-m3-reopened-qualified.log`,
+`/tmp/onton-m3-reopened-architecture-qualified.log`,
+`/tmp/onton-m3-qualified-cutover-build.log`,
+`/tmp/onton-m3-qualified-final-prefix.log`, and
+`/tmp/onton-m3-qualified-prefix-properties.log`.
+
+The two checklist exceptions remain the documented atomic behavior cutover and
+colocated tests; they do not defer recovery behavior or require an operator action
+between patches. That earlier completion claim was insufficient: it did not test the authority and gameplan bypasses. Those results did not qualify the second reopening; its final evidence follows.
+The evidence does not claim live-model success rates or release deployment.
+
+## Current qualification — complete fallback boundary
+
+The unrestricted terminal result and repair-denial event have been removed.
+The obligation planner distinguishes evidence reads, deterministic mutation,
+content repair, full recovery and observation-only diagnosis. Lack of mutation
+authority limits the agent's scope; it no longer suppresses agent assistance.
+
+The only owner intervention constructor is reached from the three exhausted-budget
+decisions (diagnosis, repair, independently verified recovery). Handler refusals
+now enter the owner as diagnostic obligations. The gameplan-publication dispatcher
+uses the common backend path. External dispatch still honors merged/WONTDO state.
+A failed or missing durable checkpoint is reported as a checkpoint failure: no
+backend may claim an operation whose identity was not durably established.
+Malformed provisioning intents are rejected before a valid owner can be created.
+
+Evidence reads have a separate persisted failure count. Complete observations
+reset it; failed mutation counts and publication recovery attempts remain scoped
+to their outstanding work. Backoff saturation is never recovery exhaustion.
+Upgrade restores every unexhausted diagnostic-only intervention, including
+intermediate checkpoints with planning counters; exhausted agent budgets survive.
+
+The independent repository model now interprets diagnostic assistance without
+changing Git content. Healthy suffixes explicitly resume exhausted recovery;
+the model checks that a real completed-agent budget exists before doing so.
+A generated owner property changes diagnostic strings, restarts and duplicates
+completion events while requiring exactly two turns before intervention.
+Backend acceptance fixtures cover diagnosis without a checkout HEAD and verify
+event forwarding. The live dispatcher logs final recovery findings.
+
+The corrected implementation passes the following gates:
+
+| Gate | Result |
+|---|---|
+| Build and fatal warnings | Pass |
+| Full `dune runtest` | Pass, including gameplan-publication backend recovery, the complete Git/checkpoint suite and publication-interleaving matrix |
+| `dune build @fmt @check` | Pass |
+| Source-policy gate and `git diff --check` | Pass |
+| Pinned archlint OCaml adapter | Pass at `855690b1d0f821a177af0ea68e8eb6ae6a263ecc` |
+| Gameplan schema, Pant and frame validation | Pass; 218 non-cache paths, with the gameplan treated as metadata |
+| Atomic-cutover prefix over `7452ee3049322d0070666782c7b25af485034946` | Builds; only the two qualification-only test executables are deferred |
+| Final prefix | Builds with no deferred executable stanzas |
+| Final-prefix properties | Planner 13, owner 134, independent model 27, outbox 10; all pass |
+
+The final-prefix seeds are `44089028` (planner), `308989935` (owner),
+`333191074` (independent model), and `380070466` (outbox). Current logs are
+`/tmp/onton-m3-final-build.log`, `/tmp/onton-m3-final-runtest.log`,
+`/tmp/onton-m3-final-check.log`, `/tmp/onton-m3-final-architecture.log`,
+`/tmp/onton-m3-final-cutover-build.log`,
+`/tmp/onton-m3-final-prefix-build.log`, and
+`/tmp/onton-m3-final-prefix-properties.log`.
+
+The two checklist exceptions remain early non-functional patches and separate
+infrastructure test stubs: the verified API cutover is atomic and includes its
+producer regressions. They defer no recovery behavior. The reopened local
+implementation goal is complete. No PR, release or deployment was performed.
+Agent fixtures demonstrate dispatch and verified Git outcomes; they do not
+claim live-model success rates or OS enforcement of observation-only prompts.

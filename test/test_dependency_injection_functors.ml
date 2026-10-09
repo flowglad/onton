@@ -41,7 +41,8 @@ module Fake_worktree : Worktree.S = struct
   let materialization ~path:_ ~project_name:_ ~branch:_ = Ok None
 
   let reconcile ~path:_ ~project_name:_ ~branch:_ ~operation:_ _ =
-    Branch_reconcile.Permanent "unexpected reconciliation in fake worktree"
+    Branch_reconcile.Needs_diagnosis
+      "unexpected reconciliation in fake worktree"
 end
 
 module Fake_env : Worktree_setup.ENV = struct

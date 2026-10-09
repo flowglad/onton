@@ -265,12 +265,8 @@ let waiting_repair ~root ~stale ~changed =
               { token = turn.token; at = 100.; reason = "backend interrupted" })
           token
       in
-      check "stale repair is suppressed"
-        (outcome
-        =
-        if stale then R.Idle
-        else if changed then R.Intervention "history_recovery_dirty_worktree"
-        else R.Waiting))
+      check "stale repair is suppressed and changed work gets a fresh claim"
+        (if stale then outcome = R.Idle else outcome = R.Waiting))
     (fun () ->
       Eio.Promise.await waiting;
       Runtime.with_patch_ownership runtime ~patch_id:id (fun _ -> ());
@@ -285,7 +281,7 @@ let waiting_repair ~root ~stale ~changed =
                     { token; at = 100.; reason = "superseded" })));
       Eio.Promise.resolve release_capacity ());
   check "only current inspected claims invoke the backend"
-    (!calls = if stale || changed then 0 else 1);
+    (!calls = if stale then 0 else 1);
   check "capacity released after repair" (not !has_capacity)
 
 let terminal_during_capacity_wait ~root ~merged =
@@ -609,8 +605,100 @@ let cancelled_active_repair ~root ~resolved ~compete =
              .Patch_agent.branch_reconcile
         = Some B.Settled))
 
+let backend_acceptance ~cwd ~diagnosis accepted =
+  let runtime = runtime ~root:false in
+  let state, token =
+    if diagnosis then
+      let state, _ =
+        B.step B.empty
+          (B.Request
+             {
+               base = "main";
+               policy = Rewrite;
+               purpose = Provision_checkout "missing";
+             })
+      in
+      let command = Option.get (B.pending state) in
+      let state, effects =
+        B.step state
+          (B.Result
+             {
+               token = command.token;
+               at = now ();
+               result = Needs_diagnosis "checkout missing";
+             })
+      in
+      let token =
+        match effects with
+        | [ B.Repair token ] -> token
+        | []
+        | (B.Execute _ | B.Start_repair _ | B.Completed _) :: _
+        | B.Repair _ :: _ :: _ ->
+            failwith "missing diagnostic offer"
+      in
+      (fst (B.step state (B.Repair_started token)), token)
+    else
+      let token = claim runtime in
+      ( Runtime.read runtime (fun snap ->
+            (Orchestrator.agent snap.Runtime.orchestrator id)
+              .Patch_agent.branch_reconcile),
+        token )
+  in
+  let turn = Option.get (B.repair_turn state ~branch:"patch" token) in
+  let backend =
+    Llm_backend.
+      {
+        name = "acceptance fixture";
+        run_streaming =
+          (fun ~project_name:_
+            ~cwd:_
+            ~patch_id:_
+            ~prompt:_
+            ~resume_session:_
+            ~session_uuid:_
+            ~complexity:_
+            ~on_event
+          ->
+            on_event
+              (if accepted then Types.Stream_event.Turn_started
+               else Types.Stream_event.Error "preflight");
+            {
+              exit_code = 1;
+              stdout = "";
+              stderr = "backend stopped";
+              got_events = true;
+              saw_final_result = false;
+              timed_out = accepted;
+            });
+      }
+  in
+  let streamed = ref [] in
+  let event =
+    Branch_repair_session.run
+      ~on_event:(fun event -> streamed := event :: !streamed)
+      ~context:"" ~guidance:[] ~backend ~cwd ~project_name:"ownership"
+      ~patch_id:id ~complexity:None ~turn
+      ~read_head:(fun () ->
+        if diagnosis then None else Some (B.Commit.to_string source))
+      ~now
+  in
+  check "owned recovery exposes its backend events" (List.length !streamed = 1);
+  check "only an accepted backend failure completes a repair attempt"
+    (event
+    =
+    if accepted then
+      B.Repair_failed { token; at = now (); reason = "backend stopped" }
+    else B.Repair_interrupted { token; at = now (); reason = "backend stopped" }
+    )
+
 let () =
   Eio_main.run (fun env ->
+      List.iter
+        (fun diagnosis ->
+          List.iter
+            (backend_acceptance ~cwd:(Eio.Stdenv.fs env) ~diagnosis)
+            [ false; true ])
+        [ false; true ];
       Eio.Time.with_timeout_exn (Eio.Stdenv.clock env) 5. (fun () ->
           List.iter
             (fun root ->

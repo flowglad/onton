@@ -23,11 +23,12 @@ let commit dir file message =
 let evidence = function
   | B.Observed o -> (Some o, false)
   | B.Retryable _ -> (None, true)
-  | B.Checkout_ready | B.Observed_active _ | Pinned | Merge_completion_needed _
-  | Merge_completed _ | Remote_replay_selected _ | Remote_checked_out
-  | Integrated _ | Conflict _ | Recovery_verified _ | Inspected _
-  | Inspected_active _ | Published | Remote _ | Recovery_required _
-  | Permanent _ ->
+  | B.Checkout_ready | B.Observed_recovery _ | B.Observed_active _ | Pinned
+  | Merge_completion_needed _ | Merge_completed _ | Remote_replay_selected _
+  | Remote_checked_out | Integrated _ | Conflict _ | Recovery_verified _
+  | Inspected _ | Inspected_active _ | Published | Remote _
+  | Recovery_required _ | Publication_rejected _ | Attempt_failed _
+  | Needs_diagnosis _ ->
       (None, false)
 
 let plain_replay env merged_history =
@@ -71,13 +72,14 @@ let plain_replay env merged_history =
                   | B.Observed observed ->
                       check "unproven replay remains labelled plain"
                         (observed.boundary = B.Plain)
-                  | B.Checkout_ready | B.Observed_active _ | B.Pinned
-                  | B.Merge_completion_needed _ | B.Merge_completed _
-                  | B.Remote_replay_selected _ | B.Remote_checked_out
-                  | B.Integrated _ | B.Conflict _ | B.Recovery_verified _
-                  | B.Inspected _ | B.Inspected_active _ | B.Published
-                  | B.Remote _ | B.Retryable _ | B.Recovery_required _
-                  | B.Permanent _ ->
+                  | B.Checkout_ready | B.Observed_recovery _
+                  | B.Observed_active _ | B.Pinned | B.Merge_completion_needed _
+                  | B.Merge_completed _ | B.Remote_replay_selected _
+                  | B.Remote_checked_out | B.Integrated _ | B.Conflict _
+                  | B.Recovery_verified _ | B.Inspected _ | B.Inspected_active _
+                  | B.Published | B.Remote _ | B.Retryable _
+                  | B.Recovery_required _ | B.Publication_rejected _
+                  | B.Attempt_failed _ | B.Needs_diagnosis _ ->
                       ());
                   let next, _ =
                     B.step state
@@ -237,8 +239,8 @@ let deep_stack env empty_tip =
                             restore
                               (fst
                                  (B.step claimed
-                                    (B.repair_result ~turn ~at:100.
-                                       ~before_head:(Some before)
+                                    (B.repair_result ~turn_accepted:false ~turn
+                                       ~at:100. ~before_head:(Some before)
                                        ~after_head:(Some after) ~timed_out:false
                                        ~final_result:true
                                        ~detail:"staged stack conflict"))))
@@ -644,7 +646,7 @@ let () =
           check "topology failure reaches history recovery"
             (match turn.mode with
             | B.History_recovery { reason; _ } -> reason = "unrelated_histories"
-            | B.Content_repair -> false);
+            | B.Content_repair | B.Diagnosis _ -> false);
           (* Simulate the claimed history-repair agent's preserving merge. *)
           Git.run_git ~cwd:dir
             [ "merge"; "--allow-unrelated-histories"; "--no-edit"; target ];

@@ -64,7 +64,7 @@ let run_unlocked ~runtime ~persist ~patch_id ~now ~execute event =
                   .Patch_agent.branch_reconcile)
         in
         match operation with
-        | None -> Intervention "checkpointed_operation_missing"
+        | None -> Checkpoint_failed "checkpointed_operation_missing"
         | Some operation -> (
             (* Cancellation leaves the pre-command checkpoint intact. Restart
                 must inspect it; neither a timeout nor a lost acknowledgement

@@ -24,7 +24,7 @@ let restore state =
   | Ok restored -> restored
   | Error reason -> failwith reason
 
-let inspections_only commands =
+let inspections_only ?state commands =
   List.for_all
     (function
       | B.Execute { kind = Observe | Inspect; _ } | B.Completed _ -> true
@@ -37,7 +37,8 @@ let inspections_only commands =
             _;
           }
       | B.Repair _ | B.Start_repair _ ->
-          false)
+          Option.fold ~none:false
+            ~some:Onton_core_test_support.Publication_fixture.is_diagnosis state)
     commands
 
 let result state result =
@@ -181,13 +182,14 @@ let tests =
                                 (if action = 5 then
                                    Retryable
                                      { reason = "offline"; retry_after = None }
-                                 else Permanent "unsafe checkout");
+                                 else Needs_diagnosis "unsafe checkout");
                             }
                       | Some { pending = None; _ } | None -> B.Recover)
                 in
                 let next, commands = B.step state event in
                 ( next,
-                  valid && inspections_only commands
+                  valid
+                  && inspections_only ~state:next commands
                   && B.publications next = []
                   && B.integrations next = []
                   && B.equal (restore next) next ))
@@ -203,8 +205,8 @@ let tests =
           let stopped, effects =
             result initial (if use_pinned then B.Pinned else B.Published)
           in
-          B.phase stopped = Some (B.Intervention "provisioning_result_mismatch")
-          && effects = []
+          Onton_core_test_support.Publication_fixture.is_diagnosis stopped
+          && effects <> []
           && B.publications stopped = []
           && B.equal (restore stopped) stopped
         with _ -> false);
@@ -292,8 +294,8 @@ let tests =
           in
           let state, _ = B.step B.empty (B.Request { intent with purpose }) in
           let stopped, effects = result state B.Checkout_ready in
-          B.phase stopped = Some (B.Intervention "command_result_mismatch")
-          && effects = []
+          Onton_core_test_support.Publication_fixture.is_diagnosis stopped
+          && effects <> []
           && B.publications stopped = []
         with _ -> false);
   ]

@@ -143,7 +143,7 @@ let () =
                 B.Conflict
                   { head = F.commit 4; sequencer = "rebase"; conflicts = 1 }
             | 1 -> B.Retryable { reason = "probe_failed"; retry_after = None }
-            | _ -> B.Permanent "refused"
+            | _ -> B.Needs_diagnosis "refused"
           in
           let failed = F.reply attempted result in
           let failed = if restart then F.restore failed else failed in

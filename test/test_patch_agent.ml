@@ -1601,7 +1601,7 @@ let () =
                                   else if action = 5 then
                                     B.Retryable
                                       { reason = "offline"; retry_after = None }
-                                  else B.Permanent "permission_denied");
+                                  else B.Needs_diagnosis "permission_denied");
                              })
                  in
                  let agent, _ = reconcile_branch agent event in

@@ -207,7 +207,7 @@ let scenario env selected boundary =
                  check "unrelated histories require history recovery"
                    (match turn.B.mode with
                    | B.History_recovery _ -> true
-                   | B.Content_repair -> false);
+                   | B.Content_repair | B.Diagnosis _ -> false);
                  Git.run_git ~cwd:dir
                    [
                      "merge"; "--allow-unrelated-histories"; "--no-edit"; target;
@@ -224,9 +224,9 @@ let scenario env selected boundary =
               let after =
                 sha (Git.git_capture ~cwd:dir [ "rev-parse"; "HEAD" ])
               in
-              B.repair_result ~turn ~at:100. ~before_head:(Some before)
-                ~after_head:(Some after) ~timed_out:false ~final_result:true
-                ~detail:"staged resolution"
+              B.repair_result ~turn_accepted:false ~turn ~at:100.
+                ~before_head:(Some before) ~after_head:(Some after)
+                ~timed_out:false ~final_result:true ~detail:"staged resolution"
           in
           let reached = ref false and refuse = ref false in
           let prior_verifications = !verifications in

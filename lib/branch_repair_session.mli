@@ -2,7 +2,10 @@
    @archlint.domain branch-reconcile *)
 
 val run :
+  context:string ->
+  guidance:string list ->
   backend:Llm_backend.t ->
+  on_event:(Types.Stream_event.t -> unit) ->
   cwd:Eio.Fs.dir_ty Eio.Path.t ->
   project_name:string ->
   patch_id:Types.Patch_id.t ->
@@ -11,6 +14,7 @@ val run :
   read_head:(unit -> string option) ->
   now:(unit -> float) ->
   Branch_reconcile.event
-(** Run one claimed content-repair or history-recovery turn. Does not invoke
+(** Run one claimed diagnostic, content-repair or history-recovery turn. Stream
+    events reach the caller so diagnostic findings can be shown. Does not invoke
     ordinary session completion or publication. Cancellation propagates with the
     claimed repair checkpoint intact; the next dispatch must inspect Git. *)

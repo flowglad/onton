@@ -106,7 +106,7 @@ module Fake_worktree : Worktree.S = struct
           }
     | B.Commit_merge _ | B.Plan_remote_replay _ | B.Checkout_remote _
     | B.Verify_recovery | B.Integrate _ | B.Continue _ ->
-        B.Permanent "unexpected integration in session fixture"
+        B.Needs_diagnosis "unexpected integration in session fixture"
 end
 
 let run_case ?(adopted = false) ?(cancel = false) ?(push_failure = false)

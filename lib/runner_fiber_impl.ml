@@ -1325,40 +1325,67 @@ module Make (Forge : Forge.S) (W : Worktree.S) (Env : Runner_env.S) = struct
                                   ~persist ~patch_id
                                   ~with_capacity:with_session_slot ~now ~execute
                                   ~perform:(fun ~agent ~turn ->
-                                    if
-                                      Gameplan.is_publication_patch gameplan
-                                        patch_id
-                                    then
-                                      Branch_reconcile.Repair_denied
-                                        {
-                                          token = turn.Branch_reconcile.token;
-                                          reason =
-                                            "gameplan_publication_requires_manual_repair";
-                                        }
-                                    else
-                                      let complexity =
-                                        patch_complexity ~gameplan ~agent
-                                          ~patch_id
-                                      in
-                                      let backend, _ =
-                                        pick_backend ~complexity
-                                      in
-                                      log_event runtime ~patch_id
-                                        (match turn.Branch_reconcile.mode with
-                                        | Branch_reconcile.Content_repair ->
-                                            "Repairing staged integration \
-                                             conflicts"
-                                        | Branch_reconcile.History_recovery
-                                            { reason; baseline = _ } ->
-                                            "Agent history recovery: " ^ reason);
-                                      Branch_repair_session.run ~backend
-                                        ~cwd:Eio.Path.(Env.fs / path agent)
-                                        ~project_name ~patch_id ~complexity
-                                        ~turn
-                                        ~read_head:(fun () ->
-                                          W.read_branch_sha ~path:(path agent)
-                                            ~ref_name:"HEAD")
-                                        ~now)
+                                    let complexity =
+                                      patch_complexity ~gameplan ~agent
+                                        ~patch_id
+                                    in
+                                    let backend, _ = pick_backend ~complexity in
+                                    log_event runtime ~patch_id
+                                      (match turn.Branch_reconcile.mode with
+                                      | Branch_reconcile.Diagnosis { reason } ->
+                                          "Agent diagnosis: " ^ reason
+                                      | Branch_reconcile.Content_repair ->
+                                          "Repairing staged integration \
+                                           conflicts"
+                                      | Branch_reconcile.History_recovery
+                                          { reason; _ } ->
+                                          "Agent history recovery: " ^ reason);
+                                    let patch =
+                                      Base.List.find gameplan.Gameplan.patches
+                                        ~f:(fun (p : Patch.t) ->
+                                          Patch_id.equal p.id patch_id)
+                                    in
+                                    let context =
+                                      Prompt.render_session_context
+                                        ~project_name ?patch ~gameplan
+                                        ?pr_number:(Patch_agent.pr_number agent)
+                                        ?agents_md:
+                                          (read_optional_file
+                                             (Stdlib.Filename.concat
+                                                (path agent) "AGENTS.md"))
+                                        ()
+                                    in
+                                    let cwd =
+                                      match turn.Branch_reconcile.mode with
+                                      | Branch_reconcile.Diagnosis _ ->
+                                          Project_store.project_dir project_name
+                                      | Branch_reconcile.Content_repair
+                                      | Branch_reconcile.History_recovery _ ->
+                                          path agent
+                                    in
+                                    let context =
+                                      context ^ "\nIntended managed checkout: "
+                                      ^ path agent
+                                    in
+                                    Branch_repair_session.run ~backend ~context
+                                      ~on_event:(function
+                                        | Types.Stream_event.Final_result
+                                            { text; _ } ->
+                                            log_event runtime ~patch_id
+                                              ("Agent recovery result: " ^ text)
+                                        | Turn_started | Text_delta _
+                                        | Tool_use _ | Error _ | Session_init _
+                                          ->
+                                            ())
+                                      ~guidance:
+                                        (agent.Patch_agent.human_messages
+                                       @ agent.inflight_human_messages)
+                                      ~cwd:Eio.Path.(Env.fs / cwd)
+                                      ~project_name ~patch_id ~complexity ~turn
+                                      ~read_head:(fun () ->
+                                        W.read_branch_sha ~path:(path agent)
+                                          ~ref_name:"HEAD")
+                                      ~now)
                                   token
                               in
                               finish outcome

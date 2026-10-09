@@ -47,6 +47,53 @@ let reply state result =
   | Some command ->
       B.step state (B.Result { token = command.token; at = 100.; result })
 
+let is_diagnosis state =
+  match B.phase state with
+  | Some (B.Repairing { mode = Diagnosis _; _ }) -> true
+  | None
+  | Some
+      ( Preparing | Integrating
+      | Repairing { mode = Content_repair | History_recovery _; _ }
+      | Publishing | Confirming | Waiting _ | Recovering | Settled
+      | Intervention _ ) ->
+      false
+
+(* Terminal-state fixtures must actually consume the two owned diagnostic turns. *)
+let exhaust_diagnosis state =
+  let rec loop remaining state =
+    if remaining = 0 then state
+    else
+      match B.operation state with
+      | Some { phase = Repairing { mode = Diagnosis { reason }; _ }; _ } ->
+          let state = fst (B.step state B.Recover) in
+          let state, effects = reply state (B.Needs_diagnosis reason) in
+          let token =
+            match effects with
+            | [ B.Repair token ] -> token
+            | []
+            | (B.Execute _ | B.Start_repair _ | B.Completed _) :: _
+            | B.Repair _ :: _ :: _ ->
+                failwith "diagnosis not offered"
+          in
+          let state = fst (B.step state (B.Repair_started token)) in
+          let state =
+            fst (B.step state (B.Repair_completed { token; at = 100. }))
+          in
+          loop (remaining - 1) (fst (reply state (B.Needs_diagnosis reason)))
+      | None
+      | Some
+          {
+            phase =
+              ( Preparing | Integrating
+              | Repairing { mode = Content_repair | History_recovery _; _ }
+              | Publishing | Confirming | Waiting _ | Recovering | Settled
+              | Intervention _ );
+            _;
+          } ->
+          state
+  in
+  loop 2 state
+
 let prepared () =
   let state, _ = request () in
   let state, _ = reply state (B.Observed observation) in
@@ -116,6 +163,498 @@ let equivalence_fixture equivalent =
 
 let tests =
   [
+    QCheck2.Test.make ~count:200
+      ~name:"BR successful evidence resets only its observation budget" Gen.bool
+      (fun mutate ->
+        try
+          let state = if mutate then prepared () else fst (request ()) in
+          let state =
+            if mutate then
+              fst (reply state (B.Attempt_failed "validation timeout"))
+            else state
+          in
+          let state = if mutate then fst (B.step state B.Recover) else state in
+          let state =
+            fst
+              (reply state
+                 (B.Retryable
+                    { reason = "probe unavailable"; retry_after = None }))
+          in
+          let failed = Option.get (B.operation state) in
+          assert (failed.observation_failures = 1);
+          assert (not (is_diagnosis state));
+          let state = Result.get_ok (B.decode (B.yojson_of_t state)) in
+          let state = fst (B.step state B.Recover) in
+          let state = fst (reply state (B.Inspected observation)) in
+          let observed = Option.get (B.operation state) in
+          observed.observation_failures = 0
+          && observed.deterministic_failures = failed.deterministic_failures
+        with _ -> false);
+    QCheck2.Test.make ~count:100
+      ~name:
+        "BR diagnostic completion works without HEAD and charges accepted \
+         failures"
+      Gen.(triple bool bool bool)
+      (fun (accepted, timed_out, final_result) ->
+        try
+          let state, _ = request () in
+          let state, effects =
+            reply state (B.Needs_diagnosis "missing checkout")
+          in
+          let token =
+            match effects with
+            | [ B.Repair token ] -> token
+            | []
+            | (B.Execute _ | B.Start_repair _ | B.Completed _) :: _
+            | B.Repair _ :: _ :: _ ->
+                failwith "missing diagnosis"
+          in
+          let state, _ = B.step state (B.Repair_started token) in
+          let turn = Option.get (B.repair_turn state ~branch:"patch" token) in
+          let event =
+            B.repair_result ~turn ~turn_accepted:accepted ~at:100.
+              ~before_head:None ~after_head:None ~timed_out ~final_result
+              ~detail:"unavailable"
+          in
+          let expected =
+            if (not timed_out) && final_result then
+              B.Repair_completed { token; at = 100. }
+            else if accepted then
+              B.Repair_failed { token; at = 100.; reason = "unavailable" }
+            else
+              B.Repair_interrupted { token; at = 100.; reason = "unavailable" }
+          in
+          B.repair_head_matches turn None
+          && B.equal_event event expected
+          && B.equal_event
+               (B.repair_result ~turn ~turn_accepted:true ~at:100.
+                  ~before_head:(Some source) ~after_head:(Some candidate)
+                  ~timed_out:false ~final_result:true ~detail:"")
+               (B.Repair_failed
+                  { token; at = 100.; reason = "diagnostic_checkout_changed" })
+        with _ -> false);
+    QCheck2.Test.make ~count:200
+      ~name:
+        "BR repeated unavailable observations request diagnosis without \
+         consuming mutation attempts" Gen.string (fun reason ->
+        try
+          let state, _ = request () in
+          let fail state =
+            reply state (B.Retryable { reason; retry_after = None })
+          in
+          let state, _ = fail state in
+          let state = Result.get_ok (B.decode (B.yojson_of_t state)) in
+          let state, _ = B.step state (B.Tick 1000.) in
+          let state, effects = fail state in
+          is_diagnosis state && effects <> []
+          &&
+          match B.operation state with
+          | Some op -> op.deterministic_failures = 0 && op.source = None
+          | None -> false
+        with _ -> false);
+    QCheck2.Test.make ~count:400
+      ~name:
+        "BR arbitrary diagnostic reasons require two owned turns before \
+         holding across restart"
+      Gen.(triple string string bool)
+      (fun (first, second, failed) ->
+        try
+          let restore s = Result.get_ok (B.decode (B.yojson_of_t s)) in
+          let state, _ = request () in
+          let state, effects = reply state (B.Needs_diagnosis first) in
+          let complete state effects =
+            assert (is_diagnosis state);
+            let token =
+              match effects with
+              | [ B.Repair token ] -> token
+              | []
+              | (B.Execute _ | B.Start_repair _ | B.Completed _) :: _
+              | B.Repair _ :: _ :: _ ->
+                  failwith "no diagnostic turn"
+            in
+            let state = restore state in
+            let state, _ = B.step state (B.Repair_started token) in
+            let state = restore state in
+            let turn = Option.get (B.repair_turn state ~branch:"patch" token) in
+            assert (turn.head = None);
+            assert (
+              Base.String.is_substring turn.prompt ~substring:"observation-only");
+            let event =
+              if failed then
+                B.Repair_failed { token; at = 100.; reason = "backend timeout" }
+              else B.Repair_completed { token; at = 100. }
+            in
+            let state, _ = B.step state event in
+            let duplicate, effects = B.step state event in
+            assert (B.equal state duplicate && effects = []);
+            let state = restore state in
+            let state =
+              if failed then fst (B.step state (B.Tick 1000.)) else state
+            in
+            restore state
+          in
+          let state = complete state effects in
+          let state, effects = reply state (B.Needs_diagnosis second) in
+          let state = complete state effects in
+          let state, effects = reply state (B.Needs_diagnosis first) in
+          let state = restore state in
+          effects = []
+          && B.pending state = None
+          &&
+          match B.phase state with
+          | Some (B.Intervention _) -> true
+          | None
+          | Some
+              ( Preparing | Integrating | Repairing _ | Publishing | Confirming
+              | Waiting _ | Recovering | Settled ) ->
+              false
+        with _ -> false);
+    QCheck2.Test.make ~count:300
+      ~name:"BR recovery acceptance excludes startup and error-only streams"
+      Gen.string (fun text ->
+        let module S = Types.Stream_event in
+        List.for_all B.repair_event_accepted
+          [
+            S.Turn_started;
+            S.Text_delta text;
+            S.Tool_use { name = text; input = text; status = None };
+            S.Final_result { text; stop_reason = Types.Stop_reason.End_turn };
+          ]
+        && (not (B.repair_event_accepted (S.Error text)))
+        && not
+             (B.repair_event_accepted
+                (S.Session_init
+                   {
+                     session_id = text;
+                     api_key_source = None;
+                     model = None;
+                     claude_code_version = None;
+                     permission_mode = None;
+                   })));
+    QCheck2.Test.make ~count:300
+      ~name:
+        "BR recovery prompt retains arbitrary task context guidance and owner \
+         instructions"
+      Gen.(pair string (list_size (int_range 0 10) string))
+      (fun (context, guidance) ->
+        try
+          let state, effects = reply (recovery ()) unverified in
+          match effects with
+          | [ B.Repair token ] ->
+              let state, _ = B.step state (B.Repair_started token) in
+              let turn =
+                Option.get (B.repair_turn state ~branch:"patch" token)
+              in
+              let prompt = B.recovery_prompt ~context ~guidance turn in
+              Base.String.is_prefix prompt ~prefix:context
+              && Base.String.is_suffix prompt ~suffix:turn.prompt
+              && List.for_all
+                   (fun text -> Base.String.is_substring prompt ~substring:text)
+                   guidance
+          | []
+          | B.Execute _ :: _
+          | B.Start_repair _ :: _
+          | B.Completed _ :: _
+          | B.Repair _ :: _ :: _ ->
+              false
+        with _ -> false);
+    QCheck2.Test.make ~count:100
+      ~name:
+        "BR verified remote completion discharges exhausted mutation attempts \
+         without an agent" Gen.unit (fun () ->
+        try
+          let state, _ =
+            reply (publishing ()) (B.Attempt_failed "lost push acknowledgement")
+          in
+          let state, _ = B.step state (B.Tick 1000.) in
+          let state, _ =
+            reply state
+              (inspected
+                 {
+                   observation with
+                   source = candidate;
+                   head = candidate;
+                   target_included = true;
+                   completed_integration = true;
+                 })
+          in
+          let state, _ =
+            reply state (B.Remote { sha = Some source; topology = B.Diverged })
+          in
+          let state, _ =
+            reply state (B.Attempt_failed "second lost acknowledgement")
+          in
+          let state, effects =
+            reply state
+              (B.Recovery_verified
+                 {
+                   observation =
+                     {
+                       observation with
+                       source = candidate;
+                       head = candidate;
+                       remote = Some candidate;
+                       target_included = true;
+                     };
+                   source_preserved = true;
+                   remote_preserved = true;
+                 })
+          in
+          B.phase state = Some B.Settled
+          &&
+          match effects with
+          | [ B.Completed _ ] -> true
+          | []
+          | B.Execute _ :: _
+          | B.Repair _ :: _
+          | B.Start_repair _ :: _
+          | B.Completed _ :: _ :: _ ->
+              false
+        with _ -> false);
+    QCheck2.Test.make ~count:100
+      ~name:
+        "BR publication rejection offers bounded repair even when history is \
+         already valid"
+      Gen.(pair bool bool)
+      (fun (restart, accepted_failure) ->
+        try
+          let restored state =
+            if restart then
+              match B.decode (B.yojson_of_t state) with
+              | Ok state -> state
+              | Error message -> failwith message
+            else state
+          in
+          let verified =
+            B.Recovery_verified
+              {
+                observation =
+                  {
+                    observation with
+                    source = candidate;
+                    head = candidate;
+                    target_included = true;
+                  };
+                source_preserved = true;
+                remote_preserved = true;
+              }
+          in
+          let reject state =
+            fst
+              (reply (restored state)
+                 (B.Publication_rejected
+                    (Push_reject_classify.Hook_failure "validation failed")))
+          in
+          let attempt state =
+            let state, effects = reply (restored state) verified in
+            match effects with
+            | [ B.Repair token ] ->
+                assert (
+                  match B.operation state with
+                  | Some
+                      {
+                        repair =
+                          Some
+                            {
+                              mode =
+                                B.History_recovery
+                                  { task = B.Repair_publication; _ };
+                              _;
+                            };
+                        _;
+                      } ->
+                      true
+                  | None
+                  | Some { repair = None; _ }
+                  | Some
+                      {
+                        repair =
+                          Some
+                            {
+                              mode =
+                                ( B.Diagnosis _ | B.Content_repair
+                                | B.History_recovery
+                                    {
+                                      task =
+                                        ( B.Finish_local_work
+                                        | B.Reconstruct_history );
+                                      _;
+                                    } );
+                              _;
+                            };
+                        _;
+                      } ->
+                      false);
+                let state, _ =
+                  B.step (restored state) (B.Repair_started token)
+                in
+                let state, _ =
+                  B.step state
+                    (if accepted_failure then
+                       B.Repair_failed
+                         { token; at = 100.; reason = "accepted timeout" }
+                     else B.Repair_completed { token; at = 100. })
+                in
+                let state, _ = B.step (restored state) (B.Tick 1000.) in
+                let state, _ = reply state verified in
+                assert (
+                  match B.pending state with
+                  | Some { kind = B.Publish _; _ } -> true
+                  | None
+                  | Some
+                      {
+                        kind =
+                          ( B.Observe | B.Inspect | B.Pin _ | B.Integrate _
+                          | B.Verify_recovery | B.Continue _ | B.Confirm _
+                          | B.Commit_merge _ | B.Plan_remote_replay _
+                          | B.Checkout_remote _ );
+                        _;
+                      } ->
+                      false);
+                restored state
+            | []
+            | B.Execute _ :: _
+            | B.Start_repair _ :: _
+            | B.Completed _ :: _
+            | B.Repair _ :: _ :: _ ->
+                failwith "publication agent was bypassed"
+          in
+          let state = attempt (reject (publishing ())) in
+          assert (
+            Option.map
+              (fun (op : B.operation) -> op.publication_recovery_attempts)
+              (B.operation state)
+            = Some 1);
+          let state = attempt (reject state) in
+          assert (
+            Option.map
+              (fun (op : B.operation) -> op.publication_recovery_attempts)
+              (B.operation state)
+            = Some 2);
+          let state, effects = reply (reject state) verified in
+          B.pending state = None
+          && effects = []
+          &&
+          match B.phase state with
+          | Some (B.Intervention _) -> true
+          | None
+          | Some
+              ( B.Preparing | B.Integrating | B.Repairing _ | B.Publishing
+              | B.Confirming | B.Recovering | B.Waiting _ | B.Settled ) ->
+              false
+        with _ -> false);
+    QCheck2.Test.make ~count:100
+      ~name:
+        "BR publication authority denials enter bounded publication recovery"
+      Gen.bool (fun workflow ->
+        let rejection =
+          if workflow then Push_reject_classify.Workflow_scope_missing
+          else Push_reject_classify.Permission_denied
+        in
+        let state, effects =
+          reply (publishing ()) (B.Publication_rejected rejection)
+        in
+        effects <> []
+        && Option.map (fun c -> c.B.kind) (B.pending state)
+           = Some B.Verify_recovery);
+    QCheck2.Test.make ~count:100
+      ~name:"BR publication mutation budget survives confirmation and restart"
+      Gen.unit (fun () ->
+        try
+          let state, _ = reply (publishing ()) (B.Attempt_failed "timeout") in
+          let state =
+            match B.decode (B.yojson_of_t state) with
+            | Ok state -> state
+            | Error message -> failwith message
+          in
+          let state, _ = B.step state (B.Tick 1000.) in
+          let state, _ =
+            reply state
+              (inspected
+                 {
+                   observation with
+                   source = candidate;
+                   head = candidate;
+                   target_included = true;
+                   completed_integration = true;
+                 })
+          in
+          let state, _ =
+            reply state (B.Remote { sha = Some source; topology = B.Diverged })
+          in
+          assert (
+            match B.pending state with
+            | Some { kind = B.Publish _; _ } -> true
+            | None
+            | Some
+                {
+                  kind =
+                    ( B.Observe | B.Inspect | B.Pin _ | B.Integrate _
+                    | B.Verify_recovery | B.Continue _ | B.Confirm _
+                    | B.Commit_merge _ | B.Plan_remote_replay _
+                    | B.Checkout_remote _ );
+                  _;
+                } ->
+                false);
+          let state, _ = reply state (B.Attempt_failed "timeout") in
+          let state, effects =
+            reply state
+              (B.Recovery_verified
+                 {
+                   observation =
+                     {
+                       observation with
+                       source = candidate;
+                       head = candidate;
+                       target_included = true;
+                     };
+                   source_preserved = true;
+                   remote_preserved = true;
+                 })
+          in
+          (match effects with
+            | [ B.Repair _ ] -> true
+            | []
+            | B.Execute _ :: _
+            | B.Start_repair _ :: _
+            | B.Completed _ :: _
+            | B.Repair _ :: _ :: _ ->
+                false)
+          &&
+          match B.operation state with
+          | Some
+              {
+                deterministic_failures;
+                repair =
+                  Some
+                    {
+                      mode =
+                        B.History_recovery { task = B.Repair_publication; _ };
+                      _;
+                    };
+                _;
+              } ->
+              deterministic_failures = 2
+          | None
+          | Some { repair = None; _ }
+          | Some
+              {
+                repair =
+                  Some
+                    {
+                      mode =
+                        ( B.Diagnosis _ | B.Content_repair
+                        | B.History_recovery
+                            {
+                              task = B.Finish_local_work | B.Reconstruct_history;
+                              _;
+                            } );
+                      _;
+                    };
+                _;
+              } ->
+              false
+        with _ -> false);
     QCheck2.Test.make ~count:200
       ~name:
         "legacy verification preserves a newer queued intent before \
@@ -264,9 +803,7 @@ let tests =
             | None, _ | _, None -> false)
           && Bool.equal (B.publications final <> []) exists
           && (if exists then B.phase final = Some B.Settled
-              else
-                B.phase final
-                = Some (B.Intervention "legacy_publication_not_confirmed"))
+              else is_diagnosis final)
           &&
           match B.operation final with
           | Some op -> B.initial_publication_candidate op ~remote:sha = None
@@ -293,9 +830,10 @@ let tests =
             fst
               (reply confirming
                  (if changed then
-                    B.Permanent "legacy_publication_source_changed"
+                    B.Needs_diagnosis "legacy_publication_source_changed"
                   else B.Remote { sha = Some target; topology = Diverged }))
           in
+          let stopped = exhaust_diagnosis stopped in
           let requested_state, effects =
             if requested then B.step stopped (B.Request intent)
             else (stopped, [])
@@ -424,7 +962,7 @@ let tests =
                           B.command_allowed_for_purpose B.Verify_publication
                             c.kind
                       | B.Completed _ -> true
-                      | B.Repair _ | B.Start_repair _ -> false)
+                      | B.Repair _ | B.Start_repair _ -> is_diagnosis next)
                     effects
                 in
                 let restored =
@@ -599,7 +1137,10 @@ let tests =
             | Error reason -> failwith reason
           in
           let other = B.Remote_id.of_destination ("different/" ^ suffix) in
-          let stopped = fst (reply restored (B.Permanent "test resume")) in
+          let stopped =
+            exhaust_diagnosis
+              (fst (reply restored (B.Needs_diagnosis "test resume")))
+          in
           let resumed = fst (B.step stopped B.Resume) in
           B.check_observation_destination (operation unobserved)
             ~observed:observation.destination
@@ -634,11 +1175,7 @@ let tests =
         if unrelated then result = B.Recovery_required "unrelated_histories"
         else
           result
-          = B.Retryable
-              {
-                reason = "fatal: Unable to create index.lock: File exists";
-                retry_after = None;
-              });
+          = B.Attempt_failed "fatal: Unable to create index.lock: File exists");
     QCheck2.Test.make ~name:"BR reconstruction decoding is total" ~count:500
       Gen.(pair string string)
       (fun (tree, history) ->
@@ -910,9 +1447,12 @@ let tests =
         let state, _ =
           reply state (B.Inspected { observation with destination = other })
         in
+        let prompted = is_diagnosis state in
+        let state = exhaust_diagnosis state in
         let stopped =
-          B.phase state
-          = Some (B.Intervention "publication_destination_changed")
+          prompted
+          && B.phase state
+             = Some (B.Intervention "publication_destination_changed")
         in
         let resumed, _ = B.step state B.Resume in
         let duplicate, effects = B.step resumed B.Resume in
@@ -996,7 +1536,199 @@ let tests =
           ~base_branch:(if branch_matches then "main" else "other")
         = (head_matches && base_matches && branch_matches && published));
     QCheck2.Test.make
-      ~name:"BR history recovery retains dirty work without an agent turn"
+      ~name:
+        "BR repeated continuation timeout escalates across restart and \
+         inspection"
+      ~count:100 Gen.bool (fun restart ->
+        let active =
+          { observation with sequencer = Some "merge"; conflicts = 0 }
+        in
+        let state, _ = B.step (prepared ()) B.Recover in
+        let state, _ =
+          reply state
+            (B.Inspected_active { observation = active; ready = true })
+        in
+        let timeout =
+          B.Attempt_failed "Git command outcome uncertain after timeout"
+        in
+        let state, _ = reply state timeout in
+        let state =
+          if restart then
+            match B.decode (B.yojson_of_t state) with
+            | Ok state -> state
+            | Error _ -> assert false
+          else state
+        in
+        let state, _ = B.step state (B.Tick 1000.) in
+        let state, _ =
+          reply state
+            (B.Inspected_active { observation = active; ready = true })
+        in
+        let state, _ = reply state timeout in
+        Option.map (fun c -> c.B.kind) (B.pending state)
+        = Some B.Verify_recovery
+        &&
+        let state, effects =
+          reply state
+            (B.Recovery_verified
+               {
+                 observation = active;
+                 source_preserved = false;
+                 remote_preserved = false;
+               })
+        in
+        match B.operation state with
+        | Some { repair = Some { mode = B.History_recovery _; _ }; failures; _ }
+          ->
+            failures = 2 && effects <> []
+        | None
+        | Some { repair = None; _ }
+        | Some
+            { repair = Some { mode = B.Content_repair | B.Diagnosis _; _ }; _ }
+          ->
+            false);
+    QCheck2.Test.make
+      ~name:
+        "BR finishing interrupted edits unlocks integration only after \
+         independent proof" ~count:100 Gen.bool (fun preserved ->
+        let state, _ = request () in
+        let state, _ =
+          reply state (B.Observed { observation with clean = false })
+        in
+        let state, _ =
+          reply state
+            (B.Recovery_verified
+               {
+                 observation = { observation with clean = false };
+                 source_preserved = false;
+                 remote_preserved = false;
+               })
+        in
+        let state, _ = B.step state B.Recover in
+        let state, _ =
+          reply state
+            (B.Recovery_verified
+               {
+                 observation =
+                   { observation with source = candidate; head = candidate };
+                 source_preserved = preserved;
+                 remote_preserved = preserved;
+               })
+        in
+        if preserved then
+          Option.map (fun c -> c.B.kind) (B.pending state)
+          = Some
+              (B.Integrate
+                 {
+                   source = candidate;
+                   target;
+                   boundary = observation.boundary;
+                   policy = intent.policy;
+                 })
+        else
+          match B.operation state with
+          | Some { repair = Some { mode = B.History_recovery _; _ }; _ } ->
+              B.pending state = None
+          | None
+          | Some { repair = None; _ }
+          | Some
+              {
+                repair = Some { mode = B.Content_repair | B.Diagnosis _; _ };
+                _;
+              } ->
+              false);
+    QCheck2.Test.make
+      ~name:
+        "BR old intervention diagnostics are re-evaluated without granting \
+         destination authority"
+      ~count:200
+      Gen.(triple string bool bool)
+      (fun (diagnostic, changed_destination, legacy_fields) ->
+        try
+          let stopped, _ =
+            reply (prepared ()) (B.Needs_diagnosis ("old/" ^ diagnostic))
+          in
+          let stopped = exhaust_diagnosis stopped in
+          let rec old = function
+            | `Assoc fields ->
+                `Assoc
+                  (List.filter_map
+                     (fun (key, value) ->
+                       if legacy_fields && key = "deterministic_failures" then
+                         None
+                       else if key = "repair" then Some (key, `Null)
+                       else Some (key, old value))
+                     fields)
+            | `List values -> `List (List.map old values)
+            | value -> value
+          in
+          let state =
+            match B.decode (old (B.yojson_of_t stopped)) with
+            | Ok state -> state
+            | Error message -> failwith message
+          in
+          assert (
+            Option.map (fun c -> c.B.kind) (B.pending state) = Some B.Inspect);
+          assert (
+            match B.decode (B.yojson_of_t state) with
+            | Ok restored -> B.equal state restored
+            | Error _ -> false);
+          let state, _ =
+            reply state
+              (B.Inspected
+                 {
+                   observation with
+                   clean = false;
+                   destination =
+                     (if changed_destination then
+                        B.Remote_id.of_destination "changed"
+                      else observation.destination);
+                 })
+          in
+          if changed_destination then is_diagnosis state
+          else
+            Option.map (fun c -> c.B.kind) (B.pending state)
+            = Some B.Verify_recovery
+        with _ -> false);
+    QCheck2.Test.make
+      ~name:"BR upgrade retains an exhausted full-recovery budget" ~count:100
+      Gen.unit (fun () ->
+        try
+          let attempt state =
+            match reply state unverified with
+            | state, [ B.Repair token ] ->
+                let state, _ = B.step state (B.Repair_started token) in
+                fst (B.step state (B.Repair_completed { token; at = 100. }))
+            | ( _,
+                ( []
+                | B.Execute _ :: _
+                | B.Start_repair _ :: _
+                | B.Completed _ :: _
+                | B.Repair _ :: _ :: _ ) ) ->
+                failwith "missing recovery offer"
+          in
+          let stopped, _ = reply (attempt (attempt (recovery ()))) unverified in
+          let stopped = exhaust_diagnosis stopped in
+          let rec old = function
+            | `Assoc fields ->
+                `Assoc
+                  (List.filter_map
+                     (fun (key, value) ->
+                       if key = "deterministic_failures" then None
+                       else Some (key, old value))
+                     fields)
+            | `List values -> `List (List.map old values)
+            | value -> value
+          in
+          match B.decode (old (B.yojson_of_t stopped)) with
+          | Error _ -> false
+          | Ok restored ->
+              B.equal stopped restored
+              && B.phase restored
+                 = Some (B.Intervention "recovery_preservation_unproven")
+        with _ -> false);
+    QCheck2.Test.make
+      ~name:"BR history recovery offers an owned agent turn for dirty work"
       ~count:100 Gen.bool (fun remote_changed ->
         let observation =
           {
@@ -1018,9 +1750,31 @@ let tests =
         | Error _ -> false
         | Ok restarted ->
             let stable, again = B.step restarted B.Recover in
-            B.phase state
-            = Some (B.Intervention "history_recovery_dirty_worktree")
-            && effects = [] && again = [] && B.equal state stable);
+            (match B.operation state with
+              | Some { phase = B.Repairing r; command_sequence; id; _ } -> (
+                  B.phase state = Some (B.Repairing r)
+                  &&
+                  match effects with
+                  | [ B.Repair token ] ->
+                      token.operation = id && token.command = command_sequence
+                  | []
+                  | B.Execute _ :: _
+                  | B.Completed _ :: _
+                  | B.Start_repair _ :: _
+                  | B.Repair _ :: _ ->
+                      false)
+              | None
+              | Some
+                  {
+                    phase =
+                      ( B.Preparing | Integrating | Publishing | Confirming
+                      | Waiting _ | Recovering | Settled | Intervention _ );
+                    _;
+                  } ->
+                  false)
+            && Option.map (fun c -> c.B.kind) (B.pending stable)
+               = Some B.Verify_recovery
+            && again <> []);
     QCheck2.Test.make
       ~name:"BR observed recovery revisions survive new turns and restart"
       ~count:200
@@ -1069,8 +1823,9 @@ let tests =
       ~count:100 Gen.bool (fun history ->
         let original = if history then recovery () else publishing () in
         let stopped, _ =
-          reply original (B.Permanent "operator_action_required")
+          reply original (B.Needs_diagnosis "operator_action_required")
         in
+        let stopped = exhaust_diagnosis stopped in
         let polled, effects = B.step stopped B.Recover in
         let resumed, commands = B.step stopped B.Resume in
         let duplicate, duplicate_effects = B.step resumed B.Resume in
@@ -1080,7 +1835,7 @@ let tests =
             && before.source = after.source
             && before.target = after.target
             && before.candidate = after.candidate
-            && (command.kind = if history then B.Verify_recovery else B.Inspect)
+            && command.kind = B.Inspect
             && commands = [ B.Execute command ]
             && B.equal resumed duplicate && duplicate_effects = []
         | _ -> false);
@@ -1197,6 +1952,61 @@ let tests =
           | B.Completed _ :: _
           | B.Repair _ :: _ :: _ ->
               false);
+    QCheck2.Test.make
+      ~name:
+        "BR unfamiliar sequencers retain observations and offer owned recovery"
+      ~count:100 Gen.bool (fun cherry_pick ->
+        let sequencer =
+          if cherry_pick then
+            Git_observation.Cherry_pick { target = B.Commit.to_string target }
+          else
+            Git_observation.Rebase
+              {
+                target = B.Commit.to_string target;
+                original = B.Commit.to_string source;
+                step = "1";
+                head_ref = "refs/heads/foreign";
+                merge_heads = [];
+              }
+        in
+        let checkout =
+          Git_observation.of_porcelain ~branch:None
+            ~head:(B.Commit.to_string source)
+            ~sequencer "UU file\000"
+        in
+        let observation =
+          {
+            observation with
+            clean = false;
+            conflicts = 1;
+            sequencer = Some (Git_observation.progress_key checkout);
+          }
+        in
+        let state, _ = request () in
+        let op = Option.get (B.operation state) in
+        let result =
+          B.inspection_result op ~branch:"patch" observation checkout
+        in
+        let state, _ = reply state result in
+        Option.map (fun c -> c.B.kind) (B.pending state)
+        = Some B.Verify_recovery
+        &&
+        let state, effects =
+          reply state
+            (B.Recovery_verified
+               {
+                 observation;
+                 source_preserved = false;
+                 remote_preserved = false;
+               })
+        in
+        effects <> []
+        && B.pending state = None
+        && B.is_pending state
+        &&
+        match B.decode (B.yojson_of_t state) with
+        | Ok decoded -> B.equal state decoded
+        | Error _ -> false);
     QCheck2.Test.make
       ~name:"BR malformed checkout evidence retries without repair" ~count:100
       Gen.string (fun text ->
@@ -1560,9 +2370,10 @@ let tests =
         let state = prepared () in
         let state, _ =
           reply state
-            (if permanent then B.Permanent "policy"
+            (if permanent then B.Needs_diagnosis "policy"
              else B.Retryable { reason = "transport"; retry_after = None })
         in
+        let state = if permanent then exhaust_diagnosis state else state in
         B.is_unsettled state
         && B.is_pending state = not permanent
         && (not (B.is_unsettled B.empty))
@@ -2054,6 +2865,69 @@ let tests =
           | Error _ -> false
         with _ -> false);
     QCheck2.Test.make
+      ~name:
+        "BR accepted recovery timeouts are bounded after verification across \
+         restart" ~count:100 Gen.bool (fun final_proof ->
+        try
+          let claim state =
+            match reply state unverified with
+            | state, [ B.Repair token ] ->
+                (fst (B.step state (B.Repair_started token)), token)
+            | ( _,
+                ( []
+                | B.Execute _ :: _
+                | B.Start_repair _ :: _
+                | B.Completed _ :: _
+                | B.Repair _ :: _ :: _ ) ) ->
+                failwith "missing recovery offer"
+          in
+          let fail state =
+            let state, token = claim state in
+            let turn = Option.get (B.repair_turn state ~branch:"patch" token) in
+            let event =
+              B.repair_result ~turn ~turn_accepted:true ~at:100.
+                ~before_head:(Some candidate) ~after_head:(Some candidate)
+                ~timed_out:true ~final_result:false
+                ~detail:"accepted turn timed out"
+            in
+            assert (
+              event
+              = B.Repair_failed
+                  { token; at = 100.; reason = "accepted turn timed out" });
+            let state, _ = B.step state event in
+            let state =
+              match B.decode (B.yojson_of_t state) with
+              | Ok state -> state
+              | Error message -> failwith message
+            in
+            fst (B.step state (B.Tick 10000.))
+          in
+          let state = fail (fail (recovery ())) in
+          let state, _ =
+            reply state
+              (if final_proof then
+                 B.Recovery_verified
+                   {
+                     observation =
+                       {
+                         observation with
+                         source = candidate;
+                         head = candidate;
+                         target_included = true;
+                       };
+                     source_preserved = true;
+                     remote_preserved = true;
+                   }
+               else unverified)
+          in
+          if final_proof then
+            Option.map (fun c -> c.B.kind) (B.pending state)
+            = Some (B.Publish { candidate; expected = observation.remote })
+          else
+            B.phase state
+            = Some (B.Intervention "recovery_preservation_unproven")
+        with _ -> false);
+    QCheck2.Test.make
       ~name:"BR recovery budget ignores transport and survives restart"
       ~count:100
       Gen.(int_range 0 12)
@@ -2108,9 +2982,9 @@ let tests =
                ^ B.Commit.to_string source));
           let state, _ =
             B.step state
-              (B.repair_result ~turn ~at:100. ~before_head:(Some candidate)
-                 ~after_head:(Some target) ~timed_out:false ~final_result:true
-                 ~detail:"")
+              (B.repair_result ~turn_accepted:false ~turn ~at:100.
+                 ~before_head:(Some candidate) ~after_head:(Some target)
+                 ~timed_out:false ~final_result:true ~detail:"")
           in
           let state, token = claim state in
           let state, _ =
@@ -2132,7 +3006,9 @@ let tests =
              = Some (Printf.sprintf "%d/%d" token.operation token.command)
         with _ -> false);
     QCheck2.Test.make
-      ~name:"BR repair policy denial stops without dispatching recovery"
+      ~name:
+        "BR first accepted repair failure waits for verification without \
+         terminal denial"
       ~count:100
       Gen.(int_range 1 10)
       (fun conflicts ->
@@ -2144,15 +3020,15 @@ let tests =
         | [ B.Repair token ] ->
             let claimed, _ = B.step state (B.Repair_started token) in
             let denial =
-              B.Repair_denied
-                { token; reason = "scripted_patch_requires_manual_repair" }
+              B.Repair_failed
+                { token; at = 1.; reason = "accepted repair failed" }
             in
             let stopped, effects = B.step claimed denial in
             let duplicate, repeated = B.step stopped denial in
             let unrelated = publishing () in
             let unchanged, stale = B.step unrelated denial in
             B.phase stopped
-            = Some (B.Intervention "scripted_patch_requires_manual_repair")
+            = Some (B.Waiting { until = 6.; reason = "accepted repair failed" })
             && effects = []
             && B.pending stopped = None
             && B.equal duplicate stopped && repeated = []
@@ -2256,8 +3132,8 @@ let tests =
                 B.repair_head_matches turn after_head
                 = ((not changed) && not unknown));
               let event =
-                B.repair_result ~turn ~at:100. ~before_head ~after_head
-                  ~timed_out:timeout ~final_result:true ~detail:""
+                B.repair_result ~turn_accepted:false ~turn ~at:100. ~before_head
+                  ~after_head ~timed_out:timeout ~final_result:true ~detail:""
               in
               let state, _ = B.step state event in
               let expected =
@@ -2582,8 +3458,9 @@ let tests =
             } ->
             false);
     QCheck2.Test.make
-      ~name:"BR session publication requires the captured revision" ~count:100
-      Gen.bool (fun dirty ->
+      ~name:
+        "BR changed session publication retains its requested revision through \
+         recovery" ~count:100 Gen.bool (fun dirty ->
         let state, _ =
           B.step B.empty
             (B.Request { intent with purpose = Publish_revision candidate })
@@ -2591,8 +3468,22 @@ let tests =
         let state, effects =
           reply state (B.Observed { observation with clean = not dirty })
         in
-        B.phase state = Some (B.Intervention "publication_source_changed")
-        && effects = []);
+        Option.map (fun c -> c.B.kind) (B.pending state)
+        = Some B.Verify_recovery
+        && Option.bind (B.operation state) (fun op -> op.B.source)
+           = Some candidate
+        && effects <> []
+        &&
+        let state, _ =
+          reply state
+            (B.Recovery_verified
+               {
+                 observation = { observation with clean = not dirty };
+                 source_preserved = false;
+                 remote_preserved = false;
+               })
+        in
+        B.pending state = None && B.is_pending state);
     QCheck2.Test.make ~name:"BR duplicate command results are fixed points"
       ~count:500
       Gen.(int_range 0 5)
@@ -2674,7 +3565,19 @@ let tests =
             fail state (n - 1)
         in
         match B.operation (fail (publishing ()) count) with
-        | Some op -> op.repair = None && op.candidate = Some candidate
+        | Some op -> (
+            op.candidate = Some candidate
+            && op.deterministic_failures = 0
+            &&
+            if count = 1 then op.repair = None
+            else
+              match op.repair with
+              | Some { mode = Diagnosis _; attempts_without_progress = 0; _ } ->
+                  true
+              | None
+              | Some { mode = Content_repair | History_recovery _; _ }
+              | Some { mode = Diagnosis _; _ } ->
+                  false)
         | None -> false);
     QCheck2.Test.make
       ~name:"BR successful services converge without repeated implementation"
@@ -3205,7 +4108,10 @@ let initial_remote_integration_tests =
                    remote_preserved = true;
                  })
           in
-          B.phase verified = Some (B.Intervention "recovery_target_changed")
+          B.is_pending verified
+          && B.pending verified = None
+          && (Option.get (B.operation verified)).source = original.source
+          && (Option.get (B.operation verified)).target = original.target
           && B.publications verified = []
           && (Option.get (B.operation verified)).remote_integration
              = original.remote_integration
