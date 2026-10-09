@@ -163,7 +163,119 @@ module Make (W : Worktree.S) (Env : ENV) = struct
 
   module WS = Worktree_setup.Make (W) (Env)
 
-  let publish_completion ~write_owner ~patch_id ~(agent : Patch_agent.t) ~path
+  let publish_transcript ~patch_id text =
+    Stdlib.Hashtbl.replace Env.transcripts patch_id text;
+    Stdlib.Hashtbl.replace Env.transcript_updates patch_id text
+
+  let begin_transcript ~patch_id ~backend_name ~resume_session ~prompt =
+    let buf = Buffer.create 4096 in
+    Option.iter (Stdlib.Hashtbl.find_opt Env.transcripts patch_id)
+      ~f:(fun previous -> Buffer.add_string buf previous);
+    let tm = Unix.localtime (Unix.gettimeofday ()) in
+    Buffer.add_string buf
+      (Printf.sprintf
+         "\n\
+          ---\n\
+          **[%02d:%02d:%02d] Delivered to %s%s:**\n\n\
+          %s\n\n\
+          ---\n\
+          **%s response:**\n\n"
+         tm.Unix.tm_hour tm.Unix.tm_min tm.Unix.tm_sec backend_name
+         (Option.value_map resume_session ~default:"" ~f:(fun id ->
+              " (--resume " ^ String.prefix id 8 ^ ")"))
+         prompt backend_name);
+    publish_transcript ~patch_id (Buffer.contents buf);
+    buf
+
+  let run_repair ~patch_id ~(agent : Patch_agent.t) ~backend ~complexity ~cwd
+      ~context ~guidance ~turn ~read_head =
+    (* A repair is another turn of the patch conversation. In particular, the
+       ordinary fresh-session retry state must not discard this context. *)
+    let resume_session = agent.llm_session_id in
+    let session_uuid =
+      Option.value_or_thunk resume_session ~default:Session_id.mint
+    in
+    let prompt = Branch_reconcile.recovery_prompt ~context ~guidance turn in
+    let text_buf =
+      begin_transcript ~patch_id ~backend_name:backend.Llm_backend.name
+        ~resume_session ~prompt
+    in
+    let captured_session = ref resume_session in
+    let gate = ref (Content_gate.create ()) in
+    let streamed_text = ref false in
+    let sync () = publish_transcript ~patch_id (Buffer.contents text_buf) in
+    let on_event event =
+      let log entry =
+        Runtime_logging.log_stream_entry Env.runtime ~patch_id entry
+      in
+      (match event with
+      | Types.Stream_event.Turn_started -> ()
+      | Text_delta text ->
+          streamed_text := true;
+          Buffer.add_string text_buf text;
+          log (Activity_log.Stream_entry.Text_chunk text)
+      | Tool_use { name; input; status } ->
+          Buffer.add_string text_buf
+            (Printf.sprintf "\n[tool: %s%s] %s\n" name
+               (Option.value_map status ~default:"" ~f:(fun status ->
+                    " " ^ status))
+               input);
+          log (Activity_log.Stream_entry.Tool_use (name, input))
+      | Final_result { text; stop_reason } ->
+          if not !streamed_text then Buffer.add_string text_buf text;
+          streamed_text := false;
+          log
+            (Activity_log.Stream_entry.Finished
+               (Types.Stop_reason.to_display stop_reason))
+      | Error error ->
+          Buffer.add_string text_buf ("\n[error] " ^ error ^ "\n");
+          log (Activity_log.Stream_entry.Stream_error error)
+      | Session_init { session_id; _ } -> (
+          match resume_session with
+          | Some expected when not (String.equal expected session_id) ->
+              failwith "repair backend changed the patch conversation identity"
+          | Some _ | None -> captured_session := Some session_id));
+      sync ();
+      let next_gate, persist = Content_gate.should_persist !gate event in
+      gate := next_gate;
+      if persist then
+        Option.iter !captured_session ~f:(fun session_id ->
+            let snapshot_path = Project_store.snapshot_path Env.project_name in
+            (match
+               Runtime.update_persisting Env.runtime
+                 ~persist:(Persistence.save_snapshot ~path:snapshot_path)
+                 (fun snap ->
+                   let orch =
+                     Orchestrator.set_llm_session_id snap.Runtime.orchestrator
+                       patch_id (Some session_id)
+                   in
+                   let orch =
+                     Orchestrator.clear_session_fallback orch patch_id
+                   in
+                   let transcripts = Hashtbl.copy snap.transcripts in
+                   Hashtbl.set transcripts ~key:patch_id
+                     ~data:(Buffer.contents text_buf);
+                   ({ snap with Runtime.orchestrator = orch; transcripts }, ()))
+             with
+            | Ok () -> ()
+            | Error error ->
+                failwith ("Cannot checkpoint repair conversation: " ^ error));
+            match
+              Persistence.record_session_id
+                ~snapshot_path:(Project_store.snapshot_path Env.project_name)
+                ~patch_id ~session_id
+            with
+            | Ok () -> ()
+            | Error error ->
+                Runtime_logging.log_event Env.runtime ~patch_id
+                  ("Failed to persist repair conversation: " ^ error))
+    in
+    Exn.protect ~finally:sync ~f:(fun () ->
+        Branch_repair_session.run ~backend ~context ~guidance ~on_event ~cwd
+          ~project_name:Env.project_name ~patch_id ~complexity ~resume_session
+          ~session_uuid ~turn ~read_head ~now:(fun () -> Eio.Time.now Env.clock))
+
+  let publish_completion ~write_owner ~patch_id ~(agent : Patch_agent.t) ~path:_
       completion =
     let base, policy =
       Runtime.read Env.runtime (fun snap ->
@@ -183,9 +295,7 @@ module Make (W : Worktree.S) (Env : ENV) = struct
       Persistence.save_snapshot
         ~path:(Project_store.snapshot_path Env.project_name)
     in
-    let execute =
-      W.reconcile ~path ~project_name:Env.project_name ~branch:agent.branch
-    in
+    let execute = WS.execute_reconciliation ~patch_id in
     let now () = Eio.Time.now Env.clock in
     let outcome =
       Branch_reconcile_runner.run_owned ~owner:write_owner ~persist ~now
@@ -232,11 +342,7 @@ module Make (W : Worktree.S) (Env : ENV) = struct
     let project_name = Env.project_name in
     let owner = Env.owner in
     let repo = Env.repo in
-    let transcripts = Env.transcripts in
-    let publish_transcript text =
-      Stdlib.Hashtbl.replace transcripts patch_id text;
-      Stdlib.Hashtbl.replace Env.transcript_updates patch_id text
-    in
+    let publish_transcript = publish_transcript ~patch_id in
     let log_event = Runtime_logging.log_event in
     let log_stream_entry = Runtime_logging.log_stream_entry in
     match
@@ -246,22 +352,24 @@ module Make (W : Worktree.S) (Env : ENV) = struct
              ~guidance:agent.inflight_human_messages
              ~publication:agent.branch_reconcile)
     with
-    | Some completion -> (
-        match WS.ensure_worktree ~patch_id ~agent () with
-        | Worktree_setup.Missing | Worktree_setup.Refused ->
-            make_run_result `Retry_push []
-        | Worktree_setup.Path path ->
-            let disposition =
-              match
-                publish_completion ~write_owner ~patch_id ~agent ~path
-                  completion
-              with
-              | `Published -> `Ok
-              | `No_work -> `No_commits
-              | `Pending -> `Retry_push
-            in
-            make_run_result ~turn_accepted:completion.turn_accepted disposition
-              [])
+    | Some completion ->
+        (* Completed implementation resumes its captured publication. Replacing
+           that operation with provisioning would discard its fixed point and
+           could publish the same completed turn twice. The owned publication
+           executor performs any necessary checkout checks. *)
+        let path =
+          Option.value agent.worktree_path
+            ~default:(Worktree.worktree_dir ~project_name ~patch_id)
+        in
+        let disposition =
+          match
+            publish_completion ~write_owner ~patch_id ~agent ~path completion
+          with
+          | `Published -> `Ok
+          | `No_work -> `No_commits
+          | `Pending -> `Retry_push
+        in
+        make_run_result ~turn_accepted:completion.turn_accepted disposition []
     | None -> (
         match session_mode agent with
         | `Give_up ->
@@ -278,13 +386,8 @@ module Make (W : Worktree.S) (Env : ENV) = struct
               | `Resume id -> (Some id, false)
               | `Fresh -> (None, true)
             in
-            match WS.ensure_worktree ~patch_id ~agent () with
-            | Worktree_setup.Missing ->
-                Runtime.update_orchestrator runtime (fun orch ->
-                    Orchestrator.apply_session_result orch patch_id
-                      Orchestrator.Session_worktree_missing);
-                make_run_result `Failed []
-            | Worktree_setup.Refused -> make_run_result `Failed []
+            match WS.ensure_owned ~owner:write_owner () with
+            | Worktree_setup.Unavailable _ -> make_run_result `Failed []
             | Worktree_setup.Path worktree_path ->
                 let cwd = Eio.Path.(fs / worktree_path) in
                 let pre_session_branch_sha =
@@ -350,8 +453,10 @@ module Make (W : Worktree.S) (Env : ENV) = struct
                             "\n\
                              Integration root: preserve all published history. \
                              Never rebase, reset, or force-push this branch. \
-                             Incorporate upstream changes with git merge; the \
-                             supervisor uses normal pushes.\n"
+                             Commit implementation changes locally; the \
+                             supervisor reconciles captured upstream revisions \
+                             and uses normal pushes. Do not merge other \
+                             branches.\n"
                           else "")
                     in
                     prompt ^ mode_instructions
@@ -377,31 +482,8 @@ module Make (W : Worktree.S) (Env : ENV) = struct
                   | _ -> None
                 in
                 let text_buf =
-                  let buf = Buffer.create 4096 in
-                  (match Stdlib.Hashtbl.find_opt transcripts patch_id with
-                  | Some prev when String.length prev > 0 ->
-                      Buffer.add_string buf prev;
-                      Buffer.add_char buf '\n'
-                  | Some _ | None -> ());
-                  (* Write the prompt being delivered so it appears in the transcript *)
-                  let now = Unix.gettimeofday () in
-                  let tm = Unix.localtime now in
-                  Buffer.add_string buf
-                    (Printf.sprintf
-                       "\n---\n**[%02d:%02d:%02d] Delivered to %s%s:**\n\n"
-                       tm.Unix.tm_hour tm.Unix.tm_min tm.Unix.tm_sec
-                       backend_name
-                       (match resume_session with
-                       | Some id ->
-                           Printf.sprintf " (--resume %s)"
-                             (String.sub id ~pos:0
-                                ~len:(min 8 (String.length id)))
-                       | None -> ""));
-                  Buffer.add_string buf prompt;
-                  Buffer.add_string buf
-                    (Printf.sprintf "\n\n---\n**%s response:**\n\n" backend_name);
-                  publish_transcript (Buffer.contents buf);
-                  buf
+                  begin_transcript ~patch_id ~backend_name ~resume_session
+                    ~prompt
                 in
                 let error_buf = Buffer.create 256 in
                 let session_started_at = Unix.gettimeofday () in
@@ -902,8 +984,6 @@ module Make (W : Worktree.S) (Env : ENV) = struct
                         | Orchestrator.Session_timed_out _
                         | Orchestrator.Session_failed _
                         | Orchestrator.Session_give_up
-                        | Orchestrator.Session_worktree_missing
-                        | Orchestrator.Session_push_failed _
                         | Orchestrator.Session_no_commits
                         | Orchestrator.Session_context_exhausted ->
                             subkind
@@ -1087,8 +1167,6 @@ module Make (W : Worktree.S) (Env : ENV) = struct
                           | Orchestrator.Session_failed _
                           | Orchestrator.Session_wontdo _
                           | Orchestrator.Session_give_up
-                          | Orchestrator.Session_worktree_missing
-                          | Orchestrator.Session_push_failed _
                           | Orchestrator.Session_context_exhausted ->
                               combined
                         in
@@ -1098,12 +1176,6 @@ module Make (W : Worktree.S) (Env : ENV) = struct
                               match publication with
                               | `Pending -> `Retry_push
                               | `Published | `No_work -> user_result)
-                          | Orchestrator.Session_push_failed _ ->
-                              (* LLM session ran fine but commits didn't ship because
-                         push failed — signal retry so the Respond path uses
-                         Respond_retry_push (clean complete) and the reconciler
-                         re-enqueues the operation naturally. *)
-                              `Retry_push
                           | Orchestrator.Session_no_commits -> `No_commits
                           | Orchestrator.Session_process_error _
                           | Orchestrator.Session_no_resume
@@ -1111,7 +1183,6 @@ module Make (W : Worktree.S) (Env : ENV) = struct
                           | Orchestrator.Session_failed _
                           | Orchestrator.Session_wontdo _
                           | Orchestrator.Session_give_up
-                          | Orchestrator.Session_worktree_missing
                           | Orchestrator.Session_context_exhausted ->
                               `Failed
                         in

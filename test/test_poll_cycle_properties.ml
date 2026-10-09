@@ -251,9 +251,71 @@ let prop_timeout_always_log_error =
           Base.String.is_substring message ~substring:"timed out"
       | Apply_pr_state _ | Skip_fork _ | Rediscover_pr _ -> false)
 
+let context_agent text =
+  Patch_agent.create
+    ~branch:(Branch.of_string ("branch/" ^ text))
+    (Patch_id.of_string text)
+
+let prop_context_totality =
+  QCheck2.Test.make ~name:"poll context: total, reflexive and symmetric"
+    ~count:500
+    QCheck2.Gen.(pair string string)
+    (fun (a, b) ->
+      try
+        let a = context_agent a and b = context_agent b in
+        Poll_cycle.same_context ~requested:a ~current:a
+        && Bool.equal
+             (Poll_cycle.same_context ~requested:a ~current:b)
+             (Poll_cycle.same_context ~requested:b ~current:a)
+      with _ -> false)
+
+let prop_context_isolation =
+  QCheck2.Test.make
+    ~name:"poll context: local authority changes retire responses" ~count:500
+    QCheck2.Gen.string (fun text ->
+      try
+        let requested = context_agent text in
+        let reconciliation, _ =
+          Patch_agent.reconcile_branch requested
+            (Branch_reconcile.Request
+               { base = "main"; policy = Rewrite; purpose = Reconcile_base })
+        in
+        let changed =
+          [
+            reconciliation;
+            Patch_agent.bump_generation requested;
+            Patch_agent.set_pr_number requested (Pr_number.of_int 1);
+            Patch_agent.set_base_branch requested (Branch.of_string text);
+            Patch_agent.set_head_oid requested (Some text);
+            Onton_core_test_support.Publication_fixture.agent
+              ~candidate:(Onton_core_test_support.Publication_fixture.sha text)
+              requested;
+          ]
+        in
+        List.for_all changed ~f:(fun current ->
+            not (Poll_cycle.same_context ~requested ~current))
+      with _ -> false)
+
+let prop_context_compatible_updates =
+  QCheck2.Test.make ~name:"poll context: CI and review updates commute"
+    ~count:500
+    QCheck2.Gen.(pair string bool)
+    (fun (text, value) ->
+      try
+        let requested = context_agent text in
+        let checks a = Patch_agent.set_checks_passing a value in
+        let review a = Patch_agent.set_pr_body_delivered a value in
+        Poll_cycle.same_context ~requested ~current:(review (checks requested))
+        && Poll_cycle.same_context ~requested
+             ~current:(checks (review requested))
+      with _ -> false)
+
 let () =
   QCheck_base_runner.run_tests_main
     [
+      prop_context_totality;
+      prop_context_isolation;
+      prop_context_compatible_updates;
       prop_totality;
       prop_plan_preserves_length;
       prop_plan_preserves_order;

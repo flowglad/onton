@@ -1,5 +1,5 @@
 (* @archlint.module test
-   @archlint.domain anchor *)
+   @archlint.domain types *)
 
 open Base
 open Onton_core.Types

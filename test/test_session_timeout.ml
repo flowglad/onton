@@ -15,9 +15,6 @@ let base_head = ref "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 let recovered_worktree = ref ""
 
 module Fake_worktree : Worktree.S = struct
-  let integrate ~root_path:_ ~root_branch:_ ~descendant_branch:_ ~head_sha:_ =
-    Worktree.Integration_error "unsupported fake"
-
   let resolve_main_root () = assert false
   let is_checked_out_in_repo_root _ = assert false
   let remote_branch_exists _ = assert false
@@ -28,6 +25,7 @@ module Fake_worktree : Worktree.S = struct
   let find_for_branch _ = Some !recovered_worktree
   let prune_stale_for_branch _ = ()
   let ensure_ready ~path ~branch:_ = Ok (String.equal path !recovered_worktree)
+  let inspect_existing = ensure_ready
   let run_hook ~clock:_ ~script:_ ~cwd:_ ~env:_ () = assert false
   let fetch_origin ~fetch_lock:_ ~path:_ = assert false
 
@@ -39,10 +37,6 @@ module Fake_worktree : Worktree.S = struct
   let has_uncommitted_changes ~path:_ = assert false
   let conflict_diff ~path:_ = assert false
 
-  let rebase_onto ~path:_ ~target:_ ~upstream:_ ~project_name:_ ~ancestor_ids:_
-      () =
-    assert false
-
   let read_branch_sha ~path:_ ~ref_name =
     if String.is_suffix ref_name ~suffix:"/main" then Some !base_head
     else Some !head
@@ -51,22 +45,12 @@ module Fake_worktree : Worktree.S = struct
     String.equal ancestor "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
     && String.equal descendant "cccccccccccccccccccccccccccccccccccccccc"
 
-  let read_in_progress_conflict_info ~path:_ ~target:_ ~project_name:_
-      ~ancestor_ids:_ =
-    assert false
-
-  let force_push_with_lease ~path:_ ~branch:_ ~base:_ =
-    Int.incr pushes;
-    if String.equal !head "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" then
-      Worktree.Push_no_commits
-    else Worktree.Push_ok
-
   let commit_gameplan ~path:_ ~publication:_ ~message:_ = assert false
 
   let materialization ~path:_ ~project_name:_ ~branch:_ =
     Ok (Some (B.New_branch (sha "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")))
 
-  let reconcile ~path:_ ~project_name:_ ~branch:_ ~operation:_ command =
+  let reconcile ~path:_ ~project_name:_ ~branch:_ ~operation command =
     let observation () =
       B.
         {
@@ -91,6 +75,9 @@ module Fake_worktree : Worktree.S = struct
     | B.Observe -> B.Observed (observation ())
     | B.Inspect -> B.Inspected (observation ())
     | B.Pin _ -> B.Pinned
+    | B.Verify_scope candidate ->
+        Onton_core_test_support.Scope_fixture.verified
+          operation.B.approved_scope candidate
     | B.Publish _ ->
         Int.incr pushes;
         remote_head := Some !head;
@@ -109,9 +96,7 @@ module Fake_worktree : Worktree.S = struct
           }
     | B.Commit_merge _ | B.Plan_remote_replay _ | B.Checkout_remote _
     | B.Verify_recovery | B.Integrate _ | B.Continue _ ->
-        B.Permanent "unexpected integration in session fixture"
-
-  let rebase_in_progress ~path:_ = assert false
+        B.Needs_diagnosis "unexpected integration in session fixture"
 end
 
 let run_case env ~capture_session ~respond =

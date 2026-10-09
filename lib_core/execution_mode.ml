@@ -116,26 +116,31 @@ let descendants_complete t graph ~has_merged =
   && List.for_all (Graph.all_patch_ids graph) ~f:(fun id ->
       is_root t id || has_merged id)
 
+let branch_only_published t (a : Patch_agent.t) =
+  is_descendant t a.patch_id && Patch_agent.branch_published a
+
 let integration_ready t ~construction_open ~ignore_inflight ~max_failures
     ~terminal (a : Patch_agent.t) =
-  is_descendant t a.patch_id && construction_open && a.branch_published
+  branch_only_published t a && construction_open
   && (not (Branch_reconcile.is_unsettled a.branch_reconcile))
   && a.pr_body_delivered && (not a.merged) && (not a.busy)
   && (not (Patch_agent.needs_intervention a))
   && (not a.branch_blocked) && (not a.native_stack) && a.automerge_enabled
   && (ignore_inflight || not a.automerge_inflight)
   && a.automerge_failure_count < max_failures
-  && a.checks_passing && (not a.has_conflict)
+  && a.checks_passing
+  && (not (Patch_agent.has_conflict a))
   && a.unresolved_comment_count = 0
   && List.is_empty a.queue
   && Option.is_none a.current_op
   && Option.is_some a.head_oid
-  && Option.is_none a.expected_remote_head_oid
+  && Option.is_none (Patch_agent.expected_remote_head_oid a)
   && Option.equal Branch.equal a.base_branch (Some terminal)
-  && Option.equal Branch.equal a.branch_rebased_onto a.base_branch
+  && Option.equal Branch.equal (Patch_agent.branch_rebased_onto a) a.base_branch
 
 let root_ready t graph ~has_merged ~pending_integrations (a : Patch_agent.t) =
   is_root t a.patch_id
+  && Patch_agent.forge_revision_pair_confirmed a
   && (not (Branch_reconcile.is_unsettled a.branch_reconcile))
   && descendants_complete t graph ~has_merged
   && (not a.busy) && List.is_empty a.queue
@@ -144,9 +149,10 @@ let root_ready t graph ~has_merged ~pending_integrations (a : Patch_agent.t) =
   && a.unresolved_comment_count = 0
   && (not a.mergeability_unknown)
   && Option.is_some a.head_oid
-  && Option.is_none a.expected_remote_head_oid
-  && (not pending_integrations) && (not a.has_conflict) && a.checks_passing
-  && a.pr_body_delivered
+  && Option.is_none (Patch_agent.expected_remote_head_oid a)
+  && (not pending_integrations)
+  && (not (Patch_agent.has_conflict a))
+  && a.checks_passing && a.pr_body_delivered
   && not a.pr_body_refresh.Patch_agent.pending
 
 let validate_terminal t ~branch_of ~main =
@@ -156,14 +162,5 @@ let validate_terminal t ~branch_of ~main =
         "Integration root branch must differ from the repository main branch"
   | None | Some _ -> Ok ()
 
-let observation_pending t (a : Patch_agent.t) observed =
-  if is_root t a.patch_id || is_descendant t a.patch_id then
-    match a.expected_remote_head_oid with
-    | None -> false
-    | Some expected -> (
-        match observed with
-        | None -> true
-        | Some head ->
-            (not (String.equal head expected))
-            && Option.equal String.equal (Some head) a.head_oid)
-  else Patch_decision.defer_remote_head a observed
+let observation_pending ?confirmed_remote_head _ (a : Patch_agent.t) observed =
+  Patch_decision.defer_remote_head ?confirmed_remote_head a observed

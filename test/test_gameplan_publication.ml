@@ -224,7 +224,7 @@ module Fake_forge : Forge.S with type error = string = struct
   let check_repo_access () = Ok ()
 end
 
-let runner_without_backend env ~feature ~retry =
+let runner_without_backend ?(repair = false) env ~feature ~retry =
   Git.with_temp_repo (fun path ->
       let origin = Filename.temp_dir "onton-publication-origin-" "" in
       Fun.protect
@@ -236,6 +236,27 @@ let runner_without_backend env ~feature ~retry =
           Git.run_git ~cwd:path [ "push"; "origin"; "main" ];
           Git.run_git ~cwd:path [ "switch"; "-c"; "demo/patch-0" ];
           let clock = Eio.Stdenv.clock env in
+          let io =
+            Branch_reconcile_executor.make_io
+              ~process_mgr:(Eio.Stdenv.process_mgr env)
+              ~clock ~path
+          in
+          let boundary =
+            match
+              Branch_reconcile.Commit.make
+                (Git.git_capture ~cwd:path [ "rev-parse"; "HEAD" ])
+            with
+            | Some revision -> revision
+            | None -> assert false
+          in
+          ignore
+            (get
+               (Branch_reconcile_executor.record_materialization ~io
+                  ~prefix:
+                    (Branch_reconcile.recovery_prefix ~project:"demo"
+                       ~branch:"demo/patch-0")
+                  ~branch:"demo/patch-0" ~new_branch_from:(Some boundary)));
+
           let fs = Eio.Stdenv.fs env in
           let process_mgr = Eio.Stdenv.process_mgr env in
           let module Real_worktree =
@@ -247,9 +268,6 @@ let runner_without_backend env ~feature ~retry =
           let failed_base_push = ref false in
           let module W : Worktree.S = struct
             include Real_worktree
-
-            let force_push_with_lease ~path:_ ~branch:_ ~base:_ =
-              failwith "Gameplan publication must use durable reconciliation"
 
             let reconcile ~path ~project_name ~branch ~operation command =
               let fail_push =
@@ -274,12 +292,15 @@ let runner_without_backend env ~feature ~retry =
                          .Branch_reconcile.purpose
                      with
                     | Branch_reconcile.Publish_revision _
-                    | Branch_reconcile.Publish_session _ ->
+                    | Branch_reconcile.Publish_session _
+                    | Branch_reconcile.Verify_publication ->
                         assert (
                           completion.Session_result.head
                           = Some (Branch_reconcile.Commit.to_string candidate))
+                    | Branch_reconcile.Provision_checkout _
                     | Branch_reconcile.Reconcile_base
                     | Branch_reconcile.Reconcile_request _
+                    | Branch_reconcile.Reconcile_scoped _
                     | Branch_reconcile.Integrate_revision _ ->
                         let receipt =
                           List.hd
@@ -290,16 +311,15 @@ let runner_without_backend env ~feature ~retry =
                           receipt.Branch_reconcile.integrated_revision
                           = candidate);
                         assert (
-                          agent.Patch_agent.branch_rebased_onto_sha
+                          operation.Branch_reconcile.target
                           = Some
-                              (Branch_reconcile.Commit.to_string
-                                 receipt.Branch_reconcile.capture
-                                   .Branch_reconcile.target_revision)));
+                              receipt.Branch_reconcile.capture
+                                .Branch_reconcile.target_revision));
                     assert (
                       Branch_reconcile.pending
                         agent.Patch_agent.branch_reconcile
                       = Some command);
-                    assert (agent.Patch_agent.push_failure_count = 0);
+                    assert (agent.Patch_agent.start_attempts_without_pr = 0);
                     assert (expected = !published);
                     let first = !publications = [] in
                     publications := candidate :: !publications;
@@ -308,21 +328,25 @@ let runner_without_backend env ~feature ~retry =
                         operation.Branch_reconcile.intent
                           .Branch_reconcile.purpose
                       with
+                      | Branch_reconcile.Provision_checkout _
                       | Branch_reconcile.Reconcile_base
                       | Branch_reconcile.Reconcile_request _
+                      | Branch_reconcile.Reconcile_scoped _
                       | Branch_reconcile.Integrate_revision _ ->
                           if retry && not !failed_base_push then (
                             failed_base_push := true;
                             true)
                           else false
                       | Branch_reconcile.Publish_revision _
-                      | Branch_reconcile.Publish_session _ ->
+                      | Branch_reconcile.Publish_session _
+                      | Branch_reconcile.Verify_publication ->
                           false
                     in
                     (retry && first) || base_failure
                 | Branch_reconcile.Commit_merge _
                 | Branch_reconcile.Plan_remote_replay _
-                | Branch_reconcile.Checkout_remote _ | Branch_reconcile.Observe
+                | Branch_reconcile.Checkout_remote _
+                | Branch_reconcile.Verify_scope _ | Branch_reconcile.Observe
                 | Branch_reconcile.Pin _ | Branch_reconcile.Integrate _
                 | Branch_reconcile.Inspect | Branch_reconcile.Verify_recovery
                 | Branch_reconcile.Continue _ | Branch_reconcile.Confirm _ ->
@@ -342,7 +366,8 @@ let runner_without_backend env ~feature ~retry =
                       published := Some candidate
                 | Branch_reconcile.Commit_merge _
                 | Branch_reconcile.Plan_remote_replay _
-                | Branch_reconcile.Checkout_remote _ | Branch_reconcile.Observe
+                | Branch_reconcile.Checkout_remote _
+                | Branch_reconcile.Verify_scope _ | Branch_reconcile.Observe
                 | Branch_reconcile.Pin _ | Branch_reconcile.Integrate _
                 | Branch_reconcile.Inspect | Branch_reconcile.Verify_recovery
                 | Branch_reconcile.Continue _ | Branch_reconcile.Confirm _ ->
@@ -390,7 +415,47 @@ let runner_without_backend env ~feature ~retry =
 
             let pick_backend ~complexity:_ =
               incr backend_calls;
-              failwith "Publication must never select an agent backend"
+              if not repair then
+                failwith "Deterministic publication selected an agent backend";
+              let backend =
+                Llm_backend.
+                  {
+                    name = "publication-recovery-fixture";
+                    run_streaming =
+                      (fun ~project_name:_
+                        ~cwd:_
+                        ~patch_id
+                        ~prompt
+                        ~resume_session:_
+                        ~session_uuid:_
+                        ~complexity:_
+                        ~on_event
+                      ->
+                        assert (patch_id = id "0");
+                        assert (
+                          Base.String.is_substring prompt
+                            ~substring:"First finish the interrupted local work");
+                        on_event Types.Stream_event.Turn_started;
+                        Git.run_git ~cwd:path [ "add"; "recovery-work" ];
+                        Git.run_git ~cwd:path
+                          [
+                            "commit";
+                            "-qm";
+                            "Finish interrupted publication work";
+                          ];
+                        {
+                          exit_code = 0;
+                          stdout = "";
+                          stderr = "";
+                          got_events = true;
+                          saw_final_result = true;
+                          timed_out = false;
+                        });
+                  }
+              in
+              ( backend,
+                Backend_routing.
+                  { backend = "fixture"; model = None; effort = None } )
 
             let register_pr ~patch_id:_ ~pr_number:_ = ()
           end in
@@ -424,7 +489,7 @@ let runner_without_backend env ~feature ~retry =
             Runtime.read runtime (fun snap ->
                 Orchestrator.agent snap.Runtime.orchestrator (id "0"))
           in
-          assert (final_agent.Patch_agent.push_failure_count = 0);
+          assert (final_agent.Patch_agent.start_attempts_without_pr = 0);
           assert (
             Branch_reconcile.phase final_agent.Patch_agent.branch_reconcile
             = Some Branch_reconcile.Settled);
@@ -438,7 +503,13 @@ let runner_without_backend env ~feature ~retry =
           (* Later scheduling requests must observe a fresh base even after the
              preceding operation settled. A failed push retains the receipt and
              candidate checked by the executor wrapper above. *)
+          let recovery_injected = ref false in
           let advance_and_rebase ?(kind = Operation_kind.Rebase) parent =
+            if repair && not !recovery_injected then (
+              recovery_injected := true;
+              let channel = open_out (Filename.concat path "recovery-work") in
+              output_string channel "retained interrupted work\n";
+              close_out channel);
             let tree =
               Git.git_capture ~cwd:path [ "rev-parse"; parent ^ "^{tree}" ]
             in
@@ -448,10 +519,13 @@ let runner_without_backend env ~feature ~retry =
             in
             Git.run_git ~cwd:path
               [ "push"; "origin"; target ^ ":refs/heads/main" ];
+            let head = Git.git_capture ~cwd:path [ "rev-parse"; "HEAD" ] in
             Runtime.update_orchestrator runtime (fun orch ->
                 let orch =
                   if kind = Operation_kind.Merge_conflict then
-                    Orchestrator.set_has_conflict orch (id "0")
+                    Onton_test_support.Forge_poll_fixture.conflicting ~head
+                      ~base:target ~base_branch:(Branch.of_string "main") orch
+                      (id "0")
                   else orch
                 in
                 Orchestrator.enqueue orch (id "0") kind);
@@ -461,7 +535,16 @@ let runner_without_backend env ~feature ~retry =
                     let agent =
                       Orchestrator.agent snap.Runtime.orchestrator (id "0")
                     in
-                    agent.Patch_agent.branch_rebased_onto_sha = Some target
+                    (match
+                       Branch_reconcile.integrations
+                         agent.Patch_agent.branch_reconcile
+                     with
+                      | receipt :: _ ->
+                          Branch_reconcile.Commit.to_string
+                            receipt.Branch_reconcile.capture
+                              .Branch_reconcile.target_revision
+                          = target
+                      | [] -> false)
                     && Branch_reconcile.phase agent.Patch_agent.branch_reconcile
                        = Some Branch_reconcile.Settled)
               in
@@ -480,7 +563,12 @@ let runner_without_backend env ~feature ~retry =
                   "demo/patch-0:" ^ Gameplan_publication.path publication;
                 ]
               = String.trim source);
-            assert (!backend_calls = 0);
+            assert (!backend_calls = if repair then 1 else 0);
+            if repair then
+              assert (
+                Git.git_capture ~cwd:origin
+                  [ "show"; "demo/patch-0:recovery-work" ]
+                = "retained interrupted work");
             target
           in
           let original_base =
@@ -512,5 +600,7 @@ let () =
           runner_without_backend env ~feature:false ~retry:false;
           runner_without_backend env ~feature:true ~retry:false;
           runner_without_backend env ~feature:false ~retry:true;
-          runner_without_backend env ~feature:true ~retry:true));
+          runner_without_backend env ~feature:true ~retry:true;
+          runner_without_backend ~repair:true env ~feature:false ~retry:false;
+          runner_without_backend ~repair:true env ~feature:true ~retry:false));
   print_endline "test_gameplan_publication: OK"

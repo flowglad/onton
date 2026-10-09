@@ -25,10 +25,12 @@ open Types
     The [~world-enqueued] conjunct on the merge-conflict rule is the merge-queue
     gate: while a PR sits in a merge queue its head branch is push-locked (GH006
     [Merge_queue_locked]), so a [Merge_conflict] op could only no-op locally and
-    bounce off the lock, walking [conflict_noop_count] toward spurious
-    intervention. The [has-conflict'] {e flag} rule stays ungated — it purely
-    mirrors GitHub state, and a genuine conflict makes GitHub eject the PR from
-    the queue, after which the next poll enqueues the op normally. *)
+    bounce off the lock, repeatedly demanding work GitHub cannot accept. The
+    conflict classification stays ungated so revision-bound evidence can be
+    retained while queued. Persistent conflict state is projected by the
+    reconciliation owner, not assigned from this legacy spec notation. A genuine
+    conflict makes GitHub eject the PR, after which polling can request repair.
+*)
 
 type t = {
   queue : Operation_kind.t list;  (** Operations to enqueue for this patch. *)

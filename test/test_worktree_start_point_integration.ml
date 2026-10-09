@@ -20,15 +20,10 @@ let check label condition = if not condition then failwith label
     git commands actually return the SHAs and ancestry classification the fakes
     assume — that contract is what this test pins, against a real commit graph.
 
-    Deliberately scoped to the ref/ancestry reads only: it builds the graph with
-    [git update-ref] in a single repo and never creates a worktree, redirects
-    [$HOME], or touches the [Sys.file_exists] short-circuit. The previous
-    version drove [Worktree.create] end-to-end across seven HOME-sandboxed
-    scenarios; that machinery proved sensitive to the CI git/filesystem
-    environment (passing locally, failing in CI) without adding coverage beyond
-    the pure planner and the wiring fakes. The irreducible live-git surface —
-    "do [rev-parse]/[merge-base --is-ancestor] mean what we think?" — is kept
-    minimal and deterministic here. *)
+    Ref observations distinguish verified absence from symbolic refs, non-commit
+    objects and failed probes. Ancestry failures stay unknown. The owned
+    provisioning-to-publication contract is exercised separately by
+    [test_worktree_setup_base_fetch_integration]. *)
 
 let assert_sha_opt label ~want got =
   let show = function Some s -> Printf.sprintf "Some %S" s | None -> "None" in
@@ -73,7 +68,9 @@ let () =
   let r_sha = commit ~dir ~file:"r.txt" ~content:"r" ~msg:"R" in
 
   let read ref_name =
-    Worktree.read_repo_ref_sha ~process_mgr ~repo_root:dir ~ref_name
+    match Worktree.read_repo_ref_sha ~process_mgr ~repo_root:dir ~ref_name with
+    | Ok revision -> revision
+    | Error reason -> failwith reason
   in
   let ancestry ~local ~remote =
     Worktree.compute_repo_ancestry ~process_mgr ~repo_root:dir ~local ~remote
@@ -113,9 +110,16 @@ let () =
   Git_env.run_git ~cwd:dir [ "commit"; "--allow-empty"; "-qm"; "rewrite base" ];
   Git_env.run_git ~cwd:dir [ "cherry-pick"; equiv_local ];
   let equiv_remote = Git_env.git_capture ~cwd:dir [ "rev-parse"; "HEAD" ] in
-  check "patch-equivalent rebased local changes are represented remotely"
-    (Worktree.local_changes_represented_remotely ~process_mgr ~repo_root:dir
-       ~local:equiv_local ~remote:equiv_remote);
+  let preserves_local local remote =
+    Start_point_plan.equal_decision
+      (Start_point_plan.plan ~local_ref:(Some local) ~remote_ref:(Some remote)
+         ~ancestry:(ancestry ~local ~remote) ~base_branch:"main"
+         ~branch_checked_out_in_main_root:false ~existing_worktree_path:None)
+      (Start_point_plan.Plan
+         (Start_point_plan.Use_local_branch_unchanged { local_sha = local }))
+  in
+  check "equivalent divergence is retained for owned reconciliation"
+    (preserves_local equiv_local equiv_remote);
   Git_env.run_git ~cwd:dir [ "revert"; "--no-edit"; equiv_remote ];
   let reverted_remote = Git_env.git_capture ~cwd:dir [ "rev-parse"; "HEAD" ] in
   let cherry_after_revert =
@@ -123,13 +127,30 @@ let () =
   in
   check "git cherry still reports equivalence after a remote revert"
     (String.is_prefix cherry_after_revert ~prefix:"-");
-  check "remote revert invalidates patch-ID equivalence"
-    (not
-       (Worktree.local_changes_represented_remotely ~process_mgr ~repo_root:dir
-          ~local:equiv_local ~remote:reverted_remote));
-  check "distinct local changes are not represented remotely"
-    (not
-       (Worktree.local_changes_represented_remotely ~process_mgr ~repo_root:dir
-          ~local:l_sha ~remote:r_sha));
-  Stdlib.print_endline "  local_changes_represented_remotely: OK";
+  check "remote revert cannot discard the equivalent local patch"
+    (preserves_local equiv_local reverted_remote);
+  check "distinct local history survives provisioning"
+    (preserves_local l_sha r_sha);
+  let fails ref_name =
+    match Worktree.read_repo_ref_sha ~process_mgr ~repo_root:dir ~ref_name with
+    | Error _ -> true
+    | Ok _ -> false
+  in
+  Git_env.run_git ~cwd:dir
+    [ "symbolic-ref"; "refs/heads/symbolic"; "refs/heads/missing-target" ];
+  check "dangling symbolic ref is not absence" (fails "refs/heads/symbolic");
+  Git_env.run_git ~cwd:dir
+    [ "tag"; "-a"; "-m"; "tag object"; "tag-object"; equiv_local ];
+  check "tag object is not a branch commit" (fails "refs/tags/tag-object");
+  check "failed repository probe is not absence"
+    (match
+       Worktree.read_repo_ref_sha ~process_mgr ~repo_root:(dir ^ "/missing")
+         ~ref_name:"refs/heads/main"
+     with
+    | Error _ -> true
+    | Ok _ -> false);
+  check "failed ancestry probe stays unknown"
+    (Start_point_plan.equal_ancestry
+       (ancestry ~local:l_sha ~remote:(String.make 40 'f'))
+       Start_point_plan.Unknown);
   Stdlib.print_endline "All git-read contract checks passed."

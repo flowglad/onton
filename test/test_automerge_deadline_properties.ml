@@ -69,21 +69,18 @@ let make_agent ~patch_id ~branch ~merge_ready ~mergeability_unknown
   Patch_agent.restore ~patch_id ~branch
     ~pr_status:(Patch_pr_status.Present (Pr_number.of_int 42))
     ~has_session:busy ~busy ~merged ~queue ~satisfies:false ~changed:false
-    ~has_conflict:false ~base_branch ~notified_base_branch:base_branch
-    ~ci_failure_count:0 ~session_fallback:Patch_agent.Fresh_available
-    ~human_messages:[] ~inflight_human_messages:[] ~ci_checks:[] ~merge_ready
-    ~mergeability_unknown ~merge_queue_required ~merge_queue_entry ~is_draft
-    ~pr_body_delivered:true ~pr_body_artifact_miss_count:0
-    ~start_attempts_without_pr:0 ~conflict_noop_count:0 ~no_commits_push_count:0
-    ~context_exhaustion_count:0 ~push_failure_count:0 ~rebase_failure_count:0
-    ~branch_rebased_onto:None ~branch_rebased_onto_sha:None
-    ~merge_commit_sha:None ~base_contains_merged_siblings:true
-    ~anchor_history:Onton_core.Anchor_history.empty ~checks_passing
-    ~current_op:None
+    ~base_branch ~notified_base_branch:base_branch ~ci_failure_count:0
+    ~session_fallback:Patch_agent.Fresh_available ~human_messages:[]
+    ~inflight_human_messages:[] ~ci_checks:[] ~merge_ready ~mergeability_unknown
+    ~merge_queue_required ~merge_queue_entry ~is_draft ~pr_body_delivered:true
+    ~pr_body_artifact_miss_count:0 ~start_attempts_without_pr:0
+    ~no_commits_push_count:0 ~context_exhaustion_count:0 ~merge_commit_sha:None
+    ~base_contains_merged_siblings:true ~checks_passing ~current_op:None
     ~current_op_state:(if busy then Patch_agent.Running else Patch_agent.Queued)
     ~current_message_id:None ~generation:0 ~worktree_path:None ~branch_blocked
     ~llm_session_id:None ~automerge_enabled ~automerge_deadline
     ~automerge_inflight ~automerge_failure_count ~delivered_ci_run_ids:[] ()
+  |> Onton_core_test_support.Forge_fixture.readiness_agent
 
 let make_orch agents_alist =
   let patches =

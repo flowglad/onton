@@ -39,3 +39,10 @@ val classify : input -> classification
 val plan : input list -> (Patch_id.t * Pr_number.t * classification) list
 (** [plan inputs] applies [classify] to each input in order. Pure;
     order-preserving; per-patch independent. *)
+
+val same_context : requested:Patch_agent.t -> current:Patch_agent.t -> bool
+(** Whether an in-flight observation still belongs to the local context that
+    requested it. A PR replacement, retarget, generation change, publication or
+    reconciliation checkpoint invalidates the request. Review/CI-only updates do
+    not. This does not establish freshness of the forge's returned revisions;
+    revision validation and direct Git confirmation still apply separately. *)

@@ -125,6 +125,56 @@ let prop_lease =
         (Push_reject_classify.classify ~stderr:lease_violation_stderr ~stdout:"")
         Push_reject_classify.Lease_violation)
 
+let prop_receive_ref_race =
+  Test.make ~name:"PRC receive-side ref races remain retryable" ~count:200
+    Gen.(triple (int_range 0 15) bool bool)
+    (fun (digit, compare_failed, on_stdout) ->
+      let oid = String.make 40 "0123456789abcdef".[digit] in
+      let stderr =
+        if compare_failed then
+          "remote: error: cannot lock ref 'refs/heads/feat': is at " ^ oid
+          ^ " but expected " ^ String.make 40 'a'
+        else
+          "remote: error: cannot lock ref 'refs/heads/feat': Unable to create \
+           feat.lock: File exists"
+      in
+      let porcelain =
+        "!\tlocal:refs/heads/feat\t[remote rejected] (failed to update ref)\n"
+      in
+      let stderr, stdout =
+        if on_stdout then ("", stderr ^ "\n" ^ porcelain)
+        else (stderr, porcelain)
+      in
+      let result = Push_reject_classify.classify ~stderr ~stdout in
+      (not (Push_reject_classify.is_permanent result))
+      &&
+      if compare_failed then
+        Push_reject_classify.equal_rejection result
+          Push_reject_classify.Lease_violation
+      else
+        match result with
+        | Push_reject_classify.Unknown detail ->
+            String.is_substring detail ~substring:"File exists"
+        | Workflow_scope_missing | Permission_denied | Branch_protection
+        | Push_pattern_block | Lease_violation | Merge_queue_locked
+        | Hook_failure _ | Local_state_unsafe _ ->
+            false)
+
+let prop_initial_ref_race =
+  Test.make ~name:"PRC absent-ref receive race is a lease violation" ~count:100
+    Gen.bool (fun stdout_only ->
+      let diagnostic =
+        "remote: error: cannot lock ref 'refs/heads/feat': reference already \
+         exists"
+      in
+      let stderr, stdout =
+        if stdout_only then ("", diagnostic) else (diagnostic, "")
+      in
+      let result = Push_reject_classify.classify ~stderr ~stdout in
+      Push_reject_classify.equal_rejection result
+        Push_reject_classify.Lease_violation
+      && not (Push_reject_classify.is_permanent result))
+
 let prop_generic_hook =
   Test.make ~name:"PRC-6: unrecognized remote: line -> Hook_failure"
     (Gen.return ()) (fun () ->
@@ -396,6 +446,8 @@ let () =
       prop_branch_protection;
       prop_push_pattern;
       prop_lease;
+      prop_receive_ref_race;
+      prop_initial_ref_race;
       prop_generic_hook;
       prop_empty_stderr;
       prop_short_label_bounded;

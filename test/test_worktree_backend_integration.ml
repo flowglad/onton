@@ -926,6 +926,10 @@ let lifecycle_sequences env =
             let base = G.git_capture ~cwd:repo [ "rev-parse"; "HEAD" ] in
             G.run_git ~cwd:repo [ "branch"; "sequence"; base ];
             let path = Filename.concat repo "checkout" in
+            let canonical = Worktree_backend.canonical path in
+            let alias = Filename.concat repo "alias" in
+            Unix.symlink repo alias;
+            let aliased_path = Filename.concat alias "checkout" in
             let requested = branch "sequence" in
             let module B =
               (val Worktree_backend.make ~fs:(Eio.Stdenv.fs env)
@@ -971,7 +975,10 @@ let lifecycle_sequences env =
                           entry.branch = Some "sequence")
                         registrations
                     in
-                    registered = !ready
+                    Worktree_backend.canonical path = canonical
+                    && Worktree_backend.canonical aliased_path = canonical
+                    && Worktree_backend.canonical canonical = canonical
+                    && registered = !ready
                     && Option.is_some (get (B.inspect ~path ~branch:requested))
                        = !ready
                     && G.git_capture ~cwd:repo [ "rev-parse"; "sequence" ]

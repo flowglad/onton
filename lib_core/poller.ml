@@ -55,7 +55,7 @@ let poll ~was_merged (pr : Pr_state.t) =
     (* world-has-conflict p and ~enqueued p -> queue' p merge-conflict.
        While the PR sits in a merge queue its head branch is push-locked
        (GH006), so a Merge_conflict op could only no-op locally and bounce off
-       the lock — walking conflict_noop_count toward spurious intervention. A
+       the lock, repeatedly demanding work GitHub cannot accept. A
        Conflicting report while queued is transient: a genuine conflict makes
        GitHub eject the PR, the entry clears, and the next poll enqueues
        normally (the gate self-opens). *)

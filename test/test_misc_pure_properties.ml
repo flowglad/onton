@@ -77,6 +77,7 @@ let sample_pr_state ~merge_queue_required ~merge_queue_entry =
       comments = [];
       unresolved_comment_count = 0;
       findings = [];
+      pr_number = None;
       node_id = None;
       merge_queue_required;
       merge_queue_entry;

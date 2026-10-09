@@ -7,86 +7,6 @@ open Onton_core.Types
 let log_event runtime ?patch_id msg =
   Runtime_logging.log_event runtime ?patch_id msg
 
-let with_pending_push = Push_publication.with_pending_push
-
-let%test_unit "pending push covers publication, noop, errors and cancellation" =
-  Eio_main.run (fun _ ->
-      let patch_id = Patch_id.of_string "pending-push" in
-      let patch =
-        Patch.
-          {
-            id = patch_id;
-            title = "test";
-            description = "";
-            branch = Branch.of_string "branch";
-            dependencies = [];
-            spec = "";
-            acceptance_criteria = [];
-            changes = [];
-            files = [];
-            classification = "";
-            test_stubs_introduced = [];
-            test_stubs_implemented = [];
-            complexity = None;
-            precedents = [];
-            required_context = [];
-          }
-      in
-      let initial =
-        Orchestrator.create ~patches:[ patch ]
-          ~main_branch:(Branch.of_string "main")
-      in
-      let initial = Orchestrator.set_head_oid initial patch_id (Some "old") in
-      let orch = ref initial in
-      let update f = orch := f !orch in
-      let marker () =
-        (Orchestrator.agent !orch patch_id).Patch_agent.expected_remote_head_oid
-      in
-      let run push =
-        with_pending_push ~update ~patch_id ~local_sha:(Some "new") (fun () ->
-            assert (marker () = Some "new");
-            assert (
-              Onton_core.Patch_decision.defer_remote_head
-                (Orchestrator.agent !orch patch_id)
-                (Some "old"));
-            push ())
-      in
-      List.iter
-        (fun result ->
-          orch := initial;
-          ignore (run (fun () -> result));
-          assert (marker () = None))
-        [
-          Worktree.Push_up_to_date;
-          Worktree.Push_no_commits;
-          Worktree.Push_rejected Onton_core.Push_reject_classify.Lease_violation;
-          Worktree.Push_worktree_missing;
-          Worktree.Push_error "failed";
-        ];
-      ignore (run (fun () -> Worktree.Push_ok));
-      assert (marker () = Some "new");
-      orch := initial;
-      ignore
-        (run (fun () ->
-             update (fun t ->
-                 Orchestrator.set_expected_remote_head_oid t patch_id None);
-             Worktree.Push_ok));
-      assert (marker () = None);
-      (try
-         ignore (run (fun () -> raise Exit));
-         assert false
-       with Exit -> ());
-      assert (marker () = None);
-      let started, signal = Eio.Promise.create () in
-      Eio.Fiber.first
-        (fun () ->
-          ignore
-            (run (fun () ->
-                 Eio.Promise.resolve signal ();
-                 Eio.Fiber.await_cancel ())))
-        (fun () -> Eio.Promise.await started);
-      assert (marker () = None))
-
 let patch_complexity ~(gameplan : Gameplan.t) ~(agent : Patch_agent.t) ~patch_id
     =
   match
@@ -240,7 +160,6 @@ module Make (Forge : Forge.S) (W : Worktree.S) (Env : Runner_env.S) = struct
   end
 
   module With_busy_guard = With_busy_guard.Make (Busy_guard_env)
-  module Worktree_plan_executor = Worktree_plan_executor.Make (W) (WS_Env)
 
   let execute_github_effects ~runtime effects =
     Base.List.iter effects ~f:(fun github_effect ->
@@ -435,10 +354,13 @@ module Make (Forge : Forge.S) (W : Worktree.S) (Env : Runner_env.S) = struct
                                               (Patch_id.to_string patch_id)
                                             && Branch_reconcile.Commit.equal
                                                  request.revision revision
+                                        | Branch_reconcile.Provision_checkout _
                                         | Branch_reconcile.Reconcile_base
                                         | Branch_reconcile.Reconcile_request _
+                                        | Branch_reconcile.Reconcile_scoped _
                                         | Branch_reconcile.Publish_revision _
-                                        | Branch_reconcile.Publish_session _ ->
+                                        | Branch_reconcile.Publish_session _
+                                        | Branch_reconcile.Verify_publication ->
                                             false)
                                     | None -> false)
                               in
@@ -1084,43 +1006,25 @@ module Make (Forge : Forge.S) (W : Worktree.S) (Env : Runner_env.S) = struct
       Eio.Semaphore.acquire semaphore;
       Fun.protect ~finally:(fun () -> Eio.Semaphore.release semaphore) f
     in
-    let execute_reconciliation ~patch_id ~agent:_
-        ~(operation : Branch_reconcile.operation) command =
-      let agent =
-        Runtime.read runtime (fun snap ->
-            Orchestrator.agent snap.Runtime.orchestrator patch_id)
-      in
-      let checkout =
-        if Option.is_none operation.source then
-          WS.ensure_worktree ~patch_id ~agent ~base_ref:operation.intent.base ()
-        else Worktree_setup.Path (WS.resolve_worktree_path ~patch_id ~agent ())
-      in
-      match checkout with
-      | Worktree_setup.Missing | Worktree_setup.Refused ->
-          Branch_reconcile.Retryable
+    let reconciliation_purpose ~patch_id ~request =
+      Runtime.read Env.runtime (fun snap ->
+          Branch_reconcile.Reconcile_scoped
             {
-              reason = "reconciliation_worktree_unavailable";
-              retry_after = None;
-            }
-      | Worktree_setup.Path path ->
-          (* Provisioning can checkpoint first materialization while Observe is
-             pending. Execute with that recorded boundary, not the earlier view. *)
-          let operation =
-            Runtime.read runtime (fun snap ->
-                Option.value
-                  (Branch_reconcile.operation
-                     (Orchestrator.agent snap.Runtime.orchestrator patch_id)
-                       .Patch_agent.branch_reconcile)
-                  ~default:operation)
-          in
-          W.reconcile ~path ~project_name ~branch:agent.Patch_agent.branch
-            ~operation command
+              request;
+              project = Env.project_name;
+              ancestors =
+                Graph.transitive_ancestors
+                  (Orchestrator.graph snap.Runtime.orchestrator)
+                  patch_id;
+            })
+    in
+    let execute_reconciliation ~patch_id ~agent:_ ~operation command =
+      WS.execute_reconciliation ~patch_id ~operation command
     in
     (* Serializes [git fetch origin] across worktrees + the poller's
        main-freshness fetch to avoid ref-lock races on the shared
        [refs/remotes/origin/*] store. Shared via [Env.fetch_mutex] so a
        single mutex covers every fiber. See [Worktree.fetch_origin]. *)
-    let fetch_mutex = Env.fetch_mutex in
     let run_llm_session ~write_owner ~kind ~delivery_mode ~patch_id ~prompt
         ~(agent : Patch_agent.t) ~on_pr_detected ~complexity =
       let gameplan = Runtime.read runtime (fun snap -> snap.Runtime.gameplan) in
@@ -1421,40 +1325,64 @@ module Make (Forge : Forge.S) (W : Worktree.S) (Env : Runner_env.S) = struct
                                   ~persist ~patch_id
                                   ~with_capacity:with_session_slot ~now ~execute
                                   ~perform:(fun ~agent ~turn ->
-                                    if
-                                      Gameplan.is_publication_patch gameplan
-                                        patch_id
-                                    then
-                                      Branch_reconcile.Repair_denied
-                                        {
-                                          token = turn.Branch_reconcile.token;
-                                          reason =
-                                            "gameplan_publication_requires_manual_repair";
-                                        }
-                                    else
-                                      let complexity =
-                                        patch_complexity ~gameplan ~agent
-                                          ~patch_id
-                                      in
-                                      let backend, _ =
-                                        pick_backend ~complexity
-                                      in
-                                      log_event runtime ~patch_id
-                                        (match turn.Branch_reconcile.mode with
-                                        | Branch_reconcile.Content_repair ->
-                                            "Repairing staged integration \
-                                             conflicts"
-                                        | Branch_reconcile.History_recovery
-                                            { reason; baseline = _ } ->
-                                            "Agent history recovery: " ^ reason);
-                                      Branch_repair_session.run ~backend
-                                        ~cwd:Eio.Path.(Env.fs / path agent)
-                                        ~project_name ~patch_id ~complexity
-                                        ~turn
-                                        ~read_head:(fun () ->
-                                          W.read_branch_sha ~path:(path agent)
-                                            ~ref_name:"HEAD")
-                                        ~now)
+                                    let complexity =
+                                      patch_complexity ~gameplan ~agent
+                                        ~patch_id
+                                    in
+                                    let backend, _ = pick_backend ~complexity in
+                                    log_event runtime ~patch_id
+                                      (match turn.Branch_reconcile.mode with
+                                      | Branch_reconcile.Diagnosis { reason } ->
+                                          "Agent diagnosis: " ^ reason
+                                      | Branch_reconcile.Content_repair ->
+                                          "Repairing staged integration \
+                                           conflicts"
+                                      | Branch_reconcile.History_recovery
+                                          { reason; _ } ->
+                                          "Agent history recovery: " ^ reason);
+                                    let patch =
+                                      Base.List.find gameplan.Gameplan.patches
+                                        ~f:(fun (p : Patch.t) ->
+                                          Patch_id.equal p.id patch_id)
+                                    in
+                                    let context =
+                                      Prompt.render_session_context
+                                        ~project_name ?patch ~gameplan
+                                        ?pr_number:(Patch_agent.pr_number agent)
+                                        ?agents_md:
+                                          (read_optional_file
+                                             (Stdlib.Filename.concat
+                                                (path agent) "AGENTS.md"))
+                                        ()
+                                    in
+                                    let cwd =
+                                      match turn.Branch_reconcile.mode with
+                                      | Branch_reconcile.Diagnosis _ ->
+                                          if
+                                            try Sys.is_directory (path agent)
+                                            with Sys_error _ -> false
+                                          then path agent
+                                          else
+                                            Project_store.project_dir
+                                              project_name
+                                      | Branch_reconcile.Content_repair
+                                      | Branch_reconcile.History_recovery _ ->
+                                          path agent
+                                    in
+                                    let context =
+                                      context ^ "\nIntended managed checkout: "
+                                      ^ path agent
+                                    in
+                                    Session_driver.run_repair ~backend ~context
+                                      ~agent
+                                      ~guidance:
+                                        (agent.Patch_agent.human_messages
+                                       @ agent.inflight_human_messages)
+                                      ~cwd:Eio.Path.(Env.fs / cwd)
+                                      ~patch_id ~complexity ~turn
+                                      ~read_head:(fun () ->
+                                        W.read_branch_sha ~path:(path agent)
+                                          ~ref_name:"HEAD"))
                                   token
                               in
                               finish outcome
@@ -1529,118 +1457,111 @@ module Make (Forge : Forge.S) (W : Worktree.S) (Env : Runner_env.S) = struct
                               else (
                                 Runtime.update_orchestrator runtime (fun orch ->
                                     Orchestrator.mark_running orch patch_id);
-                                match
-                                  WS.ensure_worktree ~patch_id ~agent
-                                    ~branch:patch.Patch.branch
-                                    ~base_ref:(Branch.to_string base_branch)
-                                    ()
-                                with
-                                | Worktree_setup.Missing ->
-                                    Runtime.update_orchestrator runtime
-                                      (fun orch ->
-                                        Orchestrator.apply_session_result orch
-                                          patch_id
-                                          Orchestrator.Session_worktree_missing);
-                                    `Failed
-                                | Worktree_setup.Refused -> `Failed
-                                | Worktree_setup.Path _wt_path ->
-                                    (* Capture the initial anchor for this
-                                           Start: resolve origin/<base_branch>'s
-                                           current tip so the first rebase has
-                                           a usable [<upstream>] for [git rebase
-                                           --onto]. Closes the production-bug
-                                           blind spot where a Start-then-dep-
-                                           squash-merge sequence left the agent
-                                           with no anchor at first-rebase time
-                                           and forced the legacy 2-arg fallback
-                                           into a "both added" conflict. *)
-                                    let ancestor_ids =
-                                      Runtime.read runtime (fun snap ->
-                                          Graph.transitive_ancestors
-                                            (Orchestrator.graph
-                                               snap.Runtime.orchestrator)
-                                            patch_id)
-                                    in
-                                    let _, _, start_anchor_events =
-                                      Worktree_plan_executor.execute ~patch_id
-                                        ~agent ~fetch_lock:fetch_mutex
-                                        ~fail_label:"start anchor capture"
-                                        ~ancestor_ids
-                                        (Worktree_plan.for_start
-                                           ~base:base_branch
-                                           ~materialized:
-                                             (match
-                                                Patch_agent.worktree_state agent
-                                              with
-                                             | Patch_agent.Materialized _ ->
-                                                 true
-                                             | Patch_agent.Unmaterialized ->
-                                                 false))
-                                    in
-                                    (match start_anchor_events with
-                                    | [] -> ()
-                                    | _ ->
-                                        Runtime.update_orchestrator runtime
-                                          (fun orch ->
-                                            Orchestrator.apply_anchor_events
-                                              orch patch_id start_anchor_events));
-                                    let initial_prompt =
-                                      let has_existing_changes =
-                                        match
-                                          W.has_uncommitted_changes
-                                            ~path:_wt_path
-                                        with
-                                        | Ok changes -> changes
-                                        | Error first_error -> (
-                                            log_event runtime ~patch_id
-                                              (Printf.sprintf
-                                                 "Worktree status failed; \
-                                                  retrying: %s"
-                                                 first_error);
-                                            match
-                                              W.has_uncommitted_changes
-                                                ~path:_wt_path
-                                            with
-                                            | Ok changes -> changes
-                                            | Error error -> failwith error)
+                                if
+                                  Session_result.resume_verified_legacy_start
+                                    ~delivery_mode:Patch_decision.Start
+                                    ~guidance:agent.inflight_human_messages
+                                    ~publication:agent.branch_reconcile
+                                    ~completion:agent.session_completion
+                                then `Ok
+                                else
+                                  match
+                                    Base.Option.filter agent.session_completion
+                                      ~f:
+                                        (Session_result.resume_start
+                                           ~delivery_mode:Patch_decision.Start
+                                           ~guidance:
+                                             agent.inflight_human_messages
+                                           ~publication:agent.branch_reconcile)
+                                  with
+                                  | Some completion -> (
+                                      let path =
+                                        Option.value agent.worktree_path
+                                          ~default:
+                                            (Worktree.worktree_dir ~project_name
+                                               ~patch_id)
                                       in
-                                      Prompt.render_turn_layer_start
-                                        ~project_name ~has_existing_changes ()
-                                    in
-                                    let prompt, kind =
                                       match
-                                        Patch_decision.start_delivery agent
+                                        Session_driver.publish_completion
+                                          ~write_owner ~patch_id ~agent ~path
+                                          completion
                                       with
-                                      | Patch_decision.Start_initial ->
-                                          (initial_prompt, None)
-                                      | Patch_decision.Start_with_human
-                                          { messages } ->
-                                          ( initial_prompt ^ "\n\n"
-                                            ^ Prompt.render_human_message_prompt
-                                                ~project_name messages,
-                                            Some Operation_kind.Human )
-                                    in
-                                    (* PR detection from stream text is a hint
+                                      | `Published -> `Ok
+                                      | `No_work -> `No_commits
+                                      | `Pending -> `Retry_push)
+                                  | None -> (
+                                      match
+                                        WS.ensure_owned ~owner:write_owner
+                                          ~base_ref:
+                                            (Branch.to_string base_branch)
+                                          ()
+                                      with
+                                      | Worktree_setup.Unavailable _ -> `Failed
+                                      | Worktree_setup.Path _wt_path ->
+                                          (* Owned provisioning has already checkpointed the
+                                           materialization receipt before session dispatch. *)
+                                          let initial_prompt =
+                                            let has_existing_changes =
+                                              match
+                                                W.has_uncommitted_changes
+                                                  ~path:_wt_path
+                                              with
+                                              | Ok changes -> changes
+                                              | Error first_error -> (
+                                                  log_event runtime ~patch_id
+                                                    (Printf.sprintf
+                                                       "Worktree status \
+                                                        failed; retrying: %s"
+                                                       first_error);
+                                                  match
+                                                    W.has_uncommitted_changes
+                                                      ~path:_wt_path
+                                                  with
+                                                  | Ok changes -> changes
+                                                  | Error error ->
+                                                      failwith error)
+                                            in
+                                            Prompt.render_turn_layer_start
+                                              ~project_name
+                                              ~has_existing_changes ()
+                                          in
+                                          let prompt, kind =
+                                            match
+                                              Patch_decision.start_delivery
+                                                agent
+                                            with
+                                            | Patch_decision.Start_initial ->
+                                                (initial_prompt, None)
+                                            | Patch_decision.Start_with_human
+                                                { messages } ->
+                                                ( initial_prompt ^ "\n\n"
+                                                  ^ Prompt
+                                                    .render_human_message_prompt
+                                                      ~project_name messages,
+                                                  Some Operation_kind.Human )
+                                          in
+                                          (* PR detection from stream text is a hint
                                      only — always confirmed via the GitHub
                                      REST API after the
                                      backend session finishes *)
-                                    let on_pr_detected _pr_number = () in
-                                    let complexity =
-                                      patch_complexity ~gameplan ~agent
-                                        ~patch_id
-                                    in
-                                    let r, _tool_failures =
-                                      run_llm_session ~write_owner ~kind
-                                        ~delivery_mode:Patch_decision.Start
-                                        ~patch_id ~prompt ~agent ~on_pr_detected
-                                        ~complexity
-                                    in
-                                    (r
-                                      :> [ `Failed
-                                         | `Ok
-                                         | `No_commits
-                                         | `Retry_push
-                                         | `Stale ]))
+                                          let on_pr_detected _pr_number = () in
+                                          let complexity =
+                                            patch_complexity ~gameplan ~agent
+                                              ~patch_id
+                                          in
+                                          let r, _tool_failures =
+                                            run_llm_session ~write_owner ~kind
+                                              ~delivery_mode:
+                                                Patch_decision.Start ~patch_id
+                                              ~prompt ~agent ~on_pr_detected
+                                              ~complexity
+                                          in
+                                          (r
+                                            :> [ `Failed
+                                               | `Ok
+                                               | `No_commits
+                                               | `Retry_push
+                                               | `Stale ])))
                             in
                             let start_outcome =
                               match result with
@@ -1678,9 +1599,6 @@ module Make (Forge : Forge.S) (W : Worktree.S) (Env : Runner_env.S) = struct
                                 then (
                                   Runtime.update_orchestrator runtime
                                     (fun orch ->
-                                      Orchestrator.mark_branch_published orch
-                                        patch_id
-                                      |> fun orch ->
                                       Orchestrator.complete orch patch_id);
                                   log_event runtime ~patch_id
                                     "Descendant branch published; waiting for \
@@ -1828,9 +1746,10 @@ module Make (Forge : Forge.S) (W : Worktree.S) (Env : Runner_env.S) = struct
                                  base = Branch.to_string new_base;
                                  policy;
                                  purpose =
-                                   Reconcile_request
-                                     (Message_id.to_string
-                                        (Orchestrator.message_id msg));
+                                   reconciliation_purpose ~patch_id
+                                     ~request:
+                                       (Message_id.to_string
+                                          (Orchestrator.message_id msg));
                                })
                         in
                         (match outcome with
@@ -2261,8 +2180,10 @@ module Make (Forge : Forge.S) (W : Worktree.S) (Env : Runner_env.S) = struct
                                            base = Branch.to_string base;
                                            policy;
                                            purpose =
-                                             Reconcile_request
-                                               (Message_id.to_string message_id);
+                                             reconciliation_purpose ~patch_id
+                                               ~request:
+                                                 (Message_id.to_string
+                                                    message_id);
                                          })
                                   in
                                   match outcome with

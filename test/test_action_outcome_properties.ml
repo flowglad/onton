@@ -15,6 +15,12 @@ let mk_patches = Onton_test_support.Test_generators.mk_linear_patches
 let make_gameplan = Onton_test_support.Test_generators.make_test_gameplan
 let pid_of_idx = Onton_test_support.Test_generators.pid_of_idx
 
+let publish_fixture t pid candidate =
+  Onton_core_test_support.Publication_fixture.confirmed ~candidate
+    ~step:(fun t event -> fst (Orchestrator.reconcile_branch t pid event))
+    ~state:(fun t -> (Orchestrator.agent t pid).Patch_agent.branch_reconcile)
+    t
+
 let gen_merge_queue_entry =
   let open QCheck2.Gen in
   let states =
@@ -303,27 +309,76 @@ let () =
   QCheck2.Test.check_exn prop;
   Stdlib.print_endline "AO-2b passed"
 
-(* ========== AO-3: Respond_ok + Merge_conflict clears has_conflict ========== *)
+(* ========== AO-3: successful response preserves unresolved owner conflict ========== *)
 
 let () =
   let prop =
     QCheck2.Test.make
-      ~name:"AO-3: Respond_ok + Merge_conflict clears has_conflict"
+      ~name:"AO-3: successful response preserves unresolved owner conflict"
       (QCheck2.Gen.return ()) (fun () ->
-        let orch, patches, gameplan, pid = bootstrap_one () in
-        let orch = Orchestrator.set_has_conflict orch pid in
+        let orch, _, _, pid = bootstrap_one () in
+        let orch = Onton_test_support.Conflict_fixture.conflict orch pid in
         let orch =
-          make_busy orch patches gameplan pid Operation_kind.Merge_conflict
+          Orchestrator.fire
+            (Orchestrator.enqueue orch pid Operation_kind.Merge_conflict)
+            (Orchestrator.Respond (pid, Operation_kind.Merge_conflict))
         in
-        assert (Orchestrator.agent orch pid).Patch_agent.has_conflict;
+        let before = Orchestrator.agent orch pid in
+        assert (Patch_agent.has_conflict before);
         let orch =
           Orchestrator.apply_respond_outcome orch pid
             Operation_kind.Merge_conflict Orchestrator.Respond_ok
         in
-        not (Orchestrator.agent orch pid).Patch_agent.has_conflict)
+        let after = Orchestrator.agent orch pid in
+        Patch_agent.has_conflict after
+        && Branch_reconcile.equal before.Patch_agent.branch_reconcile
+             after.Patch_agent.branch_reconcile)
   in
   QCheck2.Test.check_exn prop;
   Stdlib.print_endline "AO-3 passed"
+
+(* A current but unconfirmed forge pair revokes queued work and invalidates
+   previously planned messages without changing the owner's repair evidence. *)
+let () =
+  QCheck2.Test.check_exn
+    (QCheck2.Test.make
+       ~name:"unconfirmed forge pair invalidates queued dispatch context"
+       ~count:100 QCheck2.Gen.bool (fun local_conflict ->
+         try
+           let orch, _, _, pid = bootstrap_one () in
+           let orch =
+             if local_conflict then
+               Onton_test_support.Conflict_fixture.conflict orch pid
+             else orch
+           in
+           let orch = Orchestrator.set_merge_ready orch pid true in
+           let orch = Orchestrator.set_checks_passing orch pid true in
+           let orch =
+             List.fold
+               [
+                 Operation_kind.Ci;
+                 Operation_kind.Merge_conflict;
+                 Operation_kind.Human;
+               ] ~init:orch ~f:(fun orch kind ->
+                 Orchestrator.enqueue orch pid kind)
+           in
+           let before = Orchestrator.agent orch pid in
+           let orch = Orchestrator.defer_forge_revision_pair orch pid in
+           let after = Orchestrator.agent orch pid in
+           (not after.Patch_agent.merge_ready)
+           && (not after.Patch_agent.checks_passing)
+           && after.Patch_agent.mergeability_unknown
+           && List.equal Operation_kind.equal after.Patch_agent.queue
+                [ Operation_kind.Human ]
+           && (not (Poll_cycle.same_context ~requested:before ~current:after))
+           && Branch_reconcile.equal before.Patch_agent.branch_reconcile
+                after.Patch_agent.branch_reconcile
+           && Patch_agent.equal after
+                (Orchestrator.agent
+                   (Orchestrator.defer_forge_revision_pair orch pid)
+                   pid)
+         with _ -> false));
+  Stdlib.print_endline "forge pair dispatch revocation passed"
 
 (* ========== AO-5: Stale outcomes are identity ========== *)
 
@@ -940,19 +995,17 @@ let () =
          let orch = Orchestrator.increment_automerge_failure_count orch pid in
          let orch = Orchestrator.reset_automerge_failure_count orch pid in
          let orch = Orchestrator.set_head_oid orch pid (Some "deadbeef") in
-         let expected_remote_head_oid =
-           if flag then Some "deadbeef" else None
+         let candidate =
+           Onton_core_test_support.Publication_fixture.sha "published"
          in
-         let orch =
-           Orchestrator.set_expected_remote_head_oid orch pid
-             expected_remote_head_oid
-         in
+         let orch = if flag then publish_fixture orch pid candidate else orch in
          if
            not
              (Option.equal String.equal
-                (Orchestrator.agent orch pid)
-                  .Patch_agent.expected_remote_head_oid expected_remote_head_oid)
-         then QCheck2.Test.fail_reportf "expected remote head was not stamped";
+                (Patch_agent.expected_remote_head_oid
+                   (Orchestrator.agent orch pid))
+                (if flag then Some candidate else None))
+         then QCheck2.Test.fail_reportf "owner publication projection differs";
          let orch =
            Orchestrator.set_review_decision orch pid (Some "REVIEW_REQUIRED")
          in
@@ -965,19 +1018,15 @@ let () =
          in
          let orch = Orchestrator.set_review_request_inflight orch pid flag in
          let orch = Orchestrator.reset_ci_failure_count orch pid in
-         let orch = Orchestrator.reset_conflict_noop_count orch pid in
          let orch = Orchestrator.set_branch_blocked orch pid in
          let orch = Orchestrator.clear_branch_blocked orch pid in
-         let orch = Orchestrator.clear_has_conflict orch pid in
+         let orch = Onton_test_support.Conflict_fixture.resolve orch pid in
          let orch = Orchestrator.complete_start_after_pr_discovery orch pid in
          let orch = Orchestrator.clear_pr orch pid in
          let orch = Orchestrator.clear_session_fallback orch pid in
          let orch = Orchestrator.mark_running orch pid in
          let orch = Orchestrator.on_pr_discovery_failure orch pid in
          let orch = Orchestrator.on_session_failure orch pid ~is_fresh:flag in
-         let orch =
-           Orchestrator.set_branch_rebased_onto_sha orch pid (Some "deadbeef")
-         in
          let orch = Orchestrator.set_ci_checks orch pid [] in
          let orch = Orchestrator.set_is_draft orch pid flag in
          let orch = Orchestrator.set_merge_queue_entry orch pid None in
@@ -986,14 +1035,6 @@ let () =
          let orch = Orchestrator.set_mergeability_unknown orch pid flag in
          let orch = Orchestrator.set_notified_base_branch orch pid main in
          let orch = Orchestrator.set_worktree_path orch pid "/tmp/wt" in
-         let orch = Orchestrator.apply_anchor_events orch pid [] in
-         let orch, _rebase_effects =
-           Orchestrator.apply_rebase_with_anchor orch pid Worktree.Noop main []
-         in
-         let orch, _conflict_decision, _conflict_effects =
-           Orchestrator.apply_conflict_rebase_with_anchor orch pid Worktree.Noop
-             main []
-         in
          let orch =
            Orchestrator.mark_patch_pending_messages_obsolete_except orch pid
              ~keep:[]
@@ -1016,44 +1057,6 @@ let () =
          | [] -> ());
          List.length (Orchestrator.all_messages orch) >= 0));
   Stdlib.print_endline "orchestrator public surface linked"
-
-(* A restored orchestrator must discard every in-flight push expectation while
-   retaining each agent's last observed remote head. *)
-let () =
-  QCheck2.Test.check_exn
-    (QCheck2.Test.make
-       ~name:"AO: clearing pending remote heads preserves observed heads"
-       ~count:100
-       QCheck2.Gen.(pair bool bool)
-       (fun (first_pending, second_pending) ->
-         try
-           let patches = mk_patches 2 in
-           let first = pid_of_idx patches 0 in
-           let second = pid_of_idx patches 1 in
-           let orch = Orchestrator.create ~patches ~main_branch:main in
-           let orch = Orchestrator.set_head_oid orch first (Some "old-first") in
-           let orch =
-             Orchestrator.set_head_oid orch second (Some "old-second")
-           in
-           let pending present value = if present then Some value else None in
-           let orch =
-             Orchestrator.set_expected_remote_head_oid orch first
-               (pending first_pending "new-first")
-           in
-           let orch =
-             Orchestrator.set_expected_remote_head_oid orch second
-               (pending second_pending "new-second")
-           in
-           let cleared = Orchestrator.clear_pending_remote_heads orch in
-           List.for_all
-             [ (first, "old-first"); (second, "old-second") ]
-             ~f:(fun (pid, old_head) ->
-               let agent = Orchestrator.agent cleared pid in
-               Option.is_none agent.Patch_agent.expected_remote_head_oid
-               && Option.equal String.equal agent.Patch_agent.head_oid
-                    (Some old_head))
-         with _ -> false));
-  Stdlib.print_endline "AO pending remote heads cleared"
 
 (* AO-MQ: merge-queue/automerge failure wrappers preserve the shared
    agent-level automerge invariants when reached through the orchestrator and
@@ -1176,6 +1179,9 @@ let () =
        ~count:100
        QCheck2.Gen.(pair bool string)
        (fun (claim, head_sha) ->
+         let head_sha =
+           Onton_core_test_support.Publication_fixture.sha head_sha
+         in
          try
            let patches = mk_patches 2 in
            let graph = Graph.of_patches patches in
@@ -1214,8 +1220,8 @@ let () =
            let orch = Orchestrator.release_promotion orch in
            let orch = Orchestrator.settle_restored_promotion orch in
            assert (Orchestrator.construction_open orch);
-           let orch = Orchestrator.mark_branch_published orch child in
-           assert (Orchestrator.agent orch child).Patch_agent.branch_published;
+           let orch = publish_fixture orch child head_sha in
+           assert (Orchestrator.branch_only_published orch child);
            let orch = Orchestrator.refresh_base_branch orch child in
            let orch =
              Patch_controller.apply_branch_observation orch child ~head_sha
@@ -1345,6 +1351,86 @@ let () =
                Bool.equal
                  (Orchestrator.agent orch root).Patch_agent.pr_body_refresh
                    .Patch_agent.pending merge_during_publication
+         with _ -> false))
+
+let () =
+  QCheck2.Test.check_exn
+    (QCheck2.Test.make ~count:200
+       ~name:"publication observation preserves running patch-message authority"
+       QCheck2.Gen.(option string)
+       (fun observed_head ->
+         try
+           let orch, patches, gameplan, pid = bootstrap_one () in
+           let candidate =
+             Onton_core_test_support.Publication_fixture.sha "published"
+           in
+           let orch = publish_fixture orch pid candidate in
+           let orch =
+             make_busy orch patches gameplan pid Operation_kind.Human
+           in
+           let observed_head =
+             Option.map observed_head
+               ~f:Onton_core_test_support.Publication_fixture.sha
+           in
+           let before = Orchestrator.agent orch pid in
+           let observed =
+             Orchestrator.observe_publication_head
+               ?confirmed_remote_head:observed_head orch pid observed_head
+           in
+           let after = Orchestrator.agent observed pid in
+           before.Patch_agent.busy && after.Patch_agent.busy
+           && Int.equal before.Patch_agent.generation
+                after.Patch_agent.generation
+           && Option.equal Message_id.equal
+                before.Patch_agent.current_message_id
+                after.Patch_agent.current_message_id
+           && Option.equal Operation_kind.equal before.Patch_agent.current_op
+                after.Patch_agent.current_op
+           && Option.equal String.equal before.Patch_agent.head_oid
+                after.Patch_agent.head_oid
+           && Option.equal Branch_reconcile.equal_publication_identity
+                (Branch_reconcile.publication_observation_target
+                   before.Patch_agent.branch_reconcile)
+                (Branch_reconcile.publication_observation_target
+                   after.Patch_agent.branch_reconcile)
+           && Bool.equal
+                (Option.is_none (Patch_agent.expected_remote_head_oid after))
+                (Option.is_some observed_head)
+         with _ -> false))
+
+let () =
+  QCheck2.Test.check_exn
+    (QCheck2.Test.make
+       ~name:
+         "confirmed branch publication preserves mode-specific PR scheduling"
+       ~count:100 QCheck2.Gen.bool (fun feature ->
+         try
+           let patches = mk_patches 2 in
+           let child = pid_of_idx patches 1 in
+           let root = pid_of_idx patches 0 in
+           let orch = Orchestrator.create ~patches ~main_branch:main in
+           let orch =
+             if feature then
+               match Execution_mode.infer (Graph.of_patches patches) with
+               | Ok mode -> Orchestrator.set_execution_mode orch mode
+               | Error message -> failwith message
+             else Orchestrator.mark_merged orch root
+           in
+           let candidate =
+             Onton_core_test_support.Publication_fixture.sha "child"
+           in
+           let orch = publish_fixture orch child candidate in
+           let orch = Orchestrator.set_pr_body_delivered orch child true in
+           let orch = Orchestrator.enqueue orch child Operation_kind.Pr_body in
+           let actions = Patch_controller.plan_actions orch ~patches in
+           Bool.equal (Orchestrator.branch_only_published orch child) feature
+           && List.exists actions ~f:(function
+             | Orchestrator.Start (pid, _) ->
+                 Patch_id.equal pid child && not feature
+             | Orchestrator.Respond (pid, kind) ->
+                 Patch_id.equal pid child && feature
+                 && Operation_kind.equal kind Operation_kind.Pr_body
+             | Orchestrator.Rebase _ | Orchestrator.Reconcile_branch _ -> false)
          with _ -> false))
 
 let () =

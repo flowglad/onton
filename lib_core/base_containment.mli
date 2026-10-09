@@ -13,7 +13,7 @@
 
     Git ancestry is supplied as an [ancestor_oracle] (effectfully backed by
     [git merge-base --is-ancestor]), keeping this function pure and testable —
-    the same pattern as {!Rebase_decision.plan}. The result feeds the
+    as in the owner's replay-boundary selection. The result feeds the
     [base_contains_merged_siblings] cache and the Start/Rebase eligibility gate.
 *)
 

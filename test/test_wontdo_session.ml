@@ -19,9 +19,6 @@ let fail_push = ref false
 let adopt_branch = ref false
 
 module Fake_worktree : Worktree.S = struct
-  let integrate ~root_path:_ ~root_branch:_ ~descendant_branch:_ ~head_sha:_ =
-    Worktree.Integration_error "unsupported fake"
-
   let resolve_main_root () = assert false
   let is_checked_out_in_repo_root _ = assert false
   let remote_branch_exists _ = assert false
@@ -32,6 +29,7 @@ module Fake_worktree : Worktree.S = struct
   let find_for_branch _ = None
   let prune_stale_for_branch _ = assert false
   let ensure_ready ~path:_ ~branch:_ = Ok true
+  let inspect_existing = ensure_ready
   let run_hook ~clock:_ ~script:_ ~cwd:_ ~env:_ () = assert false
   let fetch_origin ~fetch_lock:_ ~path:_ = assert false
 
@@ -43,10 +41,6 @@ module Fake_worktree : Worktree.S = struct
   let has_uncommitted_changes ~path:_ = assert false
   let conflict_diff ~path:_ = assert false
 
-  let rebase_onto ~path:_ ~target:_ ~upstream:_ ~project_name:_ ~ancestor_ids:_
-      () =
-    assert false
-
   let read_branch_sha ~path:_ ~ref_name =
     if String.is_suffix ref_name ~suffix:"/main" then Some !base_head
     else Some !head
@@ -55,18 +49,6 @@ module Fake_worktree : Worktree.S = struct
     String.equal ancestor "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
     && String.equal descendant "cccccccccccccccccccccccccccccccccccccccc"
 
-  let read_in_progress_conflict_info ~path:_ ~target:_ ~project_name:_
-      ~ancestor_ids:_ =
-    assert false
-
-  let force_push_with_lease ~path:_ ~branch:_ ~base:_ =
-    !before_push ();
-    Int.incr pushes;
-    if !fail_push then Worktree.Push_error "transport unavailable"
-    else if String.equal !head "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" then
-      Worktree.Push_no_commits
-    else Worktree.Push_ok
-
   let commit_gameplan ~path:_ ~publication:_ ~message:_ = assert false
 
   let materialization ~path:_ ~project_name:_ ~branch:_ =
@@ -74,7 +56,7 @@ module Fake_worktree : Worktree.S = struct
     Ok
       (Some (if !adopt_branch then B.Adopted_branch head else B.New_branch head))
 
-  let reconcile ~path:_ ~project_name:_ ~branch:_ ~operation:_ command =
+  let reconcile ~path:_ ~project_name:_ ~branch:_ ~operation command =
     let observation () =
       B.
         {
@@ -102,6 +84,9 @@ module Fake_worktree : Worktree.S = struct
     | B.Observe -> B.Observed (observation ())
     | B.Inspect -> B.Inspected (observation ())
     | B.Pin _ -> B.Pinned
+    | B.Verify_scope candidate ->
+        Onton_core_test_support.Scope_fixture.verified
+          operation.B.approved_scope candidate
     | B.Publish _ ->
         !before_push ();
         Int.incr pushes;
@@ -124,9 +109,7 @@ module Fake_worktree : Worktree.S = struct
           }
     | B.Commit_merge _ | B.Plan_remote_replay _ | B.Checkout_remote _
     | B.Verify_recovery | B.Integrate _ | B.Continue _ ->
-        B.Permanent "unexpected integration in session fixture"
-
-  let rebase_in_progress ~path:_ = assert false
+        B.Needs_diagnosis "unexpected integration in session fixture"
 end
 
 let run_case ?(adopted = false) ?(cancel = false) ?(push_failure = false)
@@ -235,7 +218,16 @@ let run_case ?(adopted = false) ?(cancel = false) ?(push_failure = false)
                 let orch =
                   match branch_role with
                   | `Feature_descendant ->
-                      Orchestrator.mark_branch_published orch patch_id
+                      let module F = Onton_core_test_support.Publication_fixture
+                      in
+                      remote_head := Some !head;
+                      F.confirmed ~candidate:!head
+                        ~step:(fun orch event ->
+                          fst
+                            (Orchestrator.reconcile_branch orch patch_id event))
+                        ~state:(fun orch ->
+                          (Orchestrator.agent orch patch_id).branch_reconcile)
+                        orch
                   | `Mainline | `Integration_root ->
                       Orchestrator.set_pr_number orch patch_id
                         (Pr_number.of_int 123)
@@ -598,7 +590,7 @@ let run_case ?(adopted = false) ?(cancel = false) ?(push_failure = false)
               assert (
                 Option.equal String.equal completion.head
                   (Some "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"));
-              assert (after.push_failure_count = 0);
+              assert (after.start_attempts_without_pr = 0);
               fail_push := false;
               let recovered =
                 Branch_reconcile_runner.run ~runtime ~patch_id
@@ -672,7 +664,8 @@ let run_case ?(adopted = false) ?(cancel = false) ?(push_failure = false)
           assert (after.no_commits_push_count = 0);
           assert (not (Onton_core.Patch_agent.needs_intervention after));
           assert (
-            Option.equal String.equal after.expected_remote_head_oid
+            Option.equal String.equal
+              (Onton_core.Patch_agent.expected_remote_head_oid after)
               (Some "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb")))))
 
 let () =

@@ -29,17 +29,36 @@ val materialization_boundary : materialization -> Commit.t option
 type policy = Rewrite | Preserve_ancestry [@@deriving eq, compare, sexp_of]
 
 type purpose =
+  | Provision_checkout of string
+      (** Provision or validate a checkout without integrating or publishing.
+          Only [Checkout_ready] can settle this intent. Retry and diagnostic
+          failures use the ordinary durable owner phases and command identity.
+      *)
   | Reconcile_base
   | Reconcile_request of string
+  | Reconcile_scoped of {
+      request : string;
+      project : string;
+      ancestors : Types.Patch_id.t list;
+    }
   | Integrate_revision of { contributor : string; revision : Commit.t }
   | Publish_revision of Commit.t
   | Publish_session of string
+  | Verify_publication
 [@@deriving eq, compare, sexp_of]
+
+val is_provisioning : purpose -> bool
 
 type intent = { base : string; policy : policy; purpose : purpose }
 [@@deriving eq, compare, sexp_of]
 
-type boundary = Recorded of Commit.t | Inferred of Commit.t | Plain
+type boundary =
+  | Recorded of Commit.t
+  | Inferred of Commit.t
+  | Reconstructed of { original : Commit.t; upstream : Commit.t }
+  | Subject_inferred of Commit.t
+  | Patch_equivalent of Commit.t
+  | Plain
 [@@deriving eq, compare, sexp_of]
 
 type boundary_choice = Chosen of boundary | Probe of Commit.t
@@ -49,6 +68,40 @@ val choose_boundary :
   candidates:boundary list -> evidence:(Commit.t * bool) list -> boundary_choice
 (** Select the first verified reachable boundary, or request the next ancestry
     observation. Missing evidence never counts as a negative observation. *)
+
+val patch_equivalent_boundary :
+  source:Commit.t -> string -> (Commit.t option, string) Result.t
+(** Decode NUL-delimited cherry-mark/revision/parent records in newest-first
+    topological order. A complete linear source chain with an equivalent prefix
+    yields the parent of its oldest remaining unique commit. All-equivalent
+    history yields [source]. Malformed/truncated probes are errors; merges and
+    non-linear histories provide no boundary. This is best-effort evidence. *)
+
+val reconstructed_boundary :
+  source:Commit.t ->
+  recorded:(Commit.t * string) list ->
+  history:string ->
+  (boundary option, string) Result.t
+(** Reconstruct an unreachable recorded boundary using exact tree identity in a
+    complete first-parent history (NUL-delimited revision/parents/tree).
+    Recorded candidates take precedence in supplied order; the newest matching
+    ancestor wins for each candidate. Both revisions remain explicit evidence.
+    Missing/malformed topology is a failed probe. This grants no recorded
+    publication authority. *)
+
+val subject_scope : purpose -> (string * Types.Patch_id.t list) option
+(** Dependency-subject heuristics require an explicitly captured project and
+    nonempty dependency set. Unscoped legacy requests cannot infer them. *)
+
+val subject_boundary :
+  source:Commit.t ->
+  project:string ->
+  ancestors:Types.Patch_id.t list ->
+  string ->
+  (Commit.t option, string) Result.t
+(** Read newest-first NUL-delimited revision/parents/subject records. Only a
+    linear leading prefix matching the captured dependency subjects can be
+    excluded. The result is best-effort inference, never recorded provenance. *)
 
 type token = private { operation : int; command : int }
 [@@deriving eq, compare, sexp_of]
@@ -117,6 +170,7 @@ type command_kind =
     }
   | Inspect
   | Verify_recovery
+  | Verify_scope of Commit.t
   | Continue of { head : Commit.t; target : Commit.t; sequencer : string }
   | Publish of { candidate : Commit.t; expected : Commit.t option }
   | Confirm of Commit.t
@@ -125,19 +179,35 @@ type command_kind =
 type command = private { token : token; kind : command_kind }
 [@@deriving eq, compare, sexp_of]
 
+type recovery_task =
+  | Finish_local_work
+  | Reconstruct_history
+  | Repair_publication
+[@@deriving eq, compare, sexp_of]
+
 type repair_mode =
+  | Diagnosis of { reason : string }
+      (** Observation-only agent assistance when mutation authority or checkout
+          evidence is unavailable. This scope grants no Git write authority. *)
   | Content_repair
-  | History_recovery of { reason : string; baseline : Commit.t option }
+  | History_recovery of {
+      reason : string;
+      baseline : Commit.t option;
+      task : recovery_task;
+    }
 [@@deriving eq, compare, sexp_of]
 
 type repair = {
   mode : repair_mode;
-  head : Commit.t;
+  head : Commit.t option;
   sequencer : string;
   conflicts : int;
   attempts_without_progress : int;
   attempt_completed : bool;
   attempt_started : bool;
+  last_turn : token option;
+      (** Last claimed agent turn, retained across inspection and retries. Older
+          snapshots without this evidence decode as [None]. *)
 }
 [@@deriving eq, compare, sexp_of]
 
@@ -149,10 +219,6 @@ type phase =
   | Confirming
   | Waiting of { until : float; reason : string }
   | Recovering
-  | Awaiting_session
-      (** Base reconciliation found uncommitted session work before integration.
-          No Git command may run until a session supplies a publication intent.
-      *)
   | Settled
   | Intervention of string
 [@@deriving eq, compare, sexp_of]
@@ -194,7 +260,15 @@ type operation = private {
   id : int;
   intent : intent;
   local_action : local_action;
+  preservation_policy : policy;
+      (** Captured preservation requirement. An adopted Git strategy may
+          strengthen this requirement, but cannot weaken the request. *)
   integration : integration_capture option;
+  remote_integration : integration_capture option;
+      (** Durable deterministic attempt, retained through publication and
+          recovery. Source is incoming remote work; target is the preserved
+          candidate, under either policy. This is separate from a base replay
+          boundary and prevents repeated attempts against the same capture. *)
   reobserve_after_completion : bool;
   destination : remote_binding;
   source : Commit.t option;
@@ -205,10 +279,34 @@ type operation = private {
   candidate : Commit.t option;
   expected : Commit.t option;
   recovery_revisions : Commit.t list;
+  retained_revisions : Commit.t list;
+      (** Recovery inventory only. Retention never grants inclusion authority.
+      *)
+  agent_dispatched : bool;
+      (** Durable execution fence: reservation alone does not grant agent work.
+      *)
+  approved_scope : Replay_scope.request;
+      (** Captured Git inputs. Only explicitly authorized linear local work may
+          extend this contract; reconstructed history cannot widen it. *)
+  scope_revision : Commit.t option;
+      (** Candidate independently verified against [approved_scope]. *)
+  deferred_remote : Commit.t option;
+      (** Incoming head waiting for certification of the preserved candidate. *)
+  candidate_evidence : integration_evidence option;
   phase : phase;
   pending : command option;
   command_sequence : int;
   failures : int;
+      (** Backoff exponent only; saturation does not exhaust recovery. *)
+  deterministic_failures : int;
+      (** Failed mutation attempts in the current integration/publication
+          obligation. Probes and transport backoff do not spend this budget. *)
+  observation_failures : int;
+      (** Failed evidence reads since the last complete observation, independent
+          of mutation attempts and the general backoff counter. *)
+  publication_recovery_attempts : int;
+      (** Completed publication recovery turns, retained across rejected pushes.
+      *)
   repair : repair option;
   merge_progress : merge_progress option;
 }
@@ -219,17 +317,23 @@ type t [@@deriving eq, compare, sexp_of]
 val yojson_of_t : t -> Yojson.Safe.t
 
 type result =
+  | Checkout_ready
+      (** Completion of the owner's provisioning inspection. This cannot settle
+          an integration or publication operation. *)
   | Observed of observation
   | Observed_active of { observation : observation; policy : policy }
+  | Observed_recovery of { observation : observation; policy : policy }
   | Pinned
   | Merge_completion_needed of merge_completion
   | Merge_completed of Commit.t
   | Remote_replay_selected of boundary
   | Remote_checked_out
   | Integrated of Commit.t
+  | Scope_verified of Replay_scope.verified
   | Conflict of { head : Commit.t; sequencer : string; conflicts : int }
   | Recovery_verified of {
       observation : observation;
+      local_extension : Replay_scope.t option;
       source_preserved : bool;
       remote_preserved : bool;
     }
@@ -238,18 +342,35 @@ type result =
   | Published
   | Remote of { sha : Commit.t option; topology : topology }
   | Retryable of { reason : string; retry_after : float option }
+  | Publication_rejected of Push_reject_classify.rejection
+  | Attempt_failed of string
+      (** A mutation ran but did not complete. Reinspect before retrying;
+          repeated failures offer agent recovery instead of replaying forever.
+      *)
   | Recovery_required of string
-  | Permanent of string
+  | Needs_diagnosis of string
+      (** Offer bounded agent diagnosis. The diagnostic text cannot stop the
+          owner before agent recovery has been attempted. *)
+[@@deriving eq, compare, sexp_of]
+
+type publication_identity = private { operation_id : int; revision : Commit.t }
 [@@deriving eq, compare, sexp_of]
 
 type event =
+  | Worktree_hook of Worktree_hook.event
+  | Publication_observed of {
+      publication : publication_identity;
+      head : Commit.t;
+      remote : Commit.t option;
+    }
   | Materialized of materialization
   | Request of intent
   | Result of { token : token; at : float; result : result }
   | Repair_invalidated of { token : token; reason : string }
-  | Repair_denied of { token : token; reason : string }
+  | Repair_dispatched of token
   | Repair_started of token
   | Repair_interrupted of { token : token; at : float; reason : string }
+  | Repair_failed of { token : token; at : float; reason : string }
   | Repair_completed of { token : token; at : float }
   | Tick of float
   | Recover
@@ -267,20 +388,109 @@ type effect_command =
   | Completed of int
 [@@deriving eq, compare, sexp_of]
 
+val verification_checkout_valid :
+  branch:string -> candidate:Commit.t -> Git_observation.t -> bool
+
+val command_allowed_for_purpose : purpose -> command_kind -> bool
+(** Verification and provisioning cannot acquire ordinary Git mutation
+    authority. *)
+
+val import_legacy_publication : t -> base:string -> t
+(** Queue verification of an old publication claim without granting publication
+    authority or replacing an in-flight command or desired reconciliation. *)
+
 val empty : t
+
+val import_legacy_anchors : ?revision:Yojson.Safe.t -> t -> Yojson.Safe.t -> t
+(** Retain valid legacy anchor revisions for recovery-ref lifetime management.
+    This grants no replay boundary, integration receipt, publication authority,
+    or ancestry requirement. Malformed entries are ignored independently;
+    imports are cumulative, commutative and idempotent. [revision] retains the
+    older scalar anchor under the same rules, even without a history list. *)
+
+val forge_observations : t -> Forge_observation.history
+
+val worktree_hook : t -> Worktree_hook.t
+(** Durable checkout initialization obligation. Pending or uncertain hooks keep
+    the owner unsettled and cannot be bypassed by a successful Git result. *)
+
+val begin_forge_observation :
+  t ->
+  request:Forge_observation.request ->
+  scope:Forge_observation.scope ->
+  t * Forge_observation.ticket option
+
+val accept_forge_observation :
+  ?confirmed_base:string ->
+  t ->
+  ticket:Forge_observation.ticket ->
+  current:Forge_observation.scope ->
+  confirmed_head:string option ->
+  Forge_observation.t ->
+  t * (Poll_outcome.t, string) Result.t
+(** Durable forge request/evidence transitions. They do not emit Git commands,
+    settle repair, alter command identity, or grant publication authority. *)
+
 val operation : t -> operation option
 
 val execution_policy : operation -> policy
-(** The captured local action determines preservation requirements, including
-    adopted integrations whose policy differs from the initiating request. *)
+(** The preservation requirement is at least as strong as the request and
+    captured integration strategy. An existing rebase cannot weaken a request to
+    preserve ancestry; an existing merge can strengthen a rewrite request. *)
+
+val integration_scope_matches :
+  operation ->
+  source:Commit.t ->
+  target:Commit.t ->
+  boundary:boundary ->
+  policy:policy ->
+  bool
+(** Integration inputs must exactly match the captured contribution contract. A
+    remote observation or recovery-head change cannot expand that contract. *)
+
+val ancestry_requirements : operation -> Commit.t list
+(** Revisions that must remain ancestors under an ancestry-preserving contract.
+    Includes retained requirements from preceding steps. Rewrite contracts
+    return an empty list; their preservation uses the separate replay proofs. *)
 
 val observation_boundaries : operation -> boundary list
 val materialization : t -> materialization option
 val publications : t -> publication_receipt list
+val publication_identity : publication_receipt -> publication_identity
+
+val publication_observation_target : t -> publication_identity option
+(** Current candidate being published, or latest confirmed publication. *)
+
+val publication_observation_pending : t -> publication_identity option
+(** Observation target without a matching durable acknowledgement. Observation
+    before Git confirmation survives later confirmation of the same candidate.
+*)
+
+val can_observe_publication :
+  t ->
+  publication:publication_identity ->
+  head:Commit.t ->
+  remote:Commit.t option ->
+  bool
+(** The candidate itself may be observed before Git confirmation. A differing
+    head requires direct remote evidence after that publication is confirmed;
+    the old remote tip cannot pre-acknowledge an upcoming publication. *)
+
+val unobserved_publication : t -> publication_receipt option
+(** Latest confirmed publication not yet observed by the forge. A matching head
+    acknowledges that exact receipt; a different head requires direct remote
+    confirmation. Old receipts cannot acknowledge newer publication. *)
 
 val integrations : t -> integration_receipt list
 (** Newest-first local base integration receipts, retained independently of
     publication. *)
+
+val forge_conflict : t -> scope:Forge_observation.scope -> bool
+
+val has_conflict : t -> scope:Forge_observation.scope -> bool
+(** Project unresolved local conflict work and current forge evidence. Only an
+    exact settled integration satisfies a retained forge pair; session success
+    and mutable scheduling flags cannot clear this projection. *)
 
 val conflict_satisfied :
   t -> head:Commit.t -> base:Commit.t -> base_branch:string -> bool
@@ -302,9 +512,32 @@ val rewrite_publication_input :
     executor must prove the leased remote lies between them. Inferred/plain
     boundaries and preservation-policy integrations confer no such authority. *)
 
+val initial_publication_candidate :
+  operation -> remote:Commit.t option -> Commit.t option
+(** Initial publication is confirmed only when the absent-ref operation's
+    captured candidate is now the directly observed destination tip. *)
+
+val initial_tracking_edits :
+  branch:string ->
+  base:string ->
+  fetch_destination:string ->
+  push_destination:string ->
+  remotes:string list ->
+  merges:string list ->
+  (string * string) list option
+(** Local tracking setup after confirmed initial publication. Accept absent
+    configuration or an inherited origin/base upstream; preserve unrelated or
+    ambiguous configuration and differing fetch/push destinations. [Some []]
+    means the configuration is already correct. *)
+
 val publication_destination : string list -> (string, string) Stdlib.result
 (** One explicit push destination is supported. Ambiguous destinations stop
     before mutation rather than treating partial publication as completion. *)
+
+val check_observation_destination :
+  operation -> observed:Remote_id.t -> (unit, string) Result.t
+(** Polling may use only the checkpointed destination. Unlike owned execution,
+    it cannot authorize rebinding during an explicit resume. *)
 
 val check_destination :
   operation -> observed:Remote_id.t -> (unit, string) Stdlib.result
@@ -312,8 +545,18 @@ val check_destination :
     restart. Missing legacy evidence cannot silently authorize publication. *)
 
 val remote_integrations : t -> integration_receipt list
-(** Remote replay receipts preserve rewrite evidence without turning the
-    preserved patch revision into a base replay boundary. *)
+(** Remote integration receipts retain the incoming revision, preserved
+    candidate, policy, selected boundary and completion evidence for either
+    policy. They do not turn the preserved candidate into a base replay
+    boundary. Publication retries keep the original evidence for an unchanged
+    capture and candidate. *)
+
+val required_revisions : t -> Commit.t list
+(** Sorted, duplicate-free inventory of every revision retained by this owner's
+    checkpoint, including queued intent, commands, repair, replay and receipts.
+    A surviving owner may still need these objects after restart. This is not an
+    ancestry or reachability proof: pruning handlers must establish which Git
+    refs keep these revisions reachable before removing recovery refs. *)
 
 val pending : t -> command option
 val phase : t -> phase option
@@ -329,8 +572,9 @@ val is_unsettled : t -> bool
 val is_pending : t -> bool
 
 val step : t -> event -> t * effect_command list
-(** Five retryable failures in one operation require explicit intervention.
-    Successful inspection does not reset this budget; Resume resets it. *)
+(** Requests use the same intent validity rules as checkpoint decoding.
+    Malformed requests leave state unchanged and emit no effects, including when
+    another operation already owns the branch. *)
 
 val decode : Yojson.Safe.t -> (t, string) Result.t
 
@@ -343,8 +587,18 @@ val integration_result :
 (** Interpret post-command ancestry observations against the captured
     integration. *)
 
+val local_extension_contract :
+  operation -> (Commit.t * Replay_scope.request) option
+(** A linear source extension is permitted only when finishing interrupted work
+    or repairing a rejected publication whose candidate already passed scope
+    verification. History reconstruction cannot widen its input contract. *)
+
 val check_checkout :
-  command -> branch:string -> Git_observation.t -> (unit, string) Result.t
+  ?operation:operation ->
+  command ->
+  branch:string ->
+  Git_observation.t ->
+  (unit, string) Result.t
 (** Validate a fresh checkout observation against the captured command before
     mutation. The core owns branch, revision, index and sequencer preconditions.
     A matching continuation may still need content repair; [Git_observation]
@@ -354,6 +608,9 @@ val check_checkout :
 val recovery_prefix : project:string -> branch:string -> string
 (** Injective encoding of project and branch names into a private Git namespace.
 *)
+
+val recovery_project_prefix : project:string -> string
+(** Exact project namespace, including its trailing slash. *)
 
 val can_execute_git : at:float -> t -> bool
 (** Whether scheduled branch work can advance now, including inspection before
@@ -365,7 +622,7 @@ val wake_event : at:float -> t -> event option
 
 type repair_turn = private {
   token : token;
-  head : Commit.t;
+  head : Commit.t option;
   mode : repair_mode;
   prompt : string;
 }
@@ -373,10 +630,17 @@ type repair_turn = private {
 val repair_turn : t -> branch:string -> token -> repair_turn option
 (** Available only for the current durably claimed repair turn. *)
 
+val recovery_prompt :
+  context:string -> guidance:string list -> repair_turn -> string
+(** Include task context and pending guidance without acknowledging normal task
+    delivery. *)
+
 val repair_head_matches : repair_turn -> Commit.t option -> bool
+val repair_event_accepted : Types.Stream_event.t -> bool
 
 val repair_result :
   turn:repair_turn ->
+  turn_accepted:bool ->
   at:float ->
   before_head:Commit.t option ->
   after_head:Commit.t option ->
@@ -384,10 +648,12 @@ val repair_result :
   final_result:bool ->
   detail:string ->
   event
-(** Validate repair-turn observations. Unknown HEAD evidence or interrupted
-    backends retry without spending repair budget. Changed HEAD invalidates
-    content-repair authority and enters history recovery. History recovery may
-    change HEAD, but only independent verification can authorize publication. *)
+(** Validate repair-turn observations. A backend failure after accepting the
+    turn is a completed attempt, verified before charging its budget. Failures
+    before acceptance retry without spending agent attempts. Changed HEAD
+    invalidates content-repair authority and enters history recovery. History
+    recovery may change HEAD, but only independent verification can authorize
+    publication. *)
 
 val continuation :
   operation -> Git_observation.t -> Git_observation.continuation

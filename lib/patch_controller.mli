@@ -42,6 +42,7 @@ val reconcile_patch :
     effects. The same snapshot always produces the same result. *)
 
 val apply_poll_result :
+  ?previous_conflict:bool ->
   ?merge_queue_ejection_confirmed:bool ->
   ?confirmed_remote_head:string ->
   Orchestrator.t ->
@@ -117,9 +118,10 @@ val tick :
   project_name:string ->
   gameplan:Gameplan.t ->
   Orchestrator.t * github_effect list * Orchestrator.action list
-(** Reconcile durable state, emit missing GitHub effects, and fire the planned
-    actions into the orchestrator state. The returned action list is the set of
-    actions that were fired. *)
+(** Reconcile durable state, emit missing GitHub effects, and accept or resume
+    runnable outbox messages. The returned actions are only those whose message
+    ownership was acquired. Repeated ticks cannot fire an already running
+    action. *)
 
 val apply_github_effect_success :
   Orchestrator.t -> github_effect -> Orchestrator.t
@@ -285,6 +287,7 @@ val is_integration_candidate :
     it can admit a duplicate integration. *)
 
 val apply_branch_observation :
+  ?confirmed_remote_head:string ->
   Orchestrator.t ->
   Patch_id.t ->
   head_sha:string ->

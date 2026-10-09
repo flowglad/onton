@@ -61,15 +61,17 @@ let gp =
 
 let check label value = if not value then failwith label
 
+module Reconciliation = Onton_test_support.Reconciliation_fixture
+
 let ready_branch orch n =
-  Orchestrator.mark_branch_published orch (id n) |> fun o ->
-  Orchestrator.set_pr_body_delivered o (id n) true |> fun o ->
+  Orchestrator.set_pr_body_delivered orch (id n) true |> fun o ->
   Orchestrator.set_automerge_enabled o (id n) true |> fun o ->
   Orchestrator.set_base_branch o (id n) (branch 1) |> fun o ->
-  fst (Orchestrator.apply_rebase_result o (id n) Worktree.Noop (branch 1))
-  |> fun o ->
+  Reconciliation.rebase ~noop:true o (id n) (branch 1) |> fun o ->
   Patch_controller.apply_branch_observation o (id n)
-    ~head_sha:("head" ^ Int.to_string n)
+    ~head_sha:
+      (Option.value (Orchestrator.agent o (id n)).Patch_agent.head_oid
+         ~default:"")
     ~checks:
       [
         Ci_check.
@@ -89,10 +91,9 @@ let ready_root orch =
   Orchestrator.set_pr_number orch (id 1) (Pr_number.of_int 1) |> fun o ->
   Orchestrator.set_is_draft o (id 1) true |> fun o ->
   Orchestrator.set_base_branch o (id 1) main |> fun o ->
-  fst (Orchestrator.apply_rebase_result o (id 1) Worktree.Noop main) |> fun o ->
+  Reconciliation.rebase ~noop:true o (id 1) main |> fun o ->
   Orchestrator.set_pr_body_delivered o (id 1) true |> fun o ->
   Orchestrator.set_checks_passing o (id 1) true |> fun o ->
-  Orchestrator.set_head_oid o (id 1) (Some "root-head") |> fun o ->
   Orchestrator.set_mergeability_unknown o (id 1) false
 
 let fresh () =
@@ -144,8 +145,7 @@ let publication_lifecycle () =
   Runtime.update_orchestrator runtime (fun o ->
       Orchestrator.set_pr_number o (id 0) (Pr_number.of_int 10) |> fun o ->
       Orchestrator.set_base_branch o (id 0) main |> fun o ->
-      fst (Orchestrator.apply_rebase_result o (id 0) Worktree.Noop main)
-      |> fun o ->
+      Reconciliation.rebase ~noop:true o (id 0) main |> fun o ->
       Orchestrator.set_pr_body_delivered o (id 0) true |> fun o ->
       Orchestrator.set_checks_passing o (id 0) true);
   check "publication ready for review before implementation starts"
@@ -206,13 +206,17 @@ let () =
       let orch = ready_branch orch 2 in
       check "published descendant has no PR"
         (not (Patch_agent.has_pr (Orchestrator.agent orch (id 2))));
+      let checked_head =
+        Option.value (Orchestrator.agent orch (id 2)).Patch_agent.head_oid
+          ~default:""
+      in
       let counted =
         Orchestrator.increment_ci_failure_count orch (id 2) |> fun o ->
         Orchestrator.increment_ci_failure_count o (id 2)
       in
       let reset =
         Patch_controller.apply_branch_observation counted (id 2)
-          ~head_sha:"head2"
+          ~head_sha:checked_head
           ~checks:
             [
               Ci_check.
@@ -283,7 +287,7 @@ let () =
           | Patch_controller.Git_integrate { root; head_sha; merge_patch_id } ->
               Patch_id.equal root (id 1)
               && Patch_id.equal merge_patch_id (id 2)
-              && String.equal head_sha "head2"
+              && String.equal head_sha checked_head
           | Patch_controller.Github_merge _ -> false));
       check "claimed branch cannot dispatch work"
         (not
@@ -429,9 +433,17 @@ let () =
            (Patch_controller.ready_for_review
               (Orchestrator.invalidate_root_readiness complete)
               (id 1)));
+      let module F = Onton_core_test_support.Publication_fixture in
+      let candidate = F.sha "final-head" in
+      let external_head = F.sha "middle-head" in
       let awaiting =
         Orchestrator.invalidate_root_readiness complete |> fun o ->
-        Orchestrator.set_expected_remote_head_oid o (id 1) (Some "final-head")
+        F.confirmed ~candidate
+          ~step:(fun o event ->
+            fst (Orchestrator.reconcile_branch o (id 1) event))
+          ~state:(fun o ->
+            (Orchestrator.agent o (id 1)).Patch_agent.branch_reconcile)
+          o
       in
       let observe head =
         Patch_controller.
@@ -444,8 +456,8 @@ let () =
                 is_draft = true;
                 merge_state = Pr_state.Mergeable;
                 merge_ready = true;
-                base_branch = None;
-                base_oid = None;
+                base_branch = Some main;
+                base_oid = Some (F.sha "root-base");
                 head_oid = Some head;
                 review_decision = None;
                 unresolved_comment_count = 0;
@@ -462,46 +474,43 @@ let () =
           }
       in
       let stale, _, _ =
-        Patch_controller.apply_poll_result awaiting (id 1) (observe "root-head")
+        Onton_test_support.Forge_poll_fixture.apply awaiting (id 1)
+          (observe (F.sha "root-head"))
       in
       check "pre-push root CI cannot promote"
         (not (Patch_controller.ready_for_review stale (id 1)));
       check "pre-push observation retains publication marker"
         (Option.equal String.equal
-           (Orchestrator.agent stale (id 1))
-             .Patch_agent.expected_remote_head_oid (Some "final-head"));
-      let distinct, _, _ =
-        Patch_controller.apply_poll_result awaiting (id 1)
-          (observe "middle-head")
+           (Patch_agent.expected_remote_head_oid
+              (Orchestrator.agent stale (id 1)))
+           (Some candidate));
+      let unconfirmed, _, _ =
+        Onton_test_support.Forge_poll_fixture.apply awaiting (id 1)
+          (observe external_head)
       in
-      check "distinct known root head settles publication"
+      check "unconfirmed distinct root head cannot settle publication"
+        (Option.equal String.equal
+           (Patch_agent.expected_remote_head_oid
+              (Orchestrator.agent unconfirmed (id 1)))
+           (Some candidate)
+        && not (Patch_controller.ready_for_review unconfirmed (id 1)));
+      let distinct, _, _ =
+        Onton_test_support.Forge_poll_fixture.apply
+          ~confirmed_remote_head:external_head awaiting (id 1)
+          (observe external_head)
+      in
+      check "directly confirmed root head settles publication"
         (Option.equal String.equal
            (Orchestrator.agent distinct (id 1)).Patch_agent.head_oid
-           (Some "middle-head")
+           (Some external_head)
         && Option.is_none
-             (Orchestrator.agent distinct (id 1))
-               .Patch_agent.expected_remote_head_oid);
-      let publication_state = ref stale in
-      let update f = publication_state := f !publication_state in
-      ignore
-        (Push_publication.with_pending_push ~update ~patch_id:(id 1)
-           ~local_sha:(Some "final-head") (fun () -> Worktree.Push_up_to_date)
-          : Worktree.push_result);
-      check "root no-op publication still waits for exact head"
-        (Option.equal String.equal
-           (Orchestrator.agent !publication_state (id 1))
-             .Patch_agent.expected_remote_head_oid (Some "final-head"));
-      ignore
-        (Push_publication.with_pending_push ~update ~patch_id:(id 1)
-           ~local_sha:(Some "unpublished-head") (fun () ->
-             Worktree.Push_error "transport")
-          : Worktree.push_result);
-      check "failed root push preserves previous published head"
-        (Option.equal String.equal
-           (Orchestrator.agent !publication_state (id 1))
-             .Patch_agent.expected_remote_head_oid (Some "final-head"));
+             (Patch_agent.expected_remote_head_oid
+                (Orchestrator.agent distinct (id 1))));
+      (* Owner publication/transport interleavings are exercised by PI-6b and
+         test_branch_reconcile_outbox; this fixture checks root readiness. *)
       let observed, _, _ =
-        Patch_controller.apply_poll_result stale (id 1) (observe "final-head")
+        Onton_test_support.Forge_poll_fixture.apply
+          ~confirmed_remote_head:candidate stale (id 1) (observe candidate)
       in
       check "current published root CI allows promotion"
         (Patch_controller.ready_for_review observed (id 1));
@@ -528,7 +537,7 @@ let () =
       check "promotion claim persisted"
         (Orchestrator.promotion_claimed restored);
       check "branch publication persisted"
-        (Orchestrator.agent restored (id 2)).Patch_agent.branch_published;
+        (Patch_agent.branch_published (Orchestrator.agent restored (id 2)));
       let rt = Runtime.create ~gameplan:gp ~main_branch:main () in
       Runtime.update_orchestrator rt (fun _ -> fresh ());
       check "unrooted additions refused"
@@ -612,71 +621,47 @@ let () =
   Stdlib.print_endline "feature PR publication generations: OK"
 
 let () =
-  let open Patch_agent in
+  let module B = Branch_reconcile in
   let pid = id 1 in
-  let claim_rebase orch =
-    Orchestrator.enqueue orch pid Operation_kind.Rebase |> fun o ->
-    Orchestrator.fire o (Orchestrator.Rebase (pid, main))
+  let initial, _, _, _ =
+    Reconciliation.prepare ~noop:false (fresh ()) pid main
   in
-  let claim_conflict orch =
-    Orchestrator.enqueue orch pid Operation_kind.Merge_conflict |> fun o ->
-    Orchestrator.fire o
-      (Orchestrator.Respond (pid, Operation_kind.Merge_conflict))
+  let failed =
+    Reconciliation.reply initial pid
+      (B.Retryable { reason = "transport"; retry_after = None })
+    |> fun o -> Orchestrator.complete o pid
   in
-  let initial = claim_rebase (fresh ()) in
-  let failed, _ =
-    Orchestrator.apply_rebase_result initial pid
-      (Worktree.Error "transient command failure") main
-  in
-  check "root command error consumes failure budget"
-    ((Orchestrator.agent failed pid).Patch_agent.rebase_failure_count = 1);
-  let conflicted, effects =
-    Orchestrator.apply_rebase_result (claim_rebase failed) pid
-      (Worktree.Merge_conflict "upstream-sha") main
-  in
+  let a = Orchestrator.agent failed pid in
+  check "root transport retry retains owner without spending repair budget"
+    (B.is_pending a.Patch_agent.branch_reconcile
+    && not (Patch_agent.needs_intervention a));
+  let conflicted = Reconciliation.conflict (fresh ()) pid main in
   let a = Orchestrator.agent conflicted pid in
-  check "root merge conflict queues agent repair without failure budget"
-    (a.has_conflict && (not a.busy) && a.rebase_failure_count = 0
+  check "root merge conflict retains durable repair after releasing capacity"
+    ((not a.Patch_agent.busy)
     && (not (Patch_agent.needs_intervention a))
-    && List.mem a.queue Operation_kind.Merge_conflict
-         ~equal:Operation_kind.equal
-    && List.is_empty effects);
-  (* Repeated deliveries after interrupted sessions are repairable conflicts,
-     rather than two command failures that strand the root in needs-help. *)
-  let repaired =
-    List.fold [ 1; 2; 3 ] ~init:conflicted ~f:(fun orch _ ->
-        let running = claim_conflict orch in
-        let orch, decision, effects =
-          Orchestrator.apply_conflict_rebase_result running pid
-            (Worktree.Merge_conflict "upstream-sha") main
-        in
-        check "pending root merge reaches repair agent"
-          (Orchestrator.equal_conflict_rebase_decision decision
-             Orchestrator.Deliver_to_agent
-          && List.is_empty effects);
-        let orch, resolution =
-          Orchestrator.apply_conflict_push_result orch pid decision None
-        in
-        let a = Orchestrator.agent orch pid in
-        check "pending root merge retains ownership for agent"
-          (Orchestrator.equal_conflict_resolution resolution
-             Orchestrator.Conflict_needs_agent
-          && a.busy && a.has_conflict && a.rebase_failure_count = 0
-          && not (Patch_agent.needs_intervention a));
-        Orchestrator.complete orch pid)
-  in
-  let finished, decision, effects =
-    Orchestrator.apply_conflict_rebase_result (claim_conflict repaired) pid
-      Worktree.Ok main
-  in
+    &&
+    match B.phase a.Patch_agent.branch_reconcile with
+    | Some (B.Repairing _) -> true
+    | None
+    | Some
+        ( B.Preparing | B.Integrating | B.Publishing | B.Confirming
+        | B.Waiting _ | B.Recovering | B.Settled | B.Intervention _ ) ->
+        false);
+  check "root repair preserves ancestry policy"
+    (match B.operation a.Patch_agent.branch_reconcile with
+    | Some operation ->
+        B.equal_policy operation.B.intent.B.policy B.Preserve_ancestry
+    | None -> false);
+  let finished = Reconciliation.resolve_conflict conflicted pid in
   let a = Orchestrator.agent finished pid in
-  check "completed root repair schedules publication and releases ownership"
-    (Orchestrator.equal_conflict_rebase_decision decision
-       Orchestrator.Conflict_resolved
-    && List.equal Orchestrator.equal_rebase_effect effects
-         [ Orchestrator.Push_branch ]
-    && (not a.busy) && (not a.has_conflict)
-    && not (Patch_agent.needs_intervention a))
+  check "completed root repair confirms publication and releases capacity"
+    ((not a.Patch_agent.busy)
+    && (not (Patch_agent.has_conflict a))
+    && (not (Patch_agent.needs_intervention a))
+    && Option.equal B.equal_phase
+         (B.phase a.Patch_agent.branch_reconcile)
+         (Some B.Settled))
 
 let () =
   let module B = Branch_reconcile in
@@ -708,6 +693,7 @@ let () =
       let state orch =
         (Orchestrator.agent orch (id 1)).Patch_agent.branch_reconcile
       in
+      let prior_publications = List.length (B.publications (state orch)) in
       let reply orch result =
         match B.pending (state orch) with
         | None -> failwith "missing integration command"
@@ -739,7 +725,13 @@ let () =
              })
       in
       let orch = reply orch B.Pinned in
-      let orch = reply orch (B.Integrated candidate) in
+      let orch =
+        reply orch (B.Integrated candidate)
+        |> Onton_core_test_support.Publication_fixture.verify_scope
+             ~step:(fun orch event ->
+               fst (Orchestrator.reconcile_branch orch (id 1) event))
+             ~state
+      in
       check "local root integration cannot complete descendant"
         (not (Orchestrator.agent orch (id 2)).Patch_agent.merged);
       let orch = reply orch B.Published in
@@ -761,8 +753,8 @@ let () =
         && not child.Patch_agent.automerge_inflight);
       check "root integration retains its base lineage"
         (Option.equal Branch.equal
-           (Orchestrator.agent orch (id 1)).Patch_agent.branch_rebased_onto
+           (Patch_agent.branch_rebased_onto (Orchestrator.agent orch (id 1)))
            (Some main));
       check "confirmed publication remains recorded on destination root"
-        (List.length (B.publications (state orch)) = 1))
+        (List.length (B.publications (state orch)) = prior_publications + 1))
 [@@warning "-42"]

@@ -60,7 +60,9 @@ let enqueue_pr_body_if_needed t patch_id (agent : Patch_agent.t) =
      would re-enqueue Pr_body on every tick and immediately override the
      escalation — defeating the retry-once-then-intervene contract. *)
   if
-    (not (Patch_agent.has_pr agent || agent.branch_published))
+    (not
+       (Patch_agent.has_pr agent
+       || Orchestrator.branch_only_published t patch_id))
     || agent.merged
     || agent.pr_body_delivered
        && not
@@ -77,17 +79,21 @@ let enqueue_pr_body_if_needed t patch_id (agent : Patch_agent.t) =
     if already_queued then t
     else Orchestrator.enqueue t patch_id Operation_kind.Pr_body
 
-let apply_poll_result ?(merge_queue_ejection_confirmed = false)
-    ?confirmed_remote_head t patch_id
+let apply_poll_result ?previous_conflict
+    ?(merge_queue_ejection_confirmed = false) ?confirmed_remote_head t patch_id
     ({ poll_result; base_branch; native_stack; branch_in_root; worktree_path } :
       poll_observation) =
+  let previous_conflict =
+    Option.value previous_conflict
+      ~default:(Patch_agent.has_conflict (Orchestrator.agent t patch_id))
+  in
   let logs = ref [] in
   let log message = logs := { message; patch_id } :: !logs in
   let was_native_stack =
     (Orchestrator.agent t patch_id).Patch_agent.native_stack
   in
   let deferred_head =
-    Execution_mode.observation_pending
+    Execution_mode.observation_pending ?confirmed_remote_head
       (Orchestrator.execution_mode t)
       (Orchestrator.agent t patch_id)
       poll_result.Poller.head_oid
@@ -128,7 +134,15 @@ let apply_poll_result ?(merge_queue_ejection_confirmed = false)
     else poll_result
   in
   let poll_result =
-    if deferred_head && Orchestrator.is_integration_root t patch_id then
+    if
+      deferred_head
+      && (Orchestrator.is_integration_root t patch_id
+         || Branch_reconcile.is_unsettled
+              (Orchestrator.agent t patch_id).branch_reconcile
+         || Option.is_some
+              (Branch_reconcile.publication_observation_target
+                 (Orchestrator.agent t patch_id).branch_reconcile))
+    then
       {
         poll_result with
         checks_passing = false;
@@ -136,7 +150,9 @@ let apply_poll_result ?(merge_queue_ejection_confirmed = false)
         merge_state = Pr_state.Unknown;
         queue =
           List.filter poll_result.queue ~f:(fun k ->
-              not (Operation_kind.equal k Operation_kind.Ci));
+              not
+                (Operation_kind.equal k Operation_kind.Ci
+                || Operation_kind.equal k Operation_kind.Merge_conflict));
       }
     else poll_result
   in
@@ -148,8 +164,9 @@ let apply_poll_result ?(merge_queue_ejection_confirmed = false)
             %s"
            (Option.value poll_result.Poller.head_oid ~default:"unknown")
            (Option.value
-              (Orchestrator.agent t patch_id)
-                .Patch_agent.expected_remote_head_oid ~default:"unknown"));
+              (Patch_agent.expected_remote_head_oid
+                 (Orchestrator.agent t patch_id))
+              ~default:"unknown"));
       {
         poll_result with
         queue =
@@ -200,33 +217,6 @@ let apply_poll_result ?(merge_queue_ejection_confirmed = false)
       match poll_result.Poller.merge_commit_sha with
       | Some _ as sha -> Orchestrator.set_merge_commit_sha t patch_id sha
       | None -> t)
-    else t
-  in
-  let t =
-    if Poller.has_conflict poll_result then (
-      let agent = Orchestrator.agent t patch_id in
-      if not agent.Patch_agent.has_conflict then log "Merge conflict detected";
-      Orchestrator.set_has_conflict t patch_id)
-    else
-      let agent = Orchestrator.agent t patch_id in
-      if agent.Patch_agent.has_conflict then
-        if Patch_decision.should_clear_conflict agent then (
-          log "Conflict cleared — no longer detected";
-          let t = Orchestrator.clear_has_conflict t patch_id in
-          Orchestrator.reset_conflict_noop_count t patch_id)
-        else (
-          log "Conflict flag retained — resolution in flight";
-          t)
-      else t
-  in
-  let t =
-    if
-      Patch_decision.should_reset_conflict_noop
-        (Orchestrator.agent t patch_id)
-        ~merge_state:poll_result.merge_state ~observed_head:poll_result.head_oid
-    then (
-      log "Mergeability confirmed — reset conflict no-op count";
-      Orchestrator.reset_conflict_noop_count t patch_id)
     else t
   in
   let previous_ci_failure_count =
@@ -294,7 +284,8 @@ let apply_poll_result ?(merge_queue_ejection_confirmed = false)
     if deferred_head then t
     else
       let t = Orchestrator.set_head_oid t patch_id poll_result.head_oid in
-      Orchestrator.set_expected_remote_head_oid t patch_id None
+      Orchestrator.observe_publication_head ?confirmed_remote_head t patch_id
+        poll_result.head_oid
   in
   let t =
     Orchestrator.set_review_decision t patch_id poll_result.review_decision
@@ -391,6 +382,24 @@ let apply_poll_result ?(merge_queue_ejection_confirmed = false)
         else t
     | _ -> t
   in
+  let agent = Orchestrator.agent t patch_id in
+  let conflict = Patch_agent.has_conflict agent in
+  if conflict && not previous_conflict then log "Merge conflict detected"
+  else if previous_conflict && not conflict then
+    log "Conflict cleared — verified or superseded branch context";
+  let t =
+    if
+      Branch_reconcile.forge_conflict agent.Patch_agent.branch_reconcile
+        ~scope:(Patch_agent.forge_scope agent)
+      && (not (Branch_reconcile.is_unsettled agent.branch_reconcile))
+      && (not agent.merged)
+      && (not (Patch_agent.in_merge_queue agent))
+      && not
+           (Option.equal Operation_kind.equal agent.current_op
+              (Some Operation_kind.Merge_conflict))
+    then Orchestrator.enqueue t patch_id Operation_kind.Merge_conflict
+    else t
+  in
   (t, List.rev !logs, newly_blocked)
 
 let apply_replacement_pr t patch_id ~pr_number ~base_branch ~merged =
@@ -402,9 +411,9 @@ let apply_replacement_pr t patch_id ~pr_number ~base_branch ~merged =
    orchestrator state. A PR has reached it when its expected base is [main]
    (every dependency merged), its PR body is delivered, no merge conflict is
    active, its local branch is actually rebased onto that base, and CI is green.
-   [branch_rebased_onto] lags [expected_base] until the Rebase action lands,
-   and [has_conflict] is set the moment a rebase or push surfaces a conflict —
-   both must clear before the fixpoint holds. Gates the draft flip in
+   The owner must be settled with confirmed publication and matching base
+   integration evidence. Its conflict projection must be clear before the
+   fixpoint holds. Gates the draft flip in
    [reconcile_pr_settings].
 
    With more than one open dep the expected base is not yet a single branch
@@ -413,7 +422,10 @@ let ready_for_review t patch_id =
   let agent = Orchestrator.agent t patch_id in
   let graph = Orchestrator.graph t in
   let has_merged pid = (Orchestrator.agent t pid).Patch_agent.merged in
-  (not (Branch_reconcile.is_unsettled agent.Patch_agent.branch_reconcile))
+  Patch_agent.forge_revision_pair_confirmed agent
+  && (not (Branch_reconcile.is_unsettled agent.Patch_agent.branch_reconcile))
+  && Option.is_none
+       (Branch_reconcile.unobserved_publication agent.branch_reconcile)
   && List.length (Orchestrator.open_deps t patch_id) <= 1
   &&
   let expected_base =
@@ -422,7 +434,7 @@ let ready_for_review t patch_id =
       ~default:(Orchestrator.terminal_branch t patch_id)
   in
   let rebase_pending =
-    match agent.Patch_agent.branch_rebased_onto with
+    match Patch_agent.branch_rebased_onto agent with
     | Some b -> not (Branch.equal b expected_base)
     | None -> true
   in
@@ -439,7 +451,7 @@ let ready_for_review t patch_id =
              agent)
   && Branch.equal expected_base (Orchestrator.main_branch t)
   && agent.Patch_agent.pr_body_delivered
-  && (not agent.Patch_agent.has_conflict)
+  && (not (Patch_agent.has_conflict agent))
   && (not rebase_pending) && agent.Patch_agent.checks_passing
 
 (* The gate a child's Start waits on for its sole open-PR dependency: the
@@ -458,8 +470,11 @@ let ready_for_review t patch_id =
 let open_dep_review_ready t pid =
   let a = Orchestrator.agent t pid in
   a.Patch_agent.pr_body_delivered
+  && (Patch_agent.forge_revision_pair_confirmed a
+     || Orchestrator.branch_only_published t pid)
+  && Option.is_none (Branch_reconcile.unobserved_publication a.branch_reconcile)
   && (not (Branch_reconcile.is_unsettled a.branch_reconcile))
-  && (not a.Patch_agent.has_conflict)
+  && (not (Patch_agent.has_conflict a))
   && a.Patch_agent.checks_passing
 
 (* PR base / draft reconciliation shared by gameplan and ad-hoc agents.
@@ -580,7 +595,7 @@ let plan_action_for_patch t ~branch_map:_ patch_id =
        — the parent's branch may not exist on the remote. Gate on
        is_pr_present rather than has_pr (which is true for [Missing] too). *)
     let a = Orchestrator.agent t pid in
-    Patch_agent.is_pr_present a || a.branch_published
+    Patch_agent.is_pr_present a || Orchestrator.branch_only_published t pid
   in
   let open_deps = Orchestrator.open_deps t patch_id in
   let dependencies_allow_start =
@@ -610,27 +625,8 @@ let plan_action_for_patch t ~branch_map:_ patch_id =
              ~f:(fun dep -> open_dep_review_ready t dep)
   in
   if Option.is_some (Patch_agent.reconciliation_hold_reason agent) then None
-  else if
-    Option.equal Branch_reconcile.equal_phase
-      (Branch_reconcile.phase agent.branch_reconcile)
-      (Some Branch_reconcile.Awaiting_session)
-  then
-    if
-      agent.busy || agent.automerge_inflight || agent.merged
-      || Patch_agent.needs_intervention agent
-    then None
-    else if Patch_agent.is_pr_present agent || agent.branch_published then
-      Some (Orchestrator.Respond (patch_id, Operation_kind.Uncommitted_changes))
-    else if (not (Patch_agent.has_pr agent)) && dependencies_allow_start then
-      Some
-        (Orchestrator.Start
-           ( patch_id,
-             Option.value
-               (Orchestrator.expected_base t patch_id)
-               ~default:(Orchestrator.terminal_branch t patch_id) ))
-    else None
   else if Branch_reconcile.is_pending agent.branch_reconcile then
-    if agent.busy then None
+    if agent.busy || agent.automerge_inflight then None
     else
       Option.map (Branch_reconcile.operation agent.branch_reconcile)
         ~f:(fun op -> Orchestrator.Reconcile_branch (patch_id, op.id))
@@ -640,7 +636,9 @@ let plan_action_for_patch t ~branch_map:_ patch_id =
     || native_stack_base_mismatch t patch_id
   then None
   else if
-    (not (Patch_agent.has_pr agent || agent.branch_published))
+    (not
+       (Patch_agent.has_pr agent
+       || Orchestrator.branch_only_published t patch_id))
     && (not agent.Patch_agent.busy)
     && (not agent.Patch_agent.merged)
     && (not (Patch_agent.needs_intervention agent))
@@ -662,7 +660,8 @@ let plan_action_for_patch t ~branch_map:_ patch_id =
        patch blocked until an LLM session can run. Gate on [is_pr_present]
        (not [has_pr]) so a [Missing] PR is excluded — rebase pushes against
        a vanished PR would 404. *)
-    (Patch_agent.is_pr_present agent || agent.branch_published)
+    (Patch_agent.is_pr_present agent
+    || Orchestrator.branch_only_published t patch_id)
     && Option.is_some (Orchestrator.expected_base t patch_id)
     && (not agent.Patch_agent.merged)
     && (not agent.Patch_agent.busy)
@@ -679,7 +678,8 @@ let plan_action_for_patch t ~branch_map:_ patch_id =
     in
     Some (Orchestrator.Rebase (patch_id, new_base))
   else if
-    (Patch_agent.is_pr_present agent || agent.branch_published)
+    (Patch_agent.is_pr_present agent
+    || Orchestrator.branch_only_published t patch_id)
     && (not agent.Patch_agent.merged)
     && (not agent.Patch_agent.busy)
     && (not (Patch_agent.needs_intervention agent))
@@ -786,12 +786,22 @@ let plan_tick t ~project_name ~gameplan =
   (t, effects, actions)
 
 let tick t ~project_name ~gameplan =
-  let t, effects, actions = plan_tick t ~project_name ~gameplan in
-  let t =
-    List.fold actions ~init:t ~f:(fun acc action ->
-        Orchestrator.fire acc action)
+  let t, effects, messages = plan_tick_messages t ~project_name ~gameplan in
+  let t, actions =
+    List.fold messages ~init:(t, []) ~f:(fun (t, actions) message ->
+        let t, action =
+          match Orchestrator.message_status message with
+          | Orchestrator.Pending ->
+              Orchestrator.accept_message t (Orchestrator.message_id message)
+          | Orchestrator.Acked ->
+              Orchestrator.resume_message t (Orchestrator.message_id message)
+          | Orchestrator.Completed | Orchestrator.Obsolete -> (t, None)
+        in
+        ( t,
+          Option.value_map action ~default:actions ~f:(fun action ->
+              action :: actions) ))
   in
-  (t, effects, actions)
+  (t, effects, List.rev actions)
 
 let apply_github_effect_success t = function
   | Set_pr_draft { patch_id; draft; _ } ->
@@ -889,18 +899,21 @@ let automerge_transient_hold (agent : Patch_agent.t) ~main_branch =
   && agent.Patch_agent.automerge_failure_count < automerge_max_failures
   && Option.is_none agent.Patch_agent.merge_queue_entry
 
-let apply_branch_observation t patch_id ~head_sha ~checks =
+let apply_branch_observation ?confirmed_remote_head t patch_id ~head_sha ~checks
+    =
   let a = Orchestrator.agent t patch_id in
   if (not (Orchestrator.is_feature_descendant t patch_id)) || a.merged then t
   else if
-    Execution_mode.observation_pending
+    Execution_mode.observation_pending ?confirmed_remote_head
       (Orchestrator.execution_mode t)
       a (Some head_sha)
   then Orchestrator.set_checks_passing t patch_id false
   else
     let t =
       Orchestrator.set_head_oid t patch_id (Some head_sha) |> fun t ->
-      Orchestrator.set_expected_remote_head_oid t patch_id None |> fun t ->
+      Orchestrator.observe_publication_head ?confirmed_remote_head t patch_id
+        (Some head_sha)
+      |> fun t ->
       Orchestrator.set_ci_checks t patch_id checks |> fun t ->
       Orchestrator.set_checks_passing t patch_id
         (Pr_state.equal_check_status
@@ -1008,7 +1021,7 @@ let dequeue_merge_queue_reasons agent ~main_branch ~entry_id =
              entry.position;
          ]
        else [])
-      @ (if agent.Patch_agent.has_conflict then [ "merge conflict" ] else [])
+      @ (if Patch_agent.has_conflict agent then [ "merge conflict" ] else [])
       @ List.map failing_checks ~f:(fun check ->
           Printf.sprintf "CI check %s (%s)" check.Ci_check.name check.conclusion)
       @ approval_reason
@@ -1228,6 +1241,109 @@ let apply_automerge_failure ?(automerge_timeout = default_automerge_timeout) t
     ~now patch_id =
   apply_automerge_failure_state t ~now ~automerge_timeout patch_id
 
+let test_confirmed_pair t pid =
+  let agent = Orchestrator.agent t pid in
+  let head =
+    Option.value agent.Patch_agent.head_oid ~default:(String.make 40 'a')
+  in
+  let base =
+    Option.value agent.base_branch ~default:(Branch.of_string "main")
+  in
+  let pr_number =
+    match Patch_agent.pr_number agent with
+    | Some number -> number
+    | None -> assert false
+  in
+  let t = Orchestrator.set_head_oid t pid (Some head) in
+  let t = Orchestrator.set_base_branch t pid base in
+  let request = Forge_observation.{ id = "inline-ready"; pr_number } in
+  let t, ticket = Orchestrator.begin_forge_observation t pid ~request in
+  let ticket =
+    match ticket with Some ticket -> ticket | None -> assert false
+  in
+  let state : Pr_state.t =
+    {
+      Pr_state.status = Pr_state.Open;
+      is_draft = agent.is_draft;
+      merge_state = Pr_state.Mergeable;
+      merge_ready = agent.merge_ready;
+      merge_ready_divergence = None;
+      review_decision = agent.review_decision;
+      check_status =
+        (if agent.checks_passing then Pr_state.Passing else Pr_state.Pending);
+      ci_checks = agent.ci_checks;
+      ci_checks_truncated = false;
+      comments = [];
+      unresolved_comment_count = agent.unresolved_comment_count;
+      findings = [];
+      pr_number = Some pr_number;
+      node_id = None;
+      merge_queue_required = false;
+      merge_queue_entry = None;
+      native_stack = false;
+      head_branch = Some agent.branch;
+      base_oid = Some (String.make 40 'b');
+      head_oid = Some head;
+      merge_commit_sha = None;
+      base_branch = Some base;
+      is_fork = false;
+    }
+  in
+  match
+    Orchestrator.accept_forge_observation t pid ~ticket
+      ~confirmed_head:(Some head) ~confirmed_base:(String.make 40 'b')
+      Forge_observation.{ request; outcome = Poll_outcome.Ok_pr_state state }
+  with
+  | t, Ok _ -> t
+  | _, Error _ -> assert false
+
+let test_conflicting t pid =
+  let module B = Branch_reconcile in
+  let commit digit =
+    match B.Commit.make (String.make 40 digit) with
+    | Some sha -> sha
+    | None -> assert false
+  in
+  let source = commit 'a' and target = commit 'b' in
+  let step t event = fst (Orchestrator.reconcile_branch t pid event) in
+  let reply t result =
+    match B.pending (Orchestrator.agent t pid).Patch_agent.branch_reconcile with
+    | None -> assert false
+    | Some command ->
+        step t (B.Result { token = command.token; at = 100.; result })
+  in
+  let t =
+    step t
+      (B.Request
+         {
+           base = "main";
+           policy = Preserve_ancestry;
+           purpose = Reconcile_request "inline-conflict";
+         })
+  in
+  let t =
+    reply t
+      (B.Observed
+         {
+           source;
+           target;
+           head = source;
+           remote = Some source;
+           boundary = Plain;
+           topology = Equal;
+           clean = true;
+           sequencer = None;
+           conflicts = 0;
+           target_included = false;
+           base_contains_source = false;
+           completed_integration = false;
+           destination = B.Remote_id.of_destination "inline-origin";
+         })
+  in
+  let t = reply t B.Pinned in
+  reply t
+    (B.Conflict { head = source; sequencer = "fixture-rebase"; conflicts = 1 })
+
 let make_orchestrator ~patch_id ~main_branch =
   let patch =
     {
@@ -1321,44 +1437,6 @@ let%test "reconcile_patch enqueues pr_body after PR creation" =
   let queue = (Orchestrator.agent t pid).Patch_agent.queue in
   List.mem queue Operation_kind.Pr_body ~equal:Operation_kind.equal
 
-let%test "reconcile_patch requests ready-for-review after pr_body on main" =
-  let patch, t = make_orchestrator ~patch_id:pid ~main_branch:main in
-  let t = Orchestrator.fire t (Orchestrator.Start (pid, main)) in
-  let t = Orchestrator.set_pr_number t pid (Pr_number.of_int 42) in
-  let t = Orchestrator.set_pr_body_delivered t pid true in
-  let t = Orchestrator.set_checks_passing t pid true in
-  let t = Orchestrator.complete t pid in
-  let _, effects =
-    reconcile_patch t ~project_name:"proj"
-      ~gameplan:
-        Gameplan.
-          {
-            project_name = "proj";
-            repo_owner = "";
-            repo_name = "";
-            problem_statement = "";
-            architecture_design = None;
-            solution_summary = "";
-            final_state_spec = "";
-            patches = [ patch ];
-            operational_considerations = "";
-            required_changes = "";
-            ordering_constraints = [];
-            current_state_analysis = "";
-            explicit_opinions = "";
-            acceptance_criteria = [];
-            open_questions = [];
-            functional_changes = [];
-            context_resources = [];
-            publication = None;
-            reachability_traces = [];
-          }
-      ~patch
-  in
-  List.exists effects ~f:(function
-    | Set_pr_draft { patch_id; draft = false; _ } -> Patch_id.equal patch_id pid
-    | Set_pr_draft _ | Set_pr_base _ -> false)
-
 let%test "reconcile_patch keeps PR draft while CI is not green" =
   let patch, t = make_orchestrator ~patch_id:pid ~main_branch:main in
   let t = Orchestrator.fire t (Orchestrator.Start (pid, main)) in
@@ -1405,7 +1483,7 @@ let%test "reconcile_patch never re-drafts a PR once it is ready for review" =
   let t = Orchestrator.set_is_draft t pid false in
   (* Now CI flaps red and a fresh conflict arrives. *)
   let t = Orchestrator.set_checks_passing t pid false in
-  let t = Orchestrator.set_has_conflict t pid in
+  let t = test_conflicting t pid in
   let _, effects =
     reconcile_patch t ~project_name:"proj"
       ~gameplan:
@@ -1445,7 +1523,7 @@ let%test "reconcile_patch keeps PR draft while merge conflict is active" =
   let t = Orchestrator.set_pr_body_delivered t pid true in
   let t = Orchestrator.set_checks_passing t pid true in
   let t = Orchestrator.complete t pid in
-  let t = Orchestrator.set_has_conflict t pid in
+  let t = test_conflicting t pid in
   let _, effects =
     reconcile_patch t ~project_name:"proj"
       ~gameplan:
@@ -1513,9 +1591,8 @@ let%test
   let t = Orchestrator.set_pr_number t parent_id (Pr_number.of_int 41) in
   let t = Orchestrator.complete t parent_id in
   let t = Orchestrator.mark_merged t parent_id in
-  (* Child started on the parent's branch — branch_rebased_onto records
-     [parent_branch], NOT main. Parent has since merged, so expected_base
-     flips to main, but the local branch has not yet been rebased. *)
+  (* Child starts on the parent's branch after the parent merged. Start
+     cannot prove base integration, so readiness must wait for the owner. *)
   let t = Orchestrator.fire t (Orchestrator.Start (child_id, parent_branch)) in
   let t = Orchestrator.set_pr_number t child_id (Pr_number.of_int 42) in
   let t = Orchestrator.set_pr_body_delivered t child_id true in
@@ -1596,25 +1673,6 @@ let plans_child_start ~child_id ~patches t =
     | Orchestrator.Reconcile_branch _ ->
         false)
 
-let%test
-    "plan_actions defers child Start until open dep reaches ready-for-review" =
-  let parent_id, child_id, patches, t = make_notes_gate_fixture () in
-  (* The parent (started on main, rebased, no conflict) has neither delivered
-     its notes nor gone CI-green, so it has not reached the ready-for-review
-     fixpoint: the child must not start yet. *)
-  (not (plans_child_start ~child_id ~patches t))
-  (* Notes alone are no longer sufficient — the shared fixpoint also requires
-     the dep's CI to be green. *)
-  && (not
-        (plans_child_start ~child_id ~patches
-           (Orchestrator.set_pr_body_delivered t parent_id true)))
-  (* Once the dep is both notes-delivered and CI-green it is ready for review,
-     and the child becomes startable. *)
-  &&
-  let t = Orchestrator.set_pr_body_delivered t parent_id true in
-  let t = Orchestrator.set_checks_passing t parent_id true in
-  plans_child_start ~child_id ~patches t
-
 let%test "plan_actions retries a materialized child without dependency gates" =
   let parent_id, child_id, patches, t = make_notes_gate_fixture () in
   (* Exercise every dependency gate that applies to first materialization: the
@@ -1622,7 +1680,7 @@ let%test "plan_actions retries a materialized child without dependency gates" =
      child's existing worktree makes all of that irrelevant to retrying the
      no-PR session in place. *)
   let t = Orchestrator.clear_pr t parent_id in
-  let t = Orchestrator.set_has_conflict t parent_id in
+  let t = test_conflicting t parent_id in
   let t =
     Orchestrator.set_worktree_path t child_id "/tmp/materialized-child-worktree"
   in
@@ -1787,29 +1845,7 @@ let%test "reconcile_all leaves an ad-hoc PR stacked on an open branch alone" =
   in
   List.is_empty effects
 
-let%test "reconcile_all never flips an ad-hoc PR's draft bit" =
-  let t = make_adhoc_orchestrator ~base_branch:main in
-  (* Reach the exact fixpoint where a gameplan patch would be marked ready:
-     based on main, rebased onto main, body delivered (ad-hoc default), no
-     conflict, CI green — and currently draft. *)
-  let t = Orchestrator.set_is_draft t pid true in
-  let t = Orchestrator.set_checks_passing t pid true in
-  let t, _ = Orchestrator.apply_rebase_result t pid Worktree.Noop main in
-  let _, effects =
-    reconcile_all t ~project_name:"proj" ~gameplan:empty_gameplan
-  in
-  List.is_empty effects
-  (* Counterfactual: the same state under the gameplan ratchet does flip the
-     draft bit — proving the ad-hoc pass is what suppresses it, not some other
-     unmet precondition. *)
-  && List.equal equal_github_effect
-       (reconcile_pr_settings t pid ~allow_draft_flip:true)
-       [
-         Set_pr_draft
-           { patch_id = pid; pr_number = Pr_number.of_int 47; draft = false };
-       ]
-
-let%test "no merge-conflict re-enqueue after noop" =
+let%test "conflicting poll queues reconciliation demand" =
   let _patch, t = make_orchestrator ~patch_id:pid ~main_branch:main in
   let t = Orchestrator.fire t (Orchestrator.Start (pid, main)) in
   let t = Orchestrator.set_pr_number t pid (Pr_number.of_int 42) in
@@ -1846,220 +1882,9 @@ let%test "no merge-conflict re-enqueue after noop" =
   in
   let t, _, _ = apply_poll_result t pid obs in
   let agent = Orchestrator.agent t pid in
-  assert (
-    List.mem agent.Patch_agent.queue Operation_kind.Merge_conflict
-      ~equal:Operation_kind.equal);
-  (* Fire the Merge_conflict, then simulate Noop via apply_conflict_rebase_result *)
-  let t =
-    Orchestrator.fire t
-      (Orchestrator.Respond (pid, Operation_kind.Merge_conflict))
-  in
-  let t, decision, _effects =
-    Orchestrator.apply_conflict_rebase_result t pid Worktree.Noop main
-  in
-  (* Noop -> Conflict_resolved, agent completed (not busy) *)
-  Orchestrator.equal_conflict_rebase_decision decision
-    Orchestrator.Conflict_resolved
-  && not (Orchestrator.agent t pid).Patch_agent.busy
-
-let%test "mergeable published head separates conflict no-op episodes" =
-  let _patch, t = make_orchestrator ~patch_id:pid ~main_branch:main in
-  let t = Orchestrator.fire t (Orchestrator.Start (pid, main)) in
-  let t = Orchestrator.set_pr_number t pid (Pr_number.of_int 42) in
-  let t = Orchestrator.complete t pid in
-  let t = Orchestrator.set_head_oid t pid (Some "old-head") in
-  let t, _, _ =
-    Orchestrator.apply_conflict_rebase_result t pid Worktree.Noop main
-  in
-  let t =
-    Orchestrator.set_expected_remote_head_oid t pid (Some "rebased-head")
-  in
-  let mergeable =
-    {
-      Poller.queue = [];
-      merged = false;
-      closed = false;
-      is_draft = false;
-      merge_state = Pr_state.Mergeable;
-      merge_ready = true;
-      base_branch = None;
-      base_oid = None;
-      head_oid = Some "rebased-head";
-      review_decision = None;
-      unresolved_comment_count = 0;
-      merge_queue_required = false;
-      merge_queue_entry = None;
-      checks_passing = true;
-      ci_checks = [];
-      merge_commit_sha = None;
-    }
-  in
-  let t, _, _ =
-    apply_poll_result t pid
-      {
-        poll_result = mergeable;
-        base_branch = Some main;
-        native_stack = false;
-        branch_in_root = false;
-        worktree_path = None;
-      }
-  in
-  let after_mergeable = Orchestrator.agent t pid in
-  let t, _, _ =
-    Orchestrator.apply_conflict_rebase_result t pid Worktree.Noop main
-  in
-  after_mergeable.Patch_agent.conflict_noop_count = 0
-  && (Orchestrator.agent t pid).Patch_agent.conflict_noop_count = 1
-  && not (Patch_agent.needs_intervention (Orchestrator.agent t pid))
-
-let%test "conflicting poll preserves conflict no-op limit" =
-  let _patch, t = make_orchestrator ~patch_id:pid ~main_branch:main in
-  let t = Orchestrator.fire t (Orchestrator.Start (pid, main)) in
-  let t = Orchestrator.set_pr_number t pid (Pr_number.of_int 42) in
-  let t = Orchestrator.complete t pid in
-  let t, _, _ =
-    Orchestrator.apply_conflict_rebase_result t pid Worktree.Noop main
-  in
-  let conflicting =
-    {
-      Poller.queue = [ Operation_kind.Merge_conflict ];
-      merged = false;
-      closed = false;
-      is_draft = false;
-      merge_state = Pr_state.Conflicting;
-      merge_ready = false;
-      base_branch = None;
-      base_oid = None;
-      head_oid = Some "conflicting-head";
-      review_decision = None;
-      unresolved_comment_count = 0;
-      merge_queue_required = false;
-      merge_queue_entry = None;
-      checks_passing = true;
-      ci_checks = [];
-      merge_commit_sha = None;
-    }
-  in
-  let t, _, _ =
-    apply_poll_result t pid
-      {
-        poll_result = conflicting;
-        base_branch = Some main;
-        native_stack = false;
-        branch_in_root = false;
-        worktree_path = None;
-      }
-  in
-  let after_conflicting = Orchestrator.agent t pid in
-  let t, _, _ =
-    Orchestrator.apply_conflict_rebase_result t pid Worktree.Noop main
-  in
-  after_conflicting.Patch_agent.conflict_noop_count = 1
-  && (Orchestrator.agent t pid).Patch_agent.conflict_noop_count = 2
-  && Patch_agent.needs_intervention (Orchestrator.agent t pid)
-
-let%test
-    "pending push survives old and unidentified polls and accepts distinct \
-     heads" =
-  let _patch, t = make_orchestrator ~patch_id:pid ~main_branch:main in
-  let t = Orchestrator.fire t (Orchestrator.Start (pid, main)) in
-  let t = Orchestrator.set_pr_number t pid (Pr_number.of_int 42) in
-  let t = Orchestrator.complete t pid in
-  let pushed_head = "new-rebased-head" in
-  let t = Orchestrator.set_head_oid t pid (Some "old-pre-push-head") in
-  let t = Orchestrator.set_expected_remote_head_oid t pid (Some pushed_head) in
-  let t, _, _ =
-    Orchestrator.apply_conflict_rebase_result t pid Worktree.Noop main
-  in
-  let poll_result =
-    {
-      Poller.queue = [ Operation_kind.Merge_conflict ];
-      merged = false;
-      closed = false;
-      is_draft = false;
-      merge_state = Pr_state.Conflicting;
-      merge_ready = false;
-      base_branch = None;
-      base_oid = None;
-      head_oid = Some "old-pre-push-head";
-      review_decision = None;
-      unresolved_comment_count = 0;
-      merge_queue_required = false;
-      merge_queue_entry = None;
-      checks_passing = true;
-      ci_checks = [];
-      merge_commit_sha = None;
-    }
-  in
-  let apply t poll_result =
-    let t, _, _ =
-      apply_poll_result t pid
-        {
-          poll_result;
-          base_branch = Some main;
-          native_stack = false;
-          branch_in_root = false;
-          worktree_path = None;
-        }
-    in
-    t
-  in
-  let t =
-    apply t
-      {
-        poll_result with
-        queue = [];
-        merge_state = Pr_state.Mergeable;
-        merge_ready = true;
-      }
-  in
-  let agent = Orchestrator.agent t pid in
-  assert agent.Patch_agent.merge_ready;
-  assert (not agent.mergeability_unknown);
-  assert (
-    Option.equal String.equal agent.expected_remote_head_oid (Some pushed_head));
-  let unidentified =
-    apply t
-      {
-        poll_result with
-        queue = [];
-        base_branch = None;
-        base_oid = None;
-        head_oid = None;
-        merge_state = Pr_state.Mergeable;
-        merge_ready = true;
-        review_decision = Some "APPROVED";
-      }
-  in
-  let agent = Orchestrator.agent unidentified pid in
-  assert agent.Patch_agent.merge_ready;
-  assert (not agent.mergeability_unknown);
-  assert (Option.equal String.equal agent.review_decision (Some "APPROVED"));
-  assert (Option.equal String.equal agent.head_oid (Some "old-pre-push-head"));
-  assert (
-    Option.equal String.equal agent.expected_remote_head_oid (Some pushed_head));
-  assert (agent.conflict_noop_count = 1);
-  let t = apply unidentified { poll_result with head_oid = None } in
-  let t = apply t poll_result in
-  let agent = Orchestrator.agent t pid in
-  assert (not agent.Patch_agent.has_conflict);
-  assert (not agent.merge_ready);
-  assert (
-    not
-      (List.mem agent.queue Operation_kind.Merge_conflict
-         ~equal:Operation_kind.equal));
-  assert (Option.equal String.equal agent.head_oid (Some "old-pre-push-head"));
-  assert (
-    Option.equal String.equal agent.expected_remote_head_oid (Some pushed_head));
-  assert (agent.conflict_noop_count = 1);
-  List.for_all [ pushed_head; "newer-remote-head" ] ~f:(fun head ->
-      let t = apply t { poll_result with head_oid = Some head } in
-      let agent = Orchestrator.agent t pid in
-      agent.Patch_agent.has_conflict
-      && List.mem agent.queue Operation_kind.Merge_conflict
-           ~equal:Operation_kind.equal
-      && Option.is_none agent.expected_remote_head_oid
-      && Option.equal String.equal agent.head_oid (Some head))
+  List.mem agent.Patch_agent.queue Operation_kind.Merge_conflict
+    ~equal:Operation_kind.equal
+  && not agent.Patch_agent.busy
 
 (* -- Automerge reconciliation tests -- *)
 
@@ -2071,7 +1896,7 @@ let make_approved_agent t =
   let t = Orchestrator.set_merge_ready t pid true in
   let t = Orchestrator.set_checks_passing t pid true in
   let t = Orchestrator.set_pr_body_delivered t pid true in
-  Orchestrator.set_automerge_enabled t pid true
+  test_confirmed_pair (Orchestrator.set_automerge_enabled t pid true) pid
 
 let%test "apply_poll_result turns merge queue ejection into CI feedback" =
   let _patch, t = make_orchestrator ~patch_id:pid ~main_branch:main in
@@ -2401,6 +2226,138 @@ let%test "toggling automerge resets failure count and inflight" =
   a.Patch_agent.automerge_enabled
   && a.Patch_agent.automerge_failure_count = 0
   && not a.Patch_agent.automerge_inflight
+
+[@@@warning "-60"]
+
+let%test_module "owner evidence for review readiness" =
+  (module struct
+    let complete_base t pid base =
+      let module B = Branch_reconcile in
+      let revision =
+        match B.Commit.make (String.make 40 'a') with
+        | Some revision -> revision
+        | None -> assert false
+      in
+      let step t event = fst (Orchestrator.reconcile_branch t pid event) in
+      let reply t result =
+        match
+          B.pending (Orchestrator.agent t pid).Patch_agent.branch_reconcile
+        with
+        | None -> assert false
+        | Some command ->
+            step t (B.Result { token = command.token; at = 100.; result })
+      in
+      let t =
+        step t
+          (B.Request
+             {
+               base = Branch.to_string base;
+               policy = Preserve_ancestry;
+               purpose = Reconcile_request "inline-base";
+             })
+      in
+      let t =
+        reply t
+          (B.Observed
+             {
+               destination = B.Remote_id.of_destination "inline-origin";
+               head = revision;
+               source = revision;
+               target = revision;
+               remote = Some revision;
+               boundary = Plain;
+               topology = Equal;
+               clean = true;
+               sequencer = None;
+               conflicts = 0;
+               target_included = true;
+               base_contains_source = false;
+               completed_integration = false;
+             })
+      in
+      let t = reply t B.Pinned in
+      let proof =
+        let source = B.Commit.to_string revision in
+        let tree = String.make 40 'f' in
+        match Replay_scope.prepare_identity ~source ~tree with
+        | Error reason -> failwith reason
+        | Ok plan -> (
+            match
+              Replay_scope.verify plan ~candidate:source ~tree ~history:""
+                ~changed_paths:""
+            with
+            | Ok proof -> proof
+            | Error reason -> failwith reason)
+      in
+      let t = reply t (B.Remote { sha = Some revision; topology = Equal }) in
+      let t = reply t (B.Scope_verified proof) in
+      let head = Some (B.Commit.to_string revision) in
+      let t = Orchestrator.set_head_oid t pid head in
+      let t = Orchestrator.observe_publication_head t pid head in
+      test_confirmed_pair (Orchestrator.complete t pid) pid
+
+    let%test "reconcile_patch requests ready-for-review after pr_body on main" =
+      let patch, t = make_orchestrator ~patch_id:pid ~main_branch:main in
+      let t = Orchestrator.fire t (Orchestrator.Start (pid, main)) in
+      let t = Orchestrator.set_pr_number t pid (Pr_number.of_int 42) in
+      let t = Orchestrator.set_pr_body_delivered t pid true in
+      let t = Orchestrator.set_checks_passing t pid true in
+      let t = complete_base t pid main in
+      let _, effects =
+        reconcile_patch t ~project_name:"proj"
+          ~gameplan:
+            Gameplan.
+              {
+                project_name = "proj";
+                repo_owner = "";
+                repo_name = "";
+                problem_statement = "";
+                architecture_design = None;
+                solution_summary = "";
+                final_state_spec = "";
+                patches = [ patch ];
+                operational_considerations = "";
+                required_changes = "";
+                ordering_constraints = [];
+                current_state_analysis = "";
+                explicit_opinions = "";
+                acceptance_criteria = [];
+                open_questions = [];
+                functional_changes = [];
+                context_resources = [];
+                publication = None;
+                reachability_traces = [];
+              }
+          ~patch
+      in
+      List.exists effects ~f:(function
+        | Set_pr_draft { patch_id; draft = false; _ } ->
+            Patch_id.equal patch_id pid
+        | Set_pr_draft _ | Set_pr_base _ -> false)
+
+    let%test
+        "plan_actions defers child Start until open dep reaches \
+         ready-for-review" =
+      let parent_id, child_id, patches, t = make_notes_gate_fixture () in
+      let t = complete_base t parent_id main in
+      (* The parent (started on main, rebased, no conflict) has neither delivered
+     its notes nor gone CI-green, so it has not reached the ready-for-review
+     fixpoint: the child must not start yet. *)
+      (not (plans_child_start ~child_id ~patches t))
+      (* Notes alone are no longer sufficient — the shared fixpoint also requires
+     the dep's CI to be green. *)
+      && (not
+            (plans_child_start ~child_id ~patches
+               (Orchestrator.set_pr_body_delivered t parent_id true)))
+      (* Once the dep is both notes-delivered and CI-green it is ready for review,
+     and the child becomes startable. *)
+      &&
+      let t = Orchestrator.set_pr_body_delivered t parent_id true in
+      let t = Orchestrator.set_checks_passing t parent_id true in
+      plans_child_start ~child_id ~patches t
+  end)
+
+[@@@warning "+60"]
 
 let merge_patch_id = function
   | Github_merge d -> d.merge_patch_id

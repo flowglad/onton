@@ -5,7 +5,7 @@ open Base
 open Ppx_yojson_conv_lib.Yojson_conv.Primitives
 
 type merge_state = Mergeable | Conflicting | Unknown
-[@@deriving show, eq, yojson]
+[@@deriving show, eq, compare, sexp_of, yojson]
 
 type check_status = Passing | Failing | Pending [@@deriving show, eq]
 type pr_status = Open | Merged | Closed [@@deriving show, eq]
@@ -32,6 +32,7 @@ type merge_ready_divergence = {
 [@@deriving show, eq]
 
 type t = {
+  pr_number : Types.Pr_number.t option;
   status : pr_status;
   is_draft : bool;
   merge_state : merge_state;
@@ -393,6 +394,7 @@ let truncated_pending_state : t =
     comments = [];
     unresolved_comment_count = 0;
     findings = [];
+    pr_number = None;
     node_id = None;
     merge_queue_required = false;
     merge_queue_entry = None;

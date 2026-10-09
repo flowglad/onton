@@ -5,7 +5,6 @@ open Base
 open Onton_core.Types
 open Onton_core.Patch_agent
 open Onton_core.Patch_decision
-module Pr_state = Onton_core.Pr_state
 
 (* -- Generators -- *)
 
@@ -65,73 +64,24 @@ let () =
   let tests =
     [
       Test.make
-        ~name:"pending publication defers only old or unidentified heads"
-        Gen.(pair (option string) (option string))
-        (fun (old, expected) ->
-          let a =
-            create ~branch:(Branch.of_string "b") (Patch_id.of_string "p")
-          in
-          let a = set_head_oid a old in
-          let a = set_expected_remote_head_oid a expected in
-          match expected with
-          | None ->
-              (not (defer_remote_head a old)) && not (defer_remote_head a None)
-          | Some head ->
-              defer_remote_head a None
-              && (not (defer_remote_head a (Some head)))
-              && Bool.equal (defer_remote_head a old)
-                   (not (Option.equal String.equal old expected))
-              && not
-                   (defer_remote_head a
-                      (Some (head ^ Option.value old ~default:"" ^ "x"))));
-      Test.make ~name:"unidentified observations retain pending publication"
-        Gen.(pair (option string) (option string))
-        (fun (old, expected) ->
-          let a =
-            create ~branch:(Branch.of_string "b") (Patch_id.of_string "p")
-          in
-          let a = set_head_oid a old in
-          let a = set_expected_remote_head_oid a expected in
-          Bool.equal (defer_remote_head a None) (Option.is_some expected));
-      Test.make ~name:"mergeable published head resets conflict no-op budget"
-        Gen.string (fun old_head ->
-          let new_head = old_head ^ "new" in
-          let a =
-            with_pr (Patch_id.of_string "p") (Branch.of_string "b")
-            |> increment_conflict_noop_count
-          in
-          let a = set_head_oid a (Some old_head) in
-          let a = set_expected_remote_head_oid a (Some new_head) in
-          should_reset_conflict_noop a ~merge_state:Pr_state.Mergeable
-            ~observed_head:(Some new_head)
-          && (not
-                (should_reset_conflict_noop a ~merge_state:Pr_state.Mergeable
-                   ~observed_head:(Some old_head)))
-          && (not
-                (should_reset_conflict_noop a ~merge_state:Pr_state.Mergeable
-                   ~observed_head:None))
-          && (not
-                (should_reset_conflict_noop a ~merge_state:Pr_state.Conflicting
-                   ~observed_head:(Some new_head)))
-          && not
-               (should_reset_conflict_noop
-                  (enqueue a Operation_kind.Merge_conflict)
-                  ~merge_state:Pr_state.Mergeable ~observed_head:(Some new_head)));
-      Test.make ~name:"mergeable known head resets without pending publication"
+        ~name:
+          "owner publication requires an identified or directly confirmed head"
         Gen.(pair string string)
-        (fun (settled_head, other_head) ->
-          let a =
-            with_pr (Patch_id.of_string "p") (Branch.of_string "b")
-            |> increment_conflict_noop_count
-            |> fun a -> set_head_oid a (Some settled_head)
-          in
-          should_reset_conflict_noop a ~merge_state:Pr_state.Mergeable
-            ~observed_head:(Some settled_head)
-          && should_reset_conflict_noop a ~merge_state:Pr_state.Mergeable
-               ~observed_head:(Some other_head)
-          && not
-               (should_reset_conflict_noop a ~merge_state:Pr_state.Mergeable
-                  ~observed_head:None));
+        (fun (old, next) ->
+          try
+            let module F = Onton_core_test_support.Publication_fixture in
+            let old = F.sha old and candidate = F.sha next in
+            let a =
+              create ~branch:(Branch.of_string "b") (Patch_id.of_string "p")
+              |> fun a -> set_head_oid a (Some old) |> F.agent ~candidate
+            in
+            defer_remote_head a None
+            && (not (defer_remote_head a (Some candidate)))
+            && Bool.equal
+                 (defer_remote_head a (Some old))
+                 (not (String.equal old candidate))
+            && not (defer_remote_head ~confirmed_remote_head:old a (Some old))
+          with _ -> false);
       (* ---- disposition: merged always Skip ---- *)
       Test.make ~name:"disposition: merged -> Skip"
         Gen.(pair gen_pid gen_branch)
@@ -515,18 +465,6 @@ let () =
         (fun (pid, br) ->
           let a = with_pr pid br |> fun a -> enqueue a Operation_kind.Human in
           equal_human_decision (on_human_message a) Already_queued);
-      (* ---- on_merge_conflict: no conflict -> Enqueue_conflict ---- *)
-      Test.make ~name:"on_merge_conflict: no conflict -> Enqueue_conflict"
-        Gen.(pair gen_pid gen_branch)
-        (fun (pid, br) ->
-          let a = with_pr pid br in
-          equal_conflict_decision (on_merge_conflict a) Enqueue_conflict);
-      (* ---- on_merge_conflict: already conflicting -> Already_conflicting ---- *)
-      Test.make ~name:"on_merge_conflict: has_conflict -> Already_conflicting"
-        Gen.(pair gen_pid gen_branch)
-        (fun (pid, br) ->
-          let a = with_pr pid br |> set_has_conflict in
-          equal_conflict_decision (on_merge_conflict a) Already_conflicting);
       (* ---- on_checks_passing: failures + passing -> Reset ---- *)
       Test.make
         ~name:"on_checks_passing: ci_failure_count > 0 + passing -> Reset"
@@ -555,35 +493,6 @@ let () =
           equal_checks_passing_decision
             (on_checks_passing a ~checks_passing:false)
             No_ci_reset);
-      (* ---- should_clear_conflict: no active conflict op -> true ---- *)
-      Test.make ~name:"should_clear_conflict: idle agent -> true"
-        Gen.(pair gen_pid gen_branch)
-        (fun (pid, br) ->
-          let a = with_pr pid br in
-          should_clear_conflict a);
-      (* ---- should_clear_conflict: Merge_conflict queued -> false ---- *)
-      Test.make ~name:"should_clear_conflict: Merge_conflict queued -> false"
-        Gen.(pair gen_pid gen_branch)
-        (fun (pid, br) ->
-          let a = with_pr pid br |> set_has_conflict in
-          let a = enqueue a Operation_kind.Merge_conflict in
-          not (should_clear_conflict a));
-      (* ---- should_clear_conflict: Merge_conflict in-flight -> false ---- *)
-      Test.make ~name:"should_clear_conflict: Merge_conflict in-flight -> false"
-        Gen.(pair gen_pid gen_branch)
-        (fun (pid, br) ->
-          let a = with_pr pid br |> set_has_conflict in
-          let a = enqueue a Operation_kind.Merge_conflict in
-          let a = respond a Operation_kind.Merge_conflict in
-          not (should_clear_conflict a));
-      (* ---- should_clear_conflict: other op in-flight -> true ---- *)
-      Test.make ~name:"should_clear_conflict: non-conflict op in-flight -> true"
-        Gen.(pair gen_pid gen_branch)
-        (fun (pid, br) ->
-          let a = with_pr pid br in
-          let a = enqueue a Operation_kind.Human in
-          let a = respond a Operation_kind.Human in
-          should_clear_conflict a);
     ]
   in
   List.iter tests ~f:(fun t -> QCheck2.Test.check_exn t);

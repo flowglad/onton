@@ -34,13 +34,11 @@ type t = private {
       (** Model-routing complexity for an adopted PR. Planned patches keep their
           complexity in the gameplan. *)
   has_session : bool;
-  branch_published : bool;
   busy : bool;
   merged : bool;
   queue : Types.Operation_kind.t list;
   satisfies : bool;
   changed : bool;
-  has_conflict : bool;
   base_branch : Types.Branch.t option;
   notified_base_branch : Types.Branch.t option;
   ci_failure_count : int;
@@ -64,14 +62,6 @@ type t = private {
       (** Component-derived merge readiness ([Pr_state.merge_ready_of]), not
           GitHub's [mergeStateStatus]. *)
   head_oid : string option;
-  expected_remote_head_oid : string option;
-      (** Head awaiting publication, installed before a force-push and retained
-          only on Push_ok. While pending, [head_oid] retains the pre-push
-          observation. Conflicts for that old head or without identity are
-          deferred. Non-conflict state remains actionable; an unidentified
-          non-conflict poll, expected head or distinct head settles the marker.
-          Snapshot restore clears it because a push interrupted by process exit
-          may never be retried. *)
   review_decision : string option;
   unresolved_comment_count : int;
   mergeability_unknown : bool;
@@ -124,7 +114,6 @@ type t = private {
           ([Respond_ok] for [Review_comments]) and by
           [reset_intervention_state]. *)
   start_attempts_without_pr : int;
-  conflict_noop_count : int;
   no_commits_push_count : int;
   context_exhaustion_count : int;
       (** Consecutive sessions that ended by exhausting the model's context
@@ -135,39 +124,6 @@ type t = private {
           session that still overflows means the task does not fit one context
           window. Reset on a successful session and by
           [reset_intervention_state]. *)
-  push_failure_count : int;
-      (** Consecutive [Session_push_failed] outcomes (Session_ok or session
-          retry with [Push_rejected]/[Push_error]) since the last successful
-          push. At [>= 3] contributes to [needs_intervention]. Reset on
-          successful push ([Push_ok] / [Push_up_to_date]) and by
-          [reset_intervention_state]. A {e permanent} rejection
-          ([Push_reject_classify.is_permanent]) short-circuits this counter by
-          setting [session_fallback = Given_up] directly — see
-          {!Orchestrator.apply_session_result}. *)
-  rebase_failure_count : int;
-      (** Consecutive worktree rebase failures ([Worktree.Error]) since the last
-          successful/noop rebase. At [>= 2] contributes to [needs_intervention].
-          Kept separate from [session_fallback] so git fetch/ref-lock failures
-          are not rendered as LLM session failures. *)
-  branch_rebased_onto : Types.Branch.t option;
-  branch_rebased_onto_sha : string option;
-      (** SHA the base ref resolved to at the time of the most recent successful
-          rebase / start. Used by [Worktree.rebase_onto] as the
-          [--onto NEW_BASE OLD_SHA] anchor when the base transitions from one
-          dep's branch to another (or to [main]): without it, the rebase falls
-          back to plain [git rebase NEW_BASE] which replays {e all} commits
-          between the local main and HEAD, leaving the old dep's commits on the
-          branch even after the dep's squash-merge appears on origin/main.
-          [None] when no rebase has succeeded yet, or when the orchestrator was
-          restarted before this field was added (it is back-filled to [None] via
-          [Patch_agent.restore], and old snapshots persist with [null]). *)
-  anchor_history : Anchor_history.t;
-      (** Newest-first log of {!Anchor.t} values recorded over this agent's
-          lifetime. Updated via {!record_anchor}; mirrored into
-          [branch_rebased_onto] and [branch_rebased_onto_sha] as a derived view.
-          {!Rebase_decision.plan} consults the history when the newest anchor is
-          unreachable from HEAD and walks back to the oldest still- reachable
-          entry. Capped at {!Anchor_history.cap}. *)
   checks_passing : bool;
   current_op : Types.Operation_kind.t option;
   current_op_state : op_state;
@@ -227,6 +183,11 @@ val has_pr : t -> bool
     [Missing] in [pr_status]). Used as the orchestrator-invariant predicate:
     every graph node must be in the gameplan or have a PR identity. *)
 
+val branch_published : t -> bool
+(** Whether the reconciliation owner has confirmed a publication. This is
+    historical publication evidence, not proof that the current head is checked
+    or permission to skip PR creation in a mainline workflow. *)
+
 val is_pr_present : t -> bool
 (** [true] only when [pr_status = Present _]. Use this for any callsite that is
     about to act on the PR (rebase, respond, merge, set draft) — a [Missing] PR
@@ -243,14 +204,14 @@ val pr_number : t -> Types.Pr_number.t option
 val intervention_reason : t -> string option
 (** [Some reason] when the agent needs intervention; [None] otherwise. Returns
     the first triggering condition's short label, in the same priority order as
-    the predicate. The label strings — ["pr_missing"],
-    ["conflict_noop_count>=2"], etc. — are stable and intended to land verbatim
-    in the event log so operators can grep "why is this patch stuck?" by reason.
-    The CI label embeds the configured cap (["ci_failure_count>=3"] under the
-    default) — match it by the ["ci_failure_count>="] prefix, not the full
-    string. *)
+    the predicate. The label strings — ["pr_missing"], ["ci_failure_count>=3"],
+    etc. — are stable and intended to land verbatim in the event log so
+    operators can grep "why is this patch stuck?" by reason. The CI label embeds
+    the configured cap (["ci_failure_count>=3"] under the default) — match it by
+    the ["ci_failure_count>="] prefix, not the full string. *)
 
 val intervention_reason_of_fields :
+  branch_reconcile:Branch_reconcile.t ->
   merged:bool ->
   has_pr:bool ->
   is_pr_missing:bool ->
@@ -260,18 +221,16 @@ val intervention_reason_of_fields :
   ci_failure_count:int ->
   max_ci_failures:int ->
   start_attempts_without_pr:int ->
-  conflict_noop_count:int ->
   no_commits_push_count:int ->
   context_exhaustion_count:int ->
-  push_failure_count:int ->
-  rebase_failure_count:int ->
   pr_body_artifact_miss_count:int ->
   review_unresolved_cycle_count:int ->
   string option
 (** Raw-field form of {!intervention_reason}. [human_pending] must be true when
     a Human delivery is either queued or in flight. This is the canonical pure
     decision for callers that reconstruct agent status from persisted telemetry
-    instead of holding a {!t}. *)
+    instead of holding a {!t}. The decoded owner checkpoint supplies branch
+    intervention; callers must not reconstruct it from obsolete counters. *)
 
 val needs_intervention : t -> bool
 (** [Option.is_some (intervention_reason t)]. Derived predicate. True iff the
@@ -281,15 +240,16 @@ val needs_intervention : t -> bool
     - [is_pr_missing t] (PR vanished from the remote — bypasses the Human
       exemption; queued Human entries are deferred until [Missing → Present]
       recovery rather than dispatched while [Missing])
+    - reconciliation is in [Intervention] (until explicit owner resume)
     - no queued or in-flight [Human] delivery AND any of:
       [ci_failure_count >= max_ci_failures],
       [(not has_pr) && start_attempts_without_pr >= 2],
-      [conflict_noop_count >= 2], [no_commits_push_count >= 2],
-      [context_exhaustion_count >= 2], [push_failure_count >= 3],
-      [rebase_failure_count >= 2], [pr_body_artifact_miss_count >= 2],
-      [review_unresolved_cycle_count >= 2]. *)
+      [no_commits_push_count >= 2], [context_exhaustion_count >= 2],
+      [pr_body_artifact_miss_count >= 2], [review_unresolved_cycle_count >= 2].
+*)
 
 val needs_intervention_of_fields :
+  branch_reconcile:Branch_reconcile.t ->
   merged:bool ->
   has_pr:bool ->
   is_pr_missing:bool ->
@@ -299,11 +259,8 @@ val needs_intervention_of_fields :
   ci_failure_count:int ->
   max_ci_failures:int ->
   start_attempts_without_pr:int ->
-  conflict_noop_count:int ->
   no_commits_push_count:int ->
   context_exhaustion_count:int ->
-  push_failure_count:int ->
-  rebase_failure_count:int ->
   pr_body_artifact_miss_count:int ->
   review_unresolved_cycle_count:int ->
   bool
@@ -315,12 +272,12 @@ val start : t -> base_branch:Types.Branch.t -> t
 (** [PatchCtx ~> Start] — begin work on a patch. Preconditions (checked):
     [~has_pr], [~busy]. Caller must verify [in_gameplan] and [deps_satisfied]
     externally. Postconditions: [has_session], [busy], [satisfies],
-    [base_branch = Some base_branch]. An unmaterialized start records
-    [branch_rebased_onto = Some base_branch]; a materialized retry preserves the
-    existing physical rebase anchor. When [Human] is queued, Start dequeues it,
-    moves [human_messages] to [inflight_human_messages], and sets
-    [current_op = Some Human], allowing a no-PR patch to deliver human guidance
-    with the same accept/restore lifecycle as [respond Human]. *)
+    [base_branch = Some base_branch]. Start preserves owner integration
+    evidence; scheduling a session does not prove any Git integration. When
+    [Human] is queued, Start dequeues it, moves [human_messages] to
+    [inflight_human_messages], and sets [current_op = Some Human], allowing a
+    no-PR patch to deliver human guidance with the same accept/restore lifecycle
+    as [respond Human]. *)
 
 val rebase : t -> base_branch:Types.Branch.t -> t
 (** [PatchCtx ~> Rebase] — orchestrator-executed rebase. Preconditions:
@@ -333,7 +290,7 @@ val respond : t -> Types.Operation_kind.t -> t
     (checked): [has_pr], [~merged], [~busy], [~needs_intervention], [k] in
     [queue], [k] is [highest_priority]. Postconditions per spec: sets
     [has_session], [busy]; dequeues [k]; conditionally updates [satisfies],
-    [changed], [has_conflict], and resolves [pending_comments]. *)
+    [changed], and resolves [pending_comments]. *)
 
 val complete : t -> t
 (** [PatchCtx ~> Complete] — session finished. Preconditions (checked): [busy].
@@ -382,23 +339,19 @@ val on_pr_discovery_failure : t -> t
     failures. No-op when the agent already has a PR. *)
 
 val on_pre_session_failure : t -> t
-(** Handle a failure that occurs before a Claude session starts (worktree
-    creation, process spawn error). Increments [start_attempts_without_pr] for
-    no-PR agents so they hit [needs_intervention] after 2 failures instead of
-    retrying indefinitely. No-op for agents that already have a PR. *)
+(** Handle a process failure before a Claude session starts. Increments
+    [start_attempts_without_pr] for no-PR agents so they hit
+    [needs_intervention] after 2 failures instead of retrying indefinitely.
+    No-op for agents that already have a PR. *)
 
-val set_has_conflict : t -> t
-(** Mark the patch as having a merge conflict. *)
+val forge_revision_pair_confirmed : t -> bool
+(** Current PR, branch, head and base-name context matches an owner-held fact
+    with direct head/base proof. Cached readiness flags cannot replace it. *)
 
-val clear_has_conflict : t -> t
-(** Clear the merge conflict flag. Does NOT reset [conflict_noop_count]; call
-    [reset_conflict_noop_count] explicitly when a conflict is truly resolved
-    (not just a noop). *)
-
-val reset_conflict_noop_count : t -> t
-(** Reset [conflict_noop_count] to 0. Call when a conflict is genuinely resolved
-    (successful rebase, agent resolution, or poll no longer reports conflict).
-*)
+val has_conflict : t -> bool
+(** Derived from the reconciliation owner's local conflict work and current
+    forge evidence. There is no setter; observing a successful session cannot
+    establish that a conflict was resolved. *)
 
 val set_base_branch : t -> Types.Branch.t -> t
 (** Update the base branch. *)
@@ -406,23 +359,11 @@ val set_base_branch : t -> Types.Branch.t -> t
 val set_notified_base_branch : t -> Types.Branch.t -> t
 (** Record that the agent session has been informed of this base branch. *)
 
-val set_branch_rebased_onto : t -> Types.Branch.t -> t
-(** Record that the local branch has been rebased onto this base (either by an
-    explicit successful [Rebase] action, or by the initial [Start] which plants
-    the branch on its base). Drives [detect_notified_base_drift]. *)
-
-val set_branch_rebased_onto_sha : t -> string option -> t
-(** Record the SHA the base ref resolved to at the moment of a successful rebase
-    / start. [None] (or a whitespace-only string) clears the field — used when
-    the SHA could not be read; the next rebase will then fall back to the legacy
-    plain [git rebase target] semantics. *)
-
-val record_anchor : t -> Anchor.t -> t
-(** Push [anchor] onto {!field-anchor_history} (newest-first, deduped by
-    [(base, sha)]) and update the legacy view fields [branch_rebased_onto] and
-    [branch_rebased_onto_sha] to mirror the new anchor. Pure and total. *)
-
-val anchor_history : t -> Anchor_history.t
+val branch_rebased_onto : t -> Types.Branch.t option
+(** Base of the newest owner integration receipt with base context. Contributor
+    receipts are skipped. This is historical evidence: it does not prove that an
+    externally changed head still includes the base. Start, base retargeting and
+    legacy base-name snapshots cannot manufacture this evidence. *)
 
 val base_branch_changed : t -> bool
 (** [true] when [base_branch] differs from [notified_base_branch], meaning the
@@ -432,7 +373,15 @@ val set_merge_ready : t -> bool -> t
 (** Set the component-derived [merge_ready] flag ([Pr_state.merge_ready_of]). *)
 
 val set_head_oid : t -> string option -> t
-val set_expected_remote_head_oid : t -> string option -> t
+
+val expected_remote_head_oid : t -> string option
+(** Projection of unobserved owner publication. *)
+
+val observe_publication_head :
+  ?confirmed_remote_head:string -> t -> string option -> t
+(** Acknowledge only the current publication receipt. Missing identity and
+    unconfirmed differing heads cannot settle the owner's observation wait. *)
+
 val set_review_decision : t -> string option -> t
 val set_unresolved_comment_count : t -> int -> t
 
@@ -490,10 +439,6 @@ val acknowledge_pr_body_refresh : t -> publication:t -> t
 val increment_start_attempts_without_pr : t -> t
 (** Record a successful Start run that still failed to discover a PR. *)
 
-val increment_conflict_noop_count : t -> t
-(** Record a conflict resolution attempt where rebase returned Noop (stale refs
-    or no real diff). After 2 noop attempts, [needs_intervention] triggers. *)
-
 val increment_no_commits_push_count : t -> t
 (** Record a session that ended with no commits on the branch (HEAD == base).
     After 2 such sessions, [needs_intervention] triggers — the agent is not
@@ -512,27 +457,6 @@ val on_context_exhausted : t -> t
 
 val reset_context_exhaustion_count : t -> t
 (** Reset [context_exhaustion_count] to 0. Called on a successful session. *)
-
-val increment_push_failure_count : t -> t
-(** Record a [Session_push_failed] outcome. At [>= 3], [needs_intervention]
-    triggers — the push has been refused by the remote three sessions in a row
-    (e.g. lease races that don't resolve, or any transient server-side block). A
-    {e permanent} rejection (workflow scope, branch protection, push rule)
-    bypasses this counter entirely; see {!Orchestrator.apply_session_result}. *)
-
-val reset_push_failure_count : t -> t
-(** Reset [push_failure_count] to 0. Called on a successful push ([Push_ok] /
-    [Push_up_to_date]) in [Orchestrator.apply_session_result]. *)
-
-val increment_rebase_failure_count : t -> t
-(** Record a worktree rebase failure. At [>= 2], [needs_intervention] triggers —
-    repeated fetch/ref-lock/rebase setup failures require operator attention and
-    should not be reported as LLM session failures. *)
-
-val reset_rebase_failure_count : t -> t
-(** Reset [rebase_failure_count] to 0. Called on successful/noop rebase paths.
-    Leaves [session_fallback] untouched because LLM session-failure intervention
-    state is independent from rebase/worktree recovery. *)
 
 val increment_pr_body_artifact_miss_count : t -> t
 (** Record a Pr_body session that ended without durable PR body delivery. Called
@@ -607,11 +531,10 @@ val set_max_ci_failures : t -> max_ci_failures:int -> t
 val reset_intervention_state : t -> t
 (** Clear [wontdo_reason], reset [session_fallback] to [Fresh_available],
     [ci_failure_count] to 0, [start_attempts_without_pr] to 0,
-    [conflict_noop_count] to 0, [no_commits_push_count] to 0,
-    [context_exhaustion_count] to 0, [push_failure_count] to 0,
-    [rebase_failure_count] to 0, [pr_body_artifact_miss_count] to 0, and
-    [review_unresolved_cycle_count] to 0. Used after manual resolution (e.g.,
-    sending a human message) to give the patch a fresh start. *)
+    [no_commits_push_count] to 0, [context_exhaustion_count] to 0,
+    [pr_body_artifact_miss_count] to 0, and [review_unresolved_cycle_count] to
+    0. Used after manual resolution (e.g., sending a human message) to give the
+    patch a fresh start. *)
 
 val set_branch_blocked : t -> t
 (** Set the branch-blocked flag (branch is checked out in repo root). *)
@@ -751,7 +674,6 @@ val mark_pr_missing : t -> t
 val restore :
   ?session_completion:Session_result.completion option ->
   ?branch_reconcile:Branch_reconcile.t ->
-  ?branch_published:bool ->
   patch_id:Types.Patch_id.t ->
   branch:Types.Branch.t ->
   pr_status:Patch_pr_status.t ->
@@ -762,7 +684,6 @@ val restore :
   queue:Types.Operation_kind.t list ->
   satisfies:bool ->
   changed:bool ->
-  has_conflict:bool ->
   base_branch:Types.Branch.t option ->
   notified_base_branch:Types.Branch.t option ->
   ci_failure_count:int ->
@@ -774,7 +695,6 @@ val restore :
   ci_checks:Types.Ci_check.t list ->
   merge_ready:bool ->
   ?head_oid:string option ->
-  ?expected_remote_head_oid:string option ->
   ?review_decision:string option ->
   ?unresolved_comment_count:int ->
   mergeability_unknown:bool ->
@@ -791,14 +711,8 @@ val restore :
   pr_body_artifact_miss_count:int ->
   ?review_unresolved_cycle_count:int ->
   start_attempts_without_pr:int ->
-  conflict_noop_count:int ->
   no_commits_push_count:int ->
   context_exhaustion_count:int ->
-  push_failure_count:int ->
-  rebase_failure_count:int ->
-  branch_rebased_onto:Types.Branch.t option ->
-  branch_rebased_onto_sha:string option ->
-  anchor_history:Anchor_history.t ->
   checks_passing:bool ->
   current_op:Types.Operation_kind.t option ->
   current_op_state:op_state ->
@@ -819,14 +733,31 @@ val restore :
 (** Reconstruct agent state from persisted field values. Bypasses precondition
     checks — use only for deserialization. *)
 
-val mark_branch_published : t -> t
-
 val reconcile_branch :
   t -> Branch_reconcile.event -> t * Branch_reconcile.effect_command list
 
 val begin_branch_reconciliation : t -> t
 (** Claim execution capacity without claiming that an implementation session
     ran. *)
+
+val forge_scope : t -> Forge_observation.scope
+
+val begin_forge_observation :
+  t -> request:Forge_observation.request -> t * Forge_observation.ticket option
+
+val accept_forge_observation :
+  ?confirmed_base:string ->
+  t ->
+  ticket:Forge_observation.ticket ->
+  confirmed_head:string option ->
+  Forge_observation.t ->
+  t * (Poll_outcome.t, string) Result.t
+(** Bind request/evidence transitions to the current patch's PR, branch,
+    generation, head and base context, retaining them in the Git owner. *)
+
+val defer_forge_revision_pair : t -> t
+(** An unconfirmed current forge report cannot authorize merge readiness or new
+    CI/conflict work. Retain running work, owner evidence and human feedback. *)
 
 val record_session_completion : t -> Session_result.completion -> t
 (** Record the backend result and observed local revision before publication. A
@@ -836,8 +767,18 @@ val reconciliation_hold_reason : t -> string option
 (** Terminal patch state suspends reconciliation execution while retaining its
     checkpoint. Resuming work must observe Git through the recovery protocol. *)
 
-val migrate_legacy_branch_state : main_branch:Types.Branch.t -> t -> t
-(** Upgrade an agent whose snapshot has no reconciliation checkpoint. Retain
+val migrate_legacy_branch_state :
+  ?revision:Yojson.Safe.t ->
+  main_branch:Types.Branch.t ->
+  owner_missing:bool ->
+  anchors:Yojson.Safe.t ->
+  published:bool ->
+  t ->
+  t
+(** Import legacy anchor revisions into owner retention without granting replay
+    authority. A legacy [published] claim queues owner verification without
+    replacing pending work or manufacturing a receipt. When [owner_missing],
+    upgrade an agent without a reconciliation checkpoint. Retain
     session/worktree/provenance and unrelated intervention state. Existing work
     starts with observation; obsolete branch counters and pending-push
     expectations do not authorize execution or permanently block it. *)

@@ -224,45 +224,6 @@ let () =
             || String.is_prefix lower_colliding ~prefix:(branch_lc ^ "/"))
   in
 
-  let prop_rebase_status_total =
-    Test.make ~name:"rebase status classification is total" ~count:500
-      Gen.(triple int string string)
-      (fun (code, stdout, stderr) ->
-        ignore
-          (Worktree_parser.classify_rebase_worktree_status ~code ~stdout ~stderr
-            : Worktree_parser.rebase_result option);
-        true)
-  in
-
-  let prop_rebase_status_boundaries =
-    Test.make
-      ~name:"rebase status: clean proceeds, dirty prompts, failure errors"
-      ~count:1 Gen.unit (fun () ->
-        Option.is_none
-          (Worktree_parser.classify_rebase_worktree_status ~code:0 ~stdout:" \n"
-             ~stderr:"")
-        && Option.value_map
-             (Worktree_parser.classify_rebase_worktree_status ~code:0
-                ~stdout:" M lib/a.ml\n?? scratch.txt\n" ~stderr:"")
-             ~default:false ~f:(fun result ->
-               Worktree_parser.equal_rebase_result result
-                 (Worktree_parser.Uncommitted_changes
-                    "M lib/a.ml\n?? scratch.txt"))
-        &&
-        match
-          Worktree_parser.classify_rebase_worktree_status ~code:128 ~stdout:""
-            ~stderr:"not a repository"
-        with
-        | Some (Worktree_parser.Error msg) ->
-            String.is_substring msg ~substring:"not a repository"
-        | Some
-            ( Worktree_parser.Ok | Worktree_parser.Noop
-            | Worktree_parser.Conflict _ | Worktree_parser.Merge_conflict _
-            | Worktree_parser.Uncommitted_changes _ )
-        | None ->
-            false)
-  in
-
   let prop_merge_failure_total =
     Test.make ~name:"merge failure classification is total" ~count:500
       Gen.(pair (triple int string string) (pair (option string) string))
@@ -386,9 +347,95 @@ let () =
       prop_merge_conflict_evidence;
       prop_merge_error_diagnostics;
       prop_merge_failure_boundaries;
-      prop_rebase_status_total;
-      prop_rebase_status_boundaries;
     ]
   in
   let errcode = QCheck_base_runner.run_tests ~verbose:true suite in
   if errcode <> 0 then Stdlib.exit errcode
+
+let () =
+  QCheck2.Test.check_exn
+    (QCheck2.Test.make ~name:"push command classification is total" ~count:1000
+       QCheck2.Gen.(triple int string_small string_small)
+       (fun (code, stdout, stderr) ->
+         try
+           ignore (Worktree_parser.classify_push_result ~code ~stdout ~stderr);
+           true
+         with _ -> false))
+
+let () =
+  let open QCheck2 in
+  let tests =
+    [
+      Test.make
+        ~name:"fetch classifiers are total over arbitrary process output"
+        ~count:1000
+        Gen.(pair int string)
+        (fun (code, stderr) ->
+          try
+            ignore (Worktree_parser.classify_fetch_result ~code ~stderr);
+            ignore (Worktree_parser.classify_fetch_branch_result ~code ~stderr);
+            true
+          with _ -> false);
+      Test.make ~name:"successful fetch ignores stale error output" ~count:500
+        Gen.string (fun stderr ->
+          try
+            Result.is_ok (Worktree_parser.classify_fetch_result ~code:0 ~stderr)
+            && Worktree_parser.equal_fetch_branch_result
+                 (Worktree_parser.classify_fetch_branch_result ~code:0
+                    ~stderr:("couldn't find remote ref " ^ stderr))
+                 Worktree_parser.Fetch_branch_ok
+          with _ -> false);
+      Test.make ~name:"missing remote ref differs from transport failure"
+        ~count:500
+        Gen.(pair (int_range 1 255) (int_range 0 100000))
+        (fun (code, number) ->
+          try
+            let missing =
+              Printf.sprintf "fatal: couldn't find remote ref patch-%d\n" number
+            in
+            let transport =
+              Printf.sprintf "fatal: failed to connect to host-%d\n" number
+            in
+            Worktree_parser.equal_fetch_branch_result
+              (Worktree_parser.classify_fetch_branch_result ~code
+                 ~stderr:missing)
+              Worktree_parser.Fetch_branch_no_remote_ref
+            && (match
+                  Worktree_parser.classify_fetch_branch_result ~code
+                    ~stderr:transport
+                with
+              | Worktree_parser.Fetch_branch_error message ->
+                  String.is_substring message
+                    ~substring:(String.strip transport)
+              | Worktree_parser.Fetch_branch_ok
+              | Worktree_parser.Fetch_branch_no_remote_ref ->
+                  false)
+            && Result.is_error
+                 (Worktree_parser.classify_fetch_result ~code ~stderr:missing)
+          with _ -> false);
+      Test.make
+        ~name:
+          "dependency subject matching retains exact project and patch scope"
+        ~count:500
+        Gen.(pair (int_range 1 100000) (int_range 1 100000))
+        (fun (project_number, patch_number) ->
+          try
+            let project = Printf.sprintf "project-%d" project_number in
+            let id = Int.to_string patch_number in
+            let subject =
+              Printf.sprintf "[%s] Patch %s: dependency" project id
+            in
+            let matches project_name ids =
+              Worktree_parser.is_ancestor_patch_subject ~project_name
+                ~ancestor_ids:(List.map ids ~f:Patch_id.of_string)
+                subject
+            in
+            matches project [ id ]
+            && (not (matches (project ^ "-other") [ id ]))
+            && (not (matches project [ id ^ "0" ]))
+            && (not (matches project []))
+            && not (matches "" [ id ])
+          with _ -> false);
+    ]
+  in
+  List.iter tests ~f:(fun test -> Test.check_exn test)

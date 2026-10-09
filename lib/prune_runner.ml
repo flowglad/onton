@@ -10,6 +10,7 @@ type prune_status =
   | No_patches
   | No_snapshot
   | Load_error of string
+  | Recovery_retained of string
 
 type refresh_summary = {
   attempted : int;
@@ -28,22 +29,6 @@ type refresh_summary = {
 let pluralize ?plural n singular =
   let many = match plural with Some p -> p | None -> singular ^ "s" in
   Stdlib.Printf.sprintf "%d %s" n (if n = 1 then singular else many)
-
-let rec remove_path path =
-  match Unix.lstat path with
-  | exception Unix.Unix_error (Unix.ENOENT, _, _) -> ()
-  | { Unix.st_kind = Unix.S_DIR; _ } -> (
-      let entries = Stdlib.Sys.readdir path in
-      Array.iter entries ~f:(fun name ->
-          remove_path (Stdlib.Filename.concat path name));
-      try Unix.rmdir path with Unix.Unix_error (Unix.ENOENT, _, _) -> ())
-  | {
-   Unix.st_kind =
-     ( Unix.S_REG | Unix.S_LNK | Unix.S_CHR | Unix.S_BLK | Unix.S_FIFO
-     | Unix.S_SOCK );
-   _;
-  } -> (
-      try Stdlib.Sys.remove path with Sys_error _ -> ())
 
 (** Build the list of (patch_id, pr_number) pairs that can be reconciled with
     the forge: agent stored as not-merged AND has a PR number on file. Both
@@ -251,7 +236,99 @@ let kept_reason ~base ~refresh_summary =
   | None -> base
   | Some note -> Stdlib.Printf.sprintf "%s (%s)" base note
 
-let run_prune ~net ~clock ~process_mgr ~github_token ~refresh () =
+let reclaim_project ~registration ~process_mgr ~clock ~slug ~remove =
+  let ( let* ) result f = Result.bind result ~f in
+  let* cfg = Project_store.load_config ~project_name:slug in
+  let make_io path =
+    Branch_reconcile_executor.make_io ~process_mgr
+      ~clock:(clock :> float Eio.Time.clock_ty Eio.Time.clock)
+      ~path
+  in
+  let io = make_io cfg.repo_root in
+  let* repository = Recovery_ref_prune.repository_id io in
+  let project_dir = Unix.realpath (Project_store.project_dir slug) in
+  let rec inspect others required protected_projects =
+    match others with
+    | [] -> (
+        let* outcome =
+          Recovery_ref_prune.reclaim ~io ~project:cfg.project_name
+            ~protected_projects ~required
+        in
+        match outcome with
+        | Recovery_ref_prune.Retained _ ->
+            Ok (Some "recovery refs required by another project")
+        | Recovery_ref_prune.Pruned ->
+            remove ();
+            Ok None)
+    | other :: rest -> (
+        let other_dir = Project_store.project_dir other in
+        let inspect_config () =
+          let* config = Project_store.load_config ~project_name:other in
+          let* identity =
+            Recovery_ref_prune.repository_id (make_io config.repo_root)
+          in
+          Ok (config.project_name, String.equal repository identity)
+        in
+        match
+          Project_lock.acquire ~project_dir:other_dir ~on_stale:(fun _ -> ())
+        with
+        | Error (Project_lock.Io_error reason) -> Error reason
+        | Error (Project_lock.Held_by _) ->
+            let* _, shared = inspect_config () in
+            if shared then Ok (Some ("shared repository in use by " ^ other))
+            else inspect rest required protected_projects
+        | Ok lock ->
+            Stdlib.Fun.protect
+              ~finally:(fun () -> Project_lock.release lock)
+              (fun () ->
+                let* project, shared = inspect_config () in
+                if not shared then inspect rest required protected_projects
+                else if
+                  Prune_decision.repository_within_project ~project_dir
+                    ~git_dir:repository
+                then Ok (Some ("managed repository still used by " ^ other))
+                else
+                  match
+                    Project_lifecycle.acquire_retirement registration
+                      ~project_name:other
+                  with
+                  | Error (Project_lifecycle.Busy _) ->
+                      Ok (Some ("shared repository in use by " ^ other))
+                  | Error (Project_lifecycle.Io_error reason) -> Error reason
+                  | Ok lifecycle ->
+                      Stdlib.Fun.protect
+                        ~finally:(fun () ->
+                          Project_lifecycle.release_retirement lifecycle)
+                        (fun () ->
+                          let* snapshot =
+                            Persistence.load
+                              ~path:(Project_store.snapshot_path other)
+                          in
+                          let agents =
+                            Orchestrator.agents_map
+                              snapshot.Runtime.orchestrator
+                          in
+                          let dependencies =
+                            match
+                              Prune_decision.classify_snapshot
+                                ~patches:snapshot.gameplan.Gameplan.patches
+                                ~agents ~closed_patch_ids:[]
+                            with
+                            | Prune_decision.All_terminal -> []
+                            | Prune_decision.Not_terminal
+                            | Prune_decision.No_patches ->
+                                Prune_decision.recovery_dependencies agents
+                          in
+                          inspect rest (dependencies @ required)
+                            (project :: protected_projects))))
+  in
+  Project_store.list_projects ()
+  |> List.filter ~f:(fun other -> not (String.equal slug other))
+  |> List.sort ~compare:String.compare
+  |> fun others -> inspect others [] []
+
+let run_prune_registered ~registration ~net ~clock ~process_mgr ~github_token
+    ~refresh () =
   let slugs = Project_store.list_projects () in
   if List.is_empty slugs then (
     Stdlib.Printf.printf "No stored projects to consider.\n";
@@ -320,15 +397,57 @@ let run_prune ~net ~clock ~process_mgr ~github_token ~refresh () =
                   (Stdlib.Fun.protect
                      ~finally:(fun () -> Project_lock.release lock)
                      (fun () ->
-                       let status, refresh_summary =
-                         classify_project ~make_forge ~refresh ~slug
-                       in
-                       (match status with
-                       | All_terminal -> remove_path project_dir
-                       | Not_terminal | No_patches | No_snapshot | Load_error _
-                         ->
-                           ());
-                       (status, refresh_summary)))
+                       match
+                         Project_lifecycle.acquire_retirement registration
+                           ~project_name:slug
+                       with
+                       | Error (Project_lifecycle.Busy _) ->
+                           (Recovery_retained "project is in use", None)
+                       | Error (Project_lifecycle.Io_error reason) ->
+                           failwith reason
+                       | Ok lifecycle ->
+                           Stdlib.Fun.protect
+                             ~finally:(fun () ->
+                               Project_lifecycle.release_retirement lifecycle)
+                             (fun () ->
+                               let status, refresh_summary =
+                                 classify_project ~make_forge ~refresh ~slug
+                               in
+                               let status =
+                                 match status with
+                                 | All_terminal -> (
+                                     match
+                                       reclaim_project ~registration
+                                         ~process_mgr ~clock ~slug
+                                         ~remove:(fun () ->
+                                           match
+                                             Project_lifecycle.retire
+                                               registration lifecycle
+                                           with
+                                           | Error error ->
+                                               failwith
+                                                 (Project_lifecycle
+                                                  .error_message error)
+                                           | Ok () -> (
+                                               match
+                                                 Project_lifecycle
+                                                 .cleanup_retired registration
+                                               with
+                                               | Ok () -> ()
+                                               | Error error ->
+                                                   failwith
+                                                     (Project_lifecycle
+                                                      .error_message error)))
+                                     with
+                                     | Ok None -> All_terminal
+                                     | Ok (Some reason) ->
+                                         Recovery_retained reason
+                                     | Error reason -> failwith reason)
+                                 | Not_terminal | No_patches | No_snapshot
+                                 | Load_error _ | Recovery_retained _ ->
+                                     status
+                               in
+                               (status, refresh_summary))))
               with
               | Eio.Cancel.Cancelled _ as exn -> raise exn
               | exn -> Error (Exn.to_string exn)
@@ -352,6 +471,10 @@ let run_prune ~net ~clock ~process_mgr ~github_token ~refresh () =
                   ( project_name,
                     kept_reason ~base:"has non-terminal patches"
                       ~refresh_summary )
+                  :: !kept
+            | Ok (Recovery_retained reason, refresh_summary) ->
+                kept :=
+                  (project_name, kept_reason ~base:reason ~refresh_summary)
                   :: !kept
             | Ok (No_patches, _) ->
                 kept := (project_name, "gameplan has no patches") :: !kept
@@ -386,3 +509,22 @@ let run_prune ~net ~clock ~process_mgr ~github_token ~refresh () =
       List.iter (List.rev leftover_worktrees) ~f:(fun (_, p, _) ->
           Stdlib.Printf.printf "  rm -rf %s\n" p));
     if not (List.is_empty !errors) then 1 else 0
+
+let run_prune ~net ~clock ~process_mgr ~github_token ~refresh () =
+  match Project_lifecycle.acquire_registration () with
+  | Error error ->
+      Stdlib.Printf.eprintf "onton prune: %s\n%!"
+        (Project_lifecycle.error_message error);
+      1
+  | Ok registration ->
+      Stdlib.Fun.protect
+        ~finally:(fun () -> Project_lifecycle.release_registration registration)
+        (fun () ->
+          match Project_lifecycle.cleanup_retired registration with
+          | Error error ->
+              Stdlib.Printf.eprintf "onton prune: %s\n%!"
+                (Project_lifecycle.error_message error);
+              1
+          | Ok () ->
+              run_prune_registered ~registration ~net ~clock ~process_mgr
+                ~github_token ~refresh ())

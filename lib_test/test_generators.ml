@@ -401,6 +401,7 @@ let gen_pr_state =
           comments;
           unresolved_comment_count;
           findings = [];
+          pr_number = None;
           node_id = None;
           merge_queue_required = false;
           merge_queue_entry = None;
@@ -822,8 +823,6 @@ let gen_non_timeout_session_result =
           bool;
         return (Onton.Orchestrator.Session_wontdo "Prerequisite missing");
         return Onton.Orchestrator.Session_give_up;
-        return Onton.Orchestrator.Session_worktree_missing;
-        return (Onton.Orchestrator.Session_push_failed None);
         return Onton.Orchestrator.Session_no_commits;
       ])
 
@@ -913,7 +912,7 @@ let apply_reconcile_actions orch ~main ~branch_of =
             queue = a.Onton_core.Patch_agent.queue;
             base_branch =
               Option.value a.Onton_core.Patch_agent.base_branch ~default:main;
-            branch_rebased_onto = a.Onton_core.Patch_agent.branch_rebased_onto;
+            branch_rebased_onto = Onton_core.Patch_agent.branch_rebased_onto a;
             base_contains_merged_siblings = true;
             (* Containment held to [true] above, so no frontier exists. *)
             sibling_rebase_target = None;

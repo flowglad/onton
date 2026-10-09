@@ -18,11 +18,6 @@ type t =
       (** Explicit pre-commit opt-out. Retains the explanation and pauses work
           until a human reprompt or intervention reset. *)
   | Session_give_up
-  | Session_worktree_missing
-  | Session_push_failed of Push_reject_classify.rejection option
-      (** [Some r] carries a classified server-side rejection (workflow-scope,
-          branch-protection, lease, hook, …). [None] reflects a transport/local
-          [git push] error (no server message available). *)
   | Session_no_commits
   | Session_context_exhausted
       (** The session exhausted the model's context window
@@ -79,6 +74,20 @@ let resume_start ~delivery_mode ~guidance ~publication completion =
                   .purpose
        | None -> false)
 
+let resume_verified_legacy_start ~delivery_mode ~guidance ~publication
+    ~completion =
+  equal_delivery_mode delivery_mode Start
+  && List.is_empty guidance && Option.is_none completion
+  && Option.exists (Branch_reconcile.operation publication) ~f:(fun op ->
+      Branch_reconcile.equal_purpose op.intent.purpose Verify_publication
+      && Branch_reconcile.equal_phase op.phase Settled
+      && List.exists (Branch_reconcile.publications publication)
+           ~f:(fun receipt ->
+             receipt.operation_id = op.id
+             && Branch_reconcile.equal_intent receipt.published_intent op.intent
+             && Option.equal Branch_reconcile.Commit.equal op.candidate
+                  (Some receipt.published_revision)))
+
 let after_local_work ~delivery_mode ~branch_changed ~no_work session =
   match session with
   | Session_ok
@@ -87,6 +96,5 @@ let after_local_work ~delivery_mode ~branch_changed ~no_work session =
       Session_no_commits
   | Session_ok | Session_process_error _ | Session_no_resume
   | Session_timed_out _ | Session_failed _ | Session_wontdo _ | Session_give_up
-  | Session_worktree_missing | Session_push_failed _ | Session_no_commits
-  | Session_context_exhausted ->
+  | Session_no_commits | Session_context_exhausted ->
       session

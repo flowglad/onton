@@ -14,7 +14,6 @@ module Poller_env : sig
     val main_branch : Branch.t
     val poll_interval : float
     val repo_root : string
-    val find_pr_number : patch_id:Patch_id.t -> Pr_number.t option
 
     val register_pr_number :
       patch_id:Patch_id.t -> pr_number:Pr_number.t -> unit
