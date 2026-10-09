@@ -1095,3 +1095,11 @@
   (setenv ONTON_SETSID_EXEC
    %{bin:onton-setsid-exec}
    (run %{test}))))
+
+(test
+ (name test_repair_session)
+ (modules test_repair_session)
+ (deps (package onton))
+ (action (setenv ONTON_SETSID_EXEC %{bin:onton-setsid-exec} (run %{test})))
+ (flags (:standard -w -40-42))
+ (libraries onton onton_core onton_core_test_support eio_main unix))

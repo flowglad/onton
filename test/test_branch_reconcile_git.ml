@@ -2277,6 +2277,8 @@ let () =
                   let invoke (turn : B.repair_turn) =
                     active_token := turn.token;
                     Branch_repair_session.run
+                      ~resume_session:(Some "patch-session")
+                      ~session_uuid:"patch-session"
                       ~on_event:(fun _ -> ())
                       ~context:"" ~guidance:[] ~backend
                       ~cwd:Eio.Path.(Eio.Stdenv.fs env / dir)
@@ -2542,6 +2544,8 @@ let () =
                   let probes = ref 0 in
                   let event =
                     Branch_repair_session.run
+                      ~resume_session:(Some "patch-session")
+                      ~session_uuid:"patch-session"
                       ~on_event:(fun _ -> ())
                       ~context:"" ~guidance:[] ~backend
                       ~cwd:Eio.Path.(Eio.Stdenv.fs env / dir)
@@ -2784,8 +2788,8 @@ let () =
                   ~complexity:_
                   ~on_event:_
                 ->
-                  check "repair is separate from implementation session"
-                    (resume_session = None);
+                  check "repair resumes the implementation session"
+                    (resume_session = Some "patch-session");
                   let checkpoint = get (Persistence.load ~path:snap) in
                   let checkpoint_state =
                     (Orchestrator.agent checkpoint.orchestrator id)
@@ -2809,7 +2813,8 @@ let () =
             }
         in
         let result =
-          Branch_repair_session.run
+          Branch_repair_session.run ~resume_session:(Some "patch-session")
+            ~session_uuid:"patch-session"
             ~on_event:(fun _ -> ())
             ~context:"" ~guidance:[] ~backend
             ~cwd:Eio.Path.(Eio.Stdenv.fs env / repair_dir)

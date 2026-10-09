@@ -57,6 +57,21 @@ module Make (_ : Worktree.S) (_ : ENV) : sig
       and backend sessions use the same captured-revision publication protocol.
       Pending publication never changes the recorded implementation outcome. *)
 
+  val run_repair :
+    patch_id:Types.Patch_id.t ->
+    agent:Patch_agent.t ->
+    backend:Llm_backend.t ->
+    complexity:int option ->
+    cwd:Eio.Fs.dir_ty Eio.Path.t ->
+    context:string ->
+    guidance:string list ->
+    turn:Branch_reconcile.repair_turn ->
+    read_head:(unit -> string option) ->
+    Branch_reconcile.event
+  (** Continue the patch conversation for every repair mode and append all
+      streamed content to its transcript. The caller holds patch ownership. This
+      does not invoke implementation completion or publication. *)
+
   val run_owned :
     write_owner:Runtime.patch_write ->
     kind:Types.Operation_kind.t option ->

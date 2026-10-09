@@ -313,6 +313,8 @@ let scenario env entrypoint policy interruption unrelated =
                     ~perform:(fun ~agent:_ ~turn ->
                       active_token := turn.B.token;
                       Branch_repair_session.run
+                        ~resume_session:(Some "patch-session")
+                        ~session_uuid:"patch-session"
                         ~on_event:(fun _ -> ())
                         ~context:"" ~guidance:[] ~backend
                         ~cwd:Eio.Path.(Eio.Stdenv.fs env / dir)

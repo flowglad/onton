@@ -788,3 +788,31 @@ Contribution-scope qualification on this implementation passed:
 publication interleavings and real-Git/checkpoint matrices. The optional simgit
 backend integration remained skipped because `ONTON_TEST_SIMGIT` was unset;
 Git-backed reconciliation scenarios ran successfully.
+
+## Repair conversation continuity
+
+Every owned diagnostic, content-repair, local-work, history-reconstruction and
+publication-repair turn now runs through the patch session driver. Existing
+backend session IDs are resumed and reused for repair correlation; the adapter
+no longer mints a detached repair session. Resume errors retain the identity
+rather than taking the ordinary fresh-session retry path. Patches without any
+conversation initialize their normal patch conversation on the first repair.
+
+Repair prompts, streamed text, tool activity, final-only responses and errors
+append to the shared patch transcript and live updates. Completed turns atomically checkpoint
+the backend identity, resumable session mode, and transcript, and refresh the
+crash-recovery sidecar. A successful repair clears stale fresh-session retry
+state so the following normal turn resumes the same conversation. Cancellation flushes
+partial transcript output while propagating to the owner. Backend attempts to
+switch an existing conversation's identity are rejected. Diagnosis uses the
+managed checkout when present to retain the backend's conversation lookup context.
+
+`test_repair_session` covers all five modes, both existing and first conversations,
+repeated turns and restored state, backend exceptions, cancellation, and rejected
+identity changes. Existing Git repair fixtures now explicitly resume the patch
+conversation. These are controlled backend tests, not live-model qualification.
+
+Conversation-continuity qualification passed: `opam exec -- dune build @all
+@fmt @check`, `opam exec -- dune runtest`, the source-policy check, and pinned
+archlint (`855690b`). The optional simgit backend integration remained skipped
+because `ONTON_TEST_SIMGIT` was unset; Git-backed suites ran successfully.

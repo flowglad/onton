@@ -124,9 +124,13 @@ recovery refs before authorizing further repair or continuation.
 
 Conflicts produce a repair token. A second checkpoint claims that token before
 an agent is dispatched; repeating the claim cannot authorize another turn.
-The dedicated repair handler starts an isolated backend turn with instructions
-to edit and stage resolutions. It does not invoke ordinary implementation-session
-completion or publication. The repair claim captures the checkout HEAD, which
+The patch session driver delivers repair instructions as another turn of the
+existing patch conversation, retaining its backend session identity and appending
+the prompt and streamed output to the same transcript. All recovery modes use
+this path. Resume failure never selects a fresh conversation. If the patch has
+never had a conversation, its first repair initializes the normal patch session;
+a committed turn makes that identity resumable across restart. Repair does not
+invoke ordinary implementation-session completion or publication. The repair claim captures the checkout HEAD, which
 can differ from the named branch during a rebase. The handler checks that HEAD
 before dispatch; subsequent inspection checks the captured HEAD and sequencer
 even after a lost probe or restart. Unexpected agent commits, resets or
@@ -453,8 +457,9 @@ an intervention retaining work, blocks review promotion, merge eligibility, and
 dependent cuts even when legacy CI and base observations still look ready.
 
 The runner resumes checkpointed Git work under scoped patch ownership. It checks
-the operation identity again after acquiring ownership. Content repair uses the separate staged-resolution agent interaction under
-patch ownership and the session concurrency limit. Waiting for an agent slot
+the operation identity again after acquiring ownership. Content repair continues
+the patch agent conversation with staged-resolution instructions under patch
+ownership and the session concurrency limit. Waiting for an agent slot
 holds neither patch nor root Git ownership. After capacity becomes available,
 the runner acquires ownership and revalidates the durable turn claim before
 invoking the backend. Ordinary Start and Respond actions use the same resource
