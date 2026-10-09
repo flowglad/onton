@@ -222,6 +222,10 @@ module Ci_check = struct
   let is_success (c : t) =
     List.mem success_conclusions c.conclusion ~equal:String.equal
 
+  let is_terminal (c : t) =
+    is_success c || is_failure c
+    || List.mem [ "cancelled"; "stale" ] c.conclusion ~equal:String.equal
+
   (* A GitHub suite identifies its producer's run. Only collapse replacements
      within that suite and context name, never across independent workflow
      runs or based on conclusion. App visibility is not required. *)

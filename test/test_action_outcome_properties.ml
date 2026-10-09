@@ -1232,7 +1232,7 @@ let () =
              (Orchestrator.agent orch root).Patch_agent.mergeability_unknown;
            match
              Branch_poll_decision.plan ~now:0. ~expected_head:(Some head_sha)
-               None
+               ~checks:[] None
            with
            | Branch_poll_decision.Probe { reuse_checks = false } -> true
            | Branch_poll_decision.Probe { reuse_checks = true }

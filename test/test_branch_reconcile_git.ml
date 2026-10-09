@@ -81,6 +81,179 @@ let () =
       ~clock:(Eio.Stdenv.clock env) ~path:dir
   in
   List.iter
+    (fun has_pr ->
+      Git.with_temp_repo (fun remote ->
+          ignore (commit remote "base" "base\n" "base");
+          ignore (commit remote "unstaged" "original\n" "tracked fixture");
+          Git.with_temp_repo (fun dir ->
+              prepare remote dir;
+              let original =
+                commit dir "work" "committed\n" "previous session"
+              in
+              Git.run_git ~cwd:dir [ "push"; "-q"; "origin"; "patch" ];
+              let oc = open_out_bin (Filename.concat dir "work") in
+              output_string oc "unfinished session\n";
+              close_out oc;
+              Git.run_git ~cwd:dir [ "add"; "work" ];
+              let oc = open_out_bin (Filename.concat dir "unstaged") in
+              output_string oc "retained\n";
+              close_out oc;
+              let runtime = make_runtime () and io = make_io dir in
+              Runtime.update_orchestrator runtime (fun orch ->
+                  let orch = Orchestrator.set_worktree_path orch id dir in
+                  if has_pr then
+                    Orchestrator.set_pr_number orch id
+                      (Types.Pr_number.of_int 1)
+                  else orch);
+              let checkpoint = Filename.temp_file "dirty-session" ".json" in
+              Fun.protect
+                ~finally:(fun () -> Sys.remove checkpoint)
+                (fun () ->
+                  check
+                    "dirty base reconciliation yields to the unfinished session"
+                    (run runtime (persist checkpoint) io (B.Request intent)
+                    = R.Waiting);
+                  check "checkout unchanged before session"
+                    (Git.git_capture ~cwd:dir [ "rev-parse"; "HEAD" ] = original
+                    && Git.git_capture ~cwd:dir [ "show"; ":work" ]
+                       = "unfinished session");
+                  let snapshot = get (Persistence.load ~path:checkpoint) in
+                  let restarted =
+                    Runtime.create ~gameplan
+                      ~main_branch:(Types.Branch.of_string "main")
+                      ~snapshot ()
+                  in
+                  let action =
+                    Runtime.read restarted (fun snap ->
+                        match
+                          Patch_controller.plan_actions
+                            snap.Runtime.orchestrator
+                            ~patches:gameplan.Types.Gameplan.patches
+                        with
+                        | [ action ] -> Some action
+                        | [] | _ :: _ -> None)
+                  in
+                  check "restarted supervisor schedules session before rebase"
+                    (match action with
+                    | Some (Orchestrator.Respond (_, kind)) ->
+                        has_pr
+                        && Types.Operation_kind.equal kind Uncommitted_changes
+                    | Some (Orchestrator.Start _) -> not has_pr
+                    | Some
+                        (Orchestrator.Rebase _ | Orchestrator.Reconcile_branch _)
+                    | None ->
+                        false);
+                  if has_pr then
+                    Runtime.read restarted (fun snap ->
+                        let orch = snap.Runtime.orchestrator in
+                        let agent = Orchestrator.agent orch id in
+                        let retry =
+                          agent |> fun a ->
+                          Patch_agent.respond a Uncommitted_changes
+                          |> Patch_agent.complete
+                          |> fun a ->
+                          Patch_agent.respond a Uncommitted_changes
+                          |> Patch_agent.complete
+                        in
+                        check "failed session recovery can dispatch again"
+                          (List.mem Types.Operation_kind.Uncommitted_changes
+                             retry.queue);
+                        let missing = Orchestrator.mark_pr_missing orch id in
+                        check "missing unpublished PR waits for rediscovery"
+                          (Patch_controller.plan_actions missing
+                             ~patches:gameplan.Types.Gameplan.patches
+                          = []);
+                        let published =
+                          Orchestrator.mark_branch_published missing id
+                        in
+                        check "published missing PR also waits for rediscovery"
+                          (Patch_controller.plan_actions published
+                             ~patches:gameplan.Types.Gameplan.patches
+                          = []);
+                        let retained = Orchestrator.agent missing id in
+                        check "missing PR retains unfinished session recovery"
+                          (B.phase retained.branch_reconcile
+                           = Some B.Awaiting_session
+                          && List.mem Types.Operation_kind.Uncommitted_changes
+                               retained.queue);
+                        let rediscovered =
+                          Orchestrator.set_pr_number missing id
+                            (Types.Pr_number.of_int 1)
+                        in
+                        check "rediscovered PR resumes recovery"
+                          (Patch_controller.plan_actions rediscovered
+                             ~patches:gameplan.Types.Gameplan.patches
+                          = [ Orchestrator.Respond (id, Uncommitted_changes) ]);
+                        let inflight =
+                          Orchestrator.set_automerge_inflight orch id true
+                        in
+                        check "session recovery waits for the pending merge"
+                          (Patch_controller.plan_actions inflight
+                             ~patches:gameplan.Types.Gameplan.patches
+                          = []);
+                        let failed =
+                          Orchestrator.set_automerge_inflight inflight id false
+                        in
+                        check "session recovery resumes after a failed merge"
+                          (Patch_controller.plan_actions failed
+                             ~patches:gameplan.Types.Gameplan.patches
+                          = [ Orchestrator.Respond (id, Uncommitted_changes) ]);
+                        let won =
+                          Patch_controller.apply_automerge_success inflight id
+                        in
+                        let retained = Orchestrator.agent won id in
+                        check
+                          "winning merge retains unfinished recovery without \
+                           dispatch"
+                          (Patch_controller.plan_actions won
+                             ~patches:gameplan.Types.Gameplan.patches
+                           = []
+                          && B.phase retained.branch_reconcile
+                             = Some B.Awaiting_session
+                          && List.mem Types.Operation_kind.Uncommitted_changes
+                               retained.queue));
+                  check "unfinished work cannot be approved"
+                    (Runtime.read restarted (fun snap ->
+                         not
+                           (Patch_agent.is_approved
+                              (Orchestrator.agent snap.Runtime.orchestrator id)
+                              ~main_branch:(Types.Branch.of_string "main"))));
+                  check "tracked unstaged work survives recovery and restart"
+                    (Git.git_capture ~cwd:dir [ "show"; ":unstaged" ]
+                     = "original"
+                    && Git.git_capture ~cwd:dir [ "diff"; "--"; "unstaged" ]
+                       <> ""
+                    && In_channel.with_open_bin
+                         (Filename.concat dir "unstaged")
+                         In_channel.input_all
+                       = "retained\n");
+                  Git.run_git ~cwd:dir [ "add"; "unstaged" ];
+                  Git.run_git ~cwd:dir
+                    [ "commit"; "-q"; "-m"; "finish interrupted session" ];
+                  let finished =
+                    Git.git_capture ~cwd:dir [ "rev-parse"; "HEAD" ]
+                  in
+                  ignore (commit remote "advance" "advanced\n" "base advances");
+                  check
+                    "publication settles the original deferred reconciliation"
+                    (run restarted (persist checkpoint) io
+                       (B.Request
+                          {
+                            intent with
+                            purpose = Publish_revision (sha finished);
+                          })
+                    = R.Idle);
+                  check "session work survives subsequent integration"
+                    (Git.git_capture ~cwd:dir [ "show"; "HEAD:work" ]
+                     = "unfinished session"
+                    && Git.git_capture ~cwd:dir [ "show"; "HEAD:unstaged" ]
+                       = "retained"
+                    && Git.git_capture ~cwd:dir [ "show"; "HEAD:advance" ]
+                       = "advanced"
+                    && Git.git_capture ~cwd:dir [ "status"; "--porcelain" ] = ""
+                    )))))
+    [ false; true ];
+  List.iter
     (fun missing_base ->
       Git.with_temp_repo (fun fetch_remote ->
           ignore (commit fetch_remote "base" "base\n" "base");

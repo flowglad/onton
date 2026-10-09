@@ -610,6 +610,25 @@ let plan_action_for_patch t ~branch_map:_ patch_id =
              ~f:(fun dep -> open_dep_review_ready t dep)
   in
   if Option.is_some (Patch_agent.reconciliation_hold_reason agent) then None
+  else if
+    Option.equal Branch_reconcile.equal_phase
+      (Branch_reconcile.phase agent.branch_reconcile)
+      (Some Branch_reconcile.Awaiting_session)
+  then
+    if
+      agent.busy || agent.automerge_inflight || agent.merged
+      || Patch_agent.needs_intervention agent
+    then None
+    else if Patch_agent.is_pr_present agent || agent.branch_published then
+      Some (Orchestrator.Respond (patch_id, Operation_kind.Uncommitted_changes))
+    else if (not (Patch_agent.has_pr agent)) && dependencies_allow_start then
+      Some
+        (Orchestrator.Start
+           ( patch_id,
+             Option.value
+               (Orchestrator.expected_base t patch_id)
+               ~default:(Orchestrator.terminal_branch t patch_id) ))
+    else None
   else if Branch_reconcile.is_pending agent.branch_reconcile then
     if agent.busy then None
     else

@@ -906,5 +906,8 @@ let make_io ~process_mgr ~clock ~path =
         with
         | Ok result -> result
         | Error `Timeout ->
-            (124, "", "Git command outcome uncertain after timeout"));
+            ( 124,
+              "",
+              "Git command outcome uncertain after timeout: "
+              ^ String.concat ~sep:" " args ));
   }

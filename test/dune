@@ -411,7 +411,7 @@
 (test
  (name test_git_env)
  (modules test_git_env)
- (libraries onton onton_core qcheck-core unix)
+ (libraries onton onton_core onton_test_support qcheck-core unix)
  (ocamlopt_flags (:standard -w -40-42-4))
  (ocamlc_flags (:standard -w -40-42-4)))
 

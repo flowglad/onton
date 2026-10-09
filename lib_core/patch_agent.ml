@@ -246,7 +246,8 @@ let intervention_reason t =
           ( Branch_reconcile.Preparing | Branch_reconcile.Integrating
           | Branch_reconcile.Repairing _ | Branch_reconcile.Publishing
           | Branch_reconcile.Confirming | Branch_reconcile.Waiting _
-          | Branch_reconcile.Recovering | Branch_reconcile.Settled ) ->
+          | Branch_reconcile.Recovering | Branch_reconcile.Awaiting_session
+          | Branch_reconcile.Settled ) ->
           None)
 
 let needs_intervention t = Option.is_some (intervention_reason t)
@@ -730,6 +731,13 @@ let reset_intervention_state t =
   {
     t with
     branch_reconcile;
+    queue =
+      (if
+         Option.equal Branch_reconcile.equal_phase
+           (Branch_reconcile.phase branch_reconcile)
+           (Some Branch_reconcile.Awaiting_session)
+       then (enqueue t Operation_kind.Uncommitted_changes).queue
+       else t.queue);
     session_fallback = Fresh_available;
     wontdo_reason = None;
     ci_failure_count = 0;
@@ -1043,7 +1051,13 @@ let respond t k =
   | Some hp when Operation_kind.equal hp k -> ()
   | _ -> invalid_arg "Patch_agent.respond: not highest priority");
   let queue =
-    List.filter t.queue ~f:(fun j -> not (Operation_kind.equal j k))
+    if
+      Operation_kind.equal k Operation_kind.Uncommitted_changes
+      && Option.equal Branch_reconcile.equal_phase
+           (Branch_reconcile.phase t.branch_reconcile)
+           (Some Branch_reconcile.Awaiting_session)
+    then t.queue
+    else List.filter t.queue ~f:(fun j -> not (Operation_kind.equal j k))
   in
   let equal_k = Operation_kind.equal k in
   let is_human = equal_k Human in
@@ -1152,11 +1166,31 @@ let mark_branch_published t =
   { t with branch_published = true; start_attempts_without_pr = 0 }
 
 let reconcile_branch t event =
+  let was_awaiting_session =
+    Option.equal Branch_reconcile.equal_phase
+      (Branch_reconcile.phase t.branch_reconcile)
+      (Some Branch_reconcile.Awaiting_session)
+  in
   let prior = List.hd (Branch_reconcile.integrations t.branch_reconcile) in
   let branch_reconcile, commands =
     Branch_reconcile.step t.branch_reconcile event
   in
   let t = { t with branch_reconcile } in
+  let t =
+    if
+      Option.equal Branch_reconcile.equal_phase
+        (Branch_reconcile.phase branch_reconcile)
+        (Some Branch_reconcile.Awaiting_session)
+    then enqueue t Operation_kind.Uncommitted_changes
+    else if was_awaiting_session then
+      {
+        t with
+        queue =
+          List.filter t.queue ~f:(fun kind ->
+              not (Operation_kind.equal kind Operation_kind.Uncommitted_changes));
+      }
+    else t
+  in
   let t =
     match List.hd (Branch_reconcile.integrations branch_reconcile) with
     | Some receipt

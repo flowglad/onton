@@ -203,6 +203,16 @@ let () =
               GIT_ALTERNATE_OBJECT_DIRECTORIES\n\
               git update-ref refs/heads/root " ^ race ^ "\n");
           Unix.chmod hook 0o755;
+          (* Model an independent server's hook configuration explicitly: the
+             local file transport otherwise inherits the client environment. *)
+          Git.run_git ~cwd:dir
+            [
+              "config";
+              "remote.origin.receivepack";
+              "git -c core.hooksPath="
+              ^ Stdlib.Filename.quote (bare ^ "/hooks")
+              ^ " receive-pack";
+            ];
           check "remote race rejected"
             (match integrate "next" next_head with
             | Worktree.Integration_error _ -> true
@@ -377,8 +387,7 @@ let () =
             | Worktree.Ok | Worktree.Noop | Worktree.Conflict _
             | Worktree.Merge_conflict _ | Worktree.Uncommitted_changes _ ->
                 false);
-          (* A failed commit hook leaves MERGE_HEAD but no unmerged index. It is
-             an execution error, so abort that failed attempt and retain output. *)
+          (* Repository hooks must not intercept Onton-owned integration. *)
           let _ = commit dir "hook-upstream" "upstream\n" in
           Git.run_git ~cwd:dir [ "push"; "-q"; "origin"; "main" ];
           check "fetch hook upstream"
@@ -392,29 +401,26 @@ let () =
              echo merge-hook-stderr >&2\n\
              exit 1\n";
           Unix.chmod merge_hook 0o755;
-          check "hook failure retains both diagnostic streams"
+          check "Onton integration bypasses the rejecting merge hook"
             (match merge_root () with
-            | Worktree.Error detail ->
-                String.is_substring detail ~substring:"merge-hook-stdout"
-                && String.is_substring detail ~substring:"merge-hook-stderr"
-            | Worktree.Ok | Worktree.Noop | Worktree.Conflict _
+            | Worktree.Ok -> true
+            | Worktree.Noop | Worktree.Error _ | Worktree.Conflict _
             | Worktree.Merge_conflict _ | Worktree.Uncommitted_changes _ ->
                 false);
           Unix.unlink merge_hook;
-          check "hook failure cleans only the failed merge"
+          check "merge completes with a clean checkout"
             (String.is_empty
                (Git.git_capture ~cwd:root_path [ "status"; "--porcelain" ])
             && Git.git_exit_code ~cwd:root_path [ "rev-parse"; "MERGE_HEAD" ]
-               <> 0
-            && String.equal
-                 (Git.git_capture ~cwd:root_path [ "rev-parse"; "HEAD" ])
-                 repaired);
+               <> 0);
           check "no temporary worktree remains"
             (not
                (String.is_substring
                   (Git.git_capture ~cwd:dir
                      [ "worktree"; "list"; "--porcelain" ])
                   ~substring:"onton-integration-"));
+          (* Publish the successful upstream merge before descendant integration. *)
+          Git.run_git ~cwd:root_path [ "push"; "-q"; "origin"; "root" ];
           let late_head = child "late" "late-file" "late\n" in
           let marker = dir ^ "/integration-hook-started" in
           let filter_pid = dir ^ "/smudge-pid" in

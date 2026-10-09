@@ -220,6 +220,10 @@ module Ci_check : sig
   val is_failure : t -> bool
   val is_success : t -> bool
 
+  val is_terminal : t -> bool
+  (** Finished checks, including cancelled and stale runs. Terminality does not
+      imply success or an actionable failure. *)
+
   val current_runs : t list -> t list
   (** Retain the greatest CheckRun ID for each (check suite, check name). A
       suite scopes its producer, even when App metadata is inaccessible.

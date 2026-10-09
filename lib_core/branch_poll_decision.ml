@@ -15,17 +15,23 @@ type action = Skip | Probe of { reuse_checks : bool }
 let head_interval = 60.
 let checks_interval = 180.
 
-let plan ~now ~expected_head = function
+let plan ~now ~expected_head ~checks = function
   | None -> Probe { reuse_checks = false }
   | Some cached ->
       let publication_changed =
         not (Option.equal String.equal expected_head cached.expected_head)
       in
-      if (not publication_changed) && Float.(now < cached.next_probe_at) then
-        Skip
+      let terminal_checks =
+        (not (List.is_empty checks))
+        && List.for_all checks ~f:Types.Ci_check.is_terminal
+      in
+      if
+        (not publication_changed) && terminal_checks
+        && Float.(now < cached.next_probe_at)
+      then Skip
       else
         let reuse_checks =
-          (not publication_changed)
+          (not publication_changed) && terminal_checks
           && Option.is_none expected_head
           && Option.is_some cached.observed_head
           && Option.value_map cached.checks_observed_at ~default:false

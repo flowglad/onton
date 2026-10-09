@@ -63,10 +63,11 @@ let format_process_failure { stdout; stderr; _ } =
   in
   if String.is_empty detail then "no output" else detail
 
-(** Spawn [git] (not [git -C ...]) with a clean environment, capture stdout and
-    stderr. Used for [git clone] before any working tree exists. [?extra_env] is
-    appended to the clean env (use to set, e.g., a custom [GIT_SSH_COMMAND] for
-    one-off probes that must not prompt or hang). *)
+(** Spawn [git] with a clean environment and hooks disabled, capturing stdout
+    and stderr. Used for clone, remote URL probes, and remote branch discovery.
+    Callers supply [-C path] in [args] when a checkout is needed. [?extra_env]
+    is appended to the clean env (use to set, e.g., a custom [GIT_SSH_COMMAND]
+    for one-off probes that must not prompt or hang). *)
 let run_git_no_cwd ?(extra_env = []) args =
   let argv = Array.of_list ("git" :: args) in
   let env =
@@ -154,12 +155,8 @@ let read_remote_urls ~path =
   in
   if not is_git then []
   else
-    match
-      read_process_capture (fun () ->
-          Unix.open_process_args_in "git"
-            [| "git"; "-C"; path; "remote"; "-v" |])
-    with
-    | Some (Unix.WEXITED 0, out) ->
+    match run_git_no_cwd [ "-C"; path; "remote"; "-v" ] with
+    | Some { status = Unix.WEXITED 0; stdout = out; stderr = _ } ->
         String.split_lines out
         |> List.filter_map ~f:(fun line ->
             (* Each line is "<name>\t<url> (fetch|push)". Keep the URL field. *)
@@ -170,9 +167,7 @@ let read_remote_urls ~path =
                 | [] -> None)
             | _ -> None)
         |> List.dedup_and_sort ~compare:String.compare
-    | Some (Unix.WEXITED _, _)
-    | Some (Unix.WSIGNALED _, _)
-    | Some (Unix.WSTOPPED _, _)
+    | Some { status = Unix.WEXITED _ | Unix.WSIGNALED _ | Unix.WSTOPPED _; _ }
     | None ->
         []
 

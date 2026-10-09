@@ -158,6 +158,7 @@ type phase =
   | Confirming
   | Waiting of { until : float; reason : string }
   | Recovering
+  | Awaiting_session
   | Settled
   | Intervention of string
 [@@deriving eq, compare, sexp_of, yojson]
@@ -367,7 +368,7 @@ let publication_status t =
       {
         phase =
           ( Preparing | Integrating | Repairing _ | Publishing | Confirming
-          | Waiting _ | Recovering | Intervention _ );
+          | Waiting _ | Recovering | Awaiting_session | Intervention _ );
         _;
       } ->
       `Pending
@@ -377,13 +378,13 @@ let is_unsettled t =
   | None | Some Settled -> false
   | Some
       ( Preparing | Integrating | Repairing _ | Publishing | Confirming
-      | Waiting _ | Recovering | Intervention _ ) ->
+      | Waiting _ | Recovering | Awaiting_session | Intervention _ ) ->
       true
 
 let is_pending t =
   Option.value_map t.active ~default:false ~f:(fun op ->
       match op.phase with
-      | Settled | Intervention _ -> false
+      | Settled | Awaiting_session | Intervention _ -> false
       | Preparing | Integrating | Repairing _ | Publishing | Confirming
       | Waiting _ | Recovering ->
           true)
@@ -493,27 +494,32 @@ let inspection op =
 
 let finite_time at = if Float.is_finite at then Float.max 0. at else 0.
 
+(* Count failures across inspections too: an unchanged checkout must not grant
+   an unlimited budget for repeatedly restarting the same commit hooks. *)
 let retry t op at reason retry_after =
-  let failures = Int.min 30 (op.failures + 1) in
-  let delay =
-    Float.min 300. (5. *. Float.(2. ** of_int (Int.min 6 op.failures)))
-  in
-  let delay =
-    Option.value_map retry_after ~default:delay ~f:(fun d ->
-        if Float.is_finite d then Float.max delay d else delay)
-  in
-  ( {
-      t with
-      active =
-        Some
-          {
-            op with
-            failures;
-            pending = None;
-            phase = Waiting { until = finite_time at +. delay; reason };
-          };
-    },
-    [] )
+  if op.failures >= 4 then
+    stop t { op with failures = 5 } ("reconciliation_retry_exhausted: " ^ reason)
+  else
+    let failures = op.failures + 1 in
+    let delay =
+      Float.min 300. (5. *. Float.(2. ** of_int (Int.min 6 op.failures)))
+    in
+    let delay =
+      Option.value_map retry_after ~default:delay ~f:(fun d ->
+          if Float.is_finite d then Float.max delay d else delay)
+    in
+    ( {
+        t with
+        active =
+          Some
+            {
+              op with
+              failures;
+              pending = None;
+              phase = Waiting { until = finite_time at +. delay; reason };
+            };
+      },
+      [] )
 
 let settle t op =
   let t =
@@ -744,9 +750,13 @@ let observed t op (o : observation) =
                  (Option.bind t.materialized ~f:materialization_boundary)
                  (Some o.source) ->
       settle t op
-  | (Reconcile_base | Reconcile_request _ | Integrate_revision _), None
-    when not o.clean ->
-      stop t op "dirty_worktree"
+  | (Reconcile_base | Reconcile_request _), None when not o.clean ->
+      ( {
+          t with
+          active = Some { op with phase = Awaiting_session; pending = None };
+        },
+        [] )
+  | Integrate_revision _, None when not o.clean -> stop t op "dirty_worktree"
   | (Reconcile_base | Reconcile_request _ | Integrate_revision _), None
     when o.target_included && Option.equal Commit.equal o.remote (Some o.source)
     ->
@@ -1009,14 +1019,28 @@ let step t = function
         | Publish_session _ ->
             intent
       in
-      let t = { t with desired = Some intent } in
+      (* Publishing the completed session is an intermediate step. Keep the
+         deferred base intent so settlement resumes it against the new HEAD. *)
+      let completing_session =
+        Option.equal equal_phase (phase t) (Some Awaiting_session)
+        &&
+        match intent.purpose with
+        | Publish_session _ | Publish_revision _ -> true
+        | Reconcile_base | Reconcile_request _ | Integrate_revision _ -> false
+      in
+      let t =
+        if Option.equal equal_phase (phase t) (Some Awaiting_session) then t
+        else { t with desired = Some intent }
+      in
       match t.active with
       | None -> start t intent
       | Some op -> (
           match op.phase with
+          | Awaiting_session when completing_session -> start t intent
           | Settled when not (equal_intent op.intent intent) -> start t intent
           | Preparing | Integrating | Repairing _ | Publishing | Confirming
-          | Waiting _ | Recovering | Settled | Intervention _ ->
+          | Waiting _ | Recovering | Settled | Awaiting_session | Intervention _
+            ->
               (t, [])))
   | Reconfirm_publication -> (
       match t.active with
@@ -1027,7 +1051,7 @@ let step t = function
           {
             phase =
               ( Preparing | Integrating | Repairing _ | Publishing | Confirming
-              | Waiting _ | Recovering | Intervention _ );
+              | Waiting _ | Recovering | Awaiting_session | Intervention _ );
             _;
           }
       | Some { phase = Settled; candidate = None; _ } ->
@@ -1046,14 +1070,36 @@ let step t = function
             {
               phase =
                 ( Preparing | Integrating | Repairing _ | Publishing
-                | Confirming | Waiting _ | Recovering | Settled | Intervention _
-                  );
+                | Confirming | Waiting _ | Recovering | Settled
+                | Awaiting_session | Intervention _ );
               _;
             },
           Some _ ) ->
           (t, []))
   | Resume -> (
       match t.active with
+      | Some ({ phase = Intervention "dirty_worktree"; _ } as op)
+        when Option.is_none op.repair
+             && Option.is_none op.remote_replay
+             && Option.is_none op.merge_progress
+             && Option.is_none op.candidate
+             &&
+             match op.intent.purpose with
+             | Reconcile_base | Reconcile_request _ -> true
+             | Integrate_revision _ | Publish_revision _ | Publish_session _ ->
+                 false ->
+          ( {
+              t with
+              active =
+                Some
+                  {
+                    op with
+                    phase = Awaiting_session;
+                    pending = None;
+                    failures = 0;
+                  };
+            },
+            [] )
       | Some ({ phase = Intervention _; _ } as op) ->
           let repair =
             Option.map op.repair ~f:(fun r ->
@@ -1077,7 +1123,7 @@ let step t = function
           {
             phase =
               ( Preparing | Integrating | Repairing _ | Publishing | Confirming
-              | Waiting _ | Recovering | Settled );
+              | Waiting _ | Recovering | Settled | Awaiting_session );
             _;
           } ->
           (t, []))
@@ -1091,7 +1137,8 @@ let step t = function
           {
             phase =
               ( Preparing | Integrating | Repairing _ | Publishing | Confirming
-              | Waiting _ | Recovering | Settled | Intervention _ );
+              | Waiting _ | Recovering | Settled | Awaiting_session
+              | Intervention _ );
             _;
           } ->
           (t, []))
@@ -1105,7 +1152,8 @@ let step t = function
           {
             phase =
               ( Preparing | Integrating | Repairing _ | Publishing | Confirming
-              | Waiting _ | Recovering | Settled | Intervention _ );
+              | Waiting _ | Recovering | Settled | Awaiting_session
+              | Intervention _ );
             _;
           } ->
           (t, []))
@@ -1120,7 +1168,8 @@ let step t = function
           {
             phase =
               ( Preparing | Integrating | Repairing _ | Publishing | Confirming
-              | Waiting _ | Recovering | Settled | Intervention _ );
+              | Waiting _ | Recovering | Settled | Awaiting_session
+              | Intervention _ );
             _;
           } ->
           (t, []))
@@ -1135,7 +1184,8 @@ let step t = function
           {
             phase =
               ( Preparing | Integrating | Repairing _ | Publishing | Confirming
-              | Waiting _ | Recovering | Settled | Intervention _ );
+              | Waiting _ | Recovering | Settled | Awaiting_session
+              | Intervention _ );
             _;
           } ->
           (t, []))
@@ -1156,7 +1206,8 @@ let step t = function
           {
             phase =
               ( Preparing | Integrating | Repairing _ | Publishing | Confirming
-              | Waiting _ | Recovering | Settled | Intervention _ );
+              | Waiting _ | Recovering | Settled | Awaiting_session
+              | Intervention _ );
             _;
           } ->
           (t, []))
@@ -1172,7 +1223,8 @@ let step t = function
           {
             phase =
               ( Preparing | Integrating | Repairing _ | Publishing | Confirming
-              | Waiting _ | Recovering | Settled | Intervention _ );
+              | Waiting _ | Recovering | Settled | Awaiting_session
+              | Intervention _ );
             _;
           } ->
           (t, []))
@@ -1190,7 +1242,8 @@ let step t = function
           {
             phase =
               ( Preparing | Integrating | Repairing _ | Publishing | Confirming
-              | Waiting _ | Recovering | Settled | Intervention _ );
+              | Waiting _ | Recovering | Settled | Awaiting_session
+              | Intervention _ );
             _;
           } ->
           (t, []))
@@ -1572,7 +1625,7 @@ let decode json =
         Float.is_finite until && not (String.is_empty reason)
     | Repairing r -> valid_repair r
     | Preparing | Integrating | Publishing | Confirming | Recovering | Settled
-    | Intervention _ ->
+    | Awaiting_session | Intervention _ ->
         true
   in
   let consistent (op : operation) =
@@ -1618,7 +1671,7 @@ let decode json =
         | Some { mode = Content_repair; _ } | None -> false)
     | None, Repairing repair ->
         Option.equal equal_repair op.repair (Some repair)
-    | None, (Settled | Waiting _ | Intervention _) -> true
+    | None, (Settled | Waiting _ | Awaiting_session | Intervention _) -> true
     | ( ( None
         | Some
             {
@@ -1629,7 +1682,8 @@ let decode json =
               _;
             } ),
         ( Preparing | Integrating | Repairing _ | Publishing | Confirming
-        | Waiting _ | Recovering | Settled | Intervention _ ) ) ->
+        | Waiting _ | Recovering | Settled | Awaiting_session | Intervention _
+          ) ) ->
         false
   in
   match Json.try_of_yojson t_of_yojson json with
@@ -1728,7 +1782,7 @@ let wake_event ~at t =
   | Some (Preparing | Integrating | Publishing | Confirming | Recovering) ->
       Some Recover
   | Some (Repairing _) -> Some Recover
-  | Some (Settled | Intervention _) | None -> None
+  | Some (Settled | Awaiting_session | Intervention _) | None -> None
 
 let can_execute_git ~at t = Option.is_some (wake_event ~at t)
 
@@ -1810,7 +1864,8 @@ let repair_turn t ~branch token =
       {
         phase =
           ( Preparing | Integrating | Repairing _ | Publishing | Confirming
-          | Waiting _ | Recovering | Settled | Intervention _ );
+          | Waiting _ | Recovering | Settled | Awaiting_session | Intervention _
+            );
         _;
       } ->
       None
@@ -1881,6 +1936,7 @@ let diagnostics t =
         | Confirming -> ("confirming remote", None)
         | Waiting { reason; _ } -> ("waiting", Some reason)
         | Recovering -> ("inspecting recovery", None)
+        | Awaiting_session -> ("waiting for session to commit", None)
         | Settled -> ("settled", None)
         | Intervention reason -> ("intervention", Some reason)
       in
@@ -1907,5 +1963,5 @@ let diagnostics t =
       match op.phase with
       | Waiting { until; _ } -> [ ("Retry at", Float.to_string until) ]
       | Preparing | Integrating | Repairing _ | Publishing | Confirming
-      | Recovering | Settled | Intervention _ ->
+      | Recovering | Settled | Awaiting_session | Intervention _ ->
           [])

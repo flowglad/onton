@@ -99,6 +99,14 @@ let test_token_file_auth () =
             (String.equal stdout "" && status <> Unix.WEXITED 0))
 
 let test_clean_env_scrubs_git_and_installs_auth () =
+  let inherited_config =
+    List.map
+      (fun name -> (name, Sys.getenv_opt name))
+      [ "GIT_CONFIG_COUNT"; "GIT_CONFIG_KEY_0"; "GIT_CONFIG_VALUE_0" ]
+  in
+  Unix.putenv "GIT_CONFIG_COUNT" "1";
+  Unix.putenv "GIT_CONFIG_KEY_0" "core.hooksPath";
+  Unix.putenv "GIT_CONFIG_VALUE_0" "/inherited-hooks";
   let old_git_dir = Sys.getenv_opt "GIT_DIR" in
   let old_gh_token = Sys.getenv_opt "GH_TOKEN" in
   let old_gcm_interactive = Sys.getenv_opt "GCM_INTERACTIVE" in
@@ -109,6 +117,7 @@ let test_clean_env_scrubs_git_and_installs_auth () =
   Unix.putenv "GH_PROMPT_DISABLED" "0";
   Fun.protect
     ~finally:(fun () ->
+      List.iter (fun (name, old) -> restore_env name old) inherited_config;
       restore_env "GIT_DIR" old_git_dir;
       restore_env "GH_TOKEN" old_gh_token;
       restore_env "GCM_INTERACTIVE" old_gcm_interactive;
@@ -118,6 +127,10 @@ let test_clean_env_scrubs_git_and_installs_auth () =
       let github_env = env_list () in
       assert_true "GIT_DIR scrubbed"
         (not (List.exists (binding "GIT_DIR") github_env));
+      assert_true "inherited Git config cannot re-enable hooks"
+        (value "GIT_CONFIG_COUNT" github_env = Some "1"
+        && value "GIT_CONFIG_KEY_0" github_env = Some "core.hooksPath"
+        && value "GIT_CONFIG_VALUE_0" github_env = Some "/dev/null");
       assert_true "stale GH_TOKEN scrubbed"
         (not (List.exists (binding "GH_TOKEN") github_env));
       assert_true "terminal prompts disabled"
@@ -176,6 +189,112 @@ let test_clean_env_scrubs_git_and_installs_auth () =
               "Username for 'https://git.sr.ht.example/alice/demo':")
            "x-access-token"))
 
+let test_git_commands_skip_hooks () =
+  Eio_main.run @@ fun env ->
+  let module Git = Onton_test_support.Git_env in
+  Git.with_temp_repo (fun dir ->
+      let write name contents =
+        let oc = open_out (Filename.concat dir name) in
+        Fun.protect
+          ~finally:(fun () -> close_out oc)
+          (fun () -> output_string oc contents)
+      in
+      let git = Git.run_git ~cwd:dir in
+      let normal_commit () =
+        let input, output, error =
+          Unix.open_process_args_full "git"
+            [| "git"; "-C"; dir; "commit"; "--allow-empty"; "-m"; "normal" |]
+            (Unix.environment () |> Array.to_list
+            |> List.filter (fun entry ->
+                not (String.starts_with ~prefix:"GIT_" entry))
+            |> Array.of_list)
+        in
+        close_out output;
+        ignore (In_channel.input_all input);
+        ignore (In_channel.input_all error);
+        Unix.close_process_full (input, output, error)
+      in
+      let hooks = Filename.concat dir ".git/custom-hooks" in
+      Unix.mkdir hooks 0o755;
+      write ".git/custom-hooks/pre-commit"
+        "#!/bin/sh\nprintf hook > hook-ran\nexit 97\n";
+      Unix.chmod (Filename.concat hooks "pre-commit") 0o755;
+      git [ "config"; "core.hooksPath"; hooks ];
+      assert_true "normal Git invokes the configured pre-commit hook"
+        (normal_commit () = Unix.WEXITED 1
+        && Sys.file_exists (Filename.concat dir "hook-ran"));
+      Sys.remove (Filename.concat dir "hook-ran");
+      write "file" "base\n";
+      git [ "add"; "file" ];
+      git [ "commit"; "-q"; "-m"; "base" ];
+      let publication =
+        match
+          Gameplan_publication.create ~directory:"plans" ~project_name:"hooks"
+            ~yaml:true ~content:"projectName: hooks\n"
+        with
+        | Ok p -> p
+        | Error e -> failwith e
+      in
+      assert_true "production gameplan commit skips the hook"
+        (Worktree.commit_gameplan ~clock:(Eio.Stdenv.clock env)
+           ~process_mgr:(Eio.Stdenv.process_mgr env)
+           ~path:dir ~publication ~message:"generated gameplan"
+        = Ok ());
+      git [ "checkout"; "-q"; "-b"; "side" ];
+      write "file" "side\n";
+      git [ "commit"; "-q"; "-am"; "side" ];
+      git [ "checkout"; "-q"; "main" ];
+      write "file" "main\n";
+      git [ "commit"; "-q"; "-am"; "main" ];
+      assert_true "fixture creates a real merge conflict"
+        (Git.git_exit_code ~cwd:dir [ "merge"; "side" ] = 1);
+      write "file" "resolved\n";
+      git [ "add"; "file" ];
+      git [ "remote"; "add"; "origin"; dir ];
+      let module B = Branch_reconcile in
+      let module E = Branch_reconcile_executor in
+      let io =
+        E.make_io ~clock:(Eio.Stdenv.clock env)
+          ~process_mgr:(Eio.Stdenv.process_mgr env)
+          ~path:dir
+      in
+      let initial, _ =
+        B.step B.empty
+          (B.Request
+             {
+               base = "side";
+               policy = B.Preserve_ancestry;
+               purpose = B.Reconcile_base;
+             })
+      in
+      let rec continue state remaining =
+        if remaining = 0 then failwith "merge continuation was not dispatched";
+        match (B.operation state, B.pending state) with
+        | Some operation, Some command -> (
+            let result =
+              E.execute ~io ~prefix:"refs/onton/reconcile/hook-test"
+                ~branch:"main" ~operation command
+            in
+            match command.B.kind with
+            | B.Continue _ ->
+                assert_true "production merge continuation succeeds"
+                  (match result with B.Integrated _ -> true | _ -> false)
+            | _ ->
+                let state, _ =
+                  B.step state
+                    (B.Result { token = command.token; at = 100.; result })
+                in
+                continue state (remaining - 1))
+        | _ -> failwith "merge continuation lost its pending command"
+      in
+      continue initial 5;
+      assert_true "Onton commits and merge continuation skip the hook"
+        (not (Sys.file_exists (Filename.concat dir "hook-ran")));
+      assert_true "repository hooks remain configured for normal Git"
+        (normal_commit () = Unix.WEXITED 1
+        && Sys.file_exists (Filename.concat dir "hook-ran")));
+  print_endline "Git commits and merge continuation skip local hooks: OK"
+
 module Operation_kind = Types.Operation_kind
 
 let all_kinds =
@@ -231,6 +350,7 @@ let is_feedback_classifies_kinds =
 let () =
   test_clean_env_scrubs_git_and_installs_auth ();
   test_token_file_auth ();
+  test_git_commands_skip_hooks ();
   QCheck2.Test.check_exn highest_priority_matches_peek;
   QCheck2.Test.check_exn is_feedback_classifies_kinds;
   QCheck2.Test.check_exn

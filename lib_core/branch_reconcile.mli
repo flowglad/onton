@@ -149,6 +149,10 @@ type phase =
   | Confirming
   | Waiting of { until : float; reason : string }
   | Recovering
+  | Awaiting_session
+      (** Base reconciliation found uncommitted session work before integration.
+          No Git command may run until a session supplies a publication intent.
+      *)
   | Settled
   | Intervention of string
 [@@deriving eq, compare, sexp_of]
@@ -323,7 +327,11 @@ val is_unsettled : t -> bool
     work. An empty state does not block legacy or not-yet-managed branches. *)
 
 val is_pending : t -> bool
+
 val step : t -> event -> t * effect_command list
+(** Five retryable failures in one operation require explicit intervention.
+    Successful inspection does not reset this budget; Resume resets it. *)
+
 val decode : Yojson.Safe.t -> (t, string) Result.t
 
 val integration_result :

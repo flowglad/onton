@@ -140,6 +140,9 @@ let clean_env () =
      subprocess receives only the noninteractive Git variables we install. *)
   |> List.append
        [
+         "GIT_CONFIG_COUNT=1";
+         "GIT_CONFIG_KEY_0=core.hooksPath";
+         "GIT_CONFIG_VALUE_0=/dev/null";
          "GIT_TERMINAL_PROMPT=0";
          "GIT_ASKPASS=" ^ askpass;
          "GCM_INTERACTIVE=never";
