@@ -898,7 +898,8 @@ let make_io ~process_mgr ~clock ~path =
     git =
       (fun args ->
         match
-          Eio.Time.with_timeout clock 120. (fun () ->
+          Eio.Time.with_timeout clock (G.command_timeout_seconds args)
+            (fun () ->
               Ok
                 (Process_tree.run ~process_mgr ~clock
                    ~env:(Git_env.clean_env ())
@@ -906,5 +907,8 @@ let make_io ~process_mgr ~clock ~path =
         with
         | Ok result -> result
         | Error `Timeout ->
-            (124, "", "Git command outcome uncertain after timeout"));
+            ( 124,
+              "",
+              "Git command outcome uncertain after timeout: "
+              ^ String.concat ~sep:" " args ));
   }

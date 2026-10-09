@@ -55,3 +55,7 @@ val continuation : t -> continuation
 
 val materialization_failure_is_unsafe : string -> bool
 (** Persistent provenance mismatches must refuse checkout use. *)
+
+val command_timeout_seconds : string list -> float
+(** Commit-producing commands receive a bounded 20-minute hook budget; probes
+    receive two minutes. Leading Git [-c] settings do not change the budget. *)

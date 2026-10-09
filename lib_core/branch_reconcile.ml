@@ -494,27 +494,32 @@ let inspection op =
 
 let finite_time at = if Float.is_finite at then Float.max 0. at else 0.
 
+(* Count failures across inspections too: an unchanged checkout must not grant
+   an unlimited budget for repeatedly restarting the same commit hooks. *)
 let retry t op at reason retry_after =
-  let failures = Int.min 30 (op.failures + 1) in
-  let delay =
-    Float.min 300. (5. *. Float.(2. ** of_int (Int.min 6 op.failures)))
-  in
-  let delay =
-    Option.value_map retry_after ~default:delay ~f:(fun d ->
-        if Float.is_finite d then Float.max delay d else delay)
-  in
-  ( {
-      t with
-      active =
-        Some
-          {
-            op with
-            failures;
-            pending = None;
-            phase = Waiting { until = finite_time at +. delay; reason };
-          };
-    },
-    [] )
+  if op.failures >= 4 then
+    stop t { op with failures = 5 } ("reconciliation_retry_exhausted: " ^ reason)
+  else
+    let failures = op.failures + 1 in
+    let delay =
+      Float.min 300. (5. *. Float.(2. ** of_int (Int.min 6 op.failures)))
+    in
+    let delay =
+      Option.value_map retry_after ~default:delay ~f:(fun d ->
+          if Float.is_finite d then Float.max delay d else delay)
+    in
+    ( {
+        t with
+        active =
+          Some
+            {
+              op with
+              failures;
+              pending = None;
+              phase = Waiting { until = finite_time at +. delay; reason };
+            };
+      },
+      [] )
 
 let settle t op =
   let t =

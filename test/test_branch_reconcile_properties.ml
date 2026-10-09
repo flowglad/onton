@@ -1366,9 +1366,11 @@ let tests =
         publishes
         = (source_preserved && remote_preserved && clean && target_included));
     QCheck2.Test.make
-      ~name:"BR recovery budget ignores transport and survives restart"
+      ~name:
+        "BR recovery budget ignores transport within retry limit and survives \
+         restart"
       ~count:100
-      Gen.(int_range 0 12)
+      Gen.(int_range 0 4)
       (fun interruptions ->
         try
           let claim state =
@@ -2068,6 +2070,73 @@ let tests =
           B.step before (B.Tick (100. +. Float.of_int (max 5 delay)))
         in
         effects = [] && B.phase after = Some B.Recovering);
+    QCheck2.Test.make
+      ~name:
+        "BR repeated command failures stop, survive restart, and require resume"
+      ~count:100 Gen.string (fun reason ->
+        let rec fail n state =
+          let state, _ =
+            reply state (B.Retryable { reason; retry_after = None })
+          in
+          if n = 1 then (state, true)
+          else
+            let waiting =
+              match B.phase state with
+              | Some (B.Waiting _) -> true
+              | None
+              | Some
+                  ( B.Preparing | B.Integrating | B.Repairing _ | B.Publishing
+                  | B.Confirming | B.Recovering | B.Awaiting_session | B.Settled
+                  | B.Intervention _ ) ->
+                  false
+            in
+            let state, _ = B.step state (B.Tick 10000.) in
+            let state, _ = reply state (B.Inspected observation) in
+            let state, within_budget = fail (n - 1) state in
+            (state, waiting && within_budget)
+        in
+        let state, within_budget = fail 5 (prepared ()) in
+        match B.decode (B.yojson_of_t state) with
+        | Error _ -> false
+        | Ok restored ->
+            let unchanged, effects = B.step restored (B.Tick 100000.) in
+            let recovered, commands = B.step restored B.Resume in
+            within_budget
+            && B.phase restored
+               = Some
+                   (B.Intervention ("reconciliation_retry_exhausted: " ^ reason))
+            && B.equal unchanged restored && effects = []
+            && B.wake_event ~at:100000. restored = None
+            && B.phase recovered = Some B.Recovering
+            && commands <> []);
+    QCheck2.Test.make
+      ~name:"BR legacy exhausted retry checkpoints stop on next failure"
+      ~count:100
+      Gen.(int_range 5 30)
+      (fun failures ->
+        let rec exhausted = function
+          | `Assoc fields ->
+              `Assoc
+                (List.map
+                   (fun (key, value) ->
+                     ( key,
+                       if key = "failures" then `Int failures
+                       else exhausted value ))
+                   fields)
+          | `List values -> `List (List.map exhausted values)
+          | value -> value
+        in
+        match B.decode (exhausted (B.yojson_of_t (prepared ()))) with
+        | Error _ -> false
+        | Ok restored ->
+            let state, effects =
+              reply restored
+                (B.Retryable { reason = "timeout"; retry_after = None })
+            in
+            B.phase state
+            = Some (B.Intervention "reconciliation_retry_exhausted: timeout")
+            && effects = []
+            && B.pending state = None);
   ]
 
 let () = QCheck_base_runner.run_tests_main tests
