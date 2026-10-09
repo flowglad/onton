@@ -112,6 +112,12 @@ let tests =
           in
           let state, _ = B.step B.empty (B.Request intent) in
           let state, _ = reply state (B.Observed observation) in
+          let state, _ =
+            reply state
+              (B.Retryable { reason = "transport"; retry_after = None })
+          in
+          let state, _ = B.step state (B.Tick 10000.) in
+          let state, _ = reply state (B.Inspected observation) in
           let stopped, _ = reply state (B.Permanent "dirty_worktree") in
           let restored =
             match B.decode (B.yojson_of_t stopped) with
@@ -121,6 +127,9 @@ let tests =
           let resumed, effects = B.step restored B.Resume in
           B.phase stopped = Some (B.Intervention "dirty_worktree")
           && B.phase resumed = Some B.Awaiting_session
+          && (match B.operation resumed with
+            | Some op -> B.equal_intent op.intent intent && op.failures = 0
+            | None -> false)
           && effects = [] && B.is_unsettled resumed
           && not (B.is_pending resumed)
         with _ -> false);
@@ -151,6 +160,21 @@ let tests =
           in
           let waiting = repeat restored repeats in
           let same, commands = B.step waiting (B.Request intent) in
+          let same, ignored =
+            B.step same
+              (B.Request
+                 {
+                   intent with
+                   purpose =
+                     B.Integrate_revision
+                       { contributor = "other"; revision = target };
+                 })
+          in
+          let same, ignored_request =
+            B.step same
+              (B.Request
+                 { intent with purpose = B.Reconcile_request "replacement" })
+          in
           let publication =
             {
               intent with
@@ -178,7 +202,7 @@ let tests =
             reply published
               (B.Remote { sha = Some candidate; topology = Equal })
           in
-          effects = [] && commands = []
+          effects = [] && commands = [] && ignored = [] && ignored_request = []
           && B.phase waiting = Some B.Awaiting_session
           && B.is_unsettled waiting
           && (not (B.is_pending waiting))
@@ -1367,10 +1391,9 @@ let tests =
         = (source_preserved && remote_preserved && clean && target_included));
     QCheck2.Test.make
       ~name:
-        "BR recovery budget ignores transport within retry limit and survives \
-         restart"
+        "BR recovery transport failures consume the retry budget across restart"
       ~count:100
-      Gen.(int_range 0 4)
+      Gen.(int_range 0 5)
       (fun interruptions ->
         try
           let claim state =
@@ -1408,20 +1431,26 @@ let tests =
               let state, _ = B.step state (B.Tick 10000.) in
               interrupt (n - 1) state
           in
-          let state, token = claim (interrupt interruptions (recovery ())) in
-          let turn = Option.get (B.repair_turn state ~branch:"patch" token) in
-          let state, _ =
-            B.step state
-              (B.repair_result ~turn ~at:100. ~before_head:(Some candidate)
-                 ~after_head:(Some target) ~timed_out:false ~final_result:true
-                 ~detail:"")
-          in
-          let state, token = claim state in
-          let state, _ =
-            B.step state (B.Repair_completed { token; at = 100. })
-          in
-          let state, _ = reply state unverified in
-          B.phase state = Some (B.Intervention "recovery_preservation_unproven")
+          let interrupted = interrupt interruptions (recovery ()) in
+          if interruptions = 5 then
+            B.phase interrupted
+            = Some (B.Intervention "reconciliation_retry_exhausted: transport")
+          else
+            let state, token = claim interrupted in
+            let turn = Option.get (B.repair_turn state ~branch:"patch" token) in
+            let state, _ =
+              B.step state
+                (B.repair_result ~turn ~at:100. ~before_head:(Some candidate)
+                   ~after_head:(Some target) ~timed_out:false ~final_result:true
+                   ~detail:"")
+            in
+            let state, token = claim state in
+            let state, _ =
+              B.step state (B.Repair_completed { token; at = 100. })
+            in
+            let state, _ = reply state unverified in
+            B.phase state
+            = Some (B.Intervention "recovery_preservation_unproven")
         with _ -> false);
     QCheck2.Test.make
       ~name:"BR repair policy denial stops without dispatching recovery"
@@ -2108,6 +2137,9 @@ let tests =
             && B.equal unchanged restored && effects = []
             && B.wake_event ~at:100000. restored = None
             && B.phase recovered = Some B.Recovering
+            && (match B.operation recovered with
+              | Some op -> op.failures = 0
+              | None -> false)
             && commands <> []);
     QCheck2.Test.make
       ~name:"BR legacy exhausted retry checkpoints stop on next failure"

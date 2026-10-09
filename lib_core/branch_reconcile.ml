@@ -1029,7 +1029,8 @@ let step t = function
         | Reconcile_base | Reconcile_request _ | Integrate_revision _ -> false
       in
       let t =
-        if completing_session then t else { t with desired = Some intent }
+        if Option.equal equal_phase (phase t) (Some Awaiting_session) then t
+        else { t with desired = Some intent }
       in
       match t.active with
       | None -> start t intent
@@ -1089,7 +1090,14 @@ let step t = function
                  false ->
           ( {
               t with
-              active = Some { op with phase = Awaiting_session; pending = None };
+              active =
+                Some
+                  {
+                    op with
+                    phase = Awaiting_session;
+                    pending = None;
+                    failures = 0;
+                  };
             },
             [] )
       | Some ({ phase = Intervention _; _ } as op) ->

@@ -84,6 +84,7 @@ let () =
     (fun has_pr ->
       Git.with_temp_repo (fun remote ->
           ignore (commit remote "base" "base\n" "base");
+          ignore (commit remote "unstaged" "original\n" "tracked fixture");
           Git.with_temp_repo (fun dir ->
               prepare remote dir;
               let original =
@@ -142,33 +143,78 @@ let () =
                         (Orchestrator.Rebase _ | Orchestrator.Reconcile_branch _)
                     | None ->
                         false);
+                  if has_pr then
+                    Runtime.read restarted (fun snap ->
+                        let orch = snap.Runtime.orchestrator in
+                        let agent = Orchestrator.agent orch id in
+                        let retry =
+                          agent |> fun a ->
+                          Patch_agent.respond a Uncommitted_changes
+                          |> Patch_agent.complete
+                          |> fun a ->
+                          Patch_agent.respond a Uncommitted_changes
+                          |> Patch_agent.complete
+                        in
+                        check "failed session recovery can dispatch again"
+                          (List.mem Types.Operation_kind.Uncommitted_changes
+                             retry.queue);
+                        let inflight =
+                          Orchestrator.set_automerge_inflight orch id true
+                        in
+                        check "session recovery waits for the pending merge"
+                          (Patch_controller.plan_actions inflight
+                             ~patches:gameplan.Types.Gameplan.patches
+                          = []);
+                        let failed =
+                          Orchestrator.set_automerge_inflight inflight id false
+                        in
+                        check "session recovery resumes after a failed merge"
+                          (Patch_controller.plan_actions failed
+                             ~patches:gameplan.Types.Gameplan.patches
+                          = [ Orchestrator.Respond (id, Uncommitted_changes) ]);
+                        let won =
+                          Patch_controller.apply_automerge_success inflight id
+                        in
+                        let retained = Orchestrator.agent won id in
+                        check
+                          "winning merge retains unfinished recovery without \
+                           dispatch"
+                          (Patch_controller.plan_actions won
+                             ~patches:gameplan.Types.Gameplan.patches
+                           = []
+                          && B.phase retained.branch_reconcile
+                             = Some B.Awaiting_session
+                          && List.mem Types.Operation_kind.Uncommitted_changes
+                               retained.queue));
                   check "unfinished work cannot be approved"
                     (Runtime.read restarted (fun snap ->
                          not
                            (Patch_agent.is_approved
                               (Orchestrator.agent snap.Runtime.orchestrator id)
                               ~main_branch:(Types.Branch.of_string "main"))));
+                  check "tracked unstaged work survives recovery and restart"
+                    (Git.git_capture ~cwd:dir [ "show"; ":unstaged" ]
+                     = "original"
+                    && Git.git_capture ~cwd:dir [ "diff"; "--"; "unstaged" ]
+                       <> ""
+                    && In_channel.with_open_bin
+                         (Filename.concat dir "unstaged")
+                         In_channel.input_all
+                       = "retained\n");
                   Git.run_git ~cwd:dir [ "add"; "unstaged" ];
                   Git.run_git ~cwd:dir
                     [ "commit"; "-q"; "-m"; "finish interrupted session" ];
                   let finished =
                     Git.git_capture ~cwd:dir [ "rev-parse"; "HEAD" ]
                   in
-                  check "finished session can publish its commit"
+                  ignore (commit remote "advance" "advanced\n" "base advances");
+                  check
+                    "publication settles the original deferred reconciliation"
                     (run restarted (persist checkpoint) io
                        (B.Request
                           {
                             intent with
                             purpose = Publish_revision (sha finished);
-                          })
-                    = R.Idle);
-                  ignore (commit remote "advance" "advanced\n" "base advances");
-                  check "reconciliation can follow the finished session"
-                    (run restarted (persist checkpoint) io
-                       (B.Request
-                          {
-                            intent with
-                            purpose = Reconcile_request "after-session";
                           })
                     = R.Idle);
                   check "session work survives subsequent integration"

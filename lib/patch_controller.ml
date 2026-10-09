@@ -615,7 +615,10 @@ let plan_action_for_patch t ~branch_map:_ patch_id =
       (Branch_reconcile.phase agent.branch_reconcile)
       (Some Branch_reconcile.Awaiting_session)
   then
-    if agent.busy || Patch_agent.needs_intervention agent then None
+    if
+      agent.busy || agent.automerge_inflight || agent.merged
+      || Patch_agent.needs_intervention agent
+    then None
     else if Patch_agent.has_pr agent || agent.branch_published then
       Some (Orchestrator.Respond (patch_id, Operation_kind.Uncommitted_changes))
     else if dependencies_allow_start then

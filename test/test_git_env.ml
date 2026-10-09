@@ -190,6 +190,7 @@ let test_clean_env_scrubs_git_and_installs_auth () =
            "x-access-token"))
 
 let test_git_commands_skip_hooks () =
+  Eio_main.run @@ fun env ->
   let module Git = Onton_test_support.Git_env in
   Git.with_temp_repo (fun dir ->
       let write name contents =
@@ -213,9 +214,10 @@ let test_git_commands_skip_hooks () =
         ignore (In_channel.input_all error);
         Unix.close_process_full (input, output, error)
       in
-      let hooks = Filename.concat dir "hooks" in
+      let hooks = Filename.concat dir ".git/custom-hooks" in
       Unix.mkdir hooks 0o755;
-      write "hooks/pre-commit" "#!/bin/sh\nprintf hook > hook-ran\nexit 97\n";
+      write ".git/custom-hooks/pre-commit"
+        "#!/bin/sh\nprintf hook > hook-ran\nexit 97\n";
       Unix.chmod (Filename.concat hooks "pre-commit") 0o755;
       git [ "config"; "core.hooksPath"; hooks ];
       assert_true "normal Git invokes the configured pre-commit hook"
@@ -225,6 +227,19 @@ let test_git_commands_skip_hooks () =
       write "file" "base\n";
       git [ "add"; "file" ];
       git [ "commit"; "-q"; "-m"; "base" ];
+      let publication =
+        match
+          Gameplan_publication.create ~directory:"plans" ~project_name:"hooks"
+            ~yaml:true ~content:"projectName: hooks\n"
+        with
+        | Ok p -> p
+        | Error e -> failwith e
+      in
+      assert_true "production gameplan commit skips the hook"
+        (Worktree.commit_gameplan ~clock:(Eio.Stdenv.clock env)
+           ~process_mgr:(Eio.Stdenv.process_mgr env)
+           ~path:dir ~publication ~message:"generated gameplan"
+        = Ok ());
       git [ "checkout"; "-q"; "-b"; "side" ];
       write "file" "side\n";
       git [ "commit"; "-q"; "-am"; "side" ];
@@ -235,7 +250,44 @@ let test_git_commands_skip_hooks () =
         (Git.git_exit_code ~cwd:dir [ "merge"; "side" ] = 1);
       write "file" "resolved\n";
       git [ "add"; "file" ];
-      git [ "-c"; "core.editor=true"; "merge"; "--continue" ];
+      git [ "remote"; "add"; "origin"; dir ];
+      let module B = Branch_reconcile in
+      let module E = Branch_reconcile_executor in
+      let io =
+        E.make_io ~clock:(Eio.Stdenv.clock env)
+          ~process_mgr:(Eio.Stdenv.process_mgr env)
+          ~path:dir
+      in
+      let initial, _ =
+        B.step B.empty
+          (B.Request
+             {
+               base = "side";
+               policy = B.Preserve_ancestry;
+               purpose = B.Reconcile_base;
+             })
+      in
+      let rec continue state remaining =
+        if remaining = 0 then failwith "merge continuation was not dispatched";
+        match (B.operation state, B.pending state) with
+        | Some operation, Some command -> (
+            let result =
+              E.execute ~io ~prefix:"refs/onton/reconcile/hook-test"
+                ~branch:"main" ~operation command
+            in
+            match command.B.kind with
+            | B.Continue _ ->
+                assert_true "production merge continuation succeeds"
+                  (match result with B.Integrated _ -> true | _ -> false)
+            | _ ->
+                let state, _ =
+                  B.step state
+                    (B.Result { token = command.token; at = 100.; result })
+                in
+                continue state (remaining - 1))
+        | _ -> failwith "merge continuation lost its pending command"
+      in
+      continue initial 5;
       assert_true "Onton commits and merge continuation skip the hook"
         (not (Sys.file_exists (Filename.concat dir "hook-ran")));
       assert_true "repository hooks remain configured for normal Git"

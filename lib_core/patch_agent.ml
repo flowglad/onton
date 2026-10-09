@@ -1051,7 +1051,13 @@ let respond t k =
   | Some hp when Operation_kind.equal hp k -> ()
   | _ -> invalid_arg "Patch_agent.respond: not highest priority");
   let queue =
-    List.filter t.queue ~f:(fun j -> not (Operation_kind.equal j k))
+    if
+      Operation_kind.equal k Operation_kind.Uncommitted_changes
+      && Option.equal Branch_reconcile.equal_phase
+           (Branch_reconcile.phase t.branch_reconcile)
+           (Some Branch_reconcile.Awaiting_session)
+    then t.queue
+    else List.filter t.queue ~f:(fun j -> not (Operation_kind.equal j k))
   in
   let equal_k = Operation_kind.equal k in
   let is_human = equal_k Human in

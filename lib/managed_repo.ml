@@ -63,10 +63,11 @@ let format_process_failure { stdout; stderr; _ } =
   in
   if String.is_empty detail then "no output" else detail
 
-(** Spawn [git] (not [git -C ...]) with a clean environment, capture stdout and
-    stderr. Used for [git clone] before any working tree exists. [?extra_env] is
-    appended to the clean env (use to set, e.g., a custom [GIT_SSH_COMMAND] for
-    one-off probes that must not prompt or hang). *)
+(** Spawn [git] with a clean environment and hooks disabled, capturing stdout
+    and stderr. Used for clone, remote URL probes, and remote branch discovery.
+    Callers supply [-C path] in [args] when a checkout is needed. [?extra_env]
+    is appended to the clean env (use to set, e.g., a custom [GIT_SSH_COMMAND]
+    for one-off probes that must not prompt or hang). *)
 let run_git_no_cwd ?(extra_env = []) args =
   let argv = Array.of_list ("git" :: args) in
   let env =
