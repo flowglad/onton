@@ -162,6 +162,10 @@ let scenario env entrypoint policy interruption unrelated =
           let execute ~operation command =
             let remote_attempt =
               Option.is_some operation.B.remote_integration
+              ||
+              match operation.B.local_action with
+              | B.Prepare_remote_replay _ -> true
+              | B.Publish_source | B.Integrate_source _ -> false
             in
             if remote_attempt && not (List.mem operation.id !attempts) then
               attempts := operation.id :: !attempts;
@@ -169,11 +173,11 @@ let scenario env entrypoint policy interruption unrelated =
               remote_attempt
               &&
               match command.B.kind with
-              | B.Checkout_remote _ -> policy = B.Rewrite
-              | B.Integrate _ -> policy = B.Preserve_ancestry
-              | B.Observe | B.Pin _ | B.Commit_merge _ | B.Plan_remote_replay _
-              | B.Inspect | B.Verify_recovery | B.Continue _ | B.Publish _
-              | B.Confirm _ ->
+              | B.Checkout_remote _ -> false
+              | B.Integrate _ -> true
+              | B.Verify_scope _ | B.Observe | B.Pin _ | B.Commit_merge _
+              | B.Plan_remote_replay _ | B.Inspect | B.Verify_recovery
+              | B.Continue _ | B.Publish _ | B.Confirm _ ->
                   false
             in
             let publication =
@@ -181,9 +185,9 @@ let scenario env entrypoint policy interruption unrelated =
               &&
               match command.B.kind with
               | B.Publish _ -> true
-              | B.Observe | B.Pin _ | B.Integrate _ | B.Commit_merge _
-              | B.Plan_remote_replay _ | B.Checkout_remote _ | B.Inspect
-              | B.Verify_recovery | B.Continue _ | B.Confirm _ ->
+              | B.Verify_scope _ | B.Observe | B.Pin _ | B.Integrate _
+              | B.Commit_merge _ | B.Plan_remote_replay _ | B.Checkout_remote _
+              | B.Inspect | B.Verify_recovery | B.Continue _ | B.Confirm _ ->
                   false
             in
             let stop before =
@@ -282,7 +286,7 @@ let scenario env entrypoint policy interruption unrelated =
                             "repair prompt omitted attempted remote integration"
                             (Base.String.is_substring prompt
                                ~substring:
-                                 ("Remote integration attempt: " ^ incoming));
+                                 ("Pending remote contribution: " ^ incoming));
                           Git.run_git ~cwd:dir
                             [
                               "merge";
@@ -319,59 +323,80 @@ let scenario env entrypoint policy interruption unrelated =
                         ~now:(fun () -> 100.))
                     token
                 in
-                settle (repair ());
-                settle (repair ());
-                check "history repair reran" (!calls = 1)
+                let rejected = repair () in
+                check "an unrelated merge cannot pass scope verification"
+                  (match rejected with
+                  | R.Repair_needed _ -> true
+                  | R.Idle | R.Waiting | R.Intervention _
+                  | R.Checkpoint_failed _ ->
+                      false);
+                ignore (repair ());
+                check "duplicate history repair reran" (!calls = 1);
+                check
+                  "unrelated ancestry cannot authorize a publication or receipt"
+                  (!publications = 0
+                  && B.publications (state ()) = []
+                  && B.remote_integrations (state ()) = []);
+                check "unrelated remote remains unchanged"
+                  (Git.git_capture ~cwd:remote [ "rev-parse"; "patch" ]
+                  = incoming);
+                check "unrelated remote is retained as evidence"
+                  (List.mem (revision incoming)
+                     (B.required_revisions (state ())))
             | R.Idle | R.Waiting | R.Intervention _ | R.Checkpoint_failed _ ->
                 failwith "unrelated remote did not reach history recovery"
           else settle outcome;
-          check "remote attempt restarted as a new operation"
-            (List.length !attempts = 1);
-          check "interruption was not exercised"
-            (interruption = Never || !stopped);
-          if not unrelated then check "remote mutation repeated" (!mutations = 1);
-          check "publication repeated" (!publications = 1);
-          List.iter
-            (fun (file, contents) ->
-              check
-                ("published tree lost " ^ file)
-                (Git.git_capture ~cwd:remote [ "show"; "patch:" ^ file ]
-                = contents))
-            [
-              ("local.txt", "local");
-              ("advanced.txt", "advanced");
-              ("remote.txt", "remote");
-            ];
-          let receipt =
-            match B.remote_integrations (state ()) with
-            | [ receipt ] -> receipt
-            | _ -> failwith "missing or duplicate remote receipt"
-          in
-          check "remote receipt policy changed"
-            (receipt.capture.integration_policy = policy);
-          check "remote receipt captured another remote"
-            (receipt.capture.source_revision = revision incoming);
-          let preserved = B.Commit.to_string receipt.capture.target_revision in
-          Git.run_git ~cwd:remote
-            [ "merge-base"; "--is-ancestor"; preserved; "patch" ];
-          Git.run_git ~cwd:remote
-            [ "merge-base"; "--is-ancestor"; base; "patch" ];
-          (match policy with
-          | B.Rewrite -> ()
-          | B.Preserve_ancestry ->
-              List.iter
-                (fun before ->
-                  Git.run_git ~cwd:remote
-                    [ "merge-base"; "--is-ancestor"; before; "patch" ])
-                [ local; incoming ]);
-          if entrypoint = Adopted_conflict then
-            check "adopted staged resolution was lost"
-              (Git.git_capture ~cwd:remote [ "show"; "patch:base.txt" ]
-              = "resolved");
-          let before = state () in
-          settle (run (B.Request intent));
-          check "settled entrypoint repeated reconciliation"
-            (B.equal before (state ()))))
+          if not unrelated then (
+            check "remote attempt restarted as a new operation"
+              (List.length !attempts = 1);
+            check "interruption was not exercised"
+              (interruption = Never || !stopped);
+            if not unrelated then
+              check "remote mutation repeated" (!mutations = 1);
+            check "publication repeated" (!publications = 1);
+            List.iter
+              (fun (file, contents) ->
+                check
+                  ("published tree lost " ^ file)
+                  (Git.git_capture ~cwd:remote [ "show"; "patch:" ^ file ]
+                  = contents))
+              [
+                ("local.txt", "local");
+                ("advanced.txt", "advanced");
+                ("remote.txt", "remote");
+              ];
+            let receipt =
+              match B.remote_integrations (state ()) with
+              | [ receipt ] -> receipt
+              | _ -> failwith "missing or duplicate remote receipt"
+            in
+            check "remote receipt policy changed"
+              (receipt.capture.integration_policy = policy);
+            check "remote receipt captured another remote"
+              (receipt.capture.source_revision = revision incoming);
+            let preserved =
+              B.Commit.to_string receipt.capture.target_revision
+            in
+            Git.run_git ~cwd:remote
+              [ "merge-base"; "--is-ancestor"; preserved; "patch" ];
+            Git.run_git ~cwd:remote
+              [ "merge-base"; "--is-ancestor"; base; "patch" ];
+            (match policy with
+            | B.Rewrite -> ()
+            | B.Preserve_ancestry ->
+                List.iter
+                  (fun before ->
+                    Git.run_git ~cwd:remote
+                      [ "merge-base"; "--is-ancestor"; before; "patch" ])
+                  [ local; incoming ]);
+            if entrypoint = Adopted_conflict then
+              check "adopted staged resolution was lost"
+                (Git.git_capture ~cwd:remote [ "show"; "patch:base.txt" ]
+                = "resolved");
+            let before = state () in
+            settle (run (B.Request intent));
+            check "settled entrypoint repeated reconciliation"
+              (B.equal before (state ())))))
 
 let () =
   Eio_main.run (fun env ->

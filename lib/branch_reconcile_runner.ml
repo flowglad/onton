@@ -135,10 +135,18 @@ let run_repair ~runtime ~persist ~patch_id ~with_capacity ~now ~execute ~perform
                               token
                           with
                           | None -> Idle
-                          | Some turn ->
-                              let event = perform ~agent ~turn in
-                              run_owned ~owner ~persist ~now
-                                ~execute:(execute ~agent) event)
+                          | Some turn -> (
+                              (* Reserve while queued, but durably fence scope
+                                 extension only immediately before execution. *)
+                              match
+                                checkpoint ~runtime ~persist ~patch_id
+                                  (Branch_reconcile.Repair_dispatched token)
+                              with
+                              | Error message -> Checkpoint_failed message
+                              | Ok _ ->
+                                  let event = perform ~agent ~turn in
+                                  run_owned ~owner ~persist ~now
+                                    ~execute:(execute ~agent) event))
                       | (Idle | Waiting | Intervention _ | Checkpoint_failed _)
                         as outcome ->
                           outcome)))))

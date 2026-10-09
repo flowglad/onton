@@ -50,7 +50,7 @@ module Fake_worktree : Worktree.S = struct
   let materialization ~path:_ ~project_name:_ ~branch:_ =
     Ok (Some (B.New_branch (sha "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")))
 
-  let reconcile ~path:_ ~project_name:_ ~branch:_ ~operation:_ command =
+  let reconcile ~path:_ ~project_name:_ ~branch:_ ~operation command =
     let observation () =
       B.
         {
@@ -75,6 +75,9 @@ module Fake_worktree : Worktree.S = struct
     | B.Observe -> B.Observed (observation ())
     | B.Inspect -> B.Inspected (observation ())
     | B.Pin _ -> B.Pinned
+    | B.Verify_scope candidate ->
+        Onton_core_test_support.Scope_fixture.verified
+          operation.B.approved_scope candidate
     | B.Publish _ ->
         Int.incr pushes;
         remote_head := Some !head;

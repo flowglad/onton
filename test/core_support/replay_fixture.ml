@@ -64,9 +64,13 @@ let complete ~candidate ~noop t =
   let t = reply t B.Pinned in
   let t =
     if noop then t
-    else reply t (B.Integrated candidate) |> fun t -> reply t B.Published
+    else
+      reply t (B.Integrated candidate)
+      |> Publication_fixture.verify_scope ~step ~state:Fn.id
+      |> fun t -> reply t B.Published
   in
   let t = reply t (B.Remote { sha = Some candidate; topology = Equal }) in
+  let t = Publication_fixture.verify_scope ~step ~state:Fn.id t in
   assert (Option.equal B.equal_phase (B.phase t) (Some B.Settled));
   t
 

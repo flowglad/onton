@@ -28,6 +28,11 @@ let scenario env stage =
       Stdlib.Filename.concat repo ".git/timeout-origin.git";
     ];
   git [ "commit"; "-q"; "--allow-empty"; "-m"; "base" ];
+  let materialized =
+    match B.Commit.make (capture [ "rev-parse"; "HEAD" ]) with
+    | Some sha -> sha
+    | None -> assert false
+  in
   git [ "checkout"; "-q"; "-b"; "feat" ];
   Git_env.sh ~dir:repo "echo feature > feature.txt";
   git [ "add"; "feature.txt" ];
@@ -131,7 +136,13 @@ let scenario env stage =
         drive io (remaining - 1) next
     | None, _ | _, None -> state
   in
-  let publish () = drive io 100 (fst (B.step B.empty (B.Request intent))) in
+  let publish () =
+    drive io 100
+      (fst
+         (B.step
+            (fst (B.step B.empty (B.Materialized (B.New_branch materialized))))
+            (B.Request intent)))
+  in
   let cleanup () =
     (* Git may leave its transport or hook child behind when cancelled. The
        fixture records the exec'd sleeper's PID so cleanup is deterministic. *)

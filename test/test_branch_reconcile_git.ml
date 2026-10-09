@@ -985,27 +985,30 @@ let () =
                           B.Repair_completed { token = turn.B.token; at = 301. })
                         token
                     in
-                    check "migrated active work reaches verified publication"
-                      (outcome = R.Idle);
+                    check
+                      "unproven legacy ancestry cannot authorize publication"
+                      (match outcome with
+                      | R.Repair_needed _ -> true
+                      | R.Idle | R.Waiting | R.Intervention _
+                      | R.Checkpoint_failed _ ->
+                          false);
+                    check "unproven legacy repair leaves the remote unchanged"
+                      (Git.git_exit_code ~cwd:remote
+                         [ "show-ref"; "--verify"; "refs/heads/patch" ]
+                      <> 0);
                     List.iter
                       (fun retained ->
                         check
                           "legacy recovery retains original and interrupted \
-                           commits"
-                          (Git.git_exit_code ~cwd:remote
-                             [
-                               "merge-base";
-                               "--is-ancestor";
-                               retained;
-                               "refs/heads/patch";
-                             ]
-                          = 0))
+                           commits without importing them"
+                          (List.mem (sha retained)
+                             (B.required_revisions (state resumed))))
                       [ revision; initial_checkout.head ])))))
     [ (false, false); (true, false); (false, true) ];
   List.iter
     (fun (wrong_target, lost_ack) ->
       Git.with_temp_repo (fun remote ->
-          ignore (commit remote "base" "base\n" "base");
+          let base = commit remote "base" "base\n" "base" in
           Git.run_git ~cwd:remote [ "checkout"; "-q"; "-b"; "other" ];
           let other = commit remote "other" "other\n" "other target" in
           Git.run_git ~cwd:remote [ "checkout"; "-q"; "main" ];
@@ -1020,6 +1023,9 @@ let () =
               Fun.protect
                 ~finally:(fun () -> Sys.remove checkpoint)
                 (fun () ->
+                  ignore
+                    (run runtime (persist checkpoint) io
+                       (B.Materialized (B.New_branch (sha base))));
                   let paused =
                     E.
                       {
@@ -1048,10 +1054,10 @@ let () =
                            match command.B.kind with
                            | B.Integrate _ ->
                                if lost_ack then raise Simulated_stop else result
-                           | B.Observe | B.Pin _ | B.Commit_merge _
-                           | B.Plan_remote_replay _ | B.Checkout_remote _
-                           | B.Inspect | B.Verify_recovery | B.Continue _
-                           | B.Publish _ | B.Confirm _ ->
+                           | B.Verify_scope _ | B.Observe | B.Pin _
+                           | B.Commit_merge _ | B.Plan_remote_replay _
+                           | B.Checkout_remote _ | B.Inspect | B.Verify_recovery
+                           | B.Continue _ | B.Publish _ | B.Confirm _ ->
                                result)
                          (B.Request intent)
                      in
@@ -1082,10 +1088,10 @@ let () =
                       ~execute:(fun ~operation command ->
                         (match command.B.kind with
                         | B.Continue _ -> incr continued
-                        | B.Observe | B.Pin _ | B.Integrate _ | B.Commit_merge _
-                        | B.Plan_remote_replay _ | B.Checkout_remote _
-                        | B.Inspect | B.Verify_recovery | B.Publish _
-                        | B.Confirm _ ->
+                        | B.Verify_scope _ | B.Observe | B.Pin _ | B.Integrate _
+                        | B.Commit_merge _ | B.Plan_remote_replay _
+                        | B.Checkout_remote _ | B.Inspect | B.Verify_recovery
+                        | B.Publish _ | B.Confirm _ ->
                             ());
                         execute io ~operation command)
                       B.Recover
@@ -1121,19 +1127,16 @@ let () =
                           && op.source = Some (sha source)
                       | None -> false))
                   else (
-                    check "ready integration resumes without agent repair"
-                      (outcome = R.Idle && !continued = 1);
-                    check "resumed rebase retains patch content"
-                      (Git.git_capture ~cwd:remote [ "show"; "patch:work" ]
-                      = "work");
-                    check "resumed rebase retains captured target"
+                    check "arbitrary exec instruction requires scoped repair"
+                      (match outcome with
+                      | R.Repair_needed _ -> true
+                      | R.Idle | R.Waiting | R.Intervention _
+                      | R.Checkpoint_failed _ ->
+                          false);
+                    check "unapproved sequencer cannot publish"
                       (Git.git_exit_code ~cwd:remote
-                         [ "merge-base"; "--is-ancestor"; target; "patch" ]
-                      = 0);
-                    check "resumed rebase retains the patch commit"
-                      (Git.git_capture ~cwd:remote
-                         [ "rev-list"; "--count"; target ^ "..patch" ]
-                      = "1"))))))
+                         [ "show-ref"; "--verify"; "refs/heads/patch" ]
+                      <> 0))))))
     [ (false, true); (true, true); (false, false); (true, false) ];
   Git.with_temp_repo (fun remote ->
       let base = commit remote "base" "base\n" "base" in
@@ -1148,6 +1151,9 @@ let () =
           Fun.protect
             ~finally:(fun () -> Sys.remove checkpoint)
             (fun () ->
+              ignore
+                (run runtime (persist checkpoint) io
+                   (B.Materialized (B.New_branch (sha base))));
               let outcome =
                 R.run ~runtime ~persist:(persist checkpoint) ~patch_id:id
                   ~now:(fun () -> 100.)
@@ -1166,9 +1172,9 @@ let () =
                           (saved "remote" = base);
                         checked := true
                     | B.Commit_merge _ | B.Plan_remote_replay _
-                    | B.Checkout_remote _ | B.Observe | B.Pin _ | B.Inspect
-                    | B.Verify_recovery | B.Continue _ | B.Publish _
-                    | B.Confirm _ ->
+                    | B.Checkout_remote _ | B.Verify_scope _ | B.Observe
+                    | B.Pin _ | B.Inspect | B.Verify_recovery | B.Continue _
+                    | B.Publish _ | B.Confirm _ ->
                         ());
                     execute io ~operation command)
                   (B.Request intent)
@@ -1186,25 +1192,23 @@ let () =
           Git.with_temp_repo (fun dir ->
               prepare remote dir;
               let candidate = commit dir "local" "local\n" "local candidate" in
+              Git.run_git ~cwd:dir [ "branch"; "unrelated"; candidate ];
               Git.run_git ~cwd:dir [ "config"; "rebase.updateRefs"; "true" ];
               Git.run_git ~cwd:dir [ "config"; "rebase.autoStash"; "true" ];
               let runtime = make_runtime () and io = make_io dir in
-              let raced = ref false and resets = ref 0 and rebases = ref 0 in
-              let merge_commits = ref 0 and merge_continuations = ref 0 in
-              let probe_failed = ref false in
+              let raced = ref false and mutations = ref 0 and resets = ref 0 in
+              let incoming = ref "" in
               let racing =
                 E.
                   {
                     git =
                       (fun args ->
-                        if !merge_commits > 0 && List.mem "--continue" args then
-                          incr merge_continuations;
                         (match args with
                         | "push" :: _ when not !raced ->
                             raced := true;
                             Git.run_git ~cwd:remote
                               (if history = 1 || history = 3 then
-                                 [ "checkout"; "-q"; "-b"; "patch"; "main" ]
+                                 [ "checkout"; "-qb"; "patch"; "main" ]
                                else [ "checkout"; "-q"; "patch" ]);
                             if history = 2 || history = 4 then
                               Git.run_git ~cwd:remote
@@ -1222,7 +1226,7 @@ let () =
                                   (commit remote "base" "main change\n"
                                      "remote main side");
                               Git.run_git ~cwd:remote
-                                [ "checkout"; "-q"; "-b"; "side"; base ];
+                                [ "checkout"; "-qb"; "side"; base ];
                               if history < 7 then
                                 ignore
                                   (commit remote "side" "side\n"
@@ -1246,35 +1250,22 @@ let () =
                               else
                                 Git.run_git ~cwd:remote
                                   [ "merge"; "--no-ff"; "--no-edit"; "side" ]);
+                            incoming :=
+                              Git.git_capture ~cwd:remote
+                                [ "rev-parse"; "HEAD" ];
                             Git.run_git ~cwd:remote [ "checkout"; "-q"; "main" ]
-                        | "reset" :: _ ->
-                            incr resets;
-                            if stop_at = 4 then (
-                              let oc =
-                                open_out_bin (Filename.concat dir "local")
-                              in
-                              output_string oc "late staged edit\n";
-                              close_out oc;
-                              Git.run_git ~cwd:dir [ "add"; "local" ])
-                        | "rebase" :: _ ->
-                            incr rebases;
-                            Git.run_git ~cwd:dir
-                              [ "branch"; "unrelated"; "HEAD" ]
-                        | "commit" :: _ -> incr merge_commits
+                        | "reset" :: _ -> incr resets
+                        | ("rebase" | "merge" | "cherry-pick") :: _ ->
+                            incr mutations
                         | _ -> ());
-                        match args with
-                        | "merge-base" :: "--all" :: _
-                          when history = 4 && not !probe_failed ->
-                            probe_failed := true;
-                            (128, "", "common ancestor probe unavailable")
-                        | _ -> io.git args);
+                        io.git args);
                   }
               in
               let checkpoint = Filename.temp_file "remote-replay" ".json" in
               Fun.protect
                 ~finally:(fun () -> Sys.remove checkpoint)
                 (fun () ->
-                  if history = 1 then
+                  if not (List.mem history [ 2; 3; 4 ]) then
                     ignore
                       (run runtime (persist checkpoint) racing
                          (B.Materialized (B.New_branch (sha base))));
@@ -1286,35 +1277,14 @@ let () =
                             purpose = Publish_revision (sha candidate);
                           })
                     = R.Waiting);
-                  let runtime =
-                    if history = 4 then (
-                      check "a fresh common ancestor probe failure waits"
-                        (match
-                           R.run ~runtime ~persist:(persist checkpoint)
-                             ~patch_id:id
-                             ~now:(fun () -> 1000.)
-                             ~execute:(execute racing) (B.Tick 1000.)
-                         with
-                        | R.Waiting -> true
-                        | R.Idle | R.Repair_needed _ | R.Intervention _
-                        | R.Checkpoint_failed _ ->
-                            false);
-                      check "failed planning does not mutate checkout"
-                        (!resets = 0 && !rebases = 0);
-                      let snapshot = get (Persistence.load ~path:checkpoint) in
-                      Runtime.create ~gameplan
-                        ~main_branch:(Types.Branch.of_string "main")
-                        ~snapshot ())
-                    else runtime
-                  in
                   let stopped = ref false in
-                  let stage command =
-                    match command.B.kind with
-                    | B.Checkout_remote _ -> 0
+                  let stage (command : B.command) =
+                    match command.kind with
+                    | B.Plan_remote_replay _ -> 0
                     | B.Integrate _ -> 2
-                    | B.Commit_merge _ | B.Plan_remote_replay _ | B.Observe
-                    | B.Pin _ | B.Inspect | B.Verify_recovery | B.Continue _
-                    | B.Publish _ | B.Confirm _ ->
+                    | B.Observe | B.Pin _ | B.Inspect | B.Verify_recovery
+                    | B.Verify_scope _ | B.Continue _ | B.Publish _
+                    | B.Confirm _ | B.Commit_merge _ | B.Checkout_remote _ ->
                         -10
                   in
                   (try
@@ -1323,220 +1293,86 @@ let () =
                           ~patch_id:id
                           ~now:(fun () -> 2000.)
                           ~execute:(fun ~operation command ->
-                            (match command.B.kind with
-                            | B.Checkout_remote _ ->
-                                check "chosen replay evidence is retained"
-                                  (if List.mem history [ 2; 3; 4 ] then
-                                     operation.B.boundary
-                                     = B.Inferred (sha base)
-                                   else
-                                     operation.B.boundary
-                                     = B.Recorded (sha base))
-                            | B.Commit_merge _ | B.Plan_remote_replay _
-                            | B.Observe | B.Pin _ | B.Integrate _ | B.Inspect
-                            | B.Verify_recovery | B.Continue _ | B.Publish _
-                            | B.Confirm _ ->
-                                ());
                             if stage command = stop_at then (
                               stopped := true;
                               raise Simulated_stop);
+                            if stop_at = 4 && stage command = 2 then (
+                              let channel =
+                                open_out_bin (Filename.concat dir "local")
+                              in
+                              output_string channel "late staged edit\n";
+                              close_out channel;
+                              Git.run_git ~cwd:dir [ "add"; "local" ]);
                             let result = execute racing ~operation command in
                             if
                               stage command + 1 = stop_at
-                              || (stop_at = 4 && stage command = 0)
+                              || (stop_at = 4 && stage command = 2)
                             then (
                               stopped := true;
                               raise Simulated_stop);
                             result)
-                          (Option.value
-                             (B.wake_event ~at:2000. (state runtime))
-                             ~default:(B.Tick 2000.)));
-                     failwith "expected replay interruption"
+                          (B.Tick 2000.));
+                     failwith
+                       "expected remote planning/integration interruption"
                    with Simulated_stop -> ());
-                  check "replay interruption reached" !stopped;
+                  check "remote interruption reached" !stopped;
                   let snapshot = get (Persistence.load ~path:checkpoint) in
                   let restarted =
                     Runtime.create ~gameplan
                       ~main_branch:(Types.Branch.of_string "main")
                       ~snapshot ()
                   in
-                  if stop_at = 4 then (
-                    check "late edits offer recovery without losing work"
-                      (match
-                         run restarted (persist checkpoint) racing B.Recover
-                       with
+                  let outcome =
+                    run restarted (persist checkpoint) racing B.Recover
+                  in
+                  check "remote replay never resets the checkout" (!resets = 0);
+                  check "unrelated refs survive user updateRefs configuration"
+                    (Git.git_capture ~cwd:dir [ "rev-parse"; "unrelated" ]
+                    = candidate);
+                  if history >= 2 || stop_at = 4 then (
+                    check
+                      "unproven, nonlinear or dirty replay reaches owned repair"
+                      (match outcome with
                       | R.Repair_needed _ -> true
                       | R.Idle | R.Waiting | R.Intervention _
                       | R.Checkpoint_failed _ ->
                           false);
-                    check "failed checkout retains original revision"
+                    check "rejected replay performs no integration"
+                      (!mutations = 0);
+                    check "rejected replay retains the local candidate"
                       (Git.git_capture ~cwd:dir [ "rev-parse"; "HEAD" ]
                       = candidate);
-                    check "late staged content survives refused checkout"
-                      (Git.git_capture ~cwd:dir [ "show"; ":local" ]
-                      = "late staged edit");
-                    check "no replay after late edit"
-                      (!resets = 1 && !rebases = 0))
-                  else
-                    let outcome =
-                      run restarted (persist checkpoint) racing B.Recover
-                    in
-                    let restarted, outcome =
-                      if history >= 6 then (
-                        check "merge replay enters content repair"
-                          (match outcome with
-                          | R.Repair_needed _ -> true
-                          | R.Idle | R.Waiting | R.Intervention _
-                          | R.Checkpoint_failed _ ->
-                              false);
-                        check "conflict occurs at the recreated merge"
-                          (Git.git_exit_code ~cwd:dir
-                             [ "rev-parse"; "--verify"; "MERGE_HEAD" ]
-                          = 0);
-                        let head =
-                          Git.git_capture ~cwd:dir [ "rev-parse"; "HEAD" ]
-                        in
-                        let oc = open_out_bin (Filename.concat dir "base") in
-                        output_string oc
-                          (if history >= 7 then "main change\n"
-                           else "remote resolution\n");
-                        close_out oc;
-                        Git.run_git ~cwd:dir [ "add"; "base" ];
-                        if history >= 7 then
-                          check "merge resolution has no staged tree changes"
-                            (Git.git_exit_code ~cwd:dir
-                               [ "diff"; "--cached"; "--quiet" ]
-                            = 0);
-                        check "staging merge resolution needs no agent commit"
-                          (Git.git_capture ~cwd:dir [ "rev-parse"; "HEAD" ]
-                          = head);
-                        let snapshot =
-                          get (Persistence.load ~path:checkpoint)
-                        in
-                        let resumed =
-                          Runtime.create ~gameplan
-                            ~main_branch:(Types.Branch.of_string "main")
-                            ~snapshot ()
-                        in
-                        if history >= 7 then (
-                          let interrupted = ref false in
-                          let refuse_result = ref false in
-                          let failing_persist snapshot =
-                            if !refuse_result then (
-                              refuse_result := false;
-                              Error "merge result checkpoint unavailable")
-                            else persist checkpoint snapshot
-                          in
-                          (try
-                             let outcome =
-                               R.run ~runtime:resumed ~persist:failing_persist
-                                 ~patch_id:id
-                                 ~now:(fun () -> 2000.)
-                                 ~execute:(fun ~operation command ->
-                                   let selected =
-                                     match command.B.kind with
-                                     | B.Commit_merge _ -> history < 10
-                                     | B.Continue _ ->
-                                         history >= 10 && !merge_commits = 1
-                                     | B.Plan_remote_replay _
-                                     | B.Checkout_remote _ | B.Observe | B.Pin _
-                                     | B.Integrate _ | B.Inspect
-                                     | B.Verify_recovery | B.Publish _
-                                     | B.Confirm _ ->
-                                         false
-                                   in
-                                   if selected then (
-                                     interrupted := true;
-                                     if history = 9 || history = 12 then (
-                                       let result =
-                                         execute racing ~operation command
-                                       in
-                                       refuse_result := true;
-                                       result)
-                                     else (
-                                       if history = 7 || history = 11 then
-                                         ignore
-                                           (execute racing ~operation command);
-                                       raise Simulated_stop))
-                                   else execute racing ~operation command)
-                                 B.Recover
-                             in
-                             check "merge result checkpoint refusal is surfaced"
-                               ((history = 9 || history = 12)
-                               && outcome
-                                  = R.Checkpoint_failed
-                                      "merge result checkpoint unavailable")
-                           with Simulated_stop -> ());
-                          check "merge completion checkpoint exercised"
-                            !interrupted;
-                          let snapshot =
-                            get (Persistence.load ~path:checkpoint)
-                          in
-                          check
-                            "lost merge acknowledgement leaves durable state \
-                             unchanged"
-                            (B.equal (state resumed)
-                               (Orchestrator.agent snapshot.Runtime.orchestrator
-                                  id)
-                                 .Patch_agent.branch_reconcile);
-                          let resumed =
-                            Runtime.create ~gameplan
-                              ~main_branch:(Types.Branch.of_string "main")
-                              ~snapshot ()
-                          in
-                          ( resumed,
-                            run resumed (persist checkpoint) racing B.Recover ))
-                        else
-                          ( resumed,
-                            run resumed (persist checkpoint) racing B.Recover ))
-                      else (restarted, outcome)
-                    in
+                    check "rejected replay leaves remote unchanged"
+                      (Git.git_capture ~cwd:remote [ "rev-parse"; "patch" ]
+                      = !incoming);
+                    check "rejected replay retains incoming evidence"
+                      (List.mem (sha !incoming)
+                         (B.required_revisions (state restarted)));
+                    if stop_at = 4 then
+                      check "late staged edits survive"
+                        (Git.git_capture ~cwd:dir [ "show"; ":local" ]
+                        = "late staged edit"))
+                  else (
                     check
-                      (Printf.sprintf
-                         "remote replay resumes after interruption \
-                          (history=%d, stop=%d): %s"
-                         history stop_at
-                         (Yojson.Safe.to_string
-                            (B.yojson_of_t (state restarted))))
+                      "scoped remote replay converges after lost \
+                       acknowledgement"
                       (outcome = R.Idle);
                     check
-                      "remote replay receipt retains captured candidate and \
-                       strategy"
+                      (Printf.sprintf
+                         "bounded remote replay (history=%d stop=%d \
+                          duplicate=%b mutations=%d)"
+                         history stop_at duplicate !mutations)
+                      (!mutations = 1
+                      || (duplicate && stop_at = 3 && !mutations = 2));
+                    check
+                      "remote receipt binds the recorded range and candidate"
                       (match B.remote_integrations (state restarted) with
                       | [ receipt ] ->
                           receipt.B.capture.target_revision = sha candidate
+                          && receipt.capture.replay_boundary
+                             = B.Recorded (sha base)
                           && receipt.capture.integration_policy = B.Rewrite
-                          && (receipt.capture.replay_boundary
-                             =
-                             if List.mem history [ 2; 3; 4 ] then
-                               B.Inferred (sha base)
-                             else B.Recorded (sha base))
-                          && receipt.integrated_revision
-                             = sha
-                                 (Git.git_capture ~cwd:remote
-                                    [ "rev-parse"; "patch" ])
                       | [] | _ :: _ :: _ -> false);
-                    check
-                      "replay does not update unrelated refs despite user \
-                       configuration"
-                      (match B.remote_integrations (state restarted) with
-                      | [ receipt ] ->
-                          sha
-                            (Git.git_capture ~cwd:dir
-                               [ "rev-parse"; "unrelated" ])
-                          = receipt.B.capture.source_revision
-                      | [] | _ :: _ :: _ -> false);
-                    check "remote commits replayed once"
-                      (!resets = 1 && !rebases = 1);
-                    if history >= 7 then
-                      check
-                        "merge acknowledgement loss never duplicates the merge \
-                         commit"
-                        (!merge_commits = 1);
-                    if history >= 10 then
-                      check
-                        "recreated merge continues exactly once after commit"
-                        (!merge_continuations = 1);
                     check "local candidate retains its identity"
                       (Git.git_exit_code ~cwd:remote
                          [ "merge-base"; "--is-ancestor"; candidate; "patch" ]
@@ -1549,43 +1385,10 @@ let () =
                          Git.git_capture ~cwd:remote
                            [ "show"; "patch:incoming" ]
                          = "incoming");
-                    if history >= 5 then (
-                      if history >= 6 then
-                        check "staged merge resolution is published"
-                          (Git.git_capture ~cwd:remote [ "show"; "patch:base" ]
-                          =
-                          if history >= 7 then "main change"
-                          else "remote resolution");
-                      if history < 7 then
-                        check "remote side branch work survives replay"
-                          (Git.git_capture ~cwd:remote [ "show"; "patch:side" ]
-                          = "side");
-                      check "remote merge retains both parents"
-                        (List.length
-                           (String.split_on_char ' '
-                              (Git.git_capture ~cwd:remote
-                                 [ "rev-list"; "--parents"; "-n1"; "patch" ]))
-                        = 3);
-                      List.iter
-                        (fun parent ->
-                          check
-                            "each replayed merge parent includes preserved \
-                             candidate"
-                            (Git.git_exit_code ~cwd:remote
-                               [
-                                 "merge-base";
-                                 "--is-ancestor";
-                                 candidate;
-                                 parent;
-                               ]
-                            = 0))
-                        [ "patch^1"; "patch^2" ])
-                    else
-                      check
-                        "linear rewrite race does not introduce merge commits"
-                        (Git.git_capture ~cwd:remote
-                           [ "rev-list"; "--merges"; base ^ "..patch" ]
-                        = "")))))
+                    check "remote replay cannot introduce merge commits"
+                      (Git.git_capture ~cwd:remote
+                         [ "rev-list"; "--merges"; base ^ "..patch" ]
+                      = ""))))))
     [
       (0, false, 0);
       (1, false, 0);
@@ -1689,9 +1492,9 @@ let () =
                                 checked := true;
                                 raise Simulated_stop
                             | B.Commit_merge _ | B.Plan_remote_replay _
-                            | B.Checkout_remote _ | B.Observe | B.Pin _
-                            | B.Inspect | B.Verify_recovery | B.Continue _
-                            | B.Publish _ | B.Confirm _ ->
+                            | B.Checkout_remote _ | B.Verify_scope _ | B.Observe
+                            | B.Pin _ | B.Inspect | B.Verify_recovery
+                            | B.Continue _ | B.Publish _ | B.Confirm _ ->
                                 execute io ~operation command)
                           event);
                      failwith "expected stop before integration"
@@ -1828,6 +1631,9 @@ let () =
               Fun.protect
                 ~finally:(fun () -> Sys.remove checkpoint)
                 (fun () ->
+                  ignore
+                    (run runtime (persist checkpoint) io
+                       (B.Materialized (B.New_branch (sha base))));
                   let runtime, outcome =
                     if interrupt then (
                       (try
@@ -1839,9 +1645,10 @@ let () =
                                 match command.B.kind with
                                 | B.Pin _ -> raise Simulated_stop
                                 | B.Commit_merge _ | B.Plan_remote_replay _
-                                | B.Checkout_remote _ | B.Observe
-                                | B.Integrate _ | B.Inspect | B.Verify_recovery
-                                | B.Continue _ | B.Publish _ | B.Confirm _ ->
+                                | B.Checkout_remote _ | B.Verify_scope _
+                                | B.Observe | B.Integrate _ | B.Inspect
+                                | B.Verify_recovery | B.Continue _ | B.Publish _
+                                | B.Confirm _ ->
                                     execute io ~operation command)
                               (B.Request intent));
                          failwith "expected interruption before adoption pins"
@@ -1970,8 +1777,7 @@ let () =
                     | B.History_recovery _ -> true
                     | B.Content_repair | B.Diagnosis _ -> false);
                   check "staged resolution survives before fallback"
-                    (Git.git_capture ~cwd:dir [ "show"; "HEAD:file" ]
-                    = "resolved");
+                    (Git.git_capture ~cwd:dir [ "show"; ":file" ] = "resolved");
                   check "ancestry loss cannot publish"
                     (Git.git_exit_code ~cwd:remote
                        [ "show-ref"; "--verify"; "refs/heads/patch" ]
@@ -1983,11 +1789,13 @@ let () =
                     (Git.git_exit_code ~cwd:dir
                        [ "merge-base"; "--is-ancestor"; source; rewritten ]
                     = 1);
-                  (* Model the recovery agent merging the pinned original and
-                   retaining its already reviewed conflict resolution. *)
+                  (* Rebuild the exact preserving contract, without retaining
+                     an unapproved rewritten intermediate as a merge parent. *)
+                  Git.run_git ~cwd:dir [ "rebase"; "--abort" ];
+                  Git.run_git ~cwd:dir [ "reset"; "--hard"; source ];
                   ignore
                     (Git.git_exit_code ~cwd:dir
-                       [ "merge"; "--no-commit"; source ]);
+                       [ "merge"; "--no-commit"; target ]);
                   let output = open_out (Filename.concat dir "file") in
                   output_string output "resolved\n";
                   close_out output;
@@ -2015,7 +1823,7 @@ let () =
   List.iter
     (fun (stage, safe, probe_failure) ->
       Git.with_temp_repo (fun remote ->
-          ignore (commit remote "base" "base\n" "base");
+          let base = commit remote "base" "base\n" "base" in
           Git.with_temp_repo (fun dir ->
               prepare remote dir;
               let source = commit dir "local" "local\n" "local" in
@@ -2038,18 +1846,10 @@ let () =
                         ~operation:(Option.get (B.operation state))
                         command
                     in
-                    let result =
-                      if safe then (
-                        Git.run_git ~cwd:dir [ "merge"; "--no-edit"; source ];
-                        B.Integrated
-                          (sha
-                             (Git.git_capture ~cwd:dir [ "rev-parse"; "HEAD" ])))
-                      else result
-                    in
                     prepare_candidate (fuel - 1) (reply state result)
-                | B.Observe | B.Pin _ | B.Inspect | B.Verify_recovery
-                | B.Continue _ | B.Commit_merge _ | B.Plan_remote_replay _
-                | B.Checkout_remote _ | B.Confirm _ ->
+                | B.Verify_scope _ | B.Observe | B.Pin _ | B.Inspect
+                | B.Verify_recovery | B.Continue _ | B.Commit_merge _
+                | B.Plan_remote_replay _ | B.Checkout_remote _ | B.Confirm _ ->
                     prepare_candidate (fuel - 1)
                       (reply state
                          (execute io
@@ -2057,7 +1857,19 @@ let () =
                             command))
               in
               let state =
-                prepare_candidate 10 (fst (B.step B.empty (B.Request intent)))
+                let initial =
+                  fst
+                    (B.step B.empty (B.Materialized (B.New_branch (sha base))))
+                in
+                prepare_candidate 12
+                  (fst
+                     (B.step initial
+                        (B.Request
+                           {
+                             intent with
+                             policy =
+                               (if safe then B.Preserve_ancestry else B.Rewrite);
+                           })))
               in
               let candidate =
                 Option.get (Option.get (B.operation state)).candidate
@@ -2092,7 +1904,16 @@ let () =
                     in
                     match active with
                     | `Assoc fields ->
-                        `Assoc (List.remove_assoc "preservation_policy" fields)
+                        let fields =
+                          List.remove_assoc "preservation_policy" fields
+                        in
+                        let fields =
+                          if safe then
+                            List.remove_assoc "approved_scope"
+                              (List.remove_assoc "scope_revision" fields)
+                          else fields
+                        in
+                        `Assoc fields
                     | _ -> failwith "active object")
                   (B.yojson_of_t state)
                 |> field "desired"
@@ -2100,6 +1921,10 @@ let () =
                           `List [ `String "Preserve_ancestry" ]))
               in
               let state = get (B.decode legacy) in
+              let state =
+                if B.pending state = None then fst (B.step state B.Recover)
+                else state
+              in
               let operation = Option.get (B.operation state) in
               let command = Option.get (B.pending state) in
               let pushes = ref 0 in
@@ -2173,10 +1998,10 @@ let () =
                       ~execute:(fun ~operation command ->
                         match command.B.kind with
                         | B.Pin _ -> raise Simulated_stop
-                        | B.Observe | B.Integrate _ | B.Inspect
-                        | B.Verify_recovery | B.Continue _ | B.Commit_merge _
-                        | B.Plan_remote_replay _ | B.Checkout_remote _
-                        | B.Publish _ | B.Confirm _ ->
+                        | B.Verify_scope _ | B.Observe | B.Integrate _
+                        | B.Inspect | B.Verify_recovery | B.Continue _
+                        | B.Commit_merge _ | B.Plan_remote_replay _
+                        | B.Checkout_remote _ | B.Publish _ | B.Confirm _ ->
                             execute io ~operation command)
                       (B.Request intent));
                  failwith "expected adoption interruption"
@@ -2211,7 +2036,8 @@ let () =
                 (Git.git_exit_code ~cwd:remote
                    [ "show-ref"; "--verify"; "refs/heads/patch" ]
                 <> 0);
-              Git.run_git ~cwd:dir [ "merge"; "--no-edit"; source ];
+              Git.run_git ~cwd:dir [ "reset"; "--hard"; source ];
+              Git.run_git ~cwd:dir [ "merge"; "--no-edit"; target ];
               check "restoring required ancestry allows publication"
                 (run runtime (persist checkpoint) io
                    (B.Repair_completed { token; at = 100. })
@@ -2222,7 +2048,13 @@ let () =
                     (Git.git_exit_code ~cwd:remote
                        [ "merge-base"; "--is-ancestor"; revision; "patch" ]
                     = 0))
-                [ source; target; rewritten ])));
+                [ source; target ];
+              check "unapproved rewritten intermediate remains recoverable"
+                (Base.String.is_substring
+                   (Git.git_capture ~cwd:dir
+                      [ "for-each-ref"; "--format=%(objectname)"; prefix ])
+                   ~substring:rewritten))));
+
   (* Exhausted deterministic integration needs recovery, not an endless
      transport retry. Unrelated histories retain both sides for the agent. *)
   List.iter
@@ -2263,12 +2095,8 @@ let () =
                         in
                         check "unproven publication enters history recovery"
                           (match turn.B.mode with
-                          | B.History_recovery { reason; _ } -> (
-                              reason
-                              =
-                              match policy with
-                              | B.Rewrite -> "remote_replay_no_common_ancestor"
-                              | B.Preserve_ancestry -> "unrelated_histories")
+                          | B.History_recovery { reason; _ } ->
+                              reason = "remote_replay_scope_missing_boundary"
                           | B.Content_repair | B.Diagnosis _ -> false);
                         token
                     | R.Idle | R.Waiting | R.Intervention _
@@ -2306,30 +2134,23 @@ let () =
                     run runtime (persist checkpoint) io
                       (B.Repair_completed { token; at = 100. })
                   in
-                  check "verified agent recovery completes publication"
-                    (outcome = R.Idle);
-                  check "published recovery retains local work"
-                    (Git.git_exit_code ~cwd:remote
-                       [ "merge-base"; "--is-ancestor"; local; "patch" ]
-                    = 0);
-                  check "published recovery retains remote work"
-                    (Git.git_exit_code ~cwd:remote
-                       [ "merge-base"; "--is-ancestor"; remote_head; "patch" ]
-                    = 0);
-                  Option.iter
-                    (fun later ->
-                      check "new remote work survives post-repair integration"
-                        (Git.git_capture ~cwd:remote [ "show"; "patch:later" ]
-                        = "later");
-                      match policy with
-                      | B.Rewrite -> ()
-                      | B.Preserve_ancestry ->
-                          check
-                            "post-repair integration preserves remote ancestry"
-                            (Git.git_exit_code ~cwd:remote
-                               [ "merge-base"; "--is-ancestor"; later; "patch" ]
-                            = 0))
-                    later))))
+                  check "agent cannot authorize an unproven remote merge"
+                    (match outcome with
+                    | R.Repair_needed _ -> true
+                    | R.Idle | R.Waiting | R.Intervention _
+                    | R.Checkpoint_failed _ ->
+                        false);
+                  check "unproven repair cannot publish"
+                    (B.publications (state runtime) = []);
+                  check "unproven repair preserves the remote writer"
+                    (Git.git_capture ~cwd:remote [ "rev-parse"; "patch" ]
+                    = Option.value later ~default:remote_head);
+                  List.iter
+                    (fun revision ->
+                      check "unproven merge inputs remain recoverable"
+                        (List.mem (sha revision)
+                           (B.required_revisions (state runtime))))
+                    (local :: remote_head :: Option.to_list later)))))
     [ (B.Rewrite, false); (B.Rewrite, true); (B.Preserve_ancestry, true) ];
   List.iter
     (fun (lost_probe, discard, late_work) ->
@@ -2363,9 +2184,9 @@ let () =
                                      "interrupted work");
                                 raise Simulated_stop
                             | B.Commit_merge _ | B.Plan_remote_replay _
-                            | B.Checkout_remote _ | B.Observe | B.Pin _
-                            | B.Inspect | B.Verify_recovery | B.Continue _
-                            | B.Publish _ | B.Confirm _ ->
+                            | B.Checkout_remote _ | B.Verify_scope _ | B.Observe
+                            | B.Pin _ | B.Inspect | B.Verify_recovery
+                            | B.Continue _ | B.Publish _ | B.Confirm _ ->
                                 execute io ~operation command)
                           (B.Request intent));
                      failwith "expected interruption"
@@ -2383,9 +2204,6 @@ let () =
                     | R.Idle | R.Waiting | R.Intervention _
                     | R.Checkpoint_failed _ ->
                         failwith "history recovery was not dispatched"
-                  in
-                  let baseline =
-                    Git.git_capture ~cwd:dir [ "rev-parse"; "HEAD" ]
                   in
                   let token =
                     if late_work then (
@@ -2439,18 +2257,12 @@ let () =
                               (Option.is_some
                                  (B.repair_turn saved_state ~branch:"patch"
                                     !active_token));
-                            if discard then (
+                            if discard then
+                              Git.run_git ~cwd:dir [ "reset"; "--hard"; target ]
+                            else (
+                              Git.run_git ~cwd:dir [ "reset"; "--hard"; source ];
                               Git.run_git ~cwd:dir
-                                [
-                                  "reset";
-                                  "--hard";
-                                  (if late_work then baseline else source);
-                                ];
-                              Git.run_git ~cwd:dir
-                                [ "merge"; "--no-edit"; target ])
-                            else
-                              Git.run_git ~cwd:dir
-                                [ "merge"; "--no-edit"; target ];
+                                [ "rebase"; "--onto"; target; base ]);
                             {
                               exit_code = 0;
                               stdout = "";
@@ -2518,10 +2330,10 @@ let () =
                     check
                       "restart verifies completed work without another agent"
                       (!calls = 1);
-                    check "captured patch commits survive fallback"
-                      (Git.git_exit_code ~cwd:dir
-                         [ "merge-base"; "--is-ancestor"; source; "HEAD" ]
-                      = 0);
+                    check "only captured patch content survives reconstruction"
+                      (Git.git_capture ~cwd:remote
+                         [ "diff"; "--name-only"; "main...patch" ]
+                      = "patch");
                     List.iter
                       (fun file ->
                         check
@@ -2530,7 +2342,7 @@ let () =
                              [ "show"; "patch:" ^ file ]
                           = Git.git_capture ~cwd:dir [ "show"; "HEAD:" ^ file ]
                           ))
-                      [ "patch"; "extra"; "upstream" ]);
+                      [ "patch"; "upstream" ]);
                   let saved = get (Persistence.load ~path:checkpoint) in
                   let agent =
                     Orchestrator.agent saved.Runtime.orchestrator id
@@ -2583,7 +2395,7 @@ let () =
                                   (commit dir "extra" "external commit\n"
                                      "external work");
                                 raise Simulated_stop
-                            | B.Observe | B.Pin _ | B.Inspect
+                            | B.Verify_scope _ | B.Observe | B.Pin _ | B.Inspect
                             | B.Verify_recovery | B.Continue _
                             | B.Commit_merge _ | B.Plan_remote_replay _
                             | B.Checkout_remote _ | B.Publish _ | B.Confirm _ ->
@@ -2640,8 +2452,6 @@ let () =
                         Git.run_git ~cwd:dir [ "add"; "extra"; "untracked" ];
                         Git.run_git ~cwd:dir
                           [ "commit"; "-qm"; "Finish interrupted changes" ];
-                        Git.run_git ~cwd:dir
-                          [ "merge"; "--no-edit"; "origin/main" ];
                         B.Repair_completed { token = turn.B.token; at = 100. })
                       token
                   in
@@ -3086,9 +2896,9 @@ let () =
                 match command.B.kind with
                 | B.Integrate _ when operation.B.id = 2 -> raise Simulated_stop
                 | B.Commit_merge _ | B.Plan_remote_replay _
-                | B.Checkout_remote _ | B.Observe | B.Pin _ | B.Integrate _
-                | B.Inspect | B.Verify_recovery | B.Continue _ | B.Publish _
-                | B.Confirm _ ->
+                | B.Checkout_remote _ | B.Verify_scope _ | B.Observe | B.Pin _
+                | B.Integrate _ | B.Inspect | B.Verify_recovery | B.Continue _
+                | B.Publish _ | B.Confirm _ ->
                     execute race_io ~operation command)
               (B.Tick 1000.));
          failwith "expected interruption before remote integration"

@@ -345,8 +345,10 @@ module Make (W : Worktree.S) (Env : ENV) = struct
                             "\n\
                              Integration root: preserve all published history. \
                              Never rebase, reset, or force-push this branch. \
-                             Incorporate upstream changes with git merge; the \
-                             supervisor uses normal pushes.\n"
+                             Commit implementation changes locally; the \
+                             supervisor reconciles captured upstream revisions \
+                             and uses normal pushes. Do not merge other \
+                             branches.\n"
                           else "")
                     in
                     prompt ^ mode_instructions

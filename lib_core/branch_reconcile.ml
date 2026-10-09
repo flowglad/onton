@@ -138,6 +138,7 @@ type command_kind =
     }
   | Inspect
   | Verify_recovery
+  | Verify_scope of Commit.t
   | Continue of { head : Commit.t; target : Commit.t; sequencer : string }
   | Publish of { candidate : Commit.t; expected : Commit.t option }
   | Confirm of Commit.t
@@ -236,6 +237,12 @@ type operation = {
   candidate : Commit.t option;
   expected : Commit.t option;
   recovery_revisions : Commit.t list; [@yojson.default []]
+  retained_revisions : Commit.t list; [@yojson.default []]
+  agent_dispatched : bool; [@yojson.default true]
+  approved_scope : Replay_scope.request; [@yojson.default Replay_scope.Unproven]
+  scope_revision : Commit.t option; [@yojson.default None]
+  deferred_remote : Commit.t option; [@yojson.default None]
+  candidate_evidence : integration_evidence option; [@yojson.default None]
   phase : phase;
   pending : command option;
   command_sequence : int;
@@ -279,9 +286,11 @@ type result =
   | Remote_replay_selected of boundary
   | Remote_checked_out
   | Integrated of Commit.t
+  | Scope_verified of Replay_scope.verified
   | Conflict of { head : Commit.t; sequencer : string; conflicts : int }
   | Recovery_verified of {
       observation : observation;
+      local_extension : Replay_scope.t option;
       source_preserved : bool;
       remote_preserved : bool;
     }
@@ -307,6 +316,7 @@ type event =
   | Request of intent
   | Result of { token : token; at : float; result : result }
   | Repair_invalidated of { token : token; reason : string }
+  | Repair_dispatched of token
   | Repair_started of token
   | Repair_interrupted of { token : token; at : float; reason : string }
   | Repair_failed of { token : token; at : float; reason : string }
@@ -331,12 +341,12 @@ let command_allowed_for_purpose purpose kind =
       match kind with
       | Observe | Inspect -> true
       | Pin _ | Confirm _ | Publish _ | Integrate _ | Continue _
-      | Verify_recovery | Commit_merge _ | Plan_remote_replay _
+      | Verify_recovery | Verify_scope _ | Commit_merge _ | Plan_remote_replay _
       | Checkout_remote _ ->
           false)
   | Verify_publication -> (
       match kind with
-      | Observe | Inspect | Pin _ | Confirm _ -> true
+      | Observe | Inspect | Pin _ | Verify_scope _ | Confirm _ -> true
       | Publish _ | Integrate _ | Continue _ | Verify_recovery | Commit_merge _
       | Plan_remote_replay _ | Checkout_remote _ ->
           false)
@@ -509,7 +519,7 @@ let required_revisions t =
     | Checkout_remote captured -> replay captured
     | Continue { head; target; sequencer = _ } -> [ head; target ]
     | Publish { candidate; expected } -> candidate :: option expected
-    | Confirm candidate -> [ candidate ]
+    | Confirm candidate | Verify_scope candidate -> [ candidate ]
   in
   let operation
       {
@@ -529,6 +539,12 @@ let required_revisions t =
         candidate;
         expected;
         recovery_revisions;
+        retained_revisions;
+        agent_dispatched = _;
+        approved_scope;
+        scope_revision;
+        deferred_remote;
+        candidate_evidence = _;
         phase;
         pending;
         command_sequence = _;
@@ -542,7 +558,9 @@ let required_revisions t =
     intent desired @ option source @ option target @ option candidate
     @ option expected @ boundary b
     @ List.concat_map boundary_candidates ~f:boundary
-    @ recovery_revisions
+    @ recovery_revisions @ retained_revisions @ option scope_revision
+    @ option deferred_remote
+    @ List.filter_map (Replay_scope.revisions approved_scope) ~f:Commit.make
     @ List.concat_map (option integration) ~f:capture
     @ List.concat_map (option remote_integration) ~f:capture
     @ List.concat_map (option remote_replay) ~f:replay
@@ -684,7 +702,7 @@ let check_destination (op : operation) ~observed =
         equal_phase op.phase Recovering
         && Option.value_map op.pending ~default:false ~f:(fun command ->
             match command.kind with
-            | Inspect | Verify_recovery -> true
+            | Inspect | Verify_recovery | Verify_scope _ -> true
             | Observe | Pin _ | Integrate _ | Continue _ | Commit_merge _
             | Plan_remote_replay _ | Checkout_remote _ | Publish _ | Confirm _
               ->
@@ -994,6 +1012,14 @@ let start t intent =
       candidate = None;
       expected = None;
       recovery_revisions = [];
+      agent_dispatched = false;
+      retained_revisions =
+        Option.value_map t.active ~default:[] ~f:(fun previous ->
+            previous.retained_revisions);
+      approved_scope = Replay_scope.Unproven;
+      scope_revision = None;
+      deferred_remote = None;
+      candidate_evidence = None;
       phase = Preparing;
       pending = None;
       command_sequence = 0;
@@ -1070,7 +1096,11 @@ let diagnose t (op : operation) reason =
   with
   | P.Hold _ ->
       stop_after_recovery t
-        { op with repair = Some { r with attempt_completed = true } }
+        {
+          op with
+          agent_dispatched = true;
+          repair = Some { r with attempt_completed = true };
+        }
         reason
   | P.Run_agent _ ->
       let sequence = op.command_sequence + 1 in
@@ -1216,7 +1246,7 @@ let retry_observation t (op : operation) at reason retry_after =
     ->
       retry t op at reason retry_after
 
-let settle t op =
+let settle_unchecked t op =
   let t =
     {
       t with
@@ -1254,6 +1284,58 @@ let settle t op =
       | Some base ->
           let t, effects = start_publication_verification t base in
           (t, Completed op.id :: effects))
+
+let scope_confirmed (op : operation) candidate =
+  Replay_scope.valid_request op.approved_scope
+  && Option.equal Commit.equal op.scope_revision (Some candidate)
+
+let local_extension_contract (op : operation) =
+  match op.repair with
+  | Some { mode = History_recovery { task = Finish_local_work; _ }; _ } ->
+      Option.map op.source ~f:(fun source -> (source, op.approved_scope))
+  | Some { mode = History_recovery { task = Repair_publication; _ }; _ } ->
+      Option.bind op.candidate ~f:(fun candidate ->
+          if scope_confirmed op candidate then
+            Some (candidate, Replay_scope.Identity (Commit.to_string candidate))
+          else None)
+  | Some
+      {
+        mode =
+          ( History_recovery { task = Reconstruct_history; _ }
+          | Diagnosis _ | Content_repair );
+        _;
+      }
+  | None ->
+      None
+
+let settle t op =
+  match op.candidate with
+  | Some candidate when not (scope_confirmed op candidate) ->
+      issue t op Confirming (Verify_scope candidate)
+  | Some _ | None -> settle_unchecked t op
+
+let scope_for_inputs ~source ~target ~boundary ~action =
+  let source = Commit.to_string source and target = Commit.to_string target in
+  match action with
+  | Publish_source -> Replay_scope.Identity source
+  | Prepare_remote_replay _ -> Replay_scope.Unproven
+  | Integrate_source Preserve_ancestry -> Replay_scope.Merge { source; target }
+  | Integrate_source Rewrite -> (
+      match boundary with
+      | Recorded boundary ->
+          Replay_scope.Replay
+            { source; target; boundary = Commit.to_string boundary }
+      | Plain | Inferred _ | Reconstructed _ | Patch_equivalent _
+      | Subject_inferred _ ->
+          Replay_scope.Unproven)
+
+let integration_scope_matches (op : operation) ~source ~target ~boundary ~policy
+    =
+  let requested =
+    scope_for_inputs ~source ~target ~boundary ~action:(Integrate_source policy)
+  in
+  Replay_scope.valid_request requested
+  && Replay_scope.equal_request op.approved_scope requested
 
 let repair ?(mode = Content_repair) t op head sequencer conflicts =
   let previous =
@@ -1338,6 +1420,7 @@ let repair ?(mode = Content_repair) t op head sequencer conflicts =
 
 let record_integration t op candidate evidence =
   match op.integration with
+  | Some _ when not (scope_confirmed op candidate) -> (t, op)
   | None -> (t, op)
   | Some capture ->
       let receipt =
@@ -1354,6 +1437,7 @@ let record_integration t op candidate evidence =
 let capture_candidate ?(evidence = Executed) t op candidate =
   let t =
     match op.remote_integration with
+    | Some _ when not (scope_confirmed op candidate) -> t
     | None -> t
     | Some capture ->
         let receipt =
@@ -1384,7 +1468,10 @@ let capture_candidate ?(evidence = Executed) t op candidate =
     {
       op with
       candidate = Some candidate;
-      repair = None;
+      scope_revision =
+        Option.filter op.scope_revision ~f:(Commit.equal candidate);
+      candidate_evidence = Some evidence;
+      repair = (if scope_confirmed op candidate then None else op.repair);
       merge_progress = None;
       deterministic_failures =
         (if Option.is_none op.candidate then 0 else op.deterministic_failures);
@@ -1392,33 +1479,48 @@ let capture_candidate ?(evidence = Executed) t op candidate =
 
 let publish ?evidence t op candidate =
   let t, op = capture_candidate ?evidence t op candidate in
-  issue t op Publishing (Publish { candidate; expected = op.expected })
+  if scope_confirmed op candidate then
+    issue t op Publishing (Publish { candidate; expected = op.expected })
+  else issue t op Recovering (Verify_scope candidate)
 
 let integrate_remote t op preserved incoming =
-  let begin_operation local_action source target boundary remote_replay kind =
+  if not (scope_confirmed op preserved) then
+    let t, op = capture_candidate t op preserved in
+    issue t
+      { op with deferred_remote = Some incoming }
+      Recovering (Verify_scope preserved)
+  else
+    let boundaries =
+      Recorded preserved
+      :: Option.to_list (Option.map op.expected ~f:(fun sha -> Recorded sha))
+      @ List.map t.publications ~f:(fun receipt ->
+          Recorded receipt.published_revision)
+      @ recorded_boundaries t
+    in
+    let request = { preserved; incoming; boundaries } in
     let successor =
       {
         op with
         id = t.next_operation;
-        local_action;
-        source = Some source;
-        target = Some target;
-        boundary;
-        boundary_candidates = [];
-        remote_replay;
+        local_action = Prepare_remote_replay request;
+        source = Some incoming;
+        target = Some preserved;
+        boundary = Plain;
+        boundary_candidates = boundaries;
+        integration = None;
+        remote_integration = None;
+        remote_replay = None;
         recovery_revisions =
           List.dedup_and_sort ~compare:Commit.compare
             (op.recovery_revisions @ ancestry_requirements op);
-        remote_integration =
-          Some
-            {
-              base_branch = None;
-              source_revision = incoming;
-              target_revision = preserved;
-              replay_boundary = boundary;
-              integration_policy = execution_policy op;
-            };
+        retained_revisions =
+          List.dedup_and_sort ~compare:Commit.compare
+            (incoming :: preserved :: required_revisions t);
+        approved_scope = Replay_scope.Unproven;
         candidate = None;
+        scope_revision = None;
+        deferred_remote = None;
+        candidate_evidence = None;
         expected = Some incoming;
         command_sequence = 0;
         pending = None;
@@ -1428,30 +1530,10 @@ let integrate_remote t op preserved incoming =
     in
     issue
       { t with next_operation = t.next_operation + 1 }
-      successor Integrating kind
-  in
-  match execution_policy op with
-  | Rewrite ->
-      let boundaries =
-        Option.to_list (Option.map op.expected ~f:(fun sha -> Recorded sha))
-        @ recorded_boundaries t
-      in
-      let request = { preserved; incoming; boundaries } in
-      begin_operation (Prepare_remote_replay request) incoming preserved Plain
-        None (Plan_remote_replay request)
-  | Preserve_ancestry ->
-      begin_operation (Integrate_source Preserve_ancestry) preserved incoming
-        Plain None
-        (Integrate
-           {
-             source = preserved;
-             target = incoming;
-             boundary = Plain;
-             policy = Preserve_ancestry;
-           })
+      successor Integrating (Plan_remote_replay request)
 
 let integrate t op source target boundary policy =
-  issue t
+  let op =
     {
       op with
       source = Some source;
@@ -1459,8 +1541,17 @@ let integrate t op source target boundary policy =
       boundary;
       local_action = Integrate_source policy;
     }
-    Integrating
-    (Integrate { source; target; boundary; policy })
+  in
+  if not (integration_scope_matches op ~source ~target ~boundary ~policy) then
+    recover_with_agent t op "integration_scope_unverified"
+  else
+    match (policy, boundary) with
+    | ( Rewrite,
+        ( Plain | Inferred _ | Reconstructed _ | Patch_equivalent _
+        | Subject_inferred _ ) ) ->
+        recover_with_agent t op "replay_scope_missing_boundary"
+    | Rewrite, Recorded _ | Preserve_ancestry, _ ->
+        issue t op Integrating (Integrate { source; target; boundary; policy })
 
 let clear_diagnosis (op : operation) =
   match op.repair with
@@ -1509,6 +1600,15 @@ let observed ?(deterministic = true) t op (o : observation) =
     let op =
       {
         op with
+        approved_scope =
+          (if
+             deterministic && o.target_included
+             && Option.equal Commit.equal o.remote (Some source)
+           then Replay_scope.Identity (Commit.to_string source)
+           else
+             scope_for_inputs ~source ~target ~boundary:o.boundary
+               ~action:op.local_action);
+        scope_revision = None;
         destination = Bound_remote o.destination;
         source = Some source;
         target = Some target;
@@ -1609,6 +1709,12 @@ let adopt_integration t op (o : observation) policy =
       let op =
         {
           op with
+          approved_scope =
+            scope_for_inputs ~source:o.source ~target:o.target
+              ~boundary:o.boundary
+              ~action:
+                (Integrate_source (stronger_policy (execution_policy op) policy));
+          scope_revision = None;
           source = Some o.source;
           target = Some o.target;
           expected = o.remote;
@@ -1670,11 +1776,14 @@ let recovered_unchanged ~ready t op (o : observation) =
                       ~f:(fun replay -> Commit.equal replay.preserved o.source)
             -> (
               match op.remote_replay with
-              | Some replay when o.clean ->
-                  issue t op Integrating (Checkout_remote replay)
-              | Some _ ->
-                  recover_with_agent ~task:Finish_local_work t op
-                    "dirty_worktree"
+              | Some _ when o.clean -> (
+                  match (op.source, op.target) with
+                  | Some source, Some target ->
+                      integrate t op source target op.boundary
+                        (execution_policy op)
+                  | None, _ | _, None ->
+                      recover_with_agent t op "remote_replay_capture_missing")
+              | Some _ -> recover_with_agent t op "dirty_remote_integration"
               | None -> recover_with_agent t op "remote_replay_capture_missing")
           | None -> (
               match (op.source, op.target) with
@@ -1750,7 +1859,8 @@ let recovered ?(ready = false) t op (o : observation) =
               recover_with_agent t op "unexpected_agent_sequencer_change"
           | Some _ | None -> recovered_unchanged ~ready t op o))
 
-let recovery_verified t op (o : observation) source_preserved remote_preserved =
+let recovery_verified t op (o : observation) local_extension source_preserved
+    remote_preserved =
   match check_inspected_destination op ~observed:o.destination with
   | Error reason -> diagnose t op reason
   | Ok () -> (
@@ -1759,30 +1869,70 @@ let recovery_verified t op (o : observation) source_preserved remote_preserved =
       | Some
           ({ mode = History_recovery { reason; baseline; task }; _ } as recovery)
         -> (
-          (* [source_preserved] proves all previously retained revisions. A
+          (* [source_preserved] proves the scoped contribution and required ancestry. A
              newly observed remote adds an obligation; it does not make a
              successful repair of the captured work a failed agent turn. *)
-          let captured_remote_retained =
-            Option.for_all op.expected ~f:(fun expected ->
-                List.mem op.recovery_revisions expected ~equal:Commit.equal)
-          in
           let new_remote =
             Option.exists o.remote ~f:(fun remote ->
-                not (List.mem op.recovery_revisions remote ~equal:Commit.equal))
+                not (Option.equal Commit.equal op.expected (Some remote)))
           in
           let op =
             {
               op with
-              recovery_revisions =
+              retained_revisions =
                 List.dedup_and_sort ~compare:Commit.compare
                   ((o.head :: o.source :: Option.to_list o.remote)
-                  @ Option.to_list op.expected @ op.recovery_revisions);
+                  @ Option.to_list op.expected
+                  @ Option.to_list op.candidate
+                  @ op.retained_revisions);
             }
           in
           let target_matches =
             Option.equal Commit.equal op.target (Some o.target)
           in
-          let source_preserved = source_preserved && target_matches in
+          let extension_scope =
+            Option.bind (local_extension_contract op)
+              ~f:(fun (source, contract) ->
+                Option.bind local_extension ~f:(fun extension ->
+                    if
+                      String.equal extension.Replay_scope.source
+                        (Commit.to_string o.source)
+                      && String.equal extension.boundary
+                           (Commit.to_string source)
+                    then Replay_scope.extend_local contract extension
+                    else None))
+          in
+          let source_preserved =
+            source_preserved && target_matches
+            && ((not (equal_recovery_task task Finish_local_work))
+               || Option.is_some extension_scope)
+          in
+          let op =
+            if
+              equal_recovery_task task Finish_local_work
+              && source_preserved && o.clean && Option.is_none o.sequencer
+            then
+              {
+                op with
+                source = Some o.source;
+                approved_scope =
+                  Option.value extension_scope ~default:op.approved_scope;
+                scope_revision = None;
+                integration =
+                  Option.map op.integration ~f:(fun capture ->
+                      { capture with source_revision = o.source });
+              }
+            else if
+              equal_recovery_task task Repair_publication
+              && source_preserved && o.clean && Option.is_none o.sequencer
+              && not (Option.equal Commit.equal op.candidate (Some o.source))
+            then
+              match extension_scope with
+              | Some approved_scope ->
+                  { op with approved_scope; scope_revision = None }
+              | None -> op
+            else op
+          in
           let op =
             if
               equal_recovery_task task Finish_local_work
@@ -1844,6 +1994,9 @@ let recovery_verified t op (o : observation) source_preserved remote_preserved =
                 if equal_recovery_task task Repair_publication then task
                 else Reconstruct_history
             | P.Run_agent (P.Finish_work, _)
+              when (not op.agent_dispatched) && Option.is_none o.sequencer ->
+                Finish_local_work
+            | P.Run_agent (P.Finish_work, _)
             | P.Execute _ | P.Settled | P.Wait | P.Observe | P.Verify_agent _
             | P.Hold _ ->
                 task
@@ -1854,7 +2007,12 @@ let recovery_verified t op (o : observation) source_preserved remote_preserved =
               match op.target with
               | Some target ->
                   integrate t
-                    { op with repair = None; candidate = None }
+                    {
+                      op with
+                      repair = None;
+                      candidate = None;
+                      scope_revision = None;
+                    }
                     o.source target op.boundary (execution_policy op)
               | None -> recover_with_agent t op "recovery_target_missing")
           | P.Execute P.Publish ->
@@ -1871,9 +2029,8 @@ let recovery_verified t op (o : observation) source_preserved remote_preserved =
                 }
                 o.source
           | P.Run_agent (P.Publish, _)
-            when captured_remote_retained && new_remote
-                 && (not remote_preserved)
-                 && not (equal_recovery_task task Repair_publication) -> (
+            when (new_remote || Option.is_none op.remote_integration)
+                 && not remote_preserved -> (
               let t, op =
                 capture_candidate ~evidence:Verified_history t op o.source
               in
@@ -1901,6 +2058,8 @@ let remote t (op : operation) at sha topology =
   | None -> recover_with_agent t op "publication_without_candidate"
   | Some candidate -> (
       if
+        (* Confirmation that the remote contains our candidate is publication
+         evidence, not authorization to import the remote's later commits. *)
         Option.equal Commit.equal sha (Some candidate)
         || (Option.is_some sha && equal_topology topology Behind)
       then settle t op
@@ -1923,6 +2082,18 @@ let remote t (op : operation) at sha topology =
 let verification_result t (op : operation) at command result =
   let command_is kind = Option.exists command ~f:(equal_command_kind kind) in
   match result with
+  | Scope_verified proof -> (
+      match command with
+      | Some (Verify_scope candidate)
+        when Replay_scope.matches_request proof ~request:op.approved_scope
+               ~candidate:(Commit.to_string candidate) ->
+          settle t { op with scope_revision = Some candidate }
+      | Some
+          ( Observe | Inspect | Pin _ | Confirm _ | Publish _ | Integrate _
+          | Continue _ | Verify_recovery | Verify_scope _ | Commit_merge _
+          | Plan_remote_replay _ | Checkout_remote _ )
+      | None ->
+          diagnose t op "candidate_scope_identity_changed")
   | Retryable { reason; retry_after } ->
       retry_observation t op at reason retry_after
   | Publication_rejected rejection ->
@@ -1950,6 +2121,9 @@ let verification_result t (op : operation) at command result =
                 source = Some o.source;
                 target = Some o.source;
                 candidate = Some o.source;
+                approved_scope =
+                  Replay_scope.Identity (Commit.to_string o.source);
+                scope_revision = None;
                 expected = o.remote;
                 recovery_revisions =
                   List.dedup_and_sort
@@ -2001,7 +2175,11 @@ let interrupt_repair ~attempt_completed t token at reason =
          && equal_token token
               { operation = op.id; command = op.command_sequence } ->
       retry t
-        { op with repair = Some { r with attempt_completed } }
+        {
+          op with
+          agent_dispatched = true;
+          repair = Some { r with attempt_completed };
+        }
         at reason None
   | None
   | Some
@@ -2215,6 +2393,22 @@ let step_transition t = function
             _;
           } ->
           (t, []))
+  | Repair_dispatched token -> (
+      match t.active with
+      | Some ({ phase = Repairing r; _ } as op)
+        when r.attempt_started
+             && equal_token token
+                  { operation = op.id; command = op.command_sequence } ->
+          ({ t with active = Some { op with agent_dispatched = true } }, [])
+      | None
+      | Some
+          {
+            phase =
+              ( Preparing | Integrating | Repairing _ | Publishing | Confirming
+              | Waiting _ | Recovering | Settled | Intervention _ );
+            _;
+          } ->
+          (t, []))
   | Repair_started token -> (
       match t.active with
       | Some ({ phase = Repairing r; _ } as op)
@@ -2247,7 +2441,11 @@ let step_transition t = function
              && equal_token token
                   { operation = op.id; command = op.command_sequence } ->
           issue t
-            { op with repair = Some { r with attempt_completed = true } }
+            {
+              op with
+              agent_dispatched = true;
+              repair = Some { r with attempt_completed = true };
+            }
             Recovering (inspection op)
       | None
       | Some
@@ -2268,7 +2466,7 @@ let step_transition t = function
             match result with
             | Checkout_ready | Observed _ | Observed_active _
             | Observed_recovery _ | Inspected _ | Inspected_active _
-            | Recovery_verified _
+            | Recovery_verified _ | Scope_verified _
             | Remote { topology = Equal | Includes | Behind | Diverged; _ } ->
                 0
             | Remote { topology = Unproven; _ }
@@ -2351,10 +2549,15 @@ let step_transition t = function
             | Inspected _, Some Inspect ->
                 recover_with_agent t op "unidentified_integration_context"
             | ( Recovery_verified
-                  { observation; source_preserved; remote_preserved },
+                  {
+                    observation;
+                    local_extension;
+                    source_preserved;
+                    remote_preserved;
+                  },
                 Some Verify_recovery ) ->
-                recovery_verified t op observation source_preserved
-                  remote_preserved
+                recovery_verified t op observation local_extension
+                  source_preserved remote_preserved
             | ( Merge_completion_needed capture,
                 Some (Continue { head; target; sequencer }) )
               when Commit.equal capture.head head
@@ -2415,22 +2618,15 @@ let step_transition t = function
             | Remote_replay_selected boundary, Some (Plan_remote_replay request)
               -> (
                 match boundary with
-                | Plain ->
-                    recover_with_agent t op "remote_replay_boundary_missing"
-                | Recorded upstream
-                | Inferred upstream
-                | Patch_equivalent upstream
-                | Subject_inferred upstream
-                | Reconstructed { upstream; original = _ } ->
+                | Plain | Inferred _ | Patch_equivalent _ | Subject_inferred _
+                | Reconstructed _ ->
+                    recover_with_agent t op
+                      "remote_replay_scope_missing_boundary"
+                | Recorded upstream ->
                     if
-                      match boundary with
-                      | Recorded _ ->
-                          not
-                            (List.mem request.boundaries boundary
-                               ~equal:equal_boundary)
-                      | Inferred _ | Reconstructed _ | Patch_equivalent _
-                      | Subject_inferred _ | Plain ->
-                          false
+                      not
+                        (List.mem request.boundaries boundary
+                           ~equal:equal_boundary)
                     then
                       recover_with_agent t op
                         "unrecorded_remote_replay_boundary"
@@ -2442,21 +2638,64 @@ let step_transition t = function
                           upstream;
                         }
                       in
-                      issue t
+                      let policy = execution_policy op in
+                      let source, target =
+                        match policy with
+                        | Rewrite -> (request.incoming, request.preserved)
+                        | Preserve_ancestry ->
+                            (request.preserved, request.incoming)
+                      in
+                      let op =
                         {
                           op with
                           boundary;
                           boundary_candidates = request.boundaries;
+                          source = Some source;
+                          target = Some target;
                           remote_integration =
-                            Option.map op.remote_integration ~f:(fun capture ->
-                                { capture with replay_boundary = boundary });
+                            Some
+                              {
+                                base_branch = None;
+                                source_revision = request.incoming;
+                                target_revision = request.preserved;
+                                replay_boundary = boundary;
+                                integration_policy = policy;
+                              };
                           remote_replay = Some replay;
-                          local_action = Integrate_source Rewrite;
+                          local_action = Integrate_source policy;
+                          approved_scope =
+                            scope_for_inputs ~source ~target ~boundary
+                              ~action:(Integrate_source policy);
                         }
-                        Integrating (Checkout_remote replay))
+                      in
+                      integrate t op source target boundary policy)
             | Remote_checked_out, Some (Checkout_remote replay) ->
                 integrate t op replay.incoming replay.preserved op.boundary
                   Rewrite
+            | Scope_verified proof, Some (Verify_scope candidate) ->
+                if
+                  Replay_scope.matches_request proof ~request:op.approved_scope
+                    ~candidate:(Commit.to_string candidate)
+                then
+                  let op = { op with scope_revision = Some candidate } in
+                  match op.deferred_remote with
+                  | Some incoming ->
+                      integrate_remote t
+                        { op with deferred_remote = None }
+                        candidate incoming
+                  | None ->
+                      if equal_phase op.phase Confirming then
+                        let t, op =
+                          capture_candidate
+                            ~evidence:
+                              (Option.value op.candidate_evidence
+                                 ~default:Recovered_completion)
+                            t op candidate
+                        in
+                        settle t op
+                      else
+                        publish ?evidence:op.candidate_evidence t op candidate
+                else recover_with_agent t op "candidate_scope_identity_changed"
             | Integrated candidate, Some (Integrate _ | Continue _) ->
                 publish t op candidate
             | ( Conflict { head; sequencer; conflicts },
@@ -2476,8 +2715,8 @@ let step_transition t = function
             | Remote { sha; topology }, Some (Confirm _) ->
                 remote t op at sha topology
             | ( ( Checkout_ready | Observed _ | Observed_active _
-                | Observed_recovery _ | Pinned | Integrated _ | Conflict _
-                | Merge_completion_needed _ | Merge_completed _
+                | Observed_recovery _ | Pinned | Integrated _ | Scope_verified _
+                | Conflict _ | Merge_completion_needed _ | Merge_completed _
                 | Remote_replay_selected _ | Remote_checked_out | Inspected _
                 | Inspected_active _ | Recovery_verified _ | Published
                 | Remote _ ),
@@ -2485,8 +2724,8 @@ let step_transition t = function
                 | Some
                     ( Observe | Commit_merge _ | Plan_remote_replay _
                     | Checkout_remote _ | Pin _ | Integrate _ | Inspect
-                    | Verify_recovery | Continue _ | Publish _ | Confirm _ ) ) )
-              ->
+                    | Verify_recovery | Verify_scope _ | Continue _ | Publish _
+                    | Confirm _ ) ) ) ->
                 diagnose t op "command_result_mismatch")
       | _ -> (t, []))
 
@@ -2526,7 +2765,8 @@ let verification_checkout_valid ~branch ~candidate
   && Git_observation.equal_sequencer checkout.sequencer
        Git_observation.None_active
 
-let check_checkout (command : command) ~branch (checkout : Git_observation.t) =
+let check_checkout ?operation (command : command) ~branch
+    (checkout : Git_observation.t) =
   let module G = Git_observation in
   let named_head sha =
     Option.equal String.equal checkout.branch (Some branch)
@@ -2556,10 +2796,23 @@ let check_checkout (command : command) ~branch (checkout : Git_observation.t) =
   | Checkout_remote replay ->
       if named_head replay.preserved && G.clean checkout then Ok ()
       else Error "remote_replay_precondition_changed"
-  | Integrate { source; _ } ->
-      if named_head source && G.clean checkout then Ok ()
+  | Integrate { source; target; boundary; policy } ->
+      let checkout_source =
+        match operation with
+        | Some op
+          when integration_scope_matches op ~source ~target ~boundary ~policy
+          -> (
+            match (op.remote_replay, policy) with
+            | Some replay, Rewrite
+              when Commit.equal replay.incoming source
+                   && Commit.equal replay.preserved target ->
+                target
+            | Some _, Rewrite | Some _, Preserve_ancestry | None, _ -> source)
+        | Some _ | None -> source
+      in
+      if named_head checkout_source && G.clean checkout then Ok ()
       else Error "integration_precondition_changed"
-  | Publish { candidate; _ } ->
+  | Publish { candidate; _ } | Verify_scope candidate ->
       if named_head candidate && checkout.valid then Ok ()
       else Error "publication_precondition_changed"
   | Continue { head; target; sequencer } ->
@@ -2803,7 +3056,7 @@ let decode json =
         && not (String.is_empty sequencer)
     | Publish { candidate; expected } ->
         valid_commit candidate && optional expected
-    | Confirm candidate -> valid_commit candidate
+    | Confirm candidate | Verify_scope candidate -> valid_commit candidate
   in
   let valid_phase = function
     | Waiting { until; reason } ->
@@ -2847,6 +3100,8 @@ let decode json =
     | Some { kind = Publish { candidate; expected }; _ }, Publishing ->
         commit_matches op.candidate candidate
         && Option.equal Commit.equal op.expected expected
+    | Some { kind = Verify_scope candidate; _ }, (Recovering | Confirming) ->
+        commit_matches op.candidate candidate
     | Some { kind = Confirm candidate; _ }, Confirming ->
         commit_matches op.candidate candidate
     | Some { kind = Inspect; _ }, Recovering -> true
@@ -2863,7 +3118,8 @@ let decode json =
               kind =
                 ( Observe | Commit_merge _ | Plan_remote_replay _
                 | Checkout_remote _ | Pin _ | Integrate _ | Inspect
-                | Verify_recovery | Continue _ | Publish _ | Confirm _ );
+                | Verify_recovery | Verify_scope _ | Continue _ | Publish _
+                | Confirm _ );
               _;
             } ),
         ( Preparing | Integrating | Repairing _ | Publishing | Confirming
@@ -2879,7 +3135,15 @@ let decode json =
             t with
             active =
               Option.map t.active ~f:(fun op ->
-                  if Option.is_some op.remote_integration then op
+                  if
+                    Option.is_some op.remote_integration
+                    ||
+                    match Json.field "active" json with
+                    | Some (`Assoc fields) ->
+                        List.Assoc.mem fields ~equal:String.equal
+                          "remote_integration"
+                    | Some _ | None -> false
+                  then op
                   else
                     let capture source_revision target_revision replay_boundary
                         =
@@ -2906,6 +3170,70 @@ let decode json =
                     in
                     { op with remote_integration });
           }
+        in
+        let t =
+          if
+            Option.is_some
+              (Option.bind (Json.field "active" json)
+                 ~f:(Json.field "approved_scope"))
+          then t
+          else
+            {
+              t with
+              active =
+                Option.map t.active ~f:(fun op ->
+                    let approved_scope =
+                      match (op.source, op.target, op.remote_integration) with
+                      | Some source, Some target, None ->
+                          scope_for_inputs ~source ~target ~boundary:op.boundary
+                            ~action:op.local_action
+                      | None, _, _ | _, None, _ | _, _, Some _ ->
+                          Replay_scope.Unproven
+                    in
+                    let op =
+                      { op with approved_scope; scope_revision = None }
+                    in
+                    match (op.pending, op.candidate, op.phase) with
+                    | Some { kind = Publish _; _ }, Some candidate, _
+                    | None, Some candidate, Settled ->
+                        let command_sequence = op.command_sequence + 1 in
+                        {
+                          op with
+                          command_sequence;
+                          phase =
+                            (if equal_phase op.phase Settled then Confirming
+                             else Recovering);
+                          pending =
+                            Some
+                              {
+                                token =
+                                  {
+                                    operation = op.id;
+                                    command = command_sequence;
+                                  };
+                                kind = Verify_scope candidate;
+                              };
+                        }
+                    | ( Some
+                          {
+                            kind =
+                              ( Observe | Pin _ | Integrate _ | Inspect
+                              | Verify_recovery | Verify_scope _ | Continue _
+                              | Confirm _ | Commit_merge _
+                              | Plan_remote_replay _ | Checkout_remote _ );
+                            _;
+                          },
+                        _,
+                        _ )
+                    | Some { kind = Publish _; _ }, None, _
+                    | None, None, _
+                    | ( None,
+                        Some _,
+                        ( Preparing | Integrating | Repairing _ | Publishing
+                        | Confirming | Waiting _ | Recovering | Intervention _
+                          ) ) ->
+                        op);
+            }
         in
         let legacy_downgrade =
           legacy_policy
@@ -3010,6 +3338,13 @@ let decode json =
                            | Diagnosis _ -> true
                            | Content_repair | History_recovery _ -> false)
                        && Option.is_none op.merge_progress)
+                 && (Replay_scope.equal_request op.approved_scope
+                       Replay_scope.Unproven
+                    || Replay_scope.valid_request op.approved_scope)
+                 && Option.for_all op.scope_revision ~f:(fun revision ->
+                     valid_commit revision
+                     && scope_confirmed op revision
+                     && Option.equal Commit.equal op.candidate (Some revision))
                  && Option.for_all op.integration ~f:valid_capture
                  && Option.for_all op.remote_integration ~f:(fun capture ->
                      valid_capture capture
@@ -3048,8 +3383,8 @@ let decode json =
                            | Observe | Inspect -> true
                            | Commit_merge _ | Plan_remote_replay _
                            | Checkout_remote _ | Pin _ | Integrate _
-                           | Verify_recovery | Continue _ | Publish _
-                           | Confirm _ ->
+                           | Verify_recovery | Verify_scope _ | Continue _
+                           | Publish _ | Confirm _ ->
                                false))
                  && ((not op.reobserve_after_completion)
                     || Option.is_some op.source && Option.is_some op.target
@@ -3067,6 +3402,7 @@ let decode json =
                  && op.publication_recovery_attempts <= 2
                  && optional op.source && optional op.target
                  && optional op.candidate && optional op.expected
+                 && optional op.deferred_remote
                  && (match op.local_action with
                    | Publish_source | Integrate_source _ -> true
                    | Prepare_remote_replay r ->
@@ -3087,11 +3423,20 @@ let decode json =
                        | Reconstructed { upstream = sha; original = _ } ->
                            Commit.equal sha r.upstream
                        | Plain -> false)
-                     && Option.equal Commit.equal op.source (Some r.incoming)
-                     && Option.equal Commit.equal op.target (Some r.preserved))
+                     &&
+                     match strategy_policy op with
+                     | Rewrite ->
+                         Option.equal Commit.equal op.source (Some r.incoming)
+                         && Option.equal Commit.equal op.target
+                              (Some r.preserved)
+                     | Preserve_ancestry ->
+                         Option.equal Commit.equal op.source (Some r.preserved)
+                         && Option.equal Commit.equal op.target
+                              (Some r.incoming))
                  && valid_boundary op.boundary
                  && List.for_all op.boundary_candidates ~f:valid_boundary
                  && List.for_all op.recovery_revisions ~f:valid_commit
+                 && List.for_all op.retained_revisions ~f:valid_commit
                  && (match op.destination with
                    | Unobserved_remote -> true
                    | Bound_remote identity -> Remote_id.valid identity
@@ -3236,6 +3581,35 @@ let repair_turn t ~branch token =
           mode = r.mode;
           prompt =
             (Printf.sprintf "Repair turn: %d/%d\n" token.operation token.command
+            ^ "Approved contribution contract: "
+            ^ Sexp.to_string_hum
+                (Replay_scope.sexp_of_request op.approved_scope)
+            ^ (match op.local_action with
+              | Prepare_remote_replay request ->
+                  Printf.sprintf
+                    "\n\
+                     Pending remote contribution: %s onto %s (recorded scope \
+                     not yet established).\n"
+                    (Commit.to_string request.incoming)
+                    (Commit.to_string request.preserved)
+              | Publish_source | Integrate_source _ -> "")
+            ^ "\n\
+               For history reconstruction, use only this contract's inputs. A \
+               retained ref or an observed remote head is a recovery backup, \
+               not permission to add its commits to the patch. For a Replay \
+               contract, inspect the first-parent chain from its recorded \
+               boundary to its source. Reconstruct onto its exact target using \
+               only the ordinary single-parent commits in that chain, in \
+               order. Exclude merge commits and their side-parent histories. \
+               Keep excluded work in the existing recovery refs. Do not use a \
+               plain rebase or merge a remote branch to recover missing scope. \
+               A Merge contract authorizes exactly its two captured inputs. An \
+               Identity contract authorizes only the captured commit. If the \
+               contract is Unproven, repair missing environmental evidence and \
+               report the missing recorded provenance; do not guess ownership \
+               from a merge base or commit subject. Onton independently checks \
+               the resulting history and tree, allowing conflict resolution \
+               only on paths found by its own prediction.\n"
             ^ "Repair environmental conditions that block this operation: \
                inspect and repair local gate state, install or restore missing \
                project dependencies and system tools, and correct environment \
@@ -3286,17 +3660,23 @@ let repair_turn t ~branch token =
                   | Finish_local_work ->
                       "First finish the interrupted local work: inspect the \
                        edits, complete the intended changes and checks, and \
-                       commit them. Onton will then integrate the pinned base.\n"
+                       commit them as a linear continuation of the captured \
+                       source; do not merge other branches. Onton \
+                       independently verifies this extension before \
+                       integrating the pinned base.\n"
                   | Repair_publication ->
                       "Repair the local content or history responsible for the \
-                       publication rejection below. Preserve all required \
-                       work. Do not disable hooks, checks or branch \
-                       protections, change credentials or permission scopes, \
-                       change the destination, or push. Do not remove required \
-                       work to evade authorization. If the rejection requires \
-                       authority you do not have, explain the required \
-                       external action. Onton will verify preservation and \
-                       retry publication.\n"
+                       publication rejection below. Make source fixes as \
+                       ordinary commits after the already verified candidate; \
+                       do not import or merge other branches. Onton will \
+                       verify that linear extension before accepting the new \
+                       candidate. Preserve all required work. Do not disable \
+                       hooks, checks or branch protections, change credentials \
+                       or permission scopes, change the destination, or push. \
+                       Do not remove required work to evade authorization. If \
+                       the rejection requires authority you do not have, \
+                       explain the required external action. Onton will verify \
+                       preservation and retry publication.\n"
                   | Reconstruct_history ->
                       "Deterministic integration needs recovery. Complete the \
                        integration while preserving the retained history.\n")
@@ -3311,16 +3691,17 @@ let repair_turn t ~branch token =
                      Recovery starting revision: %s\n\
                      Additional retained revisions: %s\n\
                      Inspect the checkout, index, sequencer, reflogs and \
-                     project recovery refs. Preserve all valid patch and \
-                     remote work. You may resolve, stage, commit, and finish \
-                     or reconstruct integration against the pinned target. Do \
-                     not discard uncommitted work or delete recovery refs. Do \
-                     not push. Leave a clean checkout of the managed branch \
-                     with no active sequencer. Onton will independently verify \
-                     preserved history and publish the captured candidate with \
-                     an explicit remote lease. If preservation cannot be \
-                     established, leave the work intact and explain the \
-                     uncertainty.\n"
+                     project recovery refs. Retain captured patch and remote \
+                     work in recovery refs; include only approved \
+                     contributions in the managed branch. You may resolve, \
+                     stage, commit, and finish or reconstruct integration \
+                     against the pinned target. Do not discard uncommitted \
+                     work or delete recovery refs. Do not push. Leave a clean \
+                     checkout of the managed branch with no active sequencer. \
+                     Onton will independently verify preserved history and \
+                     publish the captured candidate with an explicit remote \
+                     lease. If preservation cannot be established, leave the \
+                     work intact and explain the uncertainty.\n"
                     branch reason (sha source) (sha target) (sha candidate)
                     (sha expected)
                     (match boundary with

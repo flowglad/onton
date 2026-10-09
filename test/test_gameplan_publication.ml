@@ -236,6 +236,27 @@ let runner_without_backend ?(repair = false) env ~feature ~retry =
           Git.run_git ~cwd:path [ "push"; "origin"; "main" ];
           Git.run_git ~cwd:path [ "switch"; "-c"; "demo/patch-0" ];
           let clock = Eio.Stdenv.clock env in
+          let io =
+            Branch_reconcile_executor.make_io
+              ~process_mgr:(Eio.Stdenv.process_mgr env)
+              ~clock ~path
+          in
+          let boundary =
+            match
+              Branch_reconcile.Commit.make
+                (Git.git_capture ~cwd:path [ "rev-parse"; "HEAD" ])
+            with
+            | Some revision -> revision
+            | None -> assert false
+          in
+          ignore
+            (get
+               (Branch_reconcile_executor.record_materialization ~io
+                  ~prefix:
+                    (Branch_reconcile.recovery_prefix ~project:"demo"
+                       ~branch:"demo/patch-0")
+                  ~branch:"demo/patch-0" ~new_branch_from:(Some boundary)));
+
           let fs = Eio.Stdenv.fs env in
           let process_mgr = Eio.Stdenv.process_mgr env in
           let module Real_worktree =
@@ -324,7 +345,8 @@ let runner_without_backend ?(repair = false) env ~feature ~retry =
                     (retry && first) || base_failure
                 | Branch_reconcile.Commit_merge _
                 | Branch_reconcile.Plan_remote_replay _
-                | Branch_reconcile.Checkout_remote _ | Branch_reconcile.Observe
+                | Branch_reconcile.Checkout_remote _
+                | Branch_reconcile.Verify_scope _ | Branch_reconcile.Observe
                 | Branch_reconcile.Pin _ | Branch_reconcile.Integrate _
                 | Branch_reconcile.Inspect | Branch_reconcile.Verify_recovery
                 | Branch_reconcile.Continue _ | Branch_reconcile.Confirm _ ->
@@ -344,7 +366,8 @@ let runner_without_backend ?(repair = false) env ~feature ~retry =
                       published := Some candidate
                 | Branch_reconcile.Commit_merge _
                 | Branch_reconcile.Plan_remote_replay _
-                | Branch_reconcile.Checkout_remote _ | Branch_reconcile.Observe
+                | Branch_reconcile.Checkout_remote _
+                | Branch_reconcile.Verify_scope _ | Branch_reconcile.Observe
                 | Branch_reconcile.Pin _ | Branch_reconcile.Integrate _
                 | Branch_reconcile.Inspect | Branch_reconcile.Verify_recovery
                 | Branch_reconcile.Continue _ | Branch_reconcile.Confirm _ ->

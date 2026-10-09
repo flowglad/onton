@@ -59,7 +59,7 @@ let resolve ~step ~state initial =
              ~sequencer:"fixture-rebase" ~conflicts:0)
       in
       let candidate = R.commit ((id * 10) + 3) in
-      let t = reply t (B.Integrated candidate) in
+      let t = reply t (B.Integrated candidate) |> P.verify_scope ~step ~state in
       let t = reply t B.Published in
       reply t (B.Remote { sha = Some candidate; topology = Equal })
   | Some _ | None -> initial

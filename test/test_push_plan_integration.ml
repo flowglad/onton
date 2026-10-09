@@ -82,7 +82,7 @@ let setup_seed_clone ~origin_dir ~managed_dir =
    repeating the same request in a settled owner must issue no more work. *)
 let publication_id = ref 0
 
-let publish ?(before_command = fun (_ : B.command) -> ())
+let publish ?materialized ?(before_command = fun (_ : B.command) -> ())
     ?(preserve_history = false) ~clock ~process_mgr ~path ~branch ~base () =
   Int.incr publication_id;
   let prefix =
@@ -136,7 +136,13 @@ let publish ?(before_command = fun (_ : B.command) -> ())
                 (B.Result { token = command.token; at = 100.; result })))
     | None, _ | _, None -> state
   in
-  let state = drive 100 (fst (B.step B.empty (B.Request intent))) in
+  let initial =
+    match materialized with
+    | None -> B.empty
+    | Some revision ->
+        fst (B.step B.empty (B.Materialized (B.New_branch revision)))
+  in
+  let state = drive 100 (fst (B.step initial (B.Request intent))) in
   (if Option.equal B.equal_phase (B.phase state) (Some B.Settled) then
      let repeated, effects = B.step state (B.Request intent) in
      if not (B.equal repeated state && List.is_empty effects) then
@@ -288,6 +294,13 @@ let scenario_lineage_planning_guards env =
     "git checkout -q -b feat; echo remote > remote.txt; git add remote.txt; \
      git commit -q -m remote; git push -q -u origin feat; git reset -q --hard \
      main; echo local > local.txt; git add local.txt; git commit -q -m local";
+  let materialized =
+    match
+      B.Commit.make (git_capture ~dir:managed_dir [ "rev-parse"; "main" ])
+    with
+    | Some sha -> sha
+    | None -> assert false
+  in
   let initial_local = git_capture ~dir:managed_dir [ "rev-parse"; "HEAD" ] in
   let initial_remote = git_capture ~dir:origin_dir [ "rev-parse"; "feat" ] in
   let reflog_reads = ref 0 in
@@ -307,7 +320,7 @@ let scenario_lineage_planning_guards env =
       publishing := match command.kind with B.Publish _ -> true | _ -> false
     in
     let actual =
-      publish ~before_command ~clock ~process_mgr ~path
+      publish ~materialized ~before_command ~clock ~process_mgr ~path
         ~branch:(Types.Branch.of_string "feat")
         ~base:(Types.Branch.of_string base)
         ~preserve_history ()
@@ -995,7 +1008,14 @@ let scenario_missing_tracking env ~preserve_history case =
         ^ Stdlib.Filename.quote (Stdlib.Filename.concat root "missing.git"))
   | Fast_forward -> ());
   let result =
-    publish ~preserve_history ~clock ~process_mgr ~path:managed
+    publish
+      ~materialized:
+        (match
+           B.Commit.make (git_capture ~dir:seed [ "rev-parse"; "main" ])
+         with
+        | Some revision -> revision
+        | None -> failwith "invalid fixture creation revision")
+      ~preserve_history ~clock ~process_mgr ~path:managed
       ~branch:(Types.Branch.of_string "feat")
       ~base:(Types.Branch.of_string "main")
       ()
@@ -1075,7 +1095,14 @@ let scenario_protected_history env rewrites =
     let before = git_capture ~dir:origin [ "rev-parse"; "refs/heads/feat" ] in
     let local = git_capture ~dir:managed [ "rev-parse"; "refs/heads/feat" ] in
     let result =
-      publish ~preserve_history:true ~clock ~process_mgr ~path:managed
+      publish
+        ~materialized:
+          (match
+             B.Commit.make (git_capture ~dir:managed [ "rev-parse"; "main" ])
+           with
+          | Some revision -> revision
+          | None -> failwith "invalid fixture creation revision")
+        ~preserve_history:true ~clock ~process_mgr ~path:managed
         ~branch:(Types.Branch.of_string "feat")
         ~base:(Types.Branch.of_string "main")
         ()
@@ -1096,7 +1123,23 @@ let scenario_protected_history env rewrites =
       failwith "unproven protected publication changed remote";
     (result, before)
   in
-  let require_success = require_settled "protected merge/append" in
+  let require_success state =
+    if not (Option.equal B.equal_phase (B.phase state) (Some B.Settled)) then (
+      require_history_repair "unproven protected history requests owned repair"
+        state;
+      match B.operation state with
+      | Some operation ->
+          List.iter
+            (Option.to_list operation.source @ Option.to_list operation.target)
+            ~f:(fun revision ->
+              if
+                not
+                  (List.mem
+                     (B.required_revisions state)
+                     revision ~equal:B.Commit.equal)
+              then failwith "protected recovery lost its captured input")
+      | None -> failwith "protected recovery lost its owner")
+  in
   require_success (fst (publish ()));
   List.iteri rewrites ~f:(fun index rewrite ->
       if rewrite then (

@@ -140,6 +140,10 @@ let clean_env () =
      subprocess receives only the noninteractive Git variables we install. *)
   |> List.append
        [
+         (* Scope proofs must inspect the objects that a remote will receive,
+            never a local replacement or grafted ancestry view. *)
+         "GIT_NO_REPLACE_OBJECTS=1";
+         "GIT_GRAFT_FILE=";
          "GIT_CONFIG_COUNT=1";
          "GIT_CONFIG_KEY_0=core.hooksPath";
          "GIT_CONFIG_VALUE_0=/dev/null";

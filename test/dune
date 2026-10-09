@@ -387,7 +387,7 @@
 (test
  (name test_tui_render_frame)
  (modules test_tui_render_frame)
- (libraries onton onton_core base qcheck-core cmarkit))
+ (libraries onton onton_core onton_core_test_support base qcheck-core cmarkit))
 
 (test
  (name test_intervention_reason)
@@ -829,7 +829,7 @@
 (test
  (name test_session_timeout)
  (modules test_session_timeout)
- (libraries onton onton_core eio_main unix)
+ (libraries onton onton_core onton_core_test_support eio_main unix)
  (ocamlopt_flags (:standard -w -40-42))
  (ocamlc_flags (:standard -w -40-42)))
 
@@ -908,19 +908,19 @@
  (name test_session_result_properties)
  (modules test_session_result_properties)
  (flags (:standard -w -40-42))
- (libraries onton_core qcheck-core qcheck-core.runner))
+ (libraries onton_core onton_core_test_support qcheck-core qcheck-core.runner))
 
 (test
  (name test_branch_reconcile_ownership)
  (modules test_branch_reconcile_ownership)
  (flags (:standard -w -40-42))
- (libraries onton onton_core eio_main unix))
+ (libraries onton onton_core onton_core_test_support eio_main unix))
 
 (test
  (name test_branch_reconcile_model)
  (modules test_branch_reconcile_model)
  (flags (:standard -w -40-42))
- (libraries onton_core qcheck-core qcheck-core.runner))
+ (libraries onton_core onton_core_test_support qcheck-core qcheck-core.runner))
 
 (test
  (name test_branch_reconcile_boundaries)
@@ -1061,6 +1061,29 @@
  (name test_reconcile_plan_properties)
  (modules test_reconcile_plan_properties)
  (libraries onton_core qcheck-core qcheck-core.runner))
+
+(test
+ (name test_replay_scope_properties)
+ (modules test_replay_scope_properties)
+ (libraries onton_core qcheck-core qcheck-core.runner)
+ (flags (:standard -w -40-42)))
+
+(test
+ (name test_replay_scope_state_machine)
+ (modules test_replay_scope_state_machine)
+ (libraries onton_core onton_core_test_support qcheck-core qcheck-core.runner)
+ (flags (:standard -w -40-42)))
+
+(test
+ (name test_replay_scope_git)
+ (modules test_replay_scope_git)
+ (libraries onton onton_core onton_test_support eio_main unix)
+ (flags (:standard -w -40-42))
+ (deps (package onton))
+ (action
+  (setenv ONTON_SETSID_EXEC
+   %{bin:onton-setsid-exec}
+   (run %{test}))))
 
 (test
  (name test_reconcile_recovery_git)

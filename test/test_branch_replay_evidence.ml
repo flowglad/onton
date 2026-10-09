@@ -25,9 +25,9 @@ let evidence = function
   | B.Retryable _ -> (None, true)
   | B.Checkout_ready | B.Observed_recovery _ | B.Observed_active _ | Pinned
   | Merge_completion_needed _ | Merge_completed _ | Remote_replay_selected _
-  | Remote_checked_out | Integrated _ | Conflict _ | Recovery_verified _
-  | Inspected _ | Inspected_active _ | Published | Remote _
-  | Recovery_required _ | Publication_rejected _ | Attempt_failed _
+  | Remote_checked_out | Scope_verified _ | Integrated _ | Conflict _
+  | Recovery_verified _ | Inspected _ | Inspected_active _ | Published
+  | Remote _ | Recovery_required _ | Publication_rejected _ | Attempt_failed _
   | Needs_diagnosis _ ->
       (None, false)
 
@@ -75,11 +75,12 @@ let plain_replay env merged_history =
                   | B.Checkout_ready | B.Observed_recovery _
                   | B.Observed_active _ | B.Pinned | B.Merge_completion_needed _
                   | B.Merge_completed _ | B.Remote_replay_selected _
-                  | B.Remote_checked_out | B.Integrated _ | B.Conflict _
-                  | B.Recovery_verified _ | B.Inspected _ | B.Inspected_active _
-                  | B.Published | B.Remote _ | B.Retryable _
-                  | B.Recovery_required _ | B.Publication_rejected _
-                  | B.Attempt_failed _ | B.Needs_diagnosis _ ->
+                  | B.Remote_checked_out | B.Scope_verified _ | B.Integrated _
+                  | B.Conflict _ | B.Recovery_verified _ | B.Inspected _
+                  | B.Inspected_active _ | B.Published | B.Remote _
+                  | B.Retryable _ | B.Recovery_required _
+                  | B.Publication_rejected _ | B.Attempt_failed _
+                  | B.Needs_diagnosis _ ->
                       ());
                   let next, _ =
                     B.step state
@@ -91,27 +92,35 @@ let plain_replay env merged_history =
                     | Error reason -> failwith reason
                   in
                   settle restored (remaining - 1)
-              | None, _ | _, None ->
-                  failwith "plain replay stopped unexpectedly")
+              | ( Some { repair = Some { mode = B.History_recovery _; _ }; _ },
+                  None ) ->
+                  state
+              | None, _
+              | ( Some
+                    {
+                      repair =
+                        ( None
+                        | Some { mode = B.Content_repair | B.Diagnosis _; _ } );
+                      _;
+                    },
+                  None ) ->
+                  failwith "unproven replay stopped without agent recovery")
           in
           let settled = settle initial 12 in
-          check "plain provenance survives checkpoint and publication"
-            (match B.operation settled with
-            | Some operation -> operation.boundary = B.Plain
-            | None -> false);
-          List.iter
-            (fun file ->
-              check
-                ("plain replay preserves " ^ file)
-                (Git.git_capture ~cwd:remote [ "show"; "patch:" ^ file ] = file))
-            ([ "base"; "base-advance"; "patch" ]
-            @ if merged_history then [ "side" ] else []);
-          check "plain replay includes captured target"
+          check "unproven boundary remains pending for owned recovery"
+            (B.publication_status settled = `Pending
+            && B.integrations settled = []);
+          check "unproven history leaves the captured checkout unchanged"
+            (Git.git_capture ~cwd:dir [ "rev-parse"; "HEAD" ] = source);
+          check "unproven history never publishes a patch ref"
             (Git.git_exit_code ~cwd:remote
-               [ "merge-base"; "--is-ancestor"; target; "patch" ]
-            = 0);
-          check "plain replay rewrites source"
-            (Git.git_capture ~cwd:remote [ "rev-parse"; "patch" ] <> source)))
+               [ "show-ref"; "--verify"; "refs/heads/patch" ]
+            <> 0);
+          check "captured source and target remain retained for repair"
+            (List.for_all
+               (fun commit ->
+                 List.mem (sha commit) (B.required_revisions settled))
+               [ source; target ])))
 
 let deep_stack env empty_tip =
   Git.with_temp_repo (fun remote ->
@@ -436,42 +445,46 @@ let () =
                 (match fst (evidence preferred) with
                 | Some o -> o.boundary = B.Recorded (sha original_base)
                 | None -> false);
-              let rec settle state remaining =
-                if B.publication_status state = `Published then state
-                else (
-                  check "replay converges" (remaining > 0);
-                  let command, result = execute io state in
-                  let state, _ =
-                    B.step state
-                      (B.Result { token = command.token; at = 100.; result })
-                  in
-                  let state =
-                    match B.decode (B.yojson_of_t state) with
-                    | Ok state -> state
-                    | Error reason -> failwith reason
-                  in
-                  settle state (remaining - 1))
+              let rec inspect state remaining =
+                check "inferred replay reaches owned repair" (remaining > 0);
+                match B.pending state with
+                | None -> state
+                | Some _ ->
+                    let command, result = execute io state in
+                    let state, _ =
+                      B.step state
+                        (B.Result { token = command.token; at = 100.; result })
+                    in
+                    let state =
+                      match B.decode (B.yojson_of_t state) with
+                      | Ok state -> state
+                      | Error reason -> failwith reason
+                    in
+                    inspect state (remaining - 1)
               in
-              let state = settle initial 12 in
-              check "strategy survives serialization and settlement"
+              let state = inspect initial 12 in
+              check
+                "inferred evidence survives without granting replay authority"
                 (match B.operation state with
-                | Some op -> op.boundary = expected_boundary
+                | Some op -> (
+                    op.boundary = expected_boundary
+                    &&
+                    match op.phase with
+                    | B.Repairing _ -> true
+                    | B.Preparing | B.Integrating | B.Publishing | B.Confirming
+                    | B.Waiting _ | B.Recovering | B.Settled | B.Intervention _
+                      ->
+                        false)
                 | None -> false);
-              check "only patch work replayed"
-                (Git.git_capture ~cwd:dir
-                   [ "log"; "--format=%s"; target ^ "..patch" ]
-                = if empty then "" else "patch");
-              List.iter
-                (fun file ->
-                  check
-                    ("published tree retains " ^ file)
-                    (Git.git_capture ~cwd:remote [ "show"; "patch:" ^ file ]
-                    = file))
-                ([ "base"; "base-advance"; "dependency" ]
-                @ (if subject then [ "dependency-extra" ] else [])
-                @ if empty then [] else [ "patch" ]);
-              check "rewritten patch differs from captured source"
-                (Git.git_capture ~cwd:remote [ "rev-parse"; "patch" ] <> source))))
+              check "inferred replay leaves the captured branch unchanged"
+                (Git.git_capture ~cwd:dir [ "rev-parse"; "patch" ] = source);
+              check "inferred evidence cannot publish"
+                (B.publications state = [] && B.integrations state = []);
+              check "source and target remain recoverable"
+                (List.for_all
+                   (fun value ->
+                     List.mem (sha value) (B.required_revisions state))
+                   [ source; target ]))))
     [ (false, false); (false, true); (true, false); (true, true) ];
   Git.with_temp_repo (fun remote ->
       let base = commit remote "base" "base" in
@@ -551,7 +564,7 @@ let () =
           let _, result = execute failed state in
           check "reconstruction probe failures retry" (snd (evidence result));
           let rec settle state remaining =
-            if B.publication_status state = `Published then state
+            if B.pending state = None then state
             else (
               check "reconstructed replay converges" (remaining > 0);
               let command, result = execute io state in
@@ -583,12 +596,12 @@ let () =
             (match B.operation settled with
             | Some op -> op.boundary = boundary
             | None -> false);
-          List.iter
-            (fun file ->
-              check
-                ("reconstruction preserves " ^ file)
-                (Git.git_capture ~cwd:remote [ "show"; "patch:" ^ file ] = file))
-            [ "base"; "base-advance"; "dependency"; "patch" ]));
+          check "reconstructed evidence cannot authorize publication"
+            (B.publications settled = [] && B.integrations settled = []);
+          check "reconstructed boundary requests owned repair"
+            (match B.operation settled with
+            | Some { repair = Some _; _ } -> true
+            | Some { repair = None; _ } | None -> false)));
   Git.with_temp_repo (fun remote ->
       let target = commit remote "upstream" "independent upstream root" in
       Git.with_temp_repo (fun dir ->

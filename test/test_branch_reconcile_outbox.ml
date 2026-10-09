@@ -640,7 +640,11 @@ let () =
          })
     |> fun t ->
     reply t B.Pinned |> fun t ->
-    reply t (B.Integrated (sha candidate)) |> fun t ->
+    reply t (B.Integrated (sha candidate))
+    |> Onton_core_test_support.Publication_fixture.verify_scope
+         ~step:(fun t event -> fst (Orchestrator.reconcile_branch t pid event))
+         ~state
+    |> fun t ->
     reply t B.Published |> fun t ->
     reply t (B.Remote { sha = Some (sha candidate); topology = B.Equal })
   in
