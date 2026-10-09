@@ -2,7 +2,7 @@
    @archlint.exempt-reason effect-facade *)
 
 let run ~context ~guidance ~backend ~on_event ~cwd ~project_name ~patch_id
-    ~complexity ~turn ~read_head ~now =
+    ~complexity ~resume_session ~session_uuid ~turn ~read_head ~now =
   let read_head () =
     try Option.bind (read_head ()) Branch_reconcile.Commit.make
     with exn -> if Process_tree.has_cancellation exn then raise exn else None
@@ -14,7 +14,6 @@ let run ~context ~guidance ~backend ~on_event ~cwd ~project_name ~patch_id
       (None, "repair_head_probe_unavailable")
     else
       try
-        let session_uuid = Session_id.mint () in
         Telemetry_dispatch.emit
           (Telemetry.Event.Action
              {
@@ -32,15 +31,17 @@ let run ~context ~guidance ~backend ~on_event ~cwd ~project_name ~patch_id
             (backend.Llm_backend.run_streaming ~project_name ~cwd ~patch_id
                ~prompt:
                  (Branch_reconcile.recovery_prompt ~context ~guidance turn)
-               ~resume_session:None ~session_uuid ~complexity
-               ~on_event:(fun event ->
+               ~resume_session ~session_uuid ~complexity ~on_event:(fun event ->
                  if Branch_reconcile.repair_event_accepted event then
                    turn_accepted := true;
                  on_event event)),
           "" )
       with exn ->
         if Process_tree.has_cancellation exn then raise exn
-        else (None, Stdlib.Printexc.to_string exn)
+        else
+          let detail = Stdlib.Printexc.to_string exn in
+          on_event (Types.Stream_event.Error detail);
+          (None, detail)
   in
   let after_head = read_head () in
   let timed_out, final_result, detail =

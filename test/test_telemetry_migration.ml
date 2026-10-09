@@ -463,6 +463,8 @@ let[@warning "-42"] test_repair_session_identity () =
                 (fun () ->
                   ignore
                     (Onton.Branch_repair_session.run
+                       ~resume_session:(Some "patch-session")
+                       ~session_uuid:"patch-session"
                        ~on_event:(fun _ -> ())
                        ~context:"" ~guidance:[] ~backend
                        ~cwd:(Eio.Stdenv.fs env) ~project_name:"identity"

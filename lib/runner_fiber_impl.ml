@@ -1358,7 +1358,13 @@ module Make (Forge : Forge.S) (W : Worktree.S) (Env : Runner_env.S) = struct
                                     let cwd =
                                       match turn.Branch_reconcile.mode with
                                       | Branch_reconcile.Diagnosis _ ->
-                                          Project_store.project_dir project_name
+                                          if
+                                            try Sys.is_directory (path agent)
+                                            with Sys_error _ -> false
+                                          then path agent
+                                          else
+                                            Project_store.project_dir
+                                              project_name
                                       | Branch_reconcile.Content_repair
                                       | Branch_reconcile.History_recovery _ ->
                                           path agent
@@ -1367,25 +1373,16 @@ module Make (Forge : Forge.S) (W : Worktree.S) (Env : Runner_env.S) = struct
                                       context ^ "\nIntended managed checkout: "
                                       ^ path agent
                                     in
-                                    Branch_repair_session.run ~backend ~context
-                                      ~on_event:(function
-                                        | Types.Stream_event.Final_result
-                                            { text; _ } ->
-                                            log_event runtime ~patch_id
-                                              ("Agent recovery result: " ^ text)
-                                        | Turn_started | Text_delta _
-                                        | Tool_use _ | Error _ | Session_init _
-                                          ->
-                                            ())
+                                    Session_driver.run_repair ~backend ~context
+                                      ~agent
                                       ~guidance:
                                         (agent.Patch_agent.human_messages
                                        @ agent.inflight_human_messages)
                                       ~cwd:Eio.Path.(Env.fs / cwd)
-                                      ~project_name ~patch_id ~complexity ~turn
+                                      ~patch_id ~complexity ~turn
                                       ~read_head:(fun () ->
                                         W.read_branch_sha ~path:(path agent)
-                                          ~ref_name:"HEAD")
-                                      ~now)
+                                          ~ref_name:"HEAD"))
                                   token
                               in
                               finish outcome

@@ -682,7 +682,8 @@ let backend_acceptance ~cwd ~diagnosis accepted =
   in
   let streamed = ref [] in
   let event =
-    Branch_repair_session.run
+    Branch_repair_session.run ~resume_session:(Some "patch-session")
+      ~session_uuid:"patch-session"
       ~on_event:(fun event -> streamed := event :: !streamed)
       ~context:"" ~guidance:[] ~backend ~cwd ~project_name:"ownership"
       ~patch_id:id ~complexity:None ~turn
