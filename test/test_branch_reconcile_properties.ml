@@ -99,6 +99,99 @@ let unverified =
 let tests =
   [
     QCheck2.Test.make
+      ~name:"BR explicit resume upgrades a legacy dirty-base intervention"
+      ~count:100 Gen.bool (fun request_kind ->
+        try
+          let intent =
+            {
+              intent with
+              purpose =
+                (if request_kind then B.Reconcile_request "legacy"
+                 else B.Reconcile_base);
+            }
+          in
+          let state, _ = B.step B.empty (B.Request intent) in
+          let state, _ = reply state (B.Observed observation) in
+          let stopped, _ = reply state (B.Permanent "dirty_worktree") in
+          let restored =
+            match B.decode (B.yojson_of_t stopped) with
+            | Ok state -> state
+            | Error message -> failwith message
+          in
+          let resumed, effects = B.step restored B.Resume in
+          B.phase stopped = Some (B.Intervention "dirty_worktree")
+          && B.phase resumed = Some B.Awaiting_session
+          && effects = [] && B.is_unsettled resumed
+          && not (B.is_pending resumed)
+        with _ -> false);
+    QCheck2.Test.make
+      ~name:
+        "BR dirty base waits for a session across restart and repeated requests"
+      ~count:100
+      Gen.(pair bool (int_range 0 20))
+      (fun (explicit_head, repeats) ->
+        try
+          let state, _ = request () in
+          let waiting, effects =
+            reply state (B.Observed { observation with clean = false })
+          in
+          let restored =
+            match B.decode (B.yojson_of_t waiting) with
+            | Ok state -> state
+            | Error message -> failwith message
+          in
+          let rec repeat state n =
+            if n = 0 then state
+            else
+              let state, commands =
+                B.step state (if n mod 2 = 0 then B.Resume else B.Recover)
+              in
+              if commands <> [] then failwith "Git ran before the session";
+              repeat state (n - 1)
+          in
+          let waiting = repeat restored repeats in
+          let same, commands = B.step waiting (B.Request intent) in
+          let publication =
+            {
+              intent with
+              purpose =
+                (if explicit_head then B.Publish_revision candidate
+                 else B.Publish_session "cleanup");
+            }
+          in
+          let resumed, _ = B.step same (B.Request publication) in
+          let resumed, _ =
+            reply resumed
+              (B.Observed
+                 { observation with source = candidate; head = candidate })
+          in
+          let resumed, _ = reply resumed B.Pinned in
+          let publication_pending =
+            match B.pending resumed with
+            | Some command ->
+                B.equal_command_kind command.kind
+                  (B.Publish { candidate; expected = Some source })
+            | None -> false
+          in
+          let published, _ = reply resumed B.Published in
+          let following, _ =
+            reply published
+              (B.Remote { sha = Some candidate; topology = Equal })
+          in
+          effects = [] && commands = []
+          && B.phase waiting = Some B.Awaiting_session
+          && B.is_unsettled waiting
+          && (not (B.is_pending waiting))
+          && publication_pending
+          && (match B.operation following with
+            | Some op -> B.equal_intent op.intent intent
+            | None -> false)
+          &&
+          match B.pending following with
+          | Some command -> B.equal_command_kind command.kind B.Observe
+          | None -> false
+        with _ -> false);
+    QCheck2.Test.make
       ~name:"BR repeated publication confirmations preserve receipt history"
       ~count:200
       Gen.(pair (int_range 1 30) bool)
@@ -482,7 +575,8 @@ let tests =
           | None
           | Some
               ( B.Preparing | B.Integrating | B.Repairing _ | B.Publishing
-              | B.Confirming | B.Recovering | B.Settled | B.Intervention _ ) ->
+              | B.Confirming | B.Recovering | B.Settled | B.Awaiting_session
+              | B.Intervention _ ) ->
               false
         else
           match effects with
@@ -617,7 +711,7 @@ let tests =
                   | Some
                       ( B.Preparing | B.Integrating | B.Publishing
                       | B.Confirming | B.Waiting _ | B.Recovering | B.Settled
-                      | B.Intervention _ ) ->
+                      | B.Awaiting_session | B.Intervention _ ) ->
                       false
               else
                 B.equal_result result
@@ -1479,7 +1573,7 @@ let tests =
                     | Some
                         ( B.Preparing | B.Integrating | B.Publishing
                         | B.Confirming | B.Waiting _ | B.Recovering | B.Settled
-                        | B.Intervention _ ) ->
+                        | B.Awaiting_session | B.Intervention _ ) ->
                         false))
           | []
           | B.Execute _ :: _

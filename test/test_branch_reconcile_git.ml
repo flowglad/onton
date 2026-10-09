@@ -81,6 +81,107 @@ let () =
       ~clock:(Eio.Stdenv.clock env) ~path:dir
   in
   List.iter
+    (fun has_pr ->
+      Git.with_temp_repo (fun remote ->
+          ignore (commit remote "base" "base\n" "base");
+          Git.with_temp_repo (fun dir ->
+              prepare remote dir;
+              let original =
+                commit dir "work" "committed\n" "previous session"
+              in
+              Git.run_git ~cwd:dir [ "push"; "-q"; "origin"; "patch" ];
+              let oc = open_out_bin (Filename.concat dir "work") in
+              output_string oc "unfinished session\n";
+              close_out oc;
+              Git.run_git ~cwd:dir [ "add"; "work" ];
+              let oc = open_out_bin (Filename.concat dir "unstaged") in
+              output_string oc "retained\n";
+              close_out oc;
+              let runtime = make_runtime () and io = make_io dir in
+              Runtime.update_orchestrator runtime (fun orch ->
+                  let orch = Orchestrator.set_worktree_path orch id dir in
+                  if has_pr then
+                    Orchestrator.set_pr_number orch id
+                      (Types.Pr_number.of_int 1)
+                  else orch);
+              let checkpoint = Filename.temp_file "dirty-session" ".json" in
+              Fun.protect
+                ~finally:(fun () -> Sys.remove checkpoint)
+                (fun () ->
+                  check
+                    "dirty base reconciliation yields to the unfinished session"
+                    (run runtime (persist checkpoint) io (B.Request intent)
+                    = R.Waiting);
+                  check "checkout unchanged before session"
+                    (Git.git_capture ~cwd:dir [ "rev-parse"; "HEAD" ] = original
+                    && Git.git_capture ~cwd:dir [ "show"; ":work" ]
+                       = "unfinished session");
+                  let snapshot = get (Persistence.load ~path:checkpoint) in
+                  let restarted =
+                    Runtime.create ~gameplan
+                      ~main_branch:(Types.Branch.of_string "main")
+                      ~snapshot ()
+                  in
+                  let action =
+                    Runtime.read restarted (fun snap ->
+                        match
+                          Patch_controller.plan_actions
+                            snap.Runtime.orchestrator
+                            ~patches:gameplan.Types.Gameplan.patches
+                        with
+                        | [ action ] -> Some action
+                        | [] | _ :: _ -> None)
+                  in
+                  check "restarted supervisor schedules session before rebase"
+                    (match action with
+                    | Some (Orchestrator.Respond (_, kind)) ->
+                        has_pr
+                        && Types.Operation_kind.equal kind Uncommitted_changes
+                    | Some (Orchestrator.Start _) -> not has_pr
+                    | Some
+                        (Orchestrator.Rebase _ | Orchestrator.Reconcile_branch _)
+                    | None ->
+                        false);
+                  check "unfinished work cannot be approved"
+                    (Runtime.read restarted (fun snap ->
+                         not
+                           (Patch_agent.is_approved
+                              (Orchestrator.agent snap.Runtime.orchestrator id)
+                              ~main_branch:(Types.Branch.of_string "main"))));
+                  Git.run_git ~cwd:dir [ "add"; "unstaged" ];
+                  Git.run_git ~cwd:dir
+                    [ "commit"; "-q"; "-m"; "finish interrupted session" ];
+                  let finished =
+                    Git.git_capture ~cwd:dir [ "rev-parse"; "HEAD" ]
+                  in
+                  check "finished session can publish its commit"
+                    (run restarted (persist checkpoint) io
+                       (B.Request
+                          {
+                            intent with
+                            purpose = Publish_revision (sha finished);
+                          })
+                    = R.Idle);
+                  ignore (commit remote "advance" "advanced\n" "base advances");
+                  check "reconciliation can follow the finished session"
+                    (run restarted (persist checkpoint) io
+                       (B.Request
+                          {
+                            intent with
+                            purpose = Reconcile_request "after-session";
+                          })
+                    = R.Idle);
+                  check "session work survives subsequent integration"
+                    (Git.git_capture ~cwd:dir [ "show"; "HEAD:work" ]
+                     = "unfinished session"
+                    && Git.git_capture ~cwd:dir [ "show"; "HEAD:unstaged" ]
+                       = "retained"
+                    && Git.git_capture ~cwd:dir [ "show"; "HEAD:advance" ]
+                       = "advanced"
+                    && Git.git_capture ~cwd:dir [ "status"; "--porcelain" ] = ""
+                    )))))
+    [ false; true ];
+  List.iter
     (fun missing_base ->
       Git.with_temp_repo (fun fetch_remote ->
           ignore (commit fetch_remote "base" "base\n" "base");

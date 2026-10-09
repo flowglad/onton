@@ -149,6 +149,10 @@ type phase =
   | Confirming
   | Waiting of { until : float; reason : string }
   | Recovering
+  | Awaiting_session
+      (** Base reconciliation found uncommitted session work before integration.
+          No Git command may run until a session supplies a publication intent.
+      *)
   | Settled
   | Intervention of string
 [@@deriving eq, compare, sexp_of]
