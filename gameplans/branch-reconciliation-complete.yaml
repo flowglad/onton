@@ -1,0 +1,1976 @@
+formatVersion: 3
+
+projectName: branch-reconciliation-complete
+
+owner: flowglad
+
+repo: onton
+
+specFile:
+
+workstream:
+  name: branch-reconciliation
+  milestone: M3 — complete endpoint
+  priorMilestones:
+    - M1 — foundation
+    - M2 — useful release
+  unlocks: One extensible owner with the complete original reconciliation guarantees.
+
+problemStatement: >-
+  M3 must finish the complete branch-reconciliation design, including A18–A24 and
+  preserved M1/M2 guarantees; passing a subset of tests does not establish the endpoint.
+
+solutionSummary: >-
+  Complete the existing pure owner and effect handlers, contextual forge acceptance,
+  durable lifecycle boundaries, and independent qualification. The completion audit
+  records acceptance decisions and final verification for the full milestone.
+
+architectureDesign:
+  summary: >-
+    The workstream and AGENTS.md constrain pure decisions to onton_core and all Git
+    mutation to the existing reconciliation owner. No new architecture decision is
+    introduced here.
+  decisions:
+    - id: AD-1
+      topic: authority and effects
+      question: Who authorizes Git mutations?
+      choice: >-
+        Branch_reconcile owns decisions; durable runner dispatches effects under runtime
+        and project leases.
+      alternatives: []
+      resolution:
+        kind: constrained
+        evidence: >-
+          AGENTS.md pure decision modules and rebase-anchor lifecycle;
+          docs/workstreams/branch-reconciliation.md M3 definition of done.
+        rationale: >-
+          The approved endpoint explicitly requires one owner, no competing mutation
+          path and no feature flag.
+
+mergabilityStrategy:
+  featureFlagStrategy: No endpoint flag; every live path uses the existing owner.
+  featureFlags: []
+  patchOrderingStrategy: >-
+    The atomic implementation cutover supplies all mutually dependent APIs and migrated
+    consumers. Independent-model and endpoint qualification follows through the producer
+    guarantees; shared test wiring is extended only after its sources exist.
+
+currentStateAnalysis: >-
+  Grounded in the cumulative M3 worktree after M2 merge e72f695. The isolated
+  first-prefix build disproved the original four-patch split because owner consumers
+  require the forge identity, lifecycle and provisioning interfaces together. The atomic
+  cutover therefore owns these mutually dependent changes and their migrated regression
+  tests; independent-model and endpoint qualification follows. The completion audit
+  assesses A01–A24 against current code and executable assertions. All 211 changed
+  non-cache paths have declared frames. Both patch prefixes have compiled, with the
+  qualification model stanza deferred until its source exists. Final projection and
+  gates pass with the latest test and runbook updates. The two checklist exceptions are
+  intentional: the first patch is BEHAVIOR and its regression stubs/implementations are
+  colocated, because a separate inert API split did not compile and the approved
+  endpoint has no feature flag.
+
+operationalConsiderations:
+  externalSystemAccess: >-
+    Existing GitHub and SourceHut adapters and Git remotes remain the external systems.
+    Existing HTTPS/SSH credentials remain handler inputs; no new external service is
+    introduced.
+  crossRuntimeContracts: >-
+    Runtime snapshots, owner command tokens, hook claims and integration/publication
+    receipts survive process restart. Preserve v2 checkpoint semantics and reject
+    unsupported snapshot versions rather than silently discarding evidence.
+  failureBehavior: >-
+    Failed probes retry; permission failures intervene specifically; ambiguous command
+    completion inspects captured state. Unknown hook outcomes require explicit resume.
+    Infrastructure outages do not consume completed content-repair turns.
+  concurrencyAndIdempotency: >-
+    Runtime patch/root ownership serializes mutations; project kernel leases and drain
+    guards outlive descendant processes. Tokens reject stale results; explicit leases
+    bind publication; pruning compare-deletes captured tips while dependent owners are
+    protected.
+  rollbackStrategy: >-
+    Keep snapshots and recovery refs intact. Revert code only to a binary that supports
+    the persisted format; otherwise restore a compatible snapshot and inspect remote
+    refs before any mutation. Never delete retained evidence or downgrade by stripping
+    fields.
+
+requiredChanges: []
+
+functionalChanges:
+  - id: FC-1
+    description: >-
+      One durable revision-bound owner serializes every reconciliation trigger and
+      restart.
+    ownedBy: 1
+    requiredBy:
+      - 2
+    verifiedBy:
+      - test_branch_reconcile_boundaries.exe
+      - test_branch_reconcile_ownership.exe
+      - command: >-
+          opam exec -- dune runtest test/test_branch_reconcile_git.exe
+          test/test_branch_reconcile_boundaries.exe
+        expectation: >-
+          Relevant acceptance cases pass and establish this guarantee; see the
+          completion audit for inspected scope and remaining gaps.
+  - id: FC-2
+    description: >-
+      Exhausted truthful deterministic strategies reach bounded independently verified
+      agent recovery.
+    ownedBy: 1
+    requiredBy:
+      - 2
+    verifiedBy:
+      - test_branch_replay_evidence.exe
+      - command: >-
+          opam exec -- dune runtest test/test_branch_reconcile_git.exe
+          test/test_branch_reconcile_boundaries.exe
+        expectation: >-
+          Relevant acceptance cases pass and establish this guarantee; see the
+          completion audit for inspected scope and remaining gaps.
+  - id: FC-3
+    description: >-
+      Only identified current forge context can affect mutation authority; satisfied
+      conflicts visibly wait.
+    ownedBy: 1
+    requiredBy:
+      - 2
+    verifiedBy:
+      - test_poller_revision_context.exe
+      - test_forge_poll_checkpoint.exe
+      - command: opam exec -- dune runtest test/test_poller_revision_context.exe
+        expectation: >-
+          Relevant acceptance cases pass and establish this guarantee; see the
+          completion audit for inspected scope and remaining gaps.
+  - id: FC-4
+    description: >-
+      Required dependent recovery evidence and project incarnations survive interrupted
+      cleanup.
+    ownedBy: 1
+    requiredBy:
+      - 2
+    verifiedBy:
+      - test_recovery_ref_prune.exe
+      - test_project_lifecycle.exe
+      - command: >-
+          opam exec -- dune runtest test/test_recovery_ref_prune.exe
+          test/test_project_lifecycle.exe
+        expectation: >-
+          Relevant acceptance cases pass and establish this guarantee; see the
+          completion audit for inspected scope and remaining gaps.
+  - id: FC-5
+    description: >-
+      Independent generated histories and final acceptance evidence qualify the entire
+      M3 endpoint.
+    ownedBy: 2
+    requiredBy: []
+    verifiedBy:
+      - test_branch_reconcile_model.exe
+      - command: opam exec -- dune runtest
+        expectation: >-
+          Relevant acceptance cases pass and establish this guarantee; see the
+          completion audit for inspected scope and remaining gaps.
+  - id: FC-6
+    description: >-
+      Legacy state recovers through owner-derived views with visible repair identity and
+      specific interventions.
+    ownedBy: 1
+    requiredBy:
+      - 2
+    verifiedBy:
+      - test_branch_reconcile_git.exe
+      - command: >-
+          opam exec -- dune runtest test/test_branch_reconcile_git.exe
+          test/test_branch_reconcile_boundaries.exe
+        expectation: >-
+          Relevant acceptance cases pass and establish this guarantee; see the
+          completion audit for inspected scope and remaining gaps.
+      - test_tui_render_frame.exe
+  - id: FC-7
+    description: >-
+      Repeated stack transformations preserve patch work without duplicate dependency
+      replay.
+    ownedBy: 1
+    requiredBy:
+      - 2
+    verifiedBy:
+      - test_branch_replay_evidence.exe
+      - command: >-
+          opam exec -- dune runtest test/test_branch_reconcile_git.exe
+          test/test_branch_reconcile_boundaries.exe
+        expectation: >-
+          Relevant acceptance cases pass and establish this guarantee; see the
+          completion audit for inspected scope and remaining gaps.
+  - id: FC-8
+    description: Checkout hooks and command descendants remain inside durable lifecycle authority.
+    ownedBy: 1
+    requiredBy:
+      - 2
+    verifiedBy:
+      - test_worktree_setup_base_fetch_integration.exe
+      - test_process_tree_cancellation.exe
+      - command: >-
+          opam exec -- dune runtest test/test_recovery_ref_prune.exe
+          test/test_project_lifecycle.exe
+        expectation: >-
+          Relevant acceptance cases pass and establish this guarantee; see the
+          completion audit for inspected scope and remaining gaps.
+
+contextResources:
+  - id: endpoint-contract
+    kind: contract
+    paths:
+      - AGENTS.md
+      - docs/workstreams/branch-reconciliation.md
+      - docs/workstreams/branch-reconciliation-m3-audit.md
+    why: Preserves original scope, architecture constraints, acceptance IDs and known gaps.
+    consumedBy:
+      - 1
+      - 2
+
+acceptanceCriteria:
+  - id: A18
+    description: >-
+      Context-bound forge observations, confirmed reversion, native restrictions and
+      visible satisfied-pair waits.
+    tracesTo:
+      - FC-3
+  - id: A19
+    description: >-
+      Recorded precedence, labelled inference, failed-probe retry and exhausted
+      deterministic fallback.
+    tracesTo:
+      - FC-2
+  - id: A20
+    description: >-
+      Deep stacks, retargeting, squash/rebase merges, changed patch IDs, multiple
+      repairs and empty outcomes preserve expected trees.
+    tracesTo:
+      - FC-7
+  - id: A21
+    description: >-
+      Every mutation/checkpoint boundary resumes equivalently without lost work,
+      duplicate repair or unauthorized publication.
+    tracesTo:
+      - FC-1
+      - FC-8
+  - id: A22
+    description: >-
+      Dependent boundaries survive and eligible private refs are reclaimed without
+      touching unrelated incarnations.
+    tracesTo:
+      - FC-4
+  - id: A23
+    description: >-
+      Independent generated histories converge under explicit fairness assumptions and
+      then settle.
+    tracesTo:
+      - FC-5
+  - id: A24
+    description: >-
+      Polling, scheduled work, sessions, cancellation, root contributions and retries
+      retain exclusive authority.
+    tracesTo:
+      - FC-1
+  - id: M1-M2
+    description: >-
+      Preserve snapshot, publication, root integration, bounded repair, terminal
+      scheduling and legacy recovery guarantees.
+    tracesTo:
+      - FC-1
+      - FC-6
+      - FC-8
+
+reachabilityTraces:
+  - observable: >-
+      One durable revision-bound owner serializes every reconciliation trigger and
+      restart.
+    tracesTo: FC-1
+    ownedBy: 1
+    path:
+      - file: lib/runner_fiber_impl.ml
+        symbol: run
+        status: existing
+      - file: lib/branch_reconcile_runner.ml
+        symbol: run_owned
+        status: existing
+      - file: lib/orchestrator.ml
+        symbol: reconcile_branch
+        status: existing
+      - file: lib_core/patch_agent.ml
+        symbol: reconcile_branch
+        status: existing
+      - file: lib_core/branch_reconcile.ml
+        symbol: step
+        status: existing
+    runtimeReachabilityNote: >-
+      Direct OCaml calls/functor capabilities inspected in the current worktree; no web
+      routing or middleware. Test references describe exercised scope, not a claim of
+      complete milestone verification.
+    testPath:
+      - file: test/test_branch_reconcile_boundaries.ml
+        symbol:
+        status: existing
+  - observable: >-
+      Exhausted truthful deterministic strategies reach bounded independently verified
+      agent recovery.
+    tracesTo: FC-2
+    ownedBy: 1
+    path:
+      - file: lib/runner_fiber_impl.ml
+        symbol: run
+        status: existing
+      - file: lib/branch_reconcile_runner.ml
+        symbol: run_owned
+        status: existing
+      - file: lib/orchestrator.ml
+        symbol: reconcile_branch
+        status: existing
+      - file: lib_core/patch_agent.ml
+        symbol: reconcile_branch
+        status: existing
+      - file: lib_core/branch_reconcile.ml
+        symbol: step
+        status: existing
+    runtimeReachabilityNote: >-
+      Direct OCaml calls/functor capabilities inspected in the current worktree; no web
+      routing or middleware. Test references describe exercised scope, not a claim of
+      complete milestone verification.
+    testPath:
+      - file: test/test_branch_replay_evidence.ml
+        symbol:
+        status: existing
+  - observable: >-
+      Only identified current forge context can affect mutation authority; satisfied
+      conflicts visibly wait.
+    tracesTo: FC-3
+    ownedBy: 1
+    path:
+      - file: lib/poller_fiber.ml
+        symbol: run
+        status: existing
+      - file: lib_core/forge_observation.ml
+        symbol: validate
+        status: existing
+    runtimeReachabilityNote: >-
+      Direct OCaml calls/functor capabilities inspected in the current worktree; no web
+      routing or middleware. Test references describe exercised scope, not a claim of
+      complete milestone verification.
+    testPath:
+      - file: test/test_poller_revision_context.ml
+        symbol:
+        status: existing
+  - observable: >-
+      Required dependent recovery evidence and project incarnations survive interrupted
+      cleanup.
+    tracesTo: FC-4
+    ownedBy: 1
+    path:
+      - file: lib/prune_runner.ml
+        symbol: run_prune
+        status: existing
+      - file: lib/prune_runner.ml
+        symbol: reclaim_project
+        status: existing
+      - file: lib/recovery_ref_prune.ml
+        symbol: reclaim
+        status: existing
+      - file: lib_core/prune_decision.ml
+        symbol: plan_reclamation
+        status: existing
+    runtimeReachabilityNote: >-
+      Direct OCaml calls/functor capabilities inspected in the current worktree; no web
+      routing or middleware. Test references describe exercised scope, not a claim of
+      complete milestone verification.
+    testPath:
+      - file: test/test_recovery_ref_prune.ml
+        symbol:
+        status: existing
+  - observable: >-
+      Independent generated histories and final acceptance evidence qualify the entire
+      M3 endpoint.
+    tracesTo: FC-5
+    ownedBy: 2
+    path:
+      - file: test/test_branch_reconcile_model.ml
+        symbol: scenario
+        status: existing
+      - file: lib_core/branch_reconcile.ml
+        symbol: step
+        status: existing
+    runtimeReachabilityNote: >-
+      Direct OCaml calls/functor capabilities inspected in the current worktree; no web
+      routing or middleware. Test references describe exercised scope, not a claim of
+      complete milestone verification.
+    testPath:
+      - file: test/test_branch_reconcile_model.ml
+        symbol:
+        status: existing
+  - observable: >-
+      Legacy state recovers through owner-derived views with visible repair identity and
+      specific interventions.
+    tracesTo: FC-6
+    ownedBy: 1
+    path:
+      - file: lib/tui.ml
+        symbol: patch_view_of_agent
+        status: existing
+      - file: lib_core/branch_reconcile.ml
+        symbol: diagnostics
+        status: existing
+    runtimeReachabilityNote: >-
+      Direct OCaml calls/functor capabilities inspected in the current worktree; no web
+      routing or middleware. Test references describe exercised scope, not a claim of
+      complete milestone verification.
+    testPath:
+      - file: test/test_branch_reconcile_git.ml
+        symbol:
+        status: existing
+  - observable: >-
+      Repeated stack transformations preserve patch work without duplicate dependency
+      replay.
+    tracesTo: FC-7
+    ownedBy: 1
+    path:
+      - file: lib/runner_fiber_impl.ml
+        symbol: execute_reconciliation
+        status: existing
+      - file: lib/worktree_setup.ml
+        symbol: execute_reconciliation
+        status: existing
+      - file: lib/worktree.ml
+        symbol: reconcile
+        status: existing
+      - file: lib/branch_reconcile_executor.ml
+        symbol: execute
+        status: existing
+    runtimeReachabilityNote: >-
+      Direct OCaml calls/functor capabilities inspected in the current worktree; no web
+      routing or middleware. Test references describe exercised scope, not a claim of
+      complete milestone verification.
+    testPath:
+      - file: test/test_branch_replay_evidence.ml
+        symbol:
+        status: existing
+  - observable: Checkout hooks and command descendants remain inside durable lifecycle authority.
+    tracesTo: FC-8
+    ownedBy: 1
+    path:
+      - file: lib/worktree_setup.ml
+        symbol: ensure_hook
+        status: existing
+      - file: lib/worktree.ml
+        symbol: run_hook
+        status: existing
+      - file: lib/user_config.ml
+        symbol: run_hook
+        status: existing
+      - file: lib/process_tree.ml
+        symbol: run
+        status: existing
+    runtimeReachabilityNote: >-
+      Direct OCaml calls/functor capabilities inspected in the current worktree; no web
+      routing or middleware. Test references describe exercised scope, not a claim of
+      complete milestone verification.
+    testPath:
+      - file: test/test_worktree_setup_base_fetch_integration.ml
+        symbol:
+        status: existing
+  - observable: >-
+      Captured replay boundaries and deterministic Git strategies reach the real
+      executor.
+    tracesTo: FC-2
+    ownedBy: 1
+    path:
+      - file: lib/runner_fiber_impl.ml
+        symbol: execute_reconciliation
+        status: existing
+      - file: lib/worktree_setup.ml
+        symbol: execute_reconciliation
+        status: existing
+      - file: lib/worktree.ml
+        symbol: reconcile
+        status: existing
+      - file: lib/branch_reconcile_executor.ml
+        symbol: execute
+        status: existing
+  - observable: >-
+      Pruning retires only the captured project payload after dependent evidence is
+      protected.
+    tracesTo: FC-4
+    ownedBy: 1
+    path:
+      - file: lib/prune_runner.ml
+        symbol: run_prune_registered
+        status: existing
+      - file: lib/project_lifecycle.ml
+        symbol: retire
+        status: existing
+  - observable: Creation-hook decisions require durable captured context before dispatch.
+    tracesTo: FC-8
+    ownedBy: 1
+    path:
+      - file: lib/worktree_setup.ml
+        symbol: ensure_hook
+        status: existing
+      - file: lib_core/worktree_hook.ml
+        symbol: next
+        status: existing
+
+openQuestions: []
+
+explicitOpinions:
+  - opinion: A green parse or test subset is evidence, not milestone completion.
+    rationale: The workstream requires a complete requirement audit and final runtime acceptance.
+
+patches:
+  - number: 1
+    classification: BEHAVIOR
+    complexity: 3
+    title: Complete the atomic reconciliation, forge and lifecycle API cutover
+    files:
+      - path: bin/main.ml
+        action: modify
+        description: >-
+          Implement or verify checkout, process, provisioning and dependent project
+          lifetime guarantees.
+      - path: bin/setsid_exec/main.ml
+        action: modify
+        description: >-
+          Implement or verify checkout, process, provisioning and dependent project
+          lifetime guarantees.
+      - path: bin/setsid_exec/supervisor_stubs.c
+        action: modify
+        description: >-
+          Implement or verify checkout, process, provisioning and dependent project
+          lifetime guarantees.
+      - path: lib/activity_log_sink.ml
+        action: modify
+        description: >-
+          Migrate this owner API, consumer or regression fixture to owner-derived
+          reconciliation and retained evidence.
+      - path: lib/branch_reconcile_executor.ml
+        action: modify
+        description: Complete the owned milestone guarantee and its direct verification.
+      - path: lib/branch_reconcile_executor.mli
+        action: modify
+        description: >-
+          Migrate this owner API, consumer or regression fixture to owner-derived
+          reconciliation and retained evidence.
+      - path: lib/branch_repair_session.ml
+        action: modify
+        description: Complete the owned milestone guarantee and its direct verification.
+      - path: lib/claude_runner.ml
+        action: modify
+        description: >-
+          Implement or verify checkout, process, provisioning and dependent project
+          lifetime guarantees.
+      - path: lib/claude_runner.mli
+        action: modify
+        description: >-
+          Implement or verify checkout, process, provisioning and dependent project
+          lifetime guarantees.
+      - path: lib/dune
+        action: modify
+        description: >-
+          Implement or verify checkout, process, provisioning and dependent project
+          lifetime guarantees.
+      - path: lib/event_log.ml
+        action: modify
+        description: Preserve session correlation and owner-derived intervention transitions.
+      - path: lib/event_log.mli
+        action: modify
+        description: >-
+          Migrate this owner API, consumer or regression fixture to owner-derived
+          reconciliation and retained evidence.
+      - path: lib/forge_poll.ml
+        action: create
+        description: Complete the owned milestone guarantee and its direct verification.
+      - path: lib/forge_poll.mli
+        action: create
+        description: >-
+          Carry and validate forge revision identity through this interface or its
+          executable fixtures.
+      - path: lib/github.ml
+        action: modify
+        description: Complete the owned milestone guarantee and its direct verification.
+      - path: lib/llm_backend.ml
+        action: modify
+        description: >-
+          Implement or verify checkout, process, provisioning and dependent project
+          lifetime guarantees.
+      - path: lib/llm_backend.mli
+        action: modify
+        description: >-
+          Implement or verify checkout, process, provisioning and dependent project
+          lifetime guarantees.
+      - path: lib/managed_repo.ml
+        action: modify
+        description: >-
+          Implement or verify checkout, process, provisioning and dependent project
+          lifetime guarantees.
+      - path: lib/managed_repo.mli
+        action: modify
+        description: >-
+          Implement or verify checkout, process, provisioning and dependent project
+          lifetime guarantees.
+      - path: lib/orchestrator.ml
+        action: modify
+        description: Complete the owned milestone guarantee and its direct verification.
+      - path: lib/orchestrator.mli
+        action: modify
+        description: >-
+          Migrate this owner API, consumer or regression fixture to owner-derived
+          reconciliation and retained evidence.
+      - path: lib/patch_controller.ml
+        action: modify
+        description: Complete the owned milestone guarantee and its direct verification.
+      - path: lib/patch_controller.mli
+        action: modify
+        description: >-
+          Migrate this owner API, consumer or regression fixture to owner-derived
+          reconciliation and retained evidence.
+      - path: lib/persistence.ml
+        action: modify
+        description: Complete the owned milestone guarantee and its direct verification.
+      - path: lib/poller_fiber.ml
+        action: modify
+        description: Complete the owned milestone guarantee and its direct verification.
+      - path: lib/poller_fiber.mli
+        action: modify
+        description: >-
+          Carry and validate forge revision identity through this interface or its
+          executable fixtures.
+      - path: lib/process_tree.ml
+        action: modify
+        description: Complete the owned milestone guarantee and its direct verification.
+      - path: lib/process_tree.mli
+        action: modify
+        description: >-
+          Implement or verify checkout, process, provisioning and dependent project
+          lifetime guarantees.
+      - path: lib/project_lifecycle.ml
+        action: create
+        description: Complete the owned milestone guarantee and its direct verification.
+      - path: lib/project_lifecycle.mli
+        action: create
+        description: >-
+          Implement or verify checkout, process, provisioning and dependent project
+          lifetime guarantees.
+      - path: lib/project_store.ml
+        action: modify
+        description: Complete the owned milestone guarantee and its direct verification.
+      - path: lib/project_store.mli
+        action: modify
+        description: >-
+          Implement or verify checkout, process, provisioning and dependent project
+          lifetime guarantees.
+      - path: lib/prompt.ml
+        action: modify
+        description: >-
+          Migrate this owner API, consumer or regression fixture to owner-derived
+          reconciliation and retained evidence.
+      - path: lib/prompt.mli
+        action: modify
+        description: >-
+          Remove test-only legacy conflict recovery prompt APIs while retaining live
+          implementation and uncommitted-work guidance.
+      - path: lib/prune_runner.ml
+        action: modify
+        description: Complete the owned milestone guarantee and its direct verification.
+      - path: lib/prune_runner.mli
+        action: modify
+        description: >-
+          Implement or verify checkout, process, provisioning and dependent project
+          lifetime guarantees.
+      - path: lib/push_publication.ml
+        action: delete
+        description: >-
+          Remove the obsolete independent reconciliation API or its superseded tests;
+          retain replacement owner coverage.
+      - path: lib/recovery_ref_prune.ml
+        action: create
+        description: Complete the owned milestone guarantee and its direct verification.
+      - path: lib/recovery_ref_prune.mli
+        action: create
+        description: >-
+          Implement or verify checkout, process, provisioning and dependent project
+          lifetime guarantees.
+      - path: lib/repo_git.ml
+        action: modify
+        description: >-
+          Implement or verify checkout, process, provisioning and dependent project
+          lifetime guarantees.
+      - path: lib/repo_root.ml
+        action: modify
+        description: >-
+          Implement or verify checkout, process, provisioning and dependent project
+          lifetime guarantees.
+      - path: lib/runner_fiber_impl.ml
+        action: modify
+        description: Complete the owned milestone guarantee and its direct verification.
+      - path: lib/runtime.ml
+        action: modify
+        description: Complete the owned milestone guarantee and its direct verification.
+      - path: lib/session_driver.ml
+        action: modify
+        description: >-
+          Migrate this owner API, consumer or regression fixture to owner-derived
+          reconciliation and retained evidence.
+      - path: lib/sourcehut.ml
+        action: modify
+        description: Complete the owned milestone guarantee and its direct verification.
+      - path: lib/tui.ml
+        action: modify
+        description: Complete the owned milestone guarantee and its direct verification.
+      - path: lib/user_config.ml
+        action: modify
+        description: Keep creation-hook execution inside Process_tree supervision.
+      - path: lib/user_config.mli
+        action: modify
+        description: >-
+          Implement or verify checkout, process, provisioning and dependent project
+          lifetime guarantees.
+      - path: lib/worktree.ml
+        action: modify
+        description: >-
+          Remove legacy Git mutation APIs and route all reconciliation entrypoints
+          through the owner.
+      - path: lib/worktree.mli
+        action: modify
+        description: >-
+          Migrate this owner API, consumer or regression fixture to owner-derived
+          reconciliation and retained evidence.
+      - path: lib/worktree_backend.ml
+        action: modify
+        description: >-
+          Implement or verify checkout, process, provisioning and dependent project
+          lifetime guarantees.
+      - path: lib/worktree_backend.mli
+        action: modify
+        description: >-
+          Implement or verify checkout, process, provisioning and dependent project
+          lifetime guarantees.
+      - path: lib/worktree_plan_executor.ml
+        action: delete
+        description: >-
+          Remove the obsolete independent reconciliation API or its superseded tests;
+          retain replacement owner coverage.
+      - path: lib/worktree_plan_executor.mli
+        action: delete
+        description: >-
+          Remove the obsolete independent reconciliation API or its superseded tests;
+          retain replacement owner coverage.
+      - path: lib/worktree_setup.ml
+        action: modify
+        description: >-
+          Remove legacy Git mutation APIs and route all reconciliation entrypoints
+          through the owner.
+      - path: lib/worktree_setup.mli
+        action: modify
+        description: >-
+          Migrate this owner API, consumer or regression fixture to owner-derived
+          reconciliation and retained evidence.
+      - path: lib_core/anchor.ml
+        action: delete
+        description: >-
+          Remove the obsolete independent reconciliation API or its superseded tests;
+          retain replacement owner coverage.
+      - path: lib_core/anchor.mli
+        action: delete
+        description: >-
+          Remove the obsolete independent reconciliation API or its superseded tests;
+          retain replacement owner coverage.
+      - path: lib_core/anchor_history.ml
+        action: delete
+        description: >-
+          Remove the obsolete independent reconciliation API or its superseded tests;
+          retain replacement owner coverage.
+      - path: lib_core/anchor_history.mli
+        action: delete
+        description: >-
+          Remove the obsolete independent reconciliation API or its superseded tests;
+          retain replacement owner coverage.
+      - path: lib_core/base_containment.mli
+        action: modify
+        description: >-
+          Migrate this owner API, consumer or regression fixture to owner-derived
+          reconciliation and retained evidence.
+      - path: lib_core/branch_reconcile.ml
+        action: modify
+        description: Complete the owned milestone guarantee and its direct verification.
+      - path: lib_core/branch_reconcile.mli
+        action: modify
+        description: Complete the owned milestone guarantee and its direct verification.
+      - path: lib_core/comment_id_allocation.ml
+        action: create
+        description: >-
+          Migrate this owner API, consumer or regression fixture to owner-derived
+          reconciliation and retained evidence.
+      - path: lib_core/comment_id_allocation.mli
+        action: create
+        description: >-
+          Migrate this owner API, consumer or regression fixture to owner-derived
+          reconciliation and retained evidence.
+      - path: lib_core/execution_mode.ml
+        action: modify
+        description: >-
+          Migrate this owner API, consumer or regression fixture to owner-derived
+          reconciliation and retained evidence.
+      - path: lib_core/execution_mode.mli
+        action: modify
+        description: >-
+          Migrate this owner API, consumer or regression fixture to owner-derived
+          reconciliation and retained evidence.
+      - path: lib_core/forge_observation.ml
+        action: create
+        description: >-
+          Introduce the pure evidence/checkpoint types consumed by the owner; later
+          patches complete adapter/lifecycle qualification.
+      - path: lib_core/forge_observation.mli
+        action: create
+        description: >-
+          Introduce the pure evidence/checkpoint types consumed by the owner; later
+          patches complete adapter/lifecycle qualification.
+      - path: lib_core/git_oid.ml
+        action: create
+        description: >-
+          Introduce the pure evidence/checkpoint types consumed by the owner; later
+          patches complete adapter/lifecycle qualification.
+      - path: lib_core/git_oid.mli
+        action: create
+        description: >-
+          Introduce the pure evidence/checkpoint types consumed by the owner; later
+          patches complete adapter/lifecycle qualification.
+      - path: lib_core/patch_agent.ml
+        action: modify
+        description: Complete the owned milestone guarantee and its direct verification.
+      - path: lib_core/patch_agent.mli
+        action: modify
+        description: >-
+          Migrate this owner API, consumer or regression fixture to owner-derived
+          reconciliation and retained evidence.
+      - path: lib_core/patch_decision.ml
+        action: modify
+        description: >-
+          Migrate this owner API, consumer or regression fixture to owner-derived
+          reconciliation and retained evidence.
+      - path: lib_core/patch_decision.mli
+        action: modify
+        description: >-
+          Migrate this owner API, consumer or regression fixture to owner-derived
+          reconciliation and retained evidence.
+      - path: lib_core/poll_cycle.ml
+        action: modify
+        description: Complete the owned milestone guarantee and its direct verification.
+      - path: lib_core/poll_cycle.mli
+        action: modify
+        description: >-
+          Carry and validate forge revision identity through this interface or its
+          executable fixtures.
+      - path: lib_core/poller.ml
+        action: modify
+        description: Complete the owned milestone guarantee and its direct verification.
+      - path: lib_core/poller.mli
+        action: modify
+        description: >-
+          Carry and validate forge revision identity through this interface or its
+          executable fixtures.
+      - path: lib_core/pr_state.ml
+        action: modify
+        description: >-
+          Carry and validate forge revision identity through this interface or its
+          executable fixtures.
+      - path: lib_core/pr_state.mli
+        action: modify
+        description: >-
+          Carry and validate forge revision identity through this interface or its
+          executable fixtures.
+      - path: lib_core/project_identity.ml
+        action: create
+        description: Complete the owned milestone guarantee and its direct verification.
+      - path: lib_core/project_identity.mli
+        action: create
+        description: >-
+          Implement or verify checkout, process, provisioning and dependent project
+          lifetime guarantees.
+      - path: lib_core/project_retirement.ml
+        action: create
+        description: Complete the owned milestone guarantee and its direct verification.
+      - path: lib_core/project_retirement.mli
+        action: create
+        description: >-
+          Implement or verify checkout, process, provisioning and dependent project
+          lifetime guarantees.
+      - path: lib_core/prune_decision.ml
+        action: modify
+        description: Complete the owned milestone guarantee and its direct verification.
+      - path: lib_core/prune_decision.mli
+        action: modify
+        description: >-
+          Implement or verify checkout, process, provisioning and dependent project
+          lifetime guarantees.
+      - path: lib_core/push_plan.mli
+        action: modify
+        description: >-
+          Remove documentation of obsolete push-result outcomes; distinguish planner
+          refusals from executed Git push rejection.
+      - path: lib_core/push_reject_classify.ml
+        action: modify
+        description: >-
+          Migrate this owner API, consumer or regression fixture to owner-derived
+          reconciliation and retained evidence.
+      - path: lib_core/rebase_decision.ml
+        action: delete
+        description: >-
+          Remove the obsolete independent reconciliation API or its superseded tests;
+          retain replacement owner coverage.
+      - path: lib_core/rebase_decision.mli
+        action: delete
+        description: >-
+          Remove the obsolete independent reconciliation API or its superseded tests;
+          retain replacement owner coverage.
+      - path: lib_core/reconciler.ml
+        action: modify
+        description: >-
+          Migrate this owner API, consumer or regression fixture to owner-derived
+          reconciliation and retained evidence.
+      - path: lib_core/reconciler.mli
+        action: modify
+        description: >-
+          Migrate this owner API, consumer or regression fixture to owner-derived
+          reconciliation and retained evidence.
+      - path: lib_core/session_result.ml
+        action: modify
+        description: >-
+          Migrate this owner API, consumer or regression fixture to owner-derived
+          reconciliation and retained evidence.
+      - path: lib_core/session_result.mli
+        action: modify
+        description: >-
+          Migrate this owner API, consumer or regression fixture to owner-derived
+          reconciliation and retained evidence.
+      - path: lib_core/start_point_plan.ml
+        action: modify
+        description: >-
+          Implement or verify checkout, process, provisioning and dependent project
+          lifetime guarantees.
+      - path: lib_core/start_point_plan.mli
+        action: modify
+        description: >-
+          Implement or verify checkout, process, provisioning and dependent project
+          lifetime guarantees.
+      - path: lib_core/types.ml
+        action: modify
+        description: >-
+          Migrate this owner API, consumer or regression fixture to owner-derived
+          reconciliation and retained evidence.
+      - path: lib_core/worktree_hook.ml
+        action: create
+        description: >-
+          Introduce the pure evidence/checkpoint types consumed by the owner; later
+          patches complete adapter/lifecycle qualification.
+      - path: lib_core/worktree_hook.mli
+        action: create
+        description: >-
+          Introduce the pure evidence/checkpoint types consumed by the owner; later
+          patches complete adapter/lifecycle qualification.
+      - path: lib_core/worktree_parser.ml
+        action: modify
+        description: >-
+          Migrate this owner API, consumer or regression fixture to owner-derived
+          reconciliation and retained evidence.
+      - path: lib_core/worktree_plan.ml
+        action: delete
+        description: >-
+          Remove the obsolete independent reconciliation API or its superseded tests;
+          retain replacement owner coverage.
+      - path: lib_core/worktree_plan.mli
+        action: delete
+        description: >-
+          Remove the obsolete independent reconciliation API or its superseded tests;
+          retain replacement owner coverage.
+      - path: lib_core/worktree_provision.ml
+        action: create
+        description: >-
+          Introduce the pure evidence/checkpoint types consumed by the owner; later
+          patches complete adapter/lifecycle qualification.
+      - path: lib_core/worktree_provision.mli
+        action: create
+        description: >-
+          Introduce the pure evidence/checkpoint types consumed by the owner; later
+          patches complete adapter/lifecycle qualification.
+      - path: lib_test/conflict_fixture.ml
+        action: create
+        description: >-
+          Migrate this owner API, consumer or regression fixture to owner-derived
+          reconciliation and retained evidence.
+      - path: lib_test/dune
+        action: modify
+        description: >-
+          Migrate this owner API, consumer or regression fixture to owner-derived
+          reconciliation and retained evidence.
+      - path: lib_test/forge_poll_fixture.ml
+        action: create
+        description: >-
+          Carry and validate forge revision identity through this interface or its
+          executable fixtures.
+      - path: lib_test/reconciliation_fixture.ml
+        action: create
+        description: >-
+          Migrate this owner API, consumer or regression fixture to owner-derived
+          reconciliation and retained evidence.
+      - path: lib_test/test_generators.ml
+        action: modify
+        description: >-
+          Migrate this owner API, consumer or regression fixture to owner-derived
+          reconciliation and retained evidence.
+      - path: test/core_support/conflict_fixture.ml
+        action: create
+        description: >-
+          Migrate this owner API, consumer or regression fixture to owner-derived
+          reconciliation and retained evidence.
+      - path: test/core_support/dune
+        action: create
+        description: >-
+          Migrate this owner API, consumer or regression fixture to owner-derived
+          reconciliation and retained evidence.
+      - path: test/core_support/forge_fixture.ml
+        action: create
+        description: >-
+          Carry and validate forge revision identity through this interface or its
+          executable fixtures.
+      - path: test/core_support/publication_fixture.ml
+        action: create
+        description: >-
+          Migrate this owner API, consumer or regression fixture to owner-derived
+          reconciliation and retained evidence.
+      - path: test/core_support/replay_fixture.ml
+        action: create
+        description: >-
+          Migrate this owner API, consumer or regression fixture to owner-derived
+          reconciliation and retained evidence.
+      - path: test/dune
+        action: modify
+        description: >-
+          Update executable wiring and shared generators with the contracts changed by
+          this patch.
+      - path: test/test_action_outcome_properties.ml
+        action: modify
+        description: >-
+          Migrate this owner API, consumer or regression fixture to owner-derived
+          reconciliation and retained evidence.
+      - path: test/test_anchor.ml
+        action: delete
+        description: >-
+          Remove the obsolete independent reconciliation API or its superseded tests;
+          retain replacement owner coverage.
+      - path: test/test_anchor_history_properties.ml
+        action: delete
+        description: >-
+          Remove the obsolete independent reconciliation API or its superseded tests;
+          retain replacement owner coverage.
+      - path: test/test_anchor_state_properties.ml
+        action: delete
+        description: >-
+          Remove the obsolete independent reconciliation API or its superseded tests;
+          retain replacement owner coverage.
+      - path: test/test_automerge_deadline_properties.ml
+        action: modify
+        description: >-
+          Migrate this owner API, consumer or regression fixture to owner-derived
+          reconciliation and retained evidence.
+      - path: test/test_branch_provisioning_properties.ml
+        action: create
+        description: >-
+          Implement or verify checkout, process, provisioning and dependent project
+          lifetime guarantees.
+      - path: test/test_branch_reconcile_boundaries.ml
+        action: create
+        description: Complete the owned milestone guarantee and its direct verification.
+      - path: test/test_branch_reconcile_git.ml
+        action: modify
+        description: Complete the owned milestone guarantee and its direct verification.
+      - path: test/test_branch_reconcile_outbox.ml
+        action: modify
+        description: >-
+          Migrate this owner API, consumer or regression fixture to owner-derived
+          reconciliation and retained evidence.
+      - path: test/test_branch_reconcile_ownership.ml
+        action: modify
+        description: Complete the owned milestone guarantee and its direct verification.
+      - path: test/test_branch_reconcile_properties.ml
+        action: modify
+        description: Complete the owned milestone guarantee and its direct verification.
+      - path: test/test_branch_remote_entrypoints.ml
+        action: create
+        description: >-
+          Migrate this owner API, consumer or regression fixture to owner-derived
+          reconciliation and retained evidence.
+      - path: test/test_branch_replay_evidence.ml
+        action: create
+        description: Complete the owned milestone guarantee and its direct verification.
+      - path: test/test_comment_id_allocation_properties.ml
+        action: create
+        description: >-
+          Migrate this owner API, consumer or regression fixture to owner-derived
+          reconciliation and retained evidence.
+      - path: test/test_conflict_recovery_state_machine.ml
+        action: delete
+        description: >-
+          Remove the isolated legacy prompt reconstruction model; owner recovery is
+          verified by the independent reconciliation model and real-Git checkpoint
+          fixtures.
+      - path: test/test_dependency_injection_functors.ml
+        action: modify
+        description: >-
+          Migrate this owner API, consumer or regression fixture to owner-derived
+          reconciliation and retained evidence.
+      - path: test/test_execution_mode_properties.ml
+        action: modify
+        description: >-
+          Migrate this owner API, consumer or regression fixture to owner-derived
+          reconciliation and retained evidence.
+      - path: test/test_fanin_liveness_interleavings.ml
+        action: modify
+        description: >-
+          Migrate this owner API, consumer or regression fixture to owner-derived
+          reconciliation and retained evidence.
+      - path: test/test_feature_branch_cli.ml
+        action: modify
+        description: >-
+          Implement or verify checkout, process, provisioning and dependent project
+          lifetime guarantees.
+      - path: test/test_feature_branch_git.ml
+        action: modify
+        description: >-
+          Migrate this owner API, consumer or regression fixture to owner-derived
+          reconciliation and retained evidence.
+      - path: test/test_feature_branch_mode.ml
+        action: modify
+        description: >-
+          Migrate this owner API, consumer or regression fixture to owner-derived
+          reconciliation and retained evidence.
+      - path: test/test_forge_observation_properties.ml
+        action: create
+        description: Complete the owned milestone guarantee and its direct verification.
+      - path: test/test_forge_observation_state_machine.ml
+        action: create
+        description: >-
+          Carry and validate forge revision identity through this interface or its
+          executable fixtures.
+      - path: test/test_forge_poll_checkpoint.ml
+        action: create
+        description: Complete the owned milestone guarantee and its direct verification.
+      - path: test/test_forge_revision_confirmation.ml
+        action: create
+        description: >-
+          Carry and validate forge revision identity through this interface or its
+          executable fixtures.
+      - path: test/test_gameplan_add_patch_properties.ml
+        action: modify
+        description: >-
+          Migrate this owner API, consumer or regression fixture to owner-derived
+          reconciliation and retained evidence.
+      - path: test/test_gameplan_publication.ml
+        action: modify
+        description: >-
+          Migrate this owner API, consumer or regression fixture to owner-derived
+          reconciliation and retained evidence.
+      - path: test/test_git_oid_properties.ml
+        action: create
+        description: >-
+          Carry and validate forge revision identity through this interface or its
+          executable fixtures.
+      - path: test/test_github_check_details.ml
+        action: modify
+        description: >-
+          Carry and validate forge revision identity through this interface or its
+          executable fixtures.
+      - path: test/test_github_merge_commit_null.ml
+        action: modify
+        description: >-
+          Carry and validate forge revision identity through this interface or its
+          executable fixtures.
+      - path: test/test_initial_tracking.ml
+        action: create
+        description: >-
+          Migrate this owner API, consumer or regression fixture to owner-derived
+          reconciliation and retained evidence.
+      - path: test/test_interleaving_properties.ml
+        action: modify
+        description: >-
+          Migrate this owner API, consumer or regression fixture to owner-derived
+          reconciliation and retained evidence.
+      - path: test/test_intervention_reason.ml
+        action: modify
+        description: >-
+          Migrate this owner API, consumer or regression fixture to owner-derived
+          reconciliation and retained evidence.
+      - path: test/test_legacy_publication.ml
+        action: create
+        description: >-
+          Qualify verification-only migration, explicit-resume handoff and retained
+          remote obligations.
+      - path: test/test_misc_pure_properties.ml
+        action: modify
+        description: >-
+          Carry and validate forge revision identity through this interface or its
+          executable fixtures.
+      - path: test/test_orchestrator_properties.ml
+        action: modify
+        description: >-
+          Migrate this owner API, consumer or regression fixture to owner-derived
+          reconciliation and retained evidence.
+      - path: test/test_patch_agent.ml
+        action: modify
+        description: >-
+          Migrate this owner API, consumer or regression fixture to owner-derived
+          reconciliation and retained evidence.
+      - path: test/test_patch_agent_properties.ml
+        action: modify
+        description: >-
+          Migrate this owner API, consumer or regression fixture to owner-derived
+          reconciliation and retained evidence.
+      - path: test/test_patch_controller.ml
+        action: modify
+        description: >-
+          Migrate this owner API, consumer or regression fixture to owner-derived
+          reconciliation and retained evidence.
+      - path: test/test_patch_decision.ml
+        action: modify
+        description: >-
+          Migrate this owner API, consumer or regression fixture to owner-derived
+          reconciliation and retained evidence.
+      - path: test/test_persistence_properties.ml
+        action: modify
+        description: >-
+          Migrate this owner API, consumer or regression fixture to owner-derived
+          reconciliation and retained evidence.
+      - path: test/test_poll_cycle_properties.ml
+        action: modify
+        description: >-
+          Carry and validate forge revision identity through this interface or its
+          executable fixtures.
+      - path: test/test_poll_log_properties.ml
+        action: modify
+        description: >-
+          Carry and validate forge revision identity through this interface or its
+          executable fixtures.
+      - path: test/test_poller_revision_context.ml
+        action: create
+        description: Complete the owned milestone guarantee and its direct verification.
+      - path: test/test_pr_state_properties.ml
+        action: modify
+        description: >-
+          Carry and validate forge revision identity through this interface or its
+          executable fixtures.
+      - path: test/test_process_tree_cancellation.ml
+        action: create
+        description: Complete the owned milestone guarantee and its direct verification.
+      - path: test/test_project_identity_properties.ml
+        action: create
+        description: >-
+          Implement or verify checkout, process, provisioning and dependent project
+          lifetime guarantees.
+      - path: test/test_project_lifecycle.ml
+        action: create
+        description: Complete the owned milestone guarantee and its direct verification.
+      - path: test/test_project_lifecycle_state_machine.ml
+        action: create
+        description: >-
+          Implement or verify checkout, process, provisioning and dependent project
+          lifetime guarantees.
+      - path: test/test_project_retirement_properties.ml
+        action: create
+        description: >-
+          Implement or verify checkout, process, provisioning and dependent project
+          lifetime guarantees.
+      - path: test/test_prompt_recovery.ml
+        action: modify
+        description: >-
+          Remove test-only legacy conflict recovery prompt APIs while retaining live
+          implementation and uncommitted-work guidance.
+      - path: test/test_properties.ml
+        action: modify
+        description: >-
+          Migrate this owner API, consumer or regression fixture to owner-derived
+          reconciliation and retained evidence.
+      - path: test/test_prune_decision_properties.ml
+        action: modify
+        description: >-
+          Implement or verify checkout, process, provisioning and dependent project
+          lifetime guarantees.
+      - path: test/test_publication_observation.ml
+        action: create
+        description: >-
+          Carry and validate forge revision identity through this interface or its
+          executable fixtures.
+      - path: test/test_push_plan_integration.ml
+        action: modify
+        description: >-
+          Migrate this owner API, consumer or regression fixture to owner-derived
+          reconciliation and retained evidence.
+      - path: test/test_push_reject_classify_properties.ml
+        action: modify
+        description: >-
+          Migrate this owner API, consumer or regression fixture to owner-derived
+          reconciliation and retained evidence.
+      - path: test/test_push_timeout_integration.ml
+        action: modify
+        description: >-
+          Migrate this owner API, consumer or regression fixture to owner-derived
+          reconciliation and retained evidence.
+      - path: test/test_rebase_decision_properties.ml
+        action: delete
+        description: >-
+          Remove the obsolete independent reconciliation API or its superseded tests;
+          retain replacement owner coverage.
+      - path: test/test_rebase_onto.ml
+        action: modify
+        description: >-
+          Migrate this owner API, consumer or regression fixture to owner-derived
+          reconciliation and retained evidence.
+      - path: test/test_rebase_state_machine.ml
+        action: delete
+        description: >-
+          Remove the obsolete independent reconciliation API or its superseded tests;
+          retain replacement owner coverage.
+      - path: test/test_reconciler_properties.ml
+        action: modify
+        description: >-
+          Migrate this owner API, consumer or regression fixture to owner-derived
+          reconciliation and retained evidence.
+      - path: test/test_recovery_ref_prune.ml
+        action: create
+        description: Complete the owned milestone guarantee and its direct verification.
+      - path: test/test_replay_boundary_properties.ml
+        action: create
+        description: >-
+          Migrate this owner API, consumer or regression fixture to owner-derived
+          reconciliation and retained evidence.
+      - path: test/test_replay_boundary_state_machine.ml
+        action: create
+        description: >-
+          Migrate this owner API, consumer or regression fixture to owner-derived
+          reconciliation and retained evidence.
+      - path: test/test_repo_root.ml
+        action: modify
+        description: >-
+          Implement or verify checkout, process, provisioning and dependent project
+          lifetime guarantees.
+      - path: test/test_runtime_create.ml
+        action: modify
+        description: >-
+          Migrate this owner API, consumer or regression fixture to owner-derived
+          reconciliation and retained evidence.
+      - path: test/test_session_result_properties.ml
+        action: modify
+        description: >-
+          Migrate this owner API, consumer or regression fixture to owner-derived
+          reconciliation and retained evidence.
+      - path: test/test_session_timeout.ml
+        action: modify
+        description: >-
+          Implement or verify checkout, process, provisioning and dependent project
+          lifetime guarantees.
+      - path: test/test_spawn_logic.ml
+        action: modify
+        description: >-
+          Migrate this owner API, consumer or regression fixture to owner-derived
+          reconciliation and retained evidence.
+      - path: test/test_stale_base_invariants.ml
+        action: modify
+        description: >-
+          Migrate this owner API, consumer or regression fixture to owner-derived
+          reconciliation and retained evidence.
+      - path: test/test_start_point_plan_properties.ml
+        action: modify
+        description: >-
+          Implement or verify checkout, process, provisioning and dependent project
+          lifetime guarantees.
+      - path: test/test_telemetry_migration.ml
+        action: modify
+        description: Correlate durable repair tokens with backend session events before dispatch.
+      - path: test/test_tui_render_frame.ml
+        action: modify
+        description: >-
+          Verify rendered captured revisions, replay evidence and retry/intervention
+          diagnostics after owner checkpoint reload.
+      - path: test/test_types_state_properties.ml
+        action: create
+        description: >-
+          Migrate this owner API, consumer or regression fixture to owner-derived
+          reconciliation and retained evidence.
+      - path: test/test_user_config.ml
+        action: modify
+        description: >-
+          Implement or verify checkout, process, provisioning and dependent project
+          lifetime guarantees.
+      - path: test/test_wontdo_session.ml
+        action: modify
+        description: >-
+          Migrate this owner API, consumer or regression fixture to owner-derived
+          reconciliation and retained evidence.
+      - path: test/test_worktree_backend_integration.ml
+        action: modify
+        description: >-
+          Implement or verify checkout, process, provisioning and dependent project
+          lifetime guarantees.
+      - path: test/test_worktree_create_wiring.ml
+        action: modify
+        description: >-
+          Implement or verify checkout, process, provisioning and dependent project
+          lifetime guarantees.
+      - path: test/test_worktree_hook_properties.ml
+        action: create
+        description: >-
+          Implement or verify checkout, process, provisioning and dependent project
+          lifetime guarantees.
+      - path: test/test_worktree_missing_recovery.ml
+        action: modify
+        description: >-
+          Implement or verify checkout, process, provisioning and dependent project
+          lifetime guarantees.
+      - path: test/test_worktree_parser.ml
+        action: modify
+        description: >-
+          Migrate this owner API, consumer or regression fixture to owner-derived
+          reconciliation and retained evidence.
+      - path: test/test_worktree_plan.ml
+        action: delete
+        description: >-
+          Remove the obsolete independent reconciliation API or its superseded tests;
+          retain replacement owner coverage.
+      - path: test/test_worktree_provision_properties.ml
+        action: create
+        description: >-
+          Implement or verify checkout, process, provisioning and dependent project
+          lifetime guarantees.
+      - path: test/test_worktree_setup_base_fetch_integration.ml
+        action: modify
+        description: Complete the owned milestone guarantee and its direct verification.
+      - path: test/test_worktree_start_point_integration.ml
+        action: modify
+        description: >-
+          Implement or verify checkout, process, provisioning and dependent project
+          lifetime guarantees.
+      - path: test/test_worktree_start_state_interleavings.ml
+        action: modify
+        description: >-
+          Implement or verify checkout, process, provisioning and dependent project
+          lifetime guarantees.
+    changes:
+      - >-
+        Finish recorded/reconstructed/patch-equivalent/scoped-subject/plain replay and
+        remote replay; retain truthful provenance and retry failed probes.
+      - >-
+        Finish owner-derived readiness/publication/conflict state and live API migration
+        across scheduled, session, root and conflict paths.
+      - >-
+        Bound history recovery, independently verify preservation, retain repair
+        identity and diagnostics, and preserve legacy verification-only recovery without
+        repeated implementation.
+      - >-
+        Qualify deep stacks, staged repairs, empty outcomes, remote races, stale results
+        and every mutation/result-checkpoint boundary.
+      - >-
+        On explicit resume, hand failed legacy verification to a queued mutation-capable
+        intent under a new identity; retain captured revisions and the stronger
+        preservation policy. Correlate each repair backend session with its durable
+        operation/command token before dispatch.
+      - >-
+        Persist request tickets before dispatch and validate PR, head, base and request
+        identity on acceptance.
+      - >-
+        Require direct Git revision confirmation, permit confirmed head reversions and
+        visibly wait for already satisfied conflict pairs.
+      - >-
+        Preserve native-stack restrictions and equivalent GitHub/SourceHut outcome
+        contracts.
+      - >-
+        Complete owner-driven provisioning and captured creation-hook
+        plan/claim/completion, including uncertain outcomes and explicit resume.
+      - >-
+        Keep project writer/drain ownership until all command descendants exit,
+        including synchronous startup Git and cancellation.
+      - >-
+        Retain required replay boundaries across dependents, prune with captured-tip
+        guards, retire captured payloads and preserve stable historical project
+        identity.
+      - >-
+        Land the mutually dependent owner, forge-identity and lifecycle interfaces
+        together; migrate their existing consumers and tests in the same atomic cutover.
+        Shared test wiring in this patch contains only tests supplied here;
+        qualification adds its independent model stanza afterward.
+    requiredContext:
+      - endpoint-contract
+    spec: |
+      module M3_CUTOVER.
+
+      OwnerState.
+      OwnerEvent.
+      OwnerCommand.
+      owner-next s: OwnerState, e: OwnerEvent => OwnerState.
+      owner-stale-result? s: OwnerState, e: OwnerEvent => Bool.
+      owner-settled? s: OwnerState => Bool.
+      owner-relevant-change? s: OwnerState, e: OwnerEvent => Bool.
+      owner-emits? s: OwnerState, c: OwnerCommand => Bool.
+      owner-mutation? c: OwnerCommand => Bool.
+      owner-durable? c: OwnerCommand => Bool.
+      owner-exclusive? s: OwnerState, c: OwnerCommand => Bool.
+      owner-inputs-pinned? c: OwnerCommand => Bool.
+      owner-verification-only? s: OwnerState => Bool.
+      owner-history-turn? s: OwnerState => Bool.
+      owner-history-mode? s: OwnerState => Bool.
+      owner-same-repair? s: OwnerState, e: OwnerEvent => Bool.
+      owner-completed-no-progress? s: OwnerState, e: OwnerEvent => Bool.
+      owner-structural-progress? s: OwnerState, e: OwnerEvent => Bool.
+      owner-infrastructure-only? e: OwnerEvent => Bool.
+      owner-deterministic-exhausted? s: OwnerState => Bool.
+      owner-probe-failed? s: OwnerState => Bool.
+      owner-retry? s: OwnerState => Bool.
+      owner-no-progress-turns s: OwnerState => Nat0.
+      owner-intervention? s: OwnerState => Bool.
+      owner-publishes? s: OwnerState => Bool.
+      owner-preservation-proved? s: OwnerState => Bool.
+      owner-lease-bound? s: OwnerState => Bool.
+      owner-required-work s: OwnerState => [String].
+      owner-published-work s: OwnerState => [String].
+      owner-recorded-reachable? s: OwnerState => Bool.
+      owner-inferred-boundary? s: OwnerState => Bool.
+      owner-explicit-resume? e: OwnerEvent => Bool.
+      owner-queued-mutation-intent? s: OwnerState => Bool.
+      owner-legacy-handoff? s: OwnerState, e: OwnerEvent => Bool.
+      owner-operation-id s: OwnerState => Nat0.
+      owner-required-revisions s: OwnerState => [String].
+      owner-ancestry-required? s: OwnerState => Bool.
+      owner-fresh-observation-required? s: OwnerState => Bool.
+      owner-session-dispatched? s: OwnerState => Bool.
+      owner-session-correlated? s: OwnerState => Bool.
+      ---
+      all s: OwnerState, e: OwnerEvent, owner-stale-result? s e | owner-next s e = s.
+      all s: OwnerState, e: OwnerEvent, owner-settled? s and ~owner-relevant-change? s e | owner-next s e = s.
+      all s: OwnerState, c: OwnerCommand, owner-emits? s c and owner-mutation? c | owner-durable? c and owner-exclusive? s c and owner-inputs-pinned? c.
+      all s: OwnerState, c: OwnerCommand, owner-verification-only? s and owner-emits? s c | ~owner-mutation? c.
+      all s: OwnerState, owner-history-turn? s | owner-deterministic-exhausted? s and owner-no-progress-turns s < 2.
+      all s: OwnerState, owner-probe-failed? s | owner-retry? s and ~owner-history-turn? s.
+      > Content repair can escalate to history recovery; only the history budget exhausts into intervention.
+      all s: OwnerState, owner-history-mode? s and owner-no-progress-turns s >= 2 | owner-intervention? s.
+      > Budget changes are scoped to one repair mode and captured repair context.
+      all s: OwnerState, e: OwnerEvent, owner-same-repair? s e and owner-infrastructure-only? e | owner-no-progress-turns (owner-next s e) = owner-no-progress-turns s.
+      all s: OwnerState, e: OwnerEvent, owner-same-repair? s e and owner-completed-no-progress? s e | owner-no-progress-turns (owner-next s e) = owner-no-progress-turns s + 1.
+      all s: OwnerState, e: OwnerEvent, owner-same-repair? s e and owner-structural-progress? s e | owner-no-progress-turns (owner-next s e) = 0.
+      all s: OwnerState, owner-publishes? s | owner-preservation-proved? s and owner-lease-bound? s and owner-required-work s subset owner-published-work s.
+      all s: OwnerState, owner-recorded-reachable? s | ~owner-inferred-boundary? s.
+      > Legacy verification only yields authority after explicit resume of a queued mutation-capable intent.
+      all s: OwnerState, e: OwnerEvent, owner-verification-only? s and owner-intervention? s and owner-queued-mutation-intent? s and owner-explicit-resume? e | owner-legacy-handoff? s e.
+      all s: OwnerState, e: OwnerEvent, owner-legacy-handoff? s e | owner-verification-only? s and owner-intervention? s and owner-queued-mutation-intent? s and owner-explicit-resume? e.
+      all s: OwnerState, e: OwnerEvent, owner-legacy-handoff? s e | ~(owner-operation-id (owner-next s e) = owner-operation-id s) and owner-required-revisions s subset owner-required-revisions (owner-next s e) and owner-fresh-observation-required? (owner-next s e).
+      all s: OwnerState, e: OwnerEvent, owner-legacy-handoff? s e and owner-ancestry-required? s | owner-ancestry-required? (owner-next s e).
+      > Session correlation is emitted before backend invocation and names the claimed durable repair token.
+      all s: OwnerState, owner-session-dispatched? s | owner-session-correlated? s.
+
+      where
+
+      ForgeObservation.
+      forge-accepted? o: ForgeObservation => Bool.
+      forge-open? o: ForgeObservation => Bool.
+      forge-dispatched? o: ForgeObservation => Bool.
+      forge-ticket-durable? o: ForgeObservation => Bool.
+      forge-unresolved-conflict? o: ForgeObservation => Bool.
+      forge-merge-authorized? o: ForgeObservation => Bool.
+      forge-identified? o: ForgeObservation => Bool.
+      forge-current-ticket? o: ForgeObservation => Bool.
+      forge-current-pr? o: ForgeObservation => Bool.
+      forge-current-base? o: ForgeObservation => Bool.
+      forge-confirmed-head? o: ForgeObservation => Bool.
+      forge-confirmed-base? o: ForgeObservation => Bool.
+      forge-satisfied-pair? o: ForgeObservation => Bool.
+      forge-conflicting? o: ForgeObservation => Bool.
+      forge-visible-wait? o: ForgeObservation => Bool.
+      forge-dispatch-repair? o: ForgeObservation => Bool.
+      forge-native-stack? o: ForgeObservation => Bool.
+      forge-base-mutation? o: ForgeObservation => Bool.
+      forge-absence-count o: ForgeObservation => Nat0.
+      forge-native-released? o: ForgeObservation => Bool.
+      ---
+      all o: ForgeObservation, forge-accepted? o | forge-identified? o and forge-current-ticket? o and forge-current-pr? o.
+      all o: ForgeObservation, forge-accepted? o and forge-open? o | forge-current-base? o and forge-confirmed-head? o and forge-confirmed-base? o.
+      all o: ForgeObservation, forge-accepted? o and forge-conflicting? o and forge-satisfied-pair? o | forge-visible-wait? o and ~forge-dispatch-repair? o.
+      all o: ForgeObservation, forge-native-stack? o | ~forge-base-mutation? o.
+      all o: ForgeObservation, forge-native-released? o | forge-absence-count o >= 2.
+      all o: ForgeObservation, forge-dispatched? o | forge-ticket-durable? o.
+      all o: ForgeObservation, forge-unresolved-conflict? o | ~forge-merge-authorized? o.
+
+      where
+
+      LifeState.
+      life-mutate? s: LifeState => Bool.
+      life-writer-held? s: LifeState => Bool.
+      life-old-tree-live? s: LifeState => Bool.
+      life-admit-writer? s: LifeState => Bool.
+      life-hook-dispatch? s: LifeState => Bool.
+      life-hook-claim-durable? s: LifeState => Bool.
+      life-hook-context-matches? s: LifeState => Bool.
+      life-hook-completed? s: LifeState => Bool.
+      life-hook-unknown? s: LifeState => Bool.
+      life-explicit-resume? s: LifeState => Bool.
+      life-prune? s: LifeState => Bool.
+      life-required-revisions s: LifeState => [String].
+      life-protected-revisions s: LifeState => [String].
+      life-retiring-payload s: LifeState => String.
+      life-deleted-payload s: LifeState => String.
+      life-delete-payload? s: LifeState => Bool.
+      ---
+      all s: LifeState, life-mutate? s | life-writer-held? s.
+      all s: LifeState, life-old-tree-live? s | ~life-admit-writer? s.
+      all s: LifeState, life-hook-dispatch? s | life-hook-claim-durable? s and life-hook-context-matches? s and ~life-hook-completed? s.
+      all s: LifeState, life-hook-unknown? s and ~life-explicit-resume? s | ~life-hook-dispatch? s.
+      all s: LifeState, life-prune? s | life-required-revisions s subset life-protected-revisions s.
+      all s: LifeState, life-delete-payload? s | life-deleted-payload s = life-retiring-payload s.
+    testStubsIntroduced:
+      - test_branch_reconcile_boundaries.exe
+      - test_branch_reconcile_ownership.exe
+      - test_branch_replay_evidence.exe
+      - test_branch_reconcile_git.exe
+      - test_legacy_publication.exe
+      - test_telemetry_migration.exe
+      - test_poller_revision_context.exe
+      - test_forge_poll_checkpoint.exe
+      - test_recovery_ref_prune.exe
+      - test_project_lifecycle.exe
+      - test_worktree_setup_base_fetch_integration.exe
+      - test_process_tree_cancellation.exe
+      - test_tui_render_frame.exe
+    testStubsImplemented:
+      - test_branch_reconcile_boundaries.exe
+      - test_branch_reconcile_ownership.exe
+      - test_branch_replay_evidence.exe
+      - test_branch_reconcile_git.exe
+      - test_legacy_publication.exe
+      - test_telemetry_migration.exe
+      - test_poller_revision_context.exe
+      - test_forge_poll_checkpoint.exe
+      - test_recovery_ref_prune.exe
+      - test_project_lifecycle.exe
+      - test_worktree_setup_base_fetch_integration.exe
+      - test_process_tree_cancellation.exe
+      - test_tui_render_frame.exe
+  - number: 2
+    classification: INFRA
+    complexity: 3
+    title: Finish independent model and endpoint qualification
+    files:
+      - path: AGENTS.md
+        action: modify
+        description: >-
+          Document the endpoint contract, ownership laws and final qualification
+          evidence.
+      - path: docs/design/branch-reconciliation.md
+        action: modify
+        description: >-
+          Document the endpoint contract, ownership laws and final qualification
+          evidence.
+      - path: docs/design/branch-reconciliation-operations.md
+        action: modify
+        description: >-
+          Describe dependent-aware pruning, restart-safe retirement and contextual forge
+          observation waits for operators.
+      - path: docs/workstreams/branch-reconciliation-m3-audit.md
+        action: create
+        description: Complete the owned milestone guarantee and its direct verification.
+      - path: docs/workstreams/branch-reconciliation.md
+        action: modify
+        description: >-
+          Document the endpoint contract, ownership laws and final qualification
+          evidence.
+      - path: gameplans/branch-reconciliation-complete.yaml
+        action: create
+        description: Complete the owned milestone guarantee and its direct verification.
+      - path: scripts/check-no-raw-yojson.sh
+        action: modify
+        description: Include non-ignored unstaged modules in the final source-policy gate.
+      - path: test/dune
+        action: modify
+        description: Complete the owned milestone guarantee and its direct verification.
+      - path: test/test_branch_reconcile_model.ml
+        action: create
+        description: Complete the owned milestone guarantee and its direct verification.
+      - path: test/test_stream_parser.ml
+        action: modify
+        description: Assign the retained JSON parser tests to their live architecture domain.
+    changes:
+      - >-
+        Finish independent generated repository models for every operation purpose,
+        conflicting sequencers, stacks and competing runtime triggers.
+      - >-
+        Check totality, serialization, stale isolation, compatible-order equivalence,
+        fixed points, exclusive authority, budget isolation and fair convergence.
+      - >-
+        Finish requirement-by-requirement M1/M2/M3 audit and formal contracts; run
+        build, tests, formatting, source and architecture gates without a second runtime
+        or endpoint flag.
+    requiredContext:
+      - endpoint-contract
+    spec: |
+      module M3_MODEL.
+      ModelRun.
+      model-writes-cease? r: ModelRun => Bool.
+      model-services-return? r: ModelRun => Bool.
+      model-repairs-succeed? r: ModelRun => Bool.
+      model-fresh-observation? r: ModelRun => Bool.
+      model-finite-work? r: ModelRun => Bool.
+      model-commands-serviced? r: ModelRun => Bool.
+      model-required-resumes-authorized? r: ModelRun => Bool.
+      model-fair? r: ModelRun => Bool.
+      model-settles? r: ModelRun => Bool.
+      model-restart-equivalent? r: ModelRun => Bool.
+      model-compatible-orders-equivalent? r: ModelRun => Bool.
+      model-compatible-observations? r: ModelRun => Bool.
+      model-owned-mutations-only? r: ModelRun => Bool.
+      model-content-budget-before r: ModelRun => Nat0.
+      model-content-budget-after r: ModelRun => Nat0.
+      model-infrastructure-only? r: ModelRun => Bool.
+      ---
+      all r: ModelRun | model-fair? r <-> (model-writes-cease? r and model-services-return? r and model-repairs-succeed? r and model-fresh-observation? r and model-finite-work? r and model-commands-serviced? r and model-required-resumes-authorized? r).
+      all r: ModelRun, model-fair? r | model-settles? r.
+      all r: ModelRun | model-restart-equivalent? r and model-owned-mutations-only? r.
+      all r: ModelRun, model-compatible-observations? r | model-compatible-orders-equivalent? r.
+      all r: ModelRun, model-infrastructure-only? r | model-content-budget-after r = model-content-budget-before r.
+    testStubsIntroduced:
+      - test_branch_reconcile_model.exe
+    testStubsImplemented:
+      - test_branch_reconcile_model.exe
+
+testMap:
+  - testName: test_branch_reconcile_boundaries.exe
+    file: test/test_branch_reconcile_boundaries.ml
+    stubPatch: 1
+    implPatch: 1
+  - testName: test_branch_reconcile_ownership.exe
+    file: test/test_branch_reconcile_ownership.ml
+    stubPatch: 1
+    implPatch: 1
+  - testName: test_branch_replay_evidence.exe
+    file: test/test_branch_replay_evidence.ml
+    stubPatch: 1
+    implPatch: 1
+  - testName: test_poller_revision_context.exe
+    file: test/test_poller_revision_context.ml
+    stubPatch: 1
+    implPatch: 1
+  - testName: test_forge_poll_checkpoint.exe
+    file: test/test_forge_poll_checkpoint.ml
+    stubPatch: 1
+    implPatch: 1
+  - testName: test_recovery_ref_prune.exe
+    file: test/test_recovery_ref_prune.ml
+    stubPatch: 1
+    implPatch: 1
+  - testName: test_project_lifecycle.exe
+    file: test/test_project_lifecycle.ml
+    stubPatch: 1
+    implPatch: 1
+  - testName: test_branch_reconcile_model.exe
+    file: test/test_branch_reconcile_model.ml
+    stubPatch: 2
+    implPatch: 2
+  - testName: test_branch_reconcile_git.exe
+    file: test/test_branch_reconcile_git.ml
+    stubPatch: 1
+    implPatch: 1
+  - testName: test_worktree_setup_base_fetch_integration.exe
+    file: test/test_worktree_setup_base_fetch_integration.ml
+    stubPatch: 1
+    implPatch: 1
+  - testName: test_process_tree_cancellation.exe
+    file: test/test_process_tree_cancellation.ml
+    stubPatch: 1
+    implPatch: 1
+  - testName: test_legacy_publication.exe
+    file: test/test_legacy_publication.ml
+    stubPatch: 1
+    implPatch: 1
+  - testName: test_telemetry_migration.exe
+    file: test/test_telemetry_migration.ml
+    stubPatch: 1
+    implPatch: 1
+
+  - testName: test_tui_render_frame.exe
+    file: test/test_tui_render_frame.ml
+    stubPatch: 1
+    implPatch: 1
+
+orderingConstraints: []
+
+mergabilityChecklist:
+  featureFlagStrategyDocumented: true
+  earlyPatchesNonFunctional: false
+  testStubsInInfraPatches: false
+  testImplsColocated: true
+  testMapComplete: true
+  testMapImplPatchMatchesCode: true
+  behaviorPatchesMinimal: true
+  derivedDependenciesValid: true
+  behaviorPatchesJustified: true
+  functionalChangesOwnedByExactlyOnePatch: true
+  operationalConsiderationsSubstantive: true
+  observableReachabilityTraced: true
+  gameplanIsAtomicAndAutonomous: true
+
+mergabilityInsight: >-
+  One atomic behavior cutover supplies the qualification patch. Producer proofs remain
+  with the owning patch. Early non-functional patches and separate infrastructure stubs
+  are intentionally inapplicable to this verified API cutover.
+
+finalStateSpec: |
+  module M3_ENDPOINT.
+
+
+  OwnerState.
+  OwnerEvent.
+  OwnerCommand.
+  owner-next s: OwnerState, e: OwnerEvent => OwnerState.
+  owner-stale-result? s: OwnerState, e: OwnerEvent => Bool.
+  owner-settled? s: OwnerState => Bool.
+  owner-relevant-change? s: OwnerState, e: OwnerEvent => Bool.
+  owner-emits? s: OwnerState, c: OwnerCommand => Bool.
+  owner-mutation? c: OwnerCommand => Bool.
+  owner-durable? c: OwnerCommand => Bool.
+  owner-exclusive? s: OwnerState, c: OwnerCommand => Bool.
+  owner-inputs-pinned? c: OwnerCommand => Bool.
+  owner-verification-only? s: OwnerState => Bool.
+  owner-history-turn? s: OwnerState => Bool.
+  owner-history-mode? s: OwnerState => Bool.
+  owner-same-repair? s: OwnerState, e: OwnerEvent => Bool.
+  owner-completed-no-progress? s: OwnerState, e: OwnerEvent => Bool.
+  owner-structural-progress? s: OwnerState, e: OwnerEvent => Bool.
+  owner-infrastructure-only? e: OwnerEvent => Bool.
+  owner-deterministic-exhausted? s: OwnerState => Bool.
+  owner-probe-failed? s: OwnerState => Bool.
+  owner-retry? s: OwnerState => Bool.
+  owner-no-progress-turns s: OwnerState => Nat0.
+  owner-intervention? s: OwnerState => Bool.
+  owner-publishes? s: OwnerState => Bool.
+  owner-preservation-proved? s: OwnerState => Bool.
+  owner-lease-bound? s: OwnerState => Bool.
+  owner-required-work s: OwnerState => [String].
+  owner-published-work s: OwnerState => [String].
+  owner-recorded-reachable? s: OwnerState => Bool.
+  owner-inferred-boundary? s: OwnerState => Bool.
+  owner-explicit-resume? e: OwnerEvent => Bool.
+  owner-queued-mutation-intent? s: OwnerState => Bool.
+  owner-legacy-handoff? s: OwnerState, e: OwnerEvent => Bool.
+  owner-operation-id s: OwnerState => Nat0.
+  owner-required-revisions s: OwnerState => [String].
+  owner-ancestry-required? s: OwnerState => Bool.
+  owner-fresh-observation-required? s: OwnerState => Bool.
+  owner-session-dispatched? s: OwnerState => Bool.
+  owner-session-correlated? s: OwnerState => Bool.
+  ---
+  all s: OwnerState, e: OwnerEvent, owner-stale-result? s e | owner-next s e = s.
+  all s: OwnerState, e: OwnerEvent, owner-settled? s and ~owner-relevant-change? s e | owner-next s e = s.
+  all s: OwnerState, c: OwnerCommand, owner-emits? s c and owner-mutation? c | owner-durable? c and owner-exclusive? s c and owner-inputs-pinned? c.
+  all s: OwnerState, c: OwnerCommand, owner-verification-only? s and owner-emits? s c | ~owner-mutation? c.
+  all s: OwnerState, owner-history-turn? s | owner-deterministic-exhausted? s and owner-no-progress-turns s < 2.
+  all s: OwnerState, owner-probe-failed? s | owner-retry? s and ~owner-history-turn? s.
+  > Content repair can escalate to history recovery; only the history budget exhausts into intervention.
+  all s: OwnerState, owner-history-mode? s and owner-no-progress-turns s >= 2 | owner-intervention? s.
+  > Budget changes are scoped to one repair mode and captured repair context.
+  all s: OwnerState, e: OwnerEvent, owner-same-repair? s e and owner-infrastructure-only? e | owner-no-progress-turns (owner-next s e) = owner-no-progress-turns s.
+  all s: OwnerState, e: OwnerEvent, owner-same-repair? s e and owner-completed-no-progress? s e | owner-no-progress-turns (owner-next s e) = owner-no-progress-turns s + 1.
+  all s: OwnerState, e: OwnerEvent, owner-same-repair? s e and owner-structural-progress? s e | owner-no-progress-turns (owner-next s e) = 0.
+  all s: OwnerState, owner-publishes? s | owner-preservation-proved? s and owner-lease-bound? s and owner-required-work s subset owner-published-work s.
+  all s: OwnerState, owner-recorded-reachable? s | ~owner-inferred-boundary? s.
+  > Legacy verification only yields authority after explicit resume of a queued mutation-capable intent.
+  all s: OwnerState, e: OwnerEvent, owner-verification-only? s and owner-intervention? s and owner-queued-mutation-intent? s and owner-explicit-resume? e | owner-legacy-handoff? s e.
+  all s: OwnerState, e: OwnerEvent, owner-legacy-handoff? s e | owner-verification-only? s and owner-intervention? s and owner-queued-mutation-intent? s and owner-explicit-resume? e.
+  all s: OwnerState, e: OwnerEvent, owner-legacy-handoff? s e | ~(owner-operation-id (owner-next s e) = owner-operation-id s) and owner-required-revisions s subset owner-required-revisions (owner-next s e) and owner-fresh-observation-required? (owner-next s e).
+  all s: OwnerState, e: OwnerEvent, owner-legacy-handoff? s e and owner-ancestry-required? s | owner-ancestry-required? (owner-next s e).
+  > Session correlation is emitted before backend invocation and names the claimed durable repair token.
+  all s: OwnerState, owner-session-dispatched? s | owner-session-correlated? s.
+
+  where
+
+  ForgeObservation.
+  forge-accepted? o: ForgeObservation => Bool.
+  forge-open? o: ForgeObservation => Bool.
+  forge-dispatched? o: ForgeObservation => Bool.
+  forge-ticket-durable? o: ForgeObservation => Bool.
+  forge-unresolved-conflict? o: ForgeObservation => Bool.
+  forge-merge-authorized? o: ForgeObservation => Bool.
+  forge-identified? o: ForgeObservation => Bool.
+  forge-current-ticket? o: ForgeObservation => Bool.
+  forge-current-pr? o: ForgeObservation => Bool.
+  forge-current-base? o: ForgeObservation => Bool.
+  forge-confirmed-head? o: ForgeObservation => Bool.
+  forge-confirmed-base? o: ForgeObservation => Bool.
+  forge-satisfied-pair? o: ForgeObservation => Bool.
+  forge-conflicting? o: ForgeObservation => Bool.
+  forge-visible-wait? o: ForgeObservation => Bool.
+  forge-dispatch-repair? o: ForgeObservation => Bool.
+  forge-native-stack? o: ForgeObservation => Bool.
+  forge-base-mutation? o: ForgeObservation => Bool.
+  forge-absence-count o: ForgeObservation => Nat0.
+  forge-native-released? o: ForgeObservation => Bool.
+  ---
+  all o: ForgeObservation, forge-accepted? o | forge-identified? o and forge-current-ticket? o and forge-current-pr? o.
+  all o: ForgeObservation, forge-accepted? o and forge-open? o | forge-current-base? o and forge-confirmed-head? o and forge-confirmed-base? o.
+  all o: ForgeObservation, forge-accepted? o and forge-conflicting? o and forge-satisfied-pair? o | forge-visible-wait? o and ~forge-dispatch-repair? o.
+  all o: ForgeObservation, forge-native-stack? o | ~forge-base-mutation? o.
+  all o: ForgeObservation, forge-native-released? o | forge-absence-count o >= 2.
+  all o: ForgeObservation, forge-dispatched? o | forge-ticket-durable? o.
+  all o: ForgeObservation, forge-unresolved-conflict? o | ~forge-merge-authorized? o.
+
+  where
+
+  LifeState.
+  life-mutate? s: LifeState => Bool.
+  life-writer-held? s: LifeState => Bool.
+  life-old-tree-live? s: LifeState => Bool.
+  life-admit-writer? s: LifeState => Bool.
+  life-hook-dispatch? s: LifeState => Bool.
+  life-hook-claim-durable? s: LifeState => Bool.
+  life-hook-context-matches? s: LifeState => Bool.
+  life-hook-completed? s: LifeState => Bool.
+  life-hook-unknown? s: LifeState => Bool.
+  life-explicit-resume? s: LifeState => Bool.
+  life-prune? s: LifeState => Bool.
+  life-required-revisions s: LifeState => [String].
+  life-protected-revisions s: LifeState => [String].
+  life-retiring-payload s: LifeState => String.
+  life-deleted-payload s: LifeState => String.
+  life-delete-payload? s: LifeState => Bool.
+  ---
+  all s: LifeState, life-mutate? s | life-writer-held? s.
+  all s: LifeState, life-old-tree-live? s | ~life-admit-writer? s.
+  all s: LifeState, life-hook-dispatch? s | life-hook-claim-durable? s and life-hook-context-matches? s and ~life-hook-completed? s.
+  all s: LifeState, life-hook-unknown? s and ~life-explicit-resume? s | ~life-hook-dispatch? s.
+  all s: LifeState, life-prune? s | life-required-revisions s subset life-protected-revisions s.
+  all s: LifeState, life-delete-payload? s | life-deleted-payload s = life-retiring-payload s.
+
+  where
+
+  ModelRun.
+  model-writes-cease? r: ModelRun => Bool.
+  model-services-return? r: ModelRun => Bool.
+  model-repairs-succeed? r: ModelRun => Bool.
+  model-fresh-observation? r: ModelRun => Bool.
+  model-finite-work? r: ModelRun => Bool.
+  model-commands-serviced? r: ModelRun => Bool.
+  model-required-resumes-authorized? r: ModelRun => Bool.
+  model-fair? r: ModelRun => Bool.
+  model-settles? r: ModelRun => Bool.
+  model-restart-equivalent? r: ModelRun => Bool.
+  model-compatible-orders-equivalent? r: ModelRun => Bool.
+  model-compatible-observations? r: ModelRun => Bool.
+  model-owned-mutations-only? r: ModelRun => Bool.
+  model-content-budget-before r: ModelRun => Nat0.
+  model-content-budget-after r: ModelRun => Nat0.
+  model-infrastructure-only? r: ModelRun => Bool.
+  ---
+  all r: ModelRun | model-fair? r <-> (model-writes-cease? r and model-services-return? r and model-repairs-succeed? r and model-fresh-observation? r and model-finite-work? r and model-commands-serviced? r and model-required-resumes-authorized? r).
+  all r: ModelRun, model-fair? r | model-settles? r.
+  all r: ModelRun | model-restart-equivalent? r and model-owned-mutations-only? r.
+  all r: ModelRun, model-compatible-observations? r | model-compatible-orders-equivalent? r.
+  all r: ModelRun, model-infrastructure-only? r | model-content-budget-after r = model-content-budget-before r.

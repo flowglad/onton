@@ -26,15 +26,16 @@ cd "$REPO_ROOT" || exit 1
 # Allowlisted paths, comments/blank lines stripped and trailing space trimmed.
 allowed="$(grep -vE '^[[:space:]]*(#|$)' "$ALLOWLIST" | sed 's/[[:space:]]*$//')"
 
-# Tracked OCaml sources in the libraries/binaries we police, including nested
-# modules — the leading-anchored grep keeps it to those top-level directories.
-files="$(git ls-files '*.ml' | grep -E '^(lib|lib_core|api|bin)/')"
+# Include new worktree sources before staging, as well as tracked nested modules.
+# Ignored build output stays outside this inventory.
+files="$(git ls-files --cached --others --exclude-standard '*.ml' | grep -E '^(lib|lib_core|api|bin)/' | sort -u)"
 
 status=0
 
 # 1. Any file that references the pattern must be allowlisted.
 # shellcheck disable=SC2086 # git paths are newline-separated and space-free
 for f in $files; do
+  [ -f "$f" ] || continue
   grep -q "$PATTERN" "$f" || continue
   if ! printf '%s\n' "$allowed" | grep -qxF "$f"; then
     echo "ERROR: $f references Yojson.Safe.Util but is not allowlisted." >&2

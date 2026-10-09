@@ -60,8 +60,14 @@ materialization receipt is retained in the project/branch recovery namespace.
 A new branch proves a replay boundary; an adopted branch records its actual
 starting revision without claiming ownership of earlier commits. The receipt
 is checkpointed before creation hooks or agent work. Retry can recover it from
-Git if the snapshot write failed. Initial legacy anchors are derived from that
-receipt, so later base movement does not change the recorded starting boundary.
+Git if the snapshot write failed. Start uses owned provisioning directly; no
+separate anchor-copying plan or side-channel event remains. Later base movement
+does not change the owner's recorded starting boundary. Older snapshot anchor
+SHAs migrate into the owner's revision-retention inventory, without creating a
+materialization or integration receipt. Imports do not authorize replay, add
+ancestry obligations, or change pending commands. Pruning uses this owner
+inventory exclusively, including after restart. Valid legacy entries are retained
+independently of malformed neighbors and without the old eight-entry truncation.
 
 Preparation observes Git, records source and target revisions, and pins them
 under `refs/onton/reconcile/<project-and-branch>/<operation>/<command>/`.
@@ -69,10 +75,44 @@ The captured remote lease and any completed candidate are retained there too,
 including before integration or repair can change the checkout. Background fetches
 cannot remove the only ref keeping that remote evidence reachable.
 Integration checks the checkout identity, captured HEAD, index, and sequencer
-before using the captured target. Recorded replay boundaries precede plain
-rebase. History-preserving integration uses merge. Recovery refs are retained;
-project pruning must remove the project namespace only after its dependents no
-longer need its boundaries.
+before using the captured target. Recorded replay boundaries precede inferred replay. If a recorded boundary is
+unreachable after a rewrite, reconciliation first attempts exact-tree
+reconstruction in the captured source's complete first-parent history. It
+retains both the original revision and reconstructed upstream in the checkpoint
+and private refs. Missing or inconsistent topology retries as a failed probe.
+Reconstructed ownership remains best effort and grants no recorded-boundary
+publication authority. When reconstruction is unavailable, initial base
+reconciliation probes patch equivalence against the captured target. A complete linear history may exclude its leading equivalent
+commits, retaining the selected upstream as `Patch_equivalent` in the operation
+and integration receipt. This is explicitly best-effort ownership evidence and
+cannot grant recorded-boundary publication authority. Failed or malformed probes
+retry; non-linear history supplies no such boundary. Plain rebase remains the
+fallback when inference is unavailable. Scheduled reconciliation requests capture
+the project name and transitive dependency IDs in their durable intent. If
+patch-equivalence cannot select a prefix, those scoped requests can infer a
+leading dependency prefix from Onton's commit-subject convention. The selected
+`Subject_inferred` boundary is labelled best effort and confers no recorded
+publication authority. Unscoped requests do not guess dependency ownership.
+Subject probe failures remain errors, and resumed operations retain the captured
+scope and boundary rather than reading a changed graph. History-preserving integration uses merge. Recovery refs are retained;
+project pruning removes the project namespace only after surviving checkpoints
+no longer depend on those refs as their sole recovery anchors. The pruner holds
+the relevant project locks, probes revision ancestry, and compare-and-deletes
+captured direct commit refs. Invalid inventories and failed probes retain data.
+Shared managed repositories outlive every stored project that uses them;
+unfinished reconciliation prevents terminal-project pruning.
+
+Startup and pruning hold an external registration lease while changing project
+configuration or membership. Startup claims project ownership before provisioning
+or reading/writing resumable state, then retains an exclusive lifetime mutation
+lease throughout the worker run, including `--no-lock` runs. That option bypasses
+only the PID-file lock; concurrent supervisors cannot share mutation authority.
+Pruning requires exclusive lifetime
+leases and cannot use a running peer's refs as independent retention evidence.
+Retirement atomically renames the project directory into a versioned private
+journal before recursive deletion. Cleanup preserves unrecognized journals and
+never revisits the original project pathname, so a restart may safely recreate it
+while a prior incarnation awaits cleanup.
 
 An existing rebase or merge is adopted from its sequencer metadata. Its source
 and original target are checkpointed and pinned before continuation or a repair
@@ -171,7 +211,19 @@ its local action (publish the captured source, or integrate with a captured
 policy) independently of its initiating intent. A publication race can require
 integration even though its original intent was session publication. Restart
 resumes that recorded action and policy; it cannot skip remote integration or
-silently substitute a rewrite for a recorded merge. An unchanged source can
+silently substitute a rewrite for a recorded merge. The preservation requirement
+is captured separately from that strategy: an adopted merge may strengthen a
+rewrite request, but an adopted rebase cannot weaken an ancestry-preserving
+request or a root contribution. Integration completion, publication, confirmation,
+and completed-candidate restart inspection enforce the captured requirement.
+Remote integration successors retain its original source and target obligations.
+Recovery prompts explicitly distinguish ancestry requirements from permitted
+verified rewrites. Legacy checkpoints recover a missing requirement from the
+request and strategy; downgraded candidates also recover predecessors through
+exact recorded integration-result links. A downgraded settled candidate is
+reopened for inspection once, invalidating its old publication receipt until
+preservation is verified again. Failed ancestry probes retry; proved missing
+ancestry enters history recovery without publishing. An unchanged source can
 resume its captured integration. A changed source needs a completed
 named-branch reflog receipt for the captured source and target; merely containing
 the target is insufficient. Other changes stop with a specific intervention
@@ -180,7 +232,9 @@ reason while retaining recovery refs.
 ## Agent recovery fallback
 
 The release endpoint includes agent-driven Git recovery after deterministic
-recovery strategies are exhausted. This is a distinct durable recovery phase,
+recovery strategies are exhausted. Git's explicit refusal to merge unrelated
+histories enters this mode; it is not retried indefinitely as an infrastructure
+outage. Lock failures and failed observations retain infrastructure backoff. This is a distinct durable recovery phase,
 not another implementation session. Its input includes pinned source, target,
 candidate and remote revisions, provenance, and the strategies already tried.
 The agent inspects history and repairs a candidate while preserving valid patch
@@ -194,6 +248,13 @@ success report nor a refreshed lease establishes that remote work was retained.
 Unverifiable preservation produces a specific intervention reason with recovery
 refs retained. Recovery turns have durable identities and a bounded progress
 budget, so restart and duplicate results cannot dispatch or charge a turn twice.
+The last claimed repair token is retained separately from the current command
+sequence, so inspection and infrastructure retries do not relabel the agent
+turn. Diagnostics expose that identity, mode, completion state and no-progress
+count. Recovery prompts carry the turn identity and distinguish recorded replay
+boundaries from best-effort inference. Older checkpoints without the retained
+identity remain readable and report it as unknown.
+
 History recovery is a distinct mode of the durable agent-turn protocol. It is
 entered after exhausted staged conflict repair, invalidated Git preconditions,
 unexpected agent Git mutations, uncertain local integration and publication
@@ -218,14 +279,55 @@ inspection before an agent runs. Dirty history-recovery checkouts stop with
 A lost backend acknowledgement or failed probe resumes verification rather than
 repeating successful agent work. Two completed recovery turns without structural
 progress stop with `recovery_preservation_unproven`, retaining the recovery refs.
-Remaining deterministic cutover paths must route exhausted recovery through this
-owner before release.
+If a recovery turn proves preservation of all retained work and its integration
+target, but verification discovers a new remote revision, Onton captures that
+revision for deterministic integration with the recovered candidate. Fresh external work cannot spend
+the no-progress budget for a successful repair of the captured work. The captured
+remote remains an explicit preservation obligation across this transition.
+Live reconciliation paths route exhausted recovery through this owner. The
+legacy conflict-info/reset/rebase prompt renderers are removed; the captured
+repair turn supplies the content or history recovery prompt.
+
+Provisioning adopts locally ahead or divergent branches without resetting their
+history or granting a replay boundary. Only verified equal/remote-ahead histories
+permit a reset to the captured remote revision. Failed ref or ancestry probes
+remain retryable; verified ref absence is a separate observation.
+
+Publication, base reconciliation, adopted conflict continuation and contributor
+integration all use deterministic remote integration when a completed preservation
+check finds unincorporated remote work. Each remote attempt durably captures the
+incoming remote revision, preserved candidate, policy and selected boundary. This
+capture survives publication, interruption and recovery; a failed preservation
+check after the attempt reaches history recovery instead of repeating integration.
+New remote work can create a successor attempt with a new captured pair. Rewrite
+uses verified replay boundaries and merge-base inference; ancestry-preserving mode
+merges. Both policies record remote integration receipts separately from base
+receipts, without creating a new base replay boundary. Duplicate publication
+retries retain the first receipt for the same captured pair and candidate, including
+its original execution/recovery evidence. Diagnostics and repair prompts include
+the captured remote attempt.
+
+Older checkpoints recover that capture only from their explicit replay state or
+existing remote receipt. An older merge without such evidence keeps its captured
+Git command without inventing a receipt. Checkpoint validation rejects mismatched
+revision, boundary and policy fields. Recovery inspections cannot replace a pinned
+target; an unexpected target requests history recovery, and a recovery verification
+for another target cannot authorize publication even with positive preservation
+flags. Exhausted deterministic integration retains both histories for the agent.
 
 Initial publication checks whether the source has commits outside the desired
 base, including for adopted branches. No-work settlement has no candidate and
 allows another implementation attempt. Start retries explicitly reconfirm a
 settled candidate before retrying PR creation; a deleted remote ref resumes
 publication with an absent-ref lease. Ordinary duplicate intent remains inert.
+After confirming an initial publication against its captured candidate,
+confirmation and restart inspection finish local upstream setup idempotently.
+When fetch and push destinations agree, missing configuration or an inherited
+base upstream becomes `origin/<branch>`, and an absent tracking ref is created
+with compare-and-swap. Existing tracking refs, unrelated or ambiguous branch
+configuration, and separate fetch/push destinations are preserved. Interruption
+between the push, tracking-ref creation and individual configuration writes
+resumes from the checkpoint without repeating a confirmed successful push.
 
 Publication observes and confirms the actual configured push URL, even when it
 differs from the fetch URL. Multiple distinct push destinations stop specifically
@@ -246,7 +348,81 @@ merge. Direct Git evidence can confirm external head reversions. Repeated forge
 conflicts for a settled, verified head/base pair become an observation wait rather
 than new reconciliation requests.
 
+Publication observation is tracked separately from Git completion by a durable
+operation/candidate identity in the owner. Seeing the candidate while push or
+confirmation is in flight acknowledges that same identity; later Git confirmation
+does not re-arm the wait. Seeing the previous remote tip cannot pre-acknowledge a
+candidate that has not been confirmed. A different head after confirmation needs
+direct Git evidence. Older identities cannot acknowledge a newer publication,
+and restart retains both the wait and its acknowledgement. Missing head identity
+continues to wait. Diagnostics expose the pending identity or acknowledgement.
+
+Polling uses this owner projection to suppress stale CI/conflict work and review
+or merge readiness. Once acknowledged, a differing forge head still requires
+direct Git confirmation before replacing the last accepted head. The live branch
+and PR poll paths share the predicate and retain their apply-time context guard.
+Direct Git confirmation checks the current push endpoint against the owner's
+checkpointed destination before probing it. A changed endpoint is rejected;
+an unobserved or explicitly rebinding destination cannot supply poll evidence
+until owned reconciliation has inspected and checkpointed it.
+The legacy publication marker fields and setters are removed. New snapshots omit
+them. Old `branch_published` claims queue `Verify_publication` work in the owner,
+without replacing in-flight commands or desired intent. A prior confirmed receipt
+satisfies the claim; otherwise verification follows completion of pending work.
+Verification requires a clean named checkout and exact remote confirmation. It
+pins evidence but cannot push, integrate, dispatch repair, or create/clean up a
+checkout. The wrapper validates existing checkout ownership without repairing
+metadata or running hooks. An absent checkout or unconfirmed branch produces a
+specific intervention; failed probes retain retry semantics. These claims grant
+no replay boundary and never manufacture a receipt from snapshot data.
+If a new mutation-capable intent is queued during legacy verification intervention,
+explicit resume starts that intent under a new operation identity. The successor
+retains every captured source, target, candidate and remote revision, including
+prior recovery obligations, and cannot weaken the verification operation's
+preservation policy. It observes the checkout again before mutation. Old command
+results cannot complete the successor; automatic retries, provisioning requests,
+and resume without a new intent remain verification-only.
+For legacy mainline work without a saved backend completion, exact verification
+can resume PR creation directly. New human guidance or a saved backend outcome
+uses normal session handling; verification does not synthesize a successful
+backend completion. Runtime reconstruction preserves owner publication identities and
+acknowledgements. Startup no longer stamps a publication expectation from an
+`origin` fetch ref, which cannot establish publication at a distinct push endpoint.
+Owner recovery verifies interrupted publication using its captured destination.
+Pure decision, feature-root, controller and running-message fixtures now drive
+owner publication transitions instead of assigning a compatibility marker.
+
+
+`Patch_agent.branch_rebased_onto` projects the newest base integration receipt,
+skipping contributor-only receipts. It has no independent setter or snapshot
+field. Start and base retargeting cannot manufacture integration evidence, and
+legacy base names are ignored on import. Published branches with unknown base
+context request owner reconciliation. The projection records historical base
+context; freshness against a later externally changed head requires observation
+identity and Git evidence.
+
+Forge request tickets and accepted reports are checkpointed inside the owner.
+The poller checkpoints each request batch before network I/O and captures the
+resulting patch snapshots. Applying a result requires the pending ticket and the
+same local PR/branch/generation/head/base context. Duplicate responses and
+superseded requests cannot overwrite later evidence. Failed request checkpointing
+exposes no dispatchable ticket and leaves in-memory state unchanged. Request
+sequence changes do not increment implementation-message generations or affect
+Git command tokens. Accepted reports retain both revisions and any matching
+remote-head confirmation; they grant no integration or publication authority.
+Conflict evidence survives unknown mergeability, infrastructure errors, and
+contradictory mergeable reports, pending exact owner verification. This request
+protocol does not by itself prove freshness of the forge's cache.
+
 ## Scheduling
+
+All controller tick dispatch claims or resumes the planned outbox message. A
+Git-only reconciliation can be busy before any implementation session exists;
+its authority is the current message and matching owner operation. The separate
+post-rebase and post-conflict push-result handlers are removed. Publication
+failures retain the captured owner candidate and retry state instead of enqueuing
+an unrelated conflict session. Only fresh conflict evidence for an unsatisfied
+head/base pair can request further reconciliation.
 
 Scheduled rebases and conflict reports submit a distinct reconciliation request keyed by the
 scheduler message identity. Repeated delivery cannot restart that request;
@@ -322,6 +498,24 @@ integrations wait while root reconciliation is pending, and repair runs in the
 root checkout through the shared repair protocol. Lost acknowledgements resume
 confirmation without repeating the merge or implementation.
 
+The legacy temporary-worktree integration API is removed. The shared process
+supervisor gives cancelled commands up to 250ms to handle `SIGTERM` and remove
+their own locks before killing remaining descendants. It waits for the process
+group to be reaped before releasing ownership. The leader remains unreaped
+through every group signal and membership observation, so PID reuse cannot
+redirect cleanup to a later process group. Exit observation uses `waitid` with
+`WNOWAIT`; native membership inspection excludes the retained leader and reaps
+adopted Linux descendants. Only after group cleanup does the supervisor reap
+the leader and return its original status. This covers handled cancellation;
+locks left by a hard crash or another Git writer remain infrastructure waits,
+without assuming ownership of an external lock or deleting it.
+
+Project storage aliases resolve to the exact persisted project name before
+startup prepares checkouts or rewrites configuration. Case, spacing and
+punctuation variations may select the same storage directory but cannot create
+a new recovery-ref namespace for that stored project. A stored name selecting
+a different directory is invalid configuration and cannot authorize pruning.
+
 ## Persistence
 
 Snapshots carry per-agent reconciliation checkpoints. Writers emit version 2;
@@ -358,9 +552,40 @@ Scheduled rebases, conflict delivery, session publication, and destination-root
 integration now use the checkpoint runner. Conflict delivery no longer runs a
 separate implementation session or publisher. Deterministic conflict reconciliation requires no agent
 slot; the dedicated repair dispatcher acquires capacity only for a repair turn.
-The complete release cutover remains outstanding: remove legacy execution APIs
-and replace independently writable legacy fields with derived views; add forge
-request/head/base identities and replace legacy forge eligibility retry counters;
-migrate legacy branch counters; complete interruption recovery across provisioning boundaries; connect project pruning;
-and run the complete interruption, stack, forge, and SourceHut acceptance matrix.
-The current change is not the completed release described by that cutover.
+Start and session checkout setup use a durable provisioning intent under the
+same owner. Checkpoint and probe failures retain retry state without consuming
+implementation-session budgets. Interrupted setup retains the pending command;
+a later request reinspects a settled checkout. Completed implementation sessions
+resume their captured publication directly so provisioning cannot replace its
+settled operation and trigger redundant publication. Creation-hook configuration
+is checkpointed before checkout creation. The hook's attempt is checkpointed after
+materialization and acquiring hook capacity; its result is checkpointed before
+readiness. Retry resumes an unstarted hook using its captured executable path.
+A started hook without a durable outcome requires explicit resume, which assigns
+a fresh attempt identity. Stale completions cannot acknowledge that attempt, and
+completed hooks are not repeated on ordinary checkout reuse. Acknowledged hook
+errors retain the existing best-effort policy. Hook subprocesses use supervised
+process groups: surviving members terminate and are reaped before return after
+success, failure, timeout or cancellation. Timeout diagnostics retain captured
+stdout and stderr. Hook plans and attempt claims check terminal patch state in
+the same persisted update. Claims occur after capacity acquisition, so a merged
+or WONTDO patch cannot dispatch a waiting hook or consume its attempt. The broader
+checkpoint-failure and interruption matrix remains under audit.
+Worktree availability and publication failures are no longer session-result
+variants. The old push-failure counter and its intervention rule are removed;
+old snapshot values cannot override the reconciliation checkpoint. Permanent
+publication denial leaves the resumable backend session intact, and session
+success cannot clear a reconciliation intervention.
+Live status and activity-log transitions share the owner-aware intervention
+decision. Event reconstruction decodes the captured reconciliation checkpoint;
+obsolete retry counters cannot create or hide that intervention.
+Publication observation reads exact destination revisions without a blanket
+fetch, leaving shared tracking refs and `FETCH_HEAD` untouched. Receive-side
+compare-and-swap ref failures are lease violations; an existing ref-lock file
+is retryable infrastructure failure. Neither consumes a content-repair turn.
+
+The source cutover now removes legacy execution APIs, mutable conflict and
+publication compatibility fields, and the old conflict-info prompt reconstruction
+path. Forge request/head/base identities, provisioning recovery and dependent
+project pruning use the owner contracts described above. The requirement-by-requirement
+runtime and formal audit and final validation are recorded in the [M3 completion audit](../workstreams/branch-reconciliation-m3-audit.md).
