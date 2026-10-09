@@ -158,6 +158,32 @@ let () =
                         check "failed session recovery can dispatch again"
                           (List.mem Types.Operation_kind.Uncommitted_changes
                              retry.queue);
+                        let missing = Orchestrator.mark_pr_missing orch id in
+                        check "missing unpublished PR waits for rediscovery"
+                          (Patch_controller.plan_actions missing
+                             ~patches:gameplan.Types.Gameplan.patches
+                          = []);
+                        let published =
+                          Orchestrator.mark_branch_published missing id
+                        in
+                        check "published missing PR also waits for rediscovery"
+                          (Patch_controller.plan_actions published
+                             ~patches:gameplan.Types.Gameplan.patches
+                          = []);
+                        let retained = Orchestrator.agent missing id in
+                        check "missing PR retains unfinished session recovery"
+                          (B.phase retained.branch_reconcile
+                           = Some B.Awaiting_session
+                          && List.mem Types.Operation_kind.Uncommitted_changes
+                               retained.queue);
+                        let rediscovered =
+                          Orchestrator.set_pr_number missing id
+                            (Types.Pr_number.of_int 1)
+                        in
+                        check "rediscovered PR resumes recovery"
+                          (Patch_controller.plan_actions rediscovered
+                             ~patches:gameplan.Types.Gameplan.patches
+                          = [ Orchestrator.Respond (id, Uncommitted_changes) ]);
                         let inflight =
                           Orchestrator.set_automerge_inflight orch id true
                         in

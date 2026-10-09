@@ -619,9 +619,9 @@ let plan_action_for_patch t ~branch_map:_ patch_id =
       agent.busy || agent.automerge_inflight || agent.merged
       || Patch_agent.needs_intervention agent
     then None
-    else if Patch_agent.has_pr agent || agent.branch_published then
+    else if Patch_agent.is_pr_present agent || agent.branch_published then
       Some (Orchestrator.Respond (patch_id, Operation_kind.Uncommitted_changes))
-    else if dependencies_allow_start then
+    else if (not (Patch_agent.has_pr agent)) && dependencies_allow_start then
       Some
         (Orchestrator.Start
            ( patch_id,
