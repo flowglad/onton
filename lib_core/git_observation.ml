@@ -4,12 +4,6 @@
 open Base
 open Ppx_yojson_conv_lib.Yojson_conv.Primitives
 
-(* Commit hooks validate the staged tree and can take much longer than probes. *)
-let rec command_timeout_seconds = function
-  | "-c" :: _setting :: args -> command_timeout_seconds args
-  | ("commit" | "merge" | "rebase" | "cherry-pick") :: _ -> 1200.
-  | _ -> 120.
-
 let materialization_failure_is_unsafe reason =
   List.mem
     [

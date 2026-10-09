@@ -457,7 +457,7 @@ let scenario_happy_path env =
 
 (* Reproduce the fresh-clone/rewrite path with a real remote. Interleave an
    independent writer either before planning (and a background fetch), or in
-   Git's pre-push hook after the planner has captured its immutable lease. *)
+   the receive-pack transport after the planner has captured its immutable lease. *)
 let scenario_rewrite_interleavings ?(conflict = false) ?(drop_remote = false)
     ?(append_after = false) ?(target_deletion = false)
     ?(recreate_deleted = false) env (commits, race, preserve_history) =
@@ -586,13 +586,17 @@ let scenario_rewrite_interleavings ?(conflict = false) ?(drop_remote = false)
   else if race = 2 then (
     let hooks = Stdlib.Filename.concat managed "hooks" in
     Unix.mkdir hooks 0o755;
-    let hook = Stdlib.Filename.concat hooks "pre-push" in
+    let hook = Stdlib.Filename.concat hooks "receive-pack" in
     let oc = Stdlib.open_out hook in
     Stdlib.output_string oc
-      ("#!/bin/sh\nset -eu\n" ^ publish_writer ^ "\ngit fetch -q origin\n");
+      ("#!/bin/sh\nset -eu\ncd "
+      ^ Stdlib.Filename.quote managed
+      ^ "\n" ^ publish_writer
+      ^ "\ngit fetch -q origin\nexec git-receive-pack \"$@\"\n");
     Stdlib.close_out oc;
     Unix.chmod hook 0o755;
-    sh ~dir:managed ("git config core.hooksPath " ^ Stdlib.Filename.quote hooks));
+    sh ~dir:managed
+      ("git config remote.origin.receivepack " ^ Stdlib.Filename.quote hook));
   let outcome =
     Worktree.force_push_with_lease ~preserve_history ~clock ~process_mgr
       ~path:worktree
@@ -697,16 +701,20 @@ let scenario_initial_publication env ~preserve_history ~race =
   if race then (
     let hooks = Stdlib.Filename.concat managed "hooks" in
     Unix.mkdir hooks 0o755;
-    let hook = Stdlib.Filename.concat hooks "pre-push" in
+    let hook = Stdlib.Filename.concat hooks "receive-pack" in
     let oc = Stdlib.open_out hook in
     Stdlib.output_string oc
       (Printf.sprintf
-         "#!/bin/sh\nset -eu\ngit --git-dir=%s update-ref refs/heads/feat %s\n"
+         "#!/bin/sh\n\
+          set -eu\n\
+          git --git-dir=%s update-ref refs/heads/feat %s\n\
+          exec git-receive-pack \"$@\"\n"
          (Stdlib.Filename.quote origin)
          base);
     Stdlib.close_out oc;
     Unix.chmod hook 0o755;
-    sh ~dir:managed ("git config core.hooksPath " ^ Stdlib.Filename.quote hooks));
+    sh ~dir:managed
+      ("git config remote.origin.receivepack " ^ Stdlib.Filename.quote hook));
   let outcome =
     Worktree.force_push_with_lease ~preserve_history ~clock ~process_mgr
       ~path:managed
@@ -834,21 +842,24 @@ let scenario_missing_tracking env ~preserve_history case =
       sh ~dir:seed "git push -q origin HEAD:refs/heads/writer-object";
       let hooks = Stdlib.Filename.concat managed "hooks" in
       Unix.mkdir hooks 0o755;
-      let hook = Stdlib.Filename.concat hooks "pre-push" in
+      let hook = Stdlib.Filename.concat hooks "receive-pack" in
       let oc = Stdlib.open_out hook in
       Stdlib.output_string oc
         (Printf.sprintf
            "#!/bin/sh\n\
             set -eu\n\
+            cd %s\n\
             if git show-ref --verify --quiet refs/remotes/origin/feat; then \
             exit 88; fi\n\
-            git --git-dir=%s update-ref refs/heads/feat %s %s\n"
+            git --git-dir=%s update-ref refs/heads/feat %s %s\n\
+            exec git-receive-pack \"$@\"\n"
+           (Stdlib.Filename.quote managed)
            (Stdlib.Filename.quote origin)
            writer shared);
       Stdlib.close_out oc;
       Unix.chmod hook 0o755;
       sh ~dir:managed
-        ("git config core.hooksPath " ^ Stdlib.Filename.quote hooks)
+        ("git config remote.origin.receivepack " ^ Stdlib.Filename.quote hook)
   | Remote_unavailable ->
       sh ~dir:managed
         ("git remote set-url origin "

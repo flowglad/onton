@@ -139,25 +139,6 @@ let tests =
              (G.completed_integration ~branch ~source:"source" ~target:"target"
                 ~head:"head"
                 ~reflog:(String.sub line 0 (String.length line - 1))));
-    QCheck2.Test.make ~name:"Git timeout policy is total and bounded" ~count:500
-      Gen.(list string)
-      (fun args ->
-        let seconds = G.command_timeout_seconds args in
-        seconds = 120. || seconds = 1200.);
-    QCheck2.Test.make
-      ~name:"Commit hooks retain their budget through Git settings" ~count:100
-      Gen.(
-        pair
-          (oneof_list [ "commit"; "merge"; "rebase"; "cherry-pick" ])
-          (list string))
-      (fun (command, settings) ->
-        let args =
-          List.concat_map (fun setting -> [ "-c"; setting ]) settings
-          @ [ command; "--continue" ]
-        in
-        G.command_timeout_seconds args = 1200.
-        && G.command_timeout_seconds [ "status"; "--porcelain" ] = 120.
-        && G.command_timeout_seconds [ "fetch"; "origin" ] = 120.);
   ]
 
 let () = QCheck_base_runner.run_tests_main tests

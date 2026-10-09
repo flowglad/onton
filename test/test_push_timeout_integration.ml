@@ -48,14 +48,12 @@ let scenario env stage expected_phase =
       (Stdlib.Filename.quote marker)
       (Stdlib.Filename.quote marker)
   in
-  let hooks = Stdlib.Filename.concat repo "hooks" in
-  Unix.mkdir hooks 0o755;
-  write_script
-    (Stdlib.Filename.concat hooks "pre-push")
-    (Printf.sprintf "touch %s\n%s"
+  let receive_pack = Stdlib.Filename.concat repo "receive-pack" in
+  write_script receive_pack
+    (Printf.sprintf "touch %s\n%s\nexec git-receive-pack \"$@\"\n"
        (Stdlib.Filename.quote push_started)
        (if String.equal stage "push" then block else ""));
-  git [ "config"; "core.hooksPath"; hooks ];
+  git [ "config"; "remote.origin.receivepack"; receive_pack ];
   if not (String.equal stage "push") then (
     git [ "update-ref"; "-d"; "refs/remotes/origin/feat" ];
     let upload_pack = Stdlib.Filename.concat repo "upload-pack" in
@@ -83,7 +81,7 @@ let scenario env stage expected_phase =
       ()
   in
   let cleanup () =
-    (* Git may leave its transport or hook child behind when cancelled. The
+    (* Git may leave its transport child behind when cancelled. The
        fixture records the exec'd sleeper's PID so cleanup is deterministic. *)
     if Stdlib.Sys.file_exists marker then
       let ic = Stdlib.open_in marker in
@@ -144,7 +142,7 @@ let scenario env stage expected_phase =
   let remote = capture [ "--git-dir=origin.git"; "rev-parse"; "feat" ] in
   if not (String.equal remote old_remote) then
     failwith (stage ^ ": timeout changed remote history");
-  git [ "config"; "--unset"; "core.hooksPath" ];
+  git [ "config"; "--unset"; "remote.origin.receivepack" ];
   if not (String.equal stage "push") then
     git [ "config"; "--unset"; "remote.origin.uploadpack" ];
   let retried =

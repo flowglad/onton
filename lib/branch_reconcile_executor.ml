@@ -898,8 +898,7 @@ let make_io ~process_mgr ~clock ~path =
     git =
       (fun args ->
         match
-          Eio.Time.with_timeout clock (G.command_timeout_seconds args)
-            (fun () ->
+          Eio.Time.with_timeout clock 120. (fun () ->
               Ok
                 (Process_tree.run ~process_mgr ~clock
                    ~env:(Git_env.clean_env ())

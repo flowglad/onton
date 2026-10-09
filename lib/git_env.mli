@@ -19,13 +19,14 @@ val clean_env : unit -> string array
     inherited [GIT_AUTHOR_*] / [GIT_COMMITTER_*] variables. Stripping these
     along with the other Git overrides keeps the isolation boundary explicit.
 
-    The returned environment also disables terminal prompts and installs a
-    controlled HTTPS askpass helper. For GitHub remotes, the helper supplies the
-    token configured by {!set_github_token}, an inherited [GITHUB_TOKEN] or
-    [GH_TOKEN], or a noninteractive [gh auth token] result. For SourceHut
-    remotes, it supplies the username and token configured by
-    {!set_sourcehut_token}, or inherited [SRHT_USERNAME] and [SRHT_TOKEN]
-    bindings. *)
+    The returned environment disables local Git hooks with a process-scoped
+    [core.hooksPath=/dev/null] override, without changing repository config. It
+    also disables terminal prompts and installs a controlled HTTPS askpass
+    helper. For GitHub remotes, the helper supplies the token configured by
+    {!set_github_token}, an inherited [GITHUB_TOKEN] or [GH_TOKEN], or a
+    noninteractive [gh auth token] result. For SourceHut remotes, it supplies
+    the username and token configured by {!set_sourcehut_token}, or inherited
+    [SRHT_USERNAME] and [SRHT_TOKEN] bindings. *)
 
 val set_github_token : string -> unit
 (** [set_github_token token] makes [token] available to future [clean_env ()]
