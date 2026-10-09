@@ -4059,6 +4059,209 @@ let map_field name f = function
            fields)
   | _ -> failwith "checkpoint field is not an object"
 
+let m2_upgrade_tests =
+  let legacy ~phase ~failures state =
+    map_active
+      (function
+        | `Assoc fields ->
+            `Assoc
+              (List.filter_map
+                 (fun (name, value) ->
+                   match name with
+                   | "deterministic_failures" | "observation_failures" -> None
+                   | "phase" -> Some (name, phase)
+                   | "failures" -> Some (name, `Int failures)
+                   | "pending" | "repair" -> Some (name, `Null)
+                   | _ -> Some (name, value))
+                 fields)
+        | _ -> failwith "invalid active fixture")
+      (B.yojson_of_t state)
+  in
+  [
+    QCheck2.Test.make ~count:100
+      ~name:
+        "BR finished dirty work reobserves the deferred base before settlement"
+      Gen.bool (fun retarget ->
+        try
+          let dirty = { observation with clean = false } in
+          let initial, _ = reply (fst (request ())) (B.Observed dirty) in
+          let initial, effects =
+            reply initial
+              (B.Recovery_verified
+                 {
+                   observation = dirty;
+                   source_preserved = true;
+                   remote_preserved = true;
+                 })
+          in
+          let token =
+            match effects with
+            | [ B.Repair token ] -> token
+            | []
+            | B.Execute _ :: _
+            | B.Start_repair _ :: _
+            | B.Completed _ :: _
+            | B.Repair _ :: _ :: _ ->
+                failwith "missing dirty recovery turn"
+          in
+          let original = Option.get (B.operation initial) in
+          let initial = fst (B.step initial (B.Repair_started token)) in
+          let initial =
+            if retarget then
+              fst (B.step initial (B.Request { intent with base = "new-base" }))
+            else initial
+          in
+          let initial =
+            fst (B.step initial (B.Repair_completed { token; at = 100. }))
+          in
+          let clean =
+            {
+              observation with
+              source = candidate;
+              head = candidate;
+              target_included = true;
+            }
+          in
+          let publishing, _ =
+            reply initial
+              (B.Recovery_verified
+                 {
+                   observation = clean;
+                   source_preserved = true;
+                   remote_preserved = true;
+                 })
+          in
+          assert
+            (Option.get (B.operation publishing)).reobserve_after_completion;
+          let publishing =
+            Result.get_ok (B.decode (B.yojson_of_t publishing))
+          in
+          let confirming, _ = reply publishing B.Published in
+          let refreshed, _ =
+            reply confirming
+              (B.Remote { sha = Some candidate; topology = Equal })
+          in
+          let successor = Option.get (B.operation refreshed) in
+          assert (successor.id > original.id);
+          assert (
+            successor.intent.base = if retarget then "new-base" else intent.base);
+          B.is_pending refreshed
+          && Option.map (fun c -> c.B.kind) (B.pending refreshed)
+             = Some B.Observe
+        with _ -> false);
+    QCheck2.Test.make ~count:100
+      ~name:"BR M2 awaiting-session checkpoints retain work and deferred intent"
+      Gen.bool (fun retarget ->
+        try
+          let initial = prepared () in
+          let initial =
+            if retarget then
+              fst (B.step initial (B.Request { intent with base = "new-base" }))
+            else initial
+          in
+          let json =
+            legacy
+              ~phase:(`List [ `String "Awaiting_session" ])
+              ~failures:0 initial
+          in
+          let restored = Result.get_ok (B.decode json) in
+          assert (B.is_pending restored);
+          assert (
+            Option.map (fun c -> c.B.kind) (B.pending restored) = Some B.Inspect);
+          assert (
+            Json.field "desired" json
+            = Json.field "desired" (B.yojson_of_t restored));
+          assert (
+            B.equal restored (Result.get_ok (B.decode (B.yojson_of_t restored))));
+          let dirty = { observation with clean = false } in
+          let restored, _ = reply restored (B.Inspected dirty) in
+          let restored, _ =
+            reply restored
+              (B.Recovery_verified
+                 {
+                   observation = dirty;
+                   source_preserved = true;
+                   remote_preserved = true;
+                 })
+          in
+          match B.operation restored with
+          | Some
+              {
+                repair =
+                  Some
+                    {
+                      mode =
+                        B.History_recovery { task = B.Finish_local_work; _ };
+                      _;
+                    };
+                _;
+              } ->
+              true
+          | None
+          | Some { repair = None; _ }
+          | Some
+              {
+                repair = Some { mode = B.Content_repair | B.Diagnosis _; _ };
+                _;
+              }
+          | Some
+              {
+                repair =
+                  Some
+                    {
+                      mode =
+                        B.History_recovery
+                          {
+                            task = B.Reconstruct_history | B.Repair_publication;
+                            _;
+                          };
+                      _;
+                    };
+                _;
+              } ->
+              false
+        with _ -> false);
+    QCheck2.Test.make ~count:100
+      ~name:"BR M2 saturated retries escalate on the next failed observation"
+      Gen.(pair (int_range 4 30) bool)
+      (fun (failures, waiting) ->
+        try
+          let json =
+            legacy
+              ~phase:
+                (if waiting then
+                   `List
+                     [
+                       `String "Waiting";
+                       `Assoc
+                         [
+                           ("until", `Float 100.); ("reason", `String "timeout");
+                         ];
+                     ]
+                 else
+                   `List
+                     [
+                       `String "Intervention";
+                       `String "reconciliation_retry_exhausted: timeout";
+                     ])
+              ~failures (prepared ())
+          in
+          let restored = Result.get_ok (B.decode json) in
+          let operation = Option.get (B.operation restored) in
+          assert (
+            operation.deterministic_failures = 2
+            && operation.observation_failures = 2);
+          let restored =
+            if waiting then fst (B.step restored (B.Tick 1000.)) else restored
+          in
+          let restored, _ =
+            reply restored
+              (B.Retryable { reason = "timeout"; retry_after = None })
+          in
+          is_diagnosis restored
+        with _ -> false);
+  ]
+
 let initial_remote_integration_tests =
   [
     QCheck2.Test.make ~count:100
@@ -5034,5 +5237,5 @@ let () =
   QCheck_base_runner.run_tests_main
     (tests @ tracking_tests @ publication_observation_tests
    @ initial_remote_integration_tests @ preservation_policy_tests
-   @ preservation_checkpoint_tests @ legacy_retention_tests
+   @ preservation_checkpoint_tests @ legacy_retention_tests @ m2_upgrade_tests
    @ forge_history_tests)

@@ -430,7 +430,8 @@ let reconciliation_message_held t (msg : patch_agent_message) =
   match msg.action with
   | Reconcile_branch (pid, _) ->
       Option.value_map (find_agent t pid) ~default:true ~f:(fun agent ->
-          Option.is_some (Patch_agent.reconciliation_hold_reason agent))
+          agent.automerge_inflight
+          || Option.is_some (Patch_agent.reconciliation_hold_reason agent))
   | Start _ | Respond _ | Rebase _ -> false
 
 let reconcile_message t msg =

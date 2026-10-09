@@ -688,3 +688,33 @@ producer regressions. They defer no recovery behavior. The reopened local
 implementation goal is complete. No PR, release or deployment was performed.
 Agent fixtures demonstrate dispatch and verified Git outcomes; they do not
 claim live-model success rates or OS enforcement of observation-only prompts.
+
+## Rebase onto #486 — behavioral compatibility
+
+M3 is rebased onto `0c93fb099384636c958da7e7410565090b9006d8`, the merge
+of [#486](https://github.com/flowglad/onton/pull/486). The preceding qualification
+records the pre-rebase tree; the checks below qualify the combined implementation.
+
+| #486 behavior | M3 disposition and regression evidence |
+|---|---|
+| Finish interrupted staged and unstaged work before base reconciliation, with or without a PR | Preserved through owned `Finish_local_work` recovery rather than a separate `Awaiting_session` scheduler phase. `test_branch_reconcile_git` restores the checkpoint, exercises both PR states, commits the retained work through a repair turn, and checks remote content. |
+| Reconcile the deferred base after the session, including a base that advances during recovery | Successful, independently verified completion of dirty work marks the operation for fresh observation after publication. The retained #486 Git regression advances `main` while recovery is pending and requires the final tree to contain both the session changes and the new base file. |
+| Retain recovery across missing/rediscovered PRs and automerge races | Local owner recovery remains available without a PR. Planning and outbox acceptance defer it while automerge is in flight; a failed merge releases the same message, while a winning merge retains evidence without dispatch. Covered by Git and outbox tests. |
+| Resume old dirty-work and capped-retry checkpoints | The decoder migrates M2 `Awaiting_session` into owned reinspection, preserving the operation and deferred intent. Legacy failure counts conservatively seed both new failure budgets. Properties cover repeated decoding, deferred retargets, stopped operations and waiting operations at the old cap. |
+| Stop infinite retries without successful inspections replenishing the budget | The five-failure terminal stop is intentionally superseded by M3's bounded deterministic attempts followed by agent recovery/diagnosis. Separate durable mutation, evidence and completed-agent counters preserve the liveness guarantee; intervention requires exhausted agent recovery, not a saturated backoff exponent. |
+| Disable local hooks only for Onton-owned Git commands | #486's `Git_env.clean_env` override and environment-scrubbing tests are retained unchanged. Real Git tests verify generated commits, merge continuation, protected-root integration and local pre-push bypass; ordinary Git retains configured hooks. Remote URL probes continue through the supervised clean Git environment. |
+| Keep the two-minute Git timeout and name the timed-out command | The production timeout and command diagnostic are retained. Observation, fetch and push timeout/cancellation/retry tests use blocking transports; publication-race fixtures inject server transports explicitly because M3 binds a destination URL. Independent remote hook fixtures explicitly configure their server-side hooks. |
+| Refresh empty or nonterminal descendant CI on every configured polling cycle | The #486 planner, terminal-check predicate, poller call and polling properties are retained. Pending/mixed/empty observations bypass both throttles; cancelled/stale and other terminal checks retain the normal cache cadence. |
+
+The separate M2 session queue and its PR-dependent dispatch rules are superseded;
+reintroducing them would recreate a second owner of the same Git work. The fresh
+base observation and automerge guards were genuine gaps found by retaining #486's
+behavioral tests and are fixed in this rebase.
+
+Validation on the rebased implementation passes `dune build`, full `dune runtest`,
+`dune build @fmt @check`, the source-policy gate, `git diff --check`, and the pinned
+archlint OCaml adapter. Logs: `/tmp/onton-m3-rebase-runtest-final.log` and
+`/tmp/onton-m3-rebase-architecture.log`. The focused timeout suite also passes
+observation, fetch and push cancellation/retry; the focused real-Git/checkpoint
+and dirty-recovery suites pass. The earlier isolated-prefix results retain their
+recorded pre-rebase baseline and are not claimed as new prefix qualification.

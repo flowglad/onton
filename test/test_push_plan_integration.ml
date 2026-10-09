@@ -89,6 +89,24 @@ let publish ?(before_command = fun (_ : B.command) -> ())
     Printf.sprintf "refs/onton/reconcile/publication-test-%d" !publication_id
   in
   let io = E.make_io ~process_mgr ~clock ~path in
+  (* Inject a server transport at the command boundary: production pushes
+     bind a destination URL, so remote.origin.receivepack is not authoritative. *)
+  let receive_pack =
+    match io.git [ "config"; "--get"; "onton-test.receivepack" ] with
+    | 0, output, _ -> Some (String.strip output)
+    | _ -> None
+  in
+  let io =
+    E.
+      {
+        git =
+          (fun args ->
+            match (args, receive_pack) with
+            | "push" :: rest, Some transport ->
+                io.git ("push" :: ("--receive-pack=" ^ transport) :: rest)
+            | _ -> io.git args);
+      }
+  in
   let intent =
     B.
       {
@@ -712,7 +730,7 @@ let scenario_rewrite_interleavings ?(conflict = false) ?(drop_remote = false)
     Stdlib.close_out oc;
     Unix.chmod hook 0o755;
     sh ~dir:managed
-      ("git config remote.origin.receivepack " ^ Stdlib.Filename.quote hook));
+      ("git config onton-test.receivepack " ^ Stdlib.Filename.quote hook));
   let outcome =
     publish ~preserve_history ~clock ~process_mgr ~path:worktree
       ~branch:(Types.Branch.of_string "feat")
@@ -831,7 +849,7 @@ let scenario_initial_publication env ~preserve_history ~race =
     Stdlib.close_out oc;
     Unix.chmod hook 0o755;
     sh ~dir:managed
-      ("git config remote.origin.receivepack " ^ Stdlib.Filename.quote hook));
+      ("git config onton-test.receivepack " ^ Stdlib.Filename.quote hook));
   let outcome =
     publish ~preserve_history ~clock ~process_mgr ~path:managed
       ~branch:(Types.Branch.of_string "feat")
@@ -970,7 +988,7 @@ let scenario_missing_tracking env ~preserve_history case =
       Stdlib.close_out oc;
       Unix.chmod hook 0o755;
       sh ~dir:managed
-        ("git config remote.origin.receivepack " ^ Stdlib.Filename.quote hook)
+        ("git config onton-test.receivepack " ^ Stdlib.Filename.quote hook)
   | Remote_unavailable ->
       sh ~dir:managed
         ("git remote set-url origin "
