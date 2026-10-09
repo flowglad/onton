@@ -16,6 +16,7 @@ let pr_json ?(merge_queue_entry = "null") ?(stack = "null") ~merge_commit () =
         "repository": {
           "pullRequest": {
             "id": "PR_node_1",
+            "number": 1,
             "state": "OPEN",
             "mergeable": "MERGEABLE",
             "isDraft": true,
@@ -180,7 +181,11 @@ let () =
        (pr_json ~merge_commit:"null"
           ~stack:{|{"id":"STACK_1","number":7,"size":2}|} ())
    with
-  | Ok st -> assert st.Onton_core.Pr_state.native_stack
+  | Ok st ->
+      assert (
+        st.Onton_core.Pr_state.pr_number
+        = Some (Onton_core.Types.Pr_number.of_int 1));
+      assert st.Onton_core.Pr_state.native_stack
   | Error e ->
       Printf.eprintf "  FAIL: stacked PR poll errored: %s\n"
         (Onton.Github.show_error e);

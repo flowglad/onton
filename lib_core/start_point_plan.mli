@@ -1,82 +1,37 @@
 (* @archlint.module interface
    @archlint.domain start-point-plan *)
 
-(** Pure decision: what start point should a worktree's branch be created from,
-    given the observed state of local and remote refs?
-
-    Onton's failure mode of record (PR #315) was [Worktree.create] silently
-    reusing a stale local branch ref — the user's working clone had
-    [refs/heads/<branch>] left at the PR's base, so the new worktree started
-    missing every PR commit. The agent's session pushed an empty branch over the
-    real PR, and GitHub auto-closed it.
-
-    This module exists so that decision lives in one inspectable, testable
-    place. The effectful caller in [Worktree] reads the inputs from git (after a
-    [fetch_origin <branch>] performed by [Worktree_setup]), passes them in, and
-    executes the [action] this returns — or reports the [refusal] upward so the
-    orchestrator can route to {!Patch_agent.needs_intervention}.
-
-    {1 Authority}
-
-    For an onton-managed branch, the {e remote} is authoritative whenever a
-    remote ref exists. A local ref that matches the remote or is strictly behind
-    it ([Equal] / [Remote_ahead]) is safe to reset to the remote; a local ref
-    that has commits the remote doesn't is treated as suspect for [Local_ahead],
-    and for [Diverged] / [Unknown] unless Git proves every local-only patch is
-    already represented remotely and validates the resulting tree (the common
-    force-push-after-rebase case). *)
+(** Provision a checkout without discarding unique branch history. Proven
+    remote-ahead history replaces a stale local ref (the PR #315 guard). Ahead
+    or diverged local history is adopted unchanged; Branch_reconcile owns later
+    remote integration, history recovery and verified publication. Failed
+    ancestry observations cannot authorize a checkout mutation. *)
 
 type sha = string [@@deriving show, eq, sexp_of, compare]
 
-(** Pre-computed two-way ancestor relationship between a local ref and a remote
-    tracking ref. The effectful caller fills this in with the result of two
-    [git merge-base --is-ancestor] probes, or [Unknown] if either probe failed.
-*)
-type ancestry =
-  | Local_ahead  (** local has commits not reachable from remote *)
-  | Remote_ahead
-      (** remote has commits not reachable from local — local is stale *)
-  | Equal  (** local and remote point at the same commit *)
-  | Diverged  (** each side has unique commits the other lacks *)
-  | Unknown  (** ancestry could not be determined (e.g. probe failed) *)
+(** [Unknown] represents a failed ancestry probe, not proof of divergence. *)
+type ancestry = Local_ahead | Remote_ahead | Equal | Diverged | Unknown
 [@@deriving show, eq, sexp_of, compare]
 
-(** The action a successful plan instructs the caller to take. *)
 type action =
   | Reset_and_use_remote_tracking of { remote_sha : sha }
-      (** [git worktree add -B <branch> <path> origin/<branch>] — recreate the
-          local branch at the remote tip. Used whenever a remote ref exists and
-          the local ref is absent, equal, or strictly behind. *)
+      (** Use the observed remote commit when local is absent, equal, or a
+          proven ancestor. The executor compares the captured local ref before
+          changing it. *)
   | Use_local_branch_unchanged of { local_sha : sha }
-      (** [git worktree add <path> <branch>] — the remote ref is unknown (never
-          been pushed yet), so the local ref is the only source of truth. *)
+      (** Adopt the captured local commit without resetting its branch. This
+          grants no publication authority over remote work. *)
   | Create_new_branch_from_base of { base_branch : string }
-      (** [git worktree add -b <branch> <path> origin/<base>] — neither local
-          nor remote ref exists; the worktree starts a brand-new branch at the
-          tip of the configured base. *)
+      (** Both branch refs are absent. Create from the supplied base. *)
 [@@deriving show, eq, sexp_of, compare]
 
-(** The refusal an unsuccessful plan reports — every variant is permanent in the
-    sense that retrying without a human resolving the underlying state will hit
-    the same refusal. The effectful caller logs the refusal and surfaces it
-    through the orchestrator's intervention path. *)
 type refusal =
-  | Local_diverged_from_remote of { local_sha : sha; remote_sha : sha }
-      (** Ancestry is [Diverged] (or [Unknown]) and both refs are present — a
-          reset could lose a local patch that is not represented remotely. *)
-  | Local_has_unpushed_commits of { local_sha : sha; remote_sha : sha }
-      (** Ancestry is [Local_ahead] and both refs are present — the local ref is
-          strictly ahead of remote. On a create path this is suspicious: onton
-          is normally the sole writer for these branches. *)
+  | Ancestry_unavailable of { local_sha : sha; remote_sha : sha }
+      (** Retry observation; this is an infrastructure failure. *)
   | Branch_checked_out_in_main_root
-      (** The named branch is currently HEAD of the user's main working tree;
-          git would refuse to register a second worktree for it. *)
   | Worktree_already_registered of { existing_path : string }
-      (** Git already lists a worktree for this branch elsewhere; recreating
-          would race. *)
 [@@deriving show, eq, sexp_of, compare]
 
-(** A plan is either an action to execute or a refusal to report. *)
 type decision = Plan of action | Refuse of refusal
 [@@deriving show, eq, sexp_of, compare]
 
@@ -85,49 +40,17 @@ val plan :
   remote_ref:sha option ->
   ancestry:ancestry ->
   base_branch:string ->
-  local_changes_represented_remotely:bool ->
   branch_checked_out_in_main_root:bool ->
   existing_worktree_path:string option ->
   decision
-(** [plan] is total and deterministic. Pre-emption order, applied top-down:
-
-    + [branch_checked_out_in_main_root = true] →
-      [Refuse Branch_checked_out_in_main_root]
-    + [existing_worktree_path = Some p] →
-      [Refuse (Worktree_already_registered { existing_path = p })]
-    + [(local_ref, remote_ref) = (None, None)] →
-      [Plan (Create_new_branch_from_base { base_branch })]
-    + [(None, Some r)] →
-      [Plan (Reset_and_use_remote_tracking { remote_sha = r })]
-    + [(Some l, None)] → [Plan (Use_local_branch_unchanged { local_sha = l })]
-    + [(Some l, Some r)] with [ancestry = Equal | Remote_ahead] →
-      [Plan (Reset_and_use_remote_tracking { remote_sha = r })]
-    + [(Some l, Some r)] with [ancestry = Local_ahead] →
-      [Refuse (Local_has_unpushed_commits ...)]
-    + [(Some l, Some r)] with [ancestry = Diverged | Unknown] and
-      [local_changes_represented_remotely = true] →
-      [Plan (Reset_and_use_remote_tracking { remote_sha = r })]
-    + [(Some l, Some r)] with [ancestry = Diverged | Unknown] →
-      [Refuse (Local_diverged_from_remote ...)] (conservative — refuse rather
-      than risk silent commit loss).
-
-    The base is consumed only in the brand-new-branch arm
-    ([Create_new_branch_from_base]). Whether that base is up to date with
-    [origin/<main>] is intentionally {e not} gated here: freshness is
-    dependency-scoped and enforced by the orchestrator's scheduling gate (see
-    {!Start_eligibility}). A stacked dependent cut from its base's tip contains
-    everything in that base; main integration cascades at merge boundaries, so a
-    base lagging main for unrelated reasons must not block the cut. Which
-    {e ref} the base is read from (freshly-fetched remote SHA vs local branch)
-    is the separate {!base_start_point} decision below, supplied by the caller
-    as [base_branch]. *)
+(** Total and deterministic. Existing checkout ownership takes precedence. With
+    both refs present, [Equal]/[Remote_ahead] uses the remote;
+    [Local_ahead]/[Diverged] preserves local; [Unknown] retries observation. A
+    lone local or remote ref supplies the checkout; absent refs create from the
+    supplied base. Patch-equivalence is not a provisioning reset authority. *)
 
 val short_label : decision -> string
-(** A short, lowercase, snake_case identifier for the planner arm that fired,
-    suitable for the activity log. Always non-empty and ≤ 32 characters.
-    Examples: ["reset_to_remote"], ["use_local_unchanged"],
-    ["create_from_base"], ["refuse_local_diverged"], ["refuse_local_ahead"],
-    ["refuse_main_checkout"], ["refuse_wt_registered"]. *)
+(** Nonempty lowercase snake_case diagnostic, at most 32 characters. *)
 
 (** {1 Base start point for the brand-new-branch cut}
 

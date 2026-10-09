@@ -205,7 +205,9 @@ let agent_json ?(busy = false) patch_id =
       ("conflict_noop_count", `Int 0);
       ("no_commits_push_count", `Int 0);
       ("context_exhaustion_count", `Int 0);
-      ("push_failure_count", `Int 0);
+      (* Retired counters in archived event payloads cannot recreate an
+         independent publication intervention in the status projection. *)
+      ("push_failure_count", `Int 999);
       ("rebase_failure_count", `Int 0);
       ("pr_body_artifact_miss_count", `Int 0);
     ]
@@ -254,6 +256,75 @@ let test_activity_log_records_status_transition () =
         (Printf.sprintf "expected one transition, got %d"
            (List.length transitions))
 
+let test_activity_log_projects_owner_intervention () =
+  let module B = Branch_reconcile in
+  let patch_id = Types.Patch_id.of_string "owner-status" in
+  let requested, _ =
+    B.step B.empty
+      (B.Request
+         B.
+           {
+             base = "main";
+             policy = Rewrite;
+             purpose = Provision_checkout "status";
+           })
+  in
+  let token =
+    match B.pending requested with
+    | Some command -> command.B.token [@warning "-42"]
+    | None -> fail "missing provisioning command"
+  in
+  let stopped, _ =
+    B.step requested
+      (B.Result { token; at = 100.; result = B.Permanent "permission_denied" })
+  in
+  let resumed, _ = B.step stopped B.Resume in
+  let json owner =
+    match agent_json patch_id with
+    | `Assoc fields ->
+        `Assoc (("branch_reconcile", B.yojson_of_t owner) :: fields)
+    | _ -> fail "invalid agent fixture"
+  in
+  let log = ref Activity_log.empty in
+  Onton.Telemetry_dispatch.with_sink
+    ~sink:
+      (Onton.Activity_log_sink.sink
+         ~main_branch:(Types.Branch.of_string "main")
+         ~update:(fun f -> log := f !log)
+         ())
+    (fun () ->
+      List.iter
+        [ (requested, stopped); (stopped, resumed) ]
+        ~f:(fun (before, after) ->
+          Onton.Telemetry_dispatch.emit
+            (Telemetry.Event.Action
+               {
+                 patch_id;
+                 session_uuid = None;
+                 payload =
+                   `Assoc
+                     [
+                       ("action", `String "Reconcile_branch");
+                       ("agent_before", json before);
+                       ("agent_after", json after);
+                     ];
+               })));
+  let transitions = Activity_log.recent_transitions !log ~limit:10 in
+  if List.length transitions <> 2 then
+    fail "owner intervention/resume lost status transition";
+  let observed from_status to_status =
+    List.exists transitions ~f:(fun transition ->
+        Display_status.equal
+          transition.Activity_log.Transition_entry.from_status from_status
+        && Display_status.equal
+             transition.Activity_log.Transition_entry.to_status to_status)
+  in
+  if
+    not
+      (observed Display_status.Pending Display_status.Needs_help
+      && observed Display_status.Needs_help Display_status.Pending)
+  then fail "activity log disagrees with owner intervention/resume"
+
 let test_pre_migration_events_jsonl_loads () =
   let line =
     {|{"ts":"2026-05-19T00:00:00Z","kind":"complete","patch_id":"patch-5","result":"Session_succeeded","agent_before":{},"agent_after":{}}|}
@@ -298,10 +369,121 @@ let test_pre_migration_events_jsonl_loads () =
         (Printf.sprintf "expected legacy plus appended line, got %d lines"
            (List.length lines))
 
+let[@warning "-42"] test_repair_session_identity () =
+  let module B = Branch_reconcile in
+  let open B in
+  let source = Option.value_exn (Commit.make (String.make 40 'a')) in
+  let target = Option.value_exn (Commit.make (String.make 40 'b')) in
+  let state, _ =
+    step empty
+      (Request { base = "main"; policy = Rewrite; purpose = Reconcile_base })
+  in
+  let reply state result =
+    let command = Option.value_exn (pending state) in
+    step state (Result { token = command.token; at = 1.; result })
+  in
+  let state, _ =
+    reply state
+      (Observed
+         {
+           destination = Remote_id.of_destination "telemetry-origin";
+           head = source;
+           source;
+           target;
+           remote = Some source;
+           boundary = Recorded source;
+           topology = Equal;
+           clean = true;
+           sequencer = None;
+           conflicts = 0;
+           target_included = false;
+           base_contains_source = false;
+           completed_integration = false;
+         })
+  in
+  let state, _ = reply state Pinned in
+  let state, effects =
+    reply state (Conflict { head = source; sequencer = "step"; conflicts = 1 })
+  in
+  let token =
+    List.find_map_exn effects ~f:(function
+      | Repair token -> Some token
+      | Execute _ | Start_repair _ | Completed _ -> None)
+  in
+  let state, _ = step state (Repair_started token) in
+  let state = Result.ok_or_failwith (decode (yojson_of_t state)) in
+  let turn = Option.value_exn (repair_turn state ~branch:"patch" token) in
+  Eio_main.run (fun env ->
+      List.iter [ false; true ] ~f:(fun raises ->
+          let path = temp_path "onton-repair-identity" in
+          Stdlib.Fun.protect
+            ~finally:(fun () -> Stdlib.Sys.remove path)
+            (fun () ->
+              let session = ref None in
+              let backend =
+                Onton.Llm_backend.
+                  {
+                    name = "fixture";
+                    run_streaming =
+                      (fun ~project_name:_
+                        ~cwd:_
+                        ~patch_id:_
+                        ~prompt:_
+                        ~resume_session:_
+                        ~session_uuid
+                        ~complexity:_
+                        ~on_event:_
+                      ->
+                        session := Some session_uuid;
+                        let entries =
+                          List.map (read_lines path) ~f:(fun line ->
+                              Yojson.Safe.from_string line)
+                        in
+                        if List.length entries <> 1 then
+                          fail
+                            "repair identity must be logged before backend \
+                             dispatch";
+                        if raises then fail "backend outage";
+                        {
+                          exit_code = 0;
+                          stdout = "";
+                          stderr = "";
+                          got_events = true;
+                          saw_final_result = true;
+                          timed_out = false;
+                        });
+                  }
+              in
+              Onton.Telemetry_dispatch.with_sink
+                ~sink:(Onton.Event_log.sink (Onton.Event_log.create ~path))
+                (fun () ->
+                  ignore
+                    (Onton.Branch_repair_session.run ~backend
+                       ~cwd:(Eio.Stdenv.fs env) ~project_name:"identity"
+                       ~patch_id:(Types.Patch_id.of_string "1")
+                       ~complexity:None ~turn
+                       ~read_head:(fun () -> Some (Commit.to_string source))
+                       ~now:(fun () -> 2.)));
+              let entry =
+                Yojson.Safe.from_string (List.hd_exn (read_lines path))
+              in
+              expect_equal_string ~name:"repair event"
+                "branch_repair_session_started"
+                (string_member "kind" entry);
+              expect_equal_string ~name:"backend session correlation"
+                (Option.value_exn !session)
+                (string_member "onton_session_uuid" entry);
+              expect_equal_json ~name:"repair operation" (`Int token.operation)
+                (json_member "operation_id" entry);
+              expect_equal_json ~name:"repair command" (`Int token.command)
+                (json_member "command_id" entry))))
+
 let () =
+  test_repair_session_identity ();
   test_event_log_complete ();
   test_activity_log_free_form ();
   test_activity_log_stream_drops_untagged ();
   test_activity_log_stream_accepts_tagged ();
   test_activity_log_records_status_transition ();
+  test_activity_log_projects_owner_intervention ();
   test_pre_migration_events_jsonl_loads ()

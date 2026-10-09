@@ -3,16 +3,18 @@
 
 (** Worktree provisioning for a patch.
 
-    The runner and the worktree-plan executor both need to materialise a
-    worktree on disk before they can do anything else with a patch. This module
-    owns that logic so both callers go through the same code path — same
-    persistence, same hook invocation, same logging. *)
+    Session and scheduled work request materialization through the
+    reconciliation owner. This module handles checkout creation, durable
+    creation hooks and readiness inspection under that owner's write authority.
+*)
 
 module type ENV = Run_env.S
 (** Construction-time environment for worktree provisioning. Values here are
     fixed for the lifetime of the module instance and never vary per call. *)
 
-type ensure_result = Path of string | Missing | Refused
+type ensure_result =
+  | Path of string
+  | Unavailable of Worktree_provision.failure
 
 module type S = sig
   val resolve_worktree_path :
@@ -33,14 +35,24 @@ module type S = sig
     ?base_ref:string ->
     unit ->
     ensure_result
-  (** Ensure a validated checkout is ready for the patch. Returns [Path path] on
-      success, [Refused] for unsafe start points, previously unfinished creation
-      or failed readiness/recovery checks (routed through
-      [Session_push_failed]), or [Missing] when creation failed without an
-      adoptable checkout. On creation, success uses the validated checkout
-      returned by [create] directly and runs the user's [on_worktree_create]
-      hook serialised through [Env.hook_mutex] and persists the path on the
-      agent record. All log lines go through [Runtime_logging.log_event]. *)
+  (** Low-level command handler. Report typed failures without changing session
+      fallback or failure budgets. A materialization checkpoint must succeed
+      before setup reports success or runs a creation hook. Production callers
+      reach this handler through the reconciliation owner. *)
+
+  val execute_reconciliation :
+    patch_id:Types.Patch_id.t ->
+    operation:Branch_reconcile.operation ->
+    Branch_reconcile.command ->
+    Branch_reconcile.result
+  (** Execute a checkpointed owned command. Provisioning settles with
+      [Checkout_ready]; other commands retain the regular Git executor. *)
+
+  val ensure_owned :
+    owner:Runtime.patch_write -> ?base_ref:string -> unit -> ensure_result
+  (** Request a fresh checkpointed inspection under existing write ownership.
+      Resume pending provisioning first, honor owner backoff and intervention,
+      and defer to any unrelated unfinished reconciliation. *)
 end
 
 module Make (_ : Worktree.S) (_ : ENV) : S

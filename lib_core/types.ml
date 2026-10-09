@@ -1,5 +1,5 @@
 (* @archlint.module state
-   @archlint.domain anchor *)
+   @archlint.domain types *)
 
 open Base
 open Ppx_yojson_conv_lib.Yojson_conv.Primitives
@@ -104,13 +104,13 @@ module Comment_id = struct
     Atomic.fetch_and_add counter (-1) - 1
 
   let seed_synthetic_counter ids =
-    let min_id =
-      List.fold ids ~init:0 ~f:(fun acc id -> Int.min acc (to_int id))
-    in
+    let observed = List.map ids ~f:to_int in
     let rec try_seed () =
       let current = Atomic.get counter in
-      if min_id < current then
-        if not (Atomic.compare_and_set counter current min_id) then try_seed ()
+      let restored = Comment_id_allocation.seed_floor ~current ~observed in
+      if restored < current then
+        if not (Atomic.compare_and_set counter current restored) then
+          try_seed ()
     in
     try_seed ()
 end

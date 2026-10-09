@@ -5,17 +5,8 @@ open Base
 open Onton
 open Onton_core
 
-(** End-to-end recovery pipeline for "worktree deleted between session start and
-    post-session push". Drives:
-
-    1. {!Worktree.force_push_with_lease} against a path that does not exist —
-    must return [Push_worktree_missing] without spawning git. 2.
-    {!Orchestrator.combine_session_and_push} with [Session_ok] folded against
-    [Push_worktree_missing] — must collapse to [Session_worktree_missing] (not
-    the misleading [Session_push_failed]). 3.
-    {!Orchestrator.apply_session_result} given the combined outcome — must take
-    the pre-session-failure cleanup branch so the next scheduling tick can
-    rebuild the worktree from scratch via [Worktree_setup.ensure_worktree]. *)
+(** Missing checkout retains the publication obligation and releases the worker
+    without charging implementation-session budgets. *)
 
 let assert_eq label want got =
   if not (String.equal want got) then
@@ -35,55 +26,40 @@ let () =
   let process_mgr = Eio.Stdenv.process_mgr env in
   let clock = Eio.Stdenv.clock env in
 
-  (* (1) Precheck path: missing directory -> Push_worktree_missing without
-     spawning git. We use a path that has never existed, so any subsequent
-     git invocation would fail with exit 128. *)
   let path = nonexistent_path () in
   assert_true "precondition: path does not exist"
     (not (Stdlib.Sys.file_exists path));
-  let push_outcome =
-    Worktree.force_push_with_lease ~clock ~process_mgr ~path
-      ~branch:(Types.Branch.of_string "feat")
-      ~base:(Types.Branch.of_string "main")
-      ()
+  let module B = Branch_reconcile in
+  let state, _ =
+    B.step B.empty
+      (B.Request
+         {
+           base = "main";
+           policy = Rewrite;
+           purpose = Publish_session "missing";
+         })
   in
-  if
-    not (Worktree.equal_push_result push_outcome Worktree.Push_worktree_missing)
-  then
-    failwith
-      (Printf.sprintf
-         "force_push_with_lease on nonexistent path returned %s, expected \
-          Push_worktree_missing"
-         (Worktree.show_push_result push_outcome));
-  Stdlib.print_endline
-    "test1: force_push_with_lease on missing path -> Push_worktree_missing";
-
-  (* (2) Combine: Session_ok + Push_worktree_missing -> Session_worktree_missing.
-     Even though the LLM session itself ran cleanly, the local commits are
-     gone with the directory, so the combined outcome must route through
-     the pre-session-failure path. *)
-  let combined =
-    Orchestrator.combine_session_and_push ~delivery_mode:Patch_decision.Respond
-      ~branch_changed:true ~session:Orchestrator.Session_ok
-      ~push:Worktree.Push_worktree_missing
+  let command = Option.value_exn (B.pending state) in
+  let operation = Option.value_exn (B.operation state) in
+  let io = Branch_reconcile_executor.make_io ~clock ~process_mgr ~path in
+  let result =
+    Branch_reconcile_executor.execute ~io ~prefix:"refs/onton/reconcile/missing"
+      ~branch:"feat" ~operation command
   in
-  if
-    not
-      (Orchestrator.equal_session_result combined
-         Orchestrator.Session_worktree_missing)
-  then
-    failwith
-      (Printf.sprintf "combine returned %s, expected Session_worktree_missing"
-         (Orchestrator.show_session_result combined));
+  let waiting, _ =
+    B.step state (B.Result { token = command.token; at = 100.; result })
+  in
+  assert_true "missing checkout keeps publication pending"
+    (B.is_pending waiting);
+  assert_true "missing checkout cannot acknowledge publication"
+    (List.is_empty (B.publications waiting));
+  assert_true "missing checkout checkpoint survives restart"
+    (match B.decode (B.yojson_of_t waiting) with
+    | Ok restored -> B.equal restored waiting
+    | Error _ -> false);
   Stdlib.print_endline
-    "test2: combine Session_ok + Push_worktree_missing -> \
-     Session_worktree_missing";
+    "test1: missing checkout leaves durable publication pending";
 
-  (* (3) apply_session_result Session_worktree_missing -> agent.busy=false +
-     start_attempts_without_pr incremented (the [on_pre_session_failure]
-     bookkeeping that backs needs_intervention). The next scheduling tick
-     will see the agent idle and re-enqueue work; the next session will
-     reconstruct the worktree via [ensure_worktree]. *)
   let main = Types.Branch.of_string "main" in
   let pid = Types.Patch_id.of_string "wm-pid" in
   let patches =
@@ -119,25 +95,41 @@ let () =
        (Patch_agent.worktree_state agent_before)
        (Patch_agent.Materialized "/tmp/deleted-worktree"));
   let attempts_before = agent_before.Patch_agent.start_attempts_without_pr in
+  let orch, _ =
+    Orchestrator.reconcile_branch orch pid
+      (B.Request
+         {
+           base = "main";
+           policy = Rewrite;
+           purpose = Publish_session "missing";
+         })
+  in
+  let pending = (Orchestrator.agent orch pid).Patch_agent.branch_reconcile in
+  let token = (Option.value_exn (B.pending pending)).B.token in
+  let orch, _ =
+    Orchestrator.reconcile_branch orch pid
+      (B.Result { token; at = 100.; result })
+  in
   let orch =
-    Orchestrator.apply_session_result orch pid
-      Orchestrator.Session_worktree_missing
+    Orchestrator.apply_start_outcome orch pid Orchestrator.Start_failed
   in
   let agent_after = Orchestrator.agent orch pid in
-  assert_true "agent_after not busy" (not agent_after.Patch_agent.busy);
-  assert_true "agent_after unmaterialized"
-    (Patch_agent.equal_worktree_state
-       (Patch_agent.worktree_state agent_after)
-       Patch_agent.Unmaterialized);
-  let attempts_after = agent_after.Patch_agent.start_attempts_without_pr in
-  if not (Int.equal attempts_after (attempts_before + 1)) then
-    failwith
-      (Printf.sprintf
-         "start_attempts_without_pr should increment by 1: before=%d after=%d"
-         attempts_before attempts_after);
+  assert_true "missing checkout releases worker"
+    (not agent_after.Patch_agent.busy);
+  assert_true "missing checkout retains the path for inspection"
+    (Option.equal String.equal agent_after.worktree_path
+       agent_before.worktree_path);
+  assert_true "missing checkout does not consume implementation attempts"
+    (Int.equal agent_after.start_attempts_without_pr attempts_before);
+  assert_true "missing checkout preserves session fallback"
+    (Patch_agent.equal_session_fallback agent_before.session_fallback
+       agent_after.session_fallback);
+  assert_true "missing checkout has durable pending work"
+    (B.is_pending agent_after.branch_reconcile);
+  assert_true "missing checkout does not acknowledge publication"
+    (List.is_empty (B.publications agent_after.branch_reconcile));
   Stdlib.print_endline
-    "test3: apply_session_result Session_worktree_missing -> agent idle, \
-     start_attempts incremented (next tick will rebuild)";
+    "test2: missing checkout retains owner work without spending session budget";
 
   assert_eq "all tests passed marker" "ok" "ok";
   Stdlib.print_endline "All worktree-missing recovery tests passed."

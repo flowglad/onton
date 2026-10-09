@@ -189,13 +189,11 @@ let patch_agent_to_yojson (a : Patch_agent.t) =
         | None -> `Null
         | Some n -> Pr_number.yojson_of_t n );
       ("has_session", `Bool a.has_session);
-      ("branch_published", `Bool a.branch_published);
       ("busy", `Bool a.busy);
       ("merged", `Bool a.merged);
       ("queue", `List (List.map a.queue ~f:Operation_kind.yojson_of_t));
       ("satisfies", `Bool a.satisfies);
       ("changed", `Bool a.changed);
-      ("has_conflict", `Bool a.has_conflict);
       ( "base_branch",
         match a.base_branch with
         | None -> `Null
@@ -219,9 +217,6 @@ let patch_agent_to_yojson (a : Patch_agent.t) =
       ("merge_ready", `Bool a.merge_ready);
       ( "head_oid",
         Option.value_map a.head_oid ~default:`Null ~f:(fun s -> `String s) );
-      ( "expected_remote_head_oid",
-        Option.value_map a.expected_remote_head_oid ~default:`Null ~f:(fun s ->
-            `String s) );
       ( "review_decision",
         Option.value_map a.review_decision ~default:`Null ~f:(fun s ->
             `String s) );
@@ -236,23 +231,11 @@ let patch_agent_to_yojson (a : Patch_agent.t) =
       ("pr_body_artifact_miss_count", `Int a.pr_body_artifact_miss_count);
       ("review_unresolved_cycle_count", `Int a.review_unresolved_cycle_count);
       ("start_attempts_without_pr", `Int a.start_attempts_without_pr);
-      ("conflict_noop_count", `Int a.conflict_noop_count);
       ("no_commits_push_count", `Int a.no_commits_push_count);
       ("context_exhaustion_count", `Int a.context_exhaustion_count);
-      ("push_failure_count", `Int a.push_failure_count);
-      ("rebase_failure_count", `Int a.rebase_failure_count);
-      ( "branch_rebased_onto",
-        match a.branch_rebased_onto with
-        | None -> `Null
-        | Some b -> Branch.yojson_of_t b );
-      ( "branch_rebased_onto_sha",
-        match a.branch_rebased_onto_sha with
-        | None -> `Null
-        | Some s -> `String s );
       ( "merge_commit_sha",
         match a.merge_commit_sha with None -> `Null | Some s -> `String s );
       ("base_contains_merged_siblings", `Bool a.base_contains_merged_siblings);
-      ("anchor_history", Anchor_history.yojson_of_t a.anchor_history);
       ("checks_passing", `Bool a.checks_passing);
       ( "current_op",
         match a.current_op with
@@ -385,16 +368,11 @@ let patch_agent_of_yojson ?(snapshot_version = 1) ~main_branch ~gameplan json =
                   | None -> Patch_pr_status.Absent
                   | Some n -> Patch_pr_status.Present (Pr_number.of_int n))))
         ~complexity:(int_member_opt "complexity" json)
-        ~branch_published:
-          (Option.value
-             (bool_member_opt "branch_published" json)
-             ~default:false)
         ~has_session ~busy:(bool_member "busy" json)
         ~merged:(bool_member "merged" json)
         ~queue
         ~satisfies:(bool_member "satisfies" json)
         ~changed:(bool_member "changed" json)
-        ~has_conflict:(bool_member "has_conflict" json)
         ~base_branch:
           (string_member_opt "base_branch" json
           |> Option.map ~f:Branch.of_string)
@@ -421,8 +399,6 @@ let patch_agent_of_yojson ?(snapshot_version = 1) ~main_branch ~gameplan json =
         ~human_messages ~inflight_human_messages ~ci_checks
         ~merge_ready:(bool_member "merge_ready" json)
         ~head_oid:(string_member_opt "head_oid" json)
-        ~expected_remote_head_oid:
-          (string_member_opt "expected_remote_head_oid" json)
         ~review_decision:(string_member_opt "review_decision" json)
         ~unresolved_comment_count:
           (Option.value
@@ -487,8 +463,6 @@ let patch_agent_of_yojson ?(snapshot_version = 1) ~main_branch ~gameplan json =
              (int_member_opt "review_unresolved_cycle_count" json)
              ~default:0)
         ~start_attempts_without_pr:(int_member "start_attempts_without_pr" json)
-        ~conflict_noop_count:
-          (Option.value (int_member_opt "conflict_noop_count" json) ~default:0)
         ~no_commits_push_count:
           (Option.value
              (int_member_opt "no_commits_push_count" json)
@@ -497,30 +471,6 @@ let patch_agent_of_yojson ?(snapshot_version = 1) ~main_branch ~gameplan json =
           (Option.value
              (int_member_opt "context_exhaustion_count" json)
              ~default:0)
-        ~push_failure_count:
-          (Option.value (int_member_opt "push_failure_count" json) ~default:0)
-        ~rebase_failure_count:
-          (Option.value (int_member_opt "rebase_failure_count" json) ~default:0)
-        ~branch_rebased_onto_sha:
-          (string_member_opt "branch_rebased_onto_sha" json)
-        ~anchor_history:
-          (match member "anchor_history" json with
-          | `Null -> Anchor_history.empty
-          | v -> (
-              match Anchor_history.of_yojson_opt v with
-              | Some h -> h
-              | None -> Anchor_history.empty))
-        ~branch_rebased_onto:
-          (match string_member_opt "branch_rebased_onto" json with
-          | Some s -> Some (Branch.of_string s)
-          | None ->
-              (* Backward compat: assume existing PR agents are rebased onto
-                their current base_branch so drift detection activates if
-                GitHub later auto-retargets the PR. *)
-              if Option.is_some (int_member_opt "pr_number" json) then
-                string_member_opt "base_branch" json
-                |> Option.map ~f:Branch.of_string
-              else None)
         ~checks_passing:(bool_member "checks_passing" json)
         ~current_op:
           (match member "current_op" json with
@@ -593,11 +543,25 @@ let patch_agent_of_yojson ?(snapshot_version = 1) ~main_branch ~gameplan json =
               |> List.dedup_and_sort ~compare:Int.compare
           | _ -> [])
         ()
+    |> Patch_agent.migrate_legacy_branch_state ~main_branch
+         ~revision:
+           (Option.value
+              (Json.field "branch_rebased_onto_sha" json)
+              ~default:`Null)
+         ~published:
+           (Option.value
+              (bool_member_opt "branch_published" json)
+              ~default:false)
+         ~owner_missing:
+           (snapshot_version = 1
+           && Option.is_none (Json.field "branch_reconcile" json))
+         ~anchors:
+           (Option.value (Json.field "anchor_history" json) ~default:`Null)
     |> fun agent ->
-      if
-        snapshot_version = 1
-        && Option.is_none (Json.field "branch_reconcile" json)
-      then Patch_agent.migrate_legacy_branch_state ~main_branch agent
+      if Option.value (bool_member_opt "has_conflict" json) ~default:false then
+        Patch_agent.set_mergeability_unknown
+          (Patch_agent.set_merge_ready agent false)
+          true
       else agent )
 
 (* ---------- Activity_log ---------- *)
@@ -1088,23 +1052,20 @@ let%test_module "session_id_sidecars" =
         Patch_agent.restore ~patch_id ~branch:patch.branch
           ~pr_status:Patch_pr_status.Absent ~has_session:false ~busy
           ~merged:false ~queue:[] ~satisfies:false ~changed:false
-          ~has_conflict:false ~base_branch:None ~notified_base_branch:None
-          ~ci_failure_count:0 ~session_fallback:Patch_agent.Fresh_available
-          ~human_messages:[] ~inflight_human_messages:[] ~ci_checks:[]
-          ~merge_ready:false ~mergeability_unknown:false
-          ~merge_queue_required:false ~merge_queue_entry:None
-          ~merge_commit_sha:None ~base_contains_merged_siblings:true
-          ~is_draft:false ~pr_body_delivered:true ~pr_body_artifact_miss_count:0
-          ~start_attempts_without_pr:0 ~conflict_noop_count:0
-          ~no_commits_push_count:0 ~context_exhaustion_count:0
-          ~push_failure_count:0 ~rebase_failure_count:0
-          ~branch_rebased_onto:None ~branch_rebased_onto_sha:None
-          ~anchor_history:Anchor_history.empty ~checks_passing:false
-          ~current_op:None ~current_op_state:Patch_agent.Queued
-          ~current_message_id:None ~generation:0 ~worktree_path:None
-          ~branch_blocked:false ~llm_session_id ~automerge_enabled:false
-          ~automerge_deadline:None ~automerge_inflight:false
-          ~automerge_failure_count:0 ~delivered_ci_run_ids:[] ()
+          ~base_branch:None ~notified_base_branch:None ~ci_failure_count:0
+          ~session_fallback:Patch_agent.Fresh_available ~human_messages:[]
+          ~inflight_human_messages:[] ~ci_checks:[] ~merge_ready:false
+          ~mergeability_unknown:false ~merge_queue_required:false
+          ~merge_queue_entry:None ~merge_commit_sha:None
+          ~base_contains_merged_siblings:true ~is_draft:false
+          ~pr_body_delivered:true ~pr_body_artifact_miss_count:0
+          ~start_attempts_without_pr:0 ~no_commits_push_count:0
+          ~context_exhaustion_count:0 ~checks_passing:false ~current_op:None
+          ~current_op_state:Patch_agent.Queued ~current_message_id:None
+          ~generation:0 ~worktree_path:None ~branch_blocked:false
+          ~llm_session_id ~automerge_enabled:false ~automerge_deadline:None
+          ~automerge_inflight:false ~automerge_failure_count:0
+          ~delivered_ci_run_ids:[] ()
       in
       let orch =
         Orchestrator.restore

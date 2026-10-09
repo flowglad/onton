@@ -26,7 +26,6 @@ let timestamp () =
 
 let agent_json (a : Patch_agent.t) = Persistence.patch_agent_to_yojson a
 let poll_json (p : Poller.t) = Poller.yojson_of_t p
-let opt_sha_json = function Some s -> `String s | None -> `Null
 
 (* Auto-emit a "needs_intervention" transition event when the predicate
    flips false → true between [agent_before] and [agent_after]. Every
@@ -129,8 +128,6 @@ let failure_subkind_of_session_result (result : Orchestrator.session_result) =
       Failure_subkind.Other "session_failed"
   | Session_wontdo _ -> Failure_subkind.Other "wontdo"
   | Session_give_up -> Failure_subkind.Other "session_give_up"
-  | Session_worktree_missing -> Failure_subkind.Process_error
-  | Session_push_failed _ -> Failure_subkind.Process_error
   | Session_no_commits -> Failure_subkind.Other "session_no_commits"
   | Session_context_exhausted -> Failure_subkind.Context_exhausted
 
@@ -163,7 +160,8 @@ let sink t =
       | Stream _ | Spawn_started _ | Spawn_finalized _ -> ());
   }
 
-let log_poll t ~patch_id ~poll_result ~agent_before ~agent_after ~logs =
+let log_poll ?request t ~patch_id ~poll_result ~agent_before ~agent_after ~logs
+    =
   ignore t;
   Telemetry_dispatch.emit
     (Telemetry.Event.Poll
@@ -171,12 +169,20 @@ let log_poll t ~patch_id ~poll_result ~agent_before ~agent_after ~logs =
          patch_id;
          payload =
            `Assoc
-             [
-               ("poll_result", poll_json poll_result);
-               ("agent_before", agent_json agent_before);
-               ("agent_after", agent_json agent_after);
-               ("logs", string_list_json logs);
-             ];
+             ((match request with
+                | None -> []
+                | Some (request : Forge_observation.request) ->
+                    [
+                      ("request_id", `String request.id);
+                      ( "pr_number",
+                        `Int (Types.Pr_number.to_int request.pr_number) );
+                    ])
+             @ [
+                 ("poll_result", poll_json poll_result);
+                 ("agent_before", agent_json agent_before);
+                 ("agent_after", agent_json agent_after);
+                 ("logs", string_list_json logs);
+               ]);
        });
   emit_intervention_transition_if_needed ~patch_id ~agent_before ~agent_after
 
@@ -235,117 +241,6 @@ let log_force_complete t ~patch_id ~reason ~agent_before ~agent_after =
                ("event_log_kind", `String "force_complete");
                ( "reason",
                  `String (Orchestrator.show_force_complete_reason reason) );
-               ("agent_before", agent_json agent_before);
-               ("agent_after", agent_json agent_after);
-             ];
-       });
-  emit_intervention_transition_if_needed ~patch_id ~agent_before ~agent_after
-
-let log_conflict_rebase t ~patch_id ~result ~decision ~pre_rebase_head
-    ~post_rebase_head ~target_base_sha ~agent_before ~agent_after =
-  ignore t;
-  Telemetry_dispatch.emit
-    (Telemetry.Event.Action
-       {
-         patch_id;
-         session_uuid = None;
-         payload =
-           `Assoc
-             [
-               ("event_log_kind", `String "conflict_rebase");
-               ("result", `String (Worktree.show_rebase_result result));
-               ( "decision",
-                 `String (Orchestrator.show_conflict_rebase_decision decision)
-               );
-               ("pre_rebase_head", opt_sha_json pre_rebase_head);
-               ("post_rebase_head", opt_sha_json post_rebase_head);
-               ("target_base_sha", opt_sha_json target_base_sha);
-               ("agent_before", agent_json agent_before);
-               ("agent_after", agent_json agent_after);
-             ];
-       });
-  emit_intervention_transition_if_needed ~patch_id ~agent_before ~agent_after
-
-let log_conflict_delivery t ~patch_id ~path ~rebase_in_progress ~git_status
-    ~git_diff =
-  ignore t;
-  Telemetry_dispatch.emit
-    (Telemetry.Event.Action
-       {
-         patch_id;
-         session_uuid = None;
-         payload =
-           `Assoc
-             [
-               ("event_log_kind", `String "conflict_delivery");
-               ("path", `String path);
-               ("rebase_in_progress", `Bool rebase_in_progress);
-               ("git_status", `String git_status);
-               ("git_diff_len", `Int (String.length git_diff));
-             ];
-       })
-
-let log_rebase t ~patch_id ~result ~pre_rebase_head ~post_rebase_head
-    ~target_base_sha ~agent_before ~agent_after =
-  ignore t;
-  Telemetry_dispatch.emit
-    (Telemetry.Event.Action
-       {
-         patch_id;
-         session_uuid = None;
-         payload =
-           `Assoc
-             [
-               ("event_log_kind", `String "rebase");
-               ("result", `String (Worktree.show_rebase_result result));
-               ("pre_rebase_head", opt_sha_json pre_rebase_head);
-               ("post_rebase_head", opt_sha_json post_rebase_head);
-               ("target_base_sha", opt_sha_json target_base_sha);
-               ("agent_before", agent_json agent_before);
-               ("agent_after", agent_json agent_after);
-             ];
-       });
-  emit_intervention_transition_if_needed ~patch_id ~agent_before ~agent_after
-
-type push_kind =
-  | Session_end_push
-  | Rebase_resolution_push
-  | Conflict_resolution_push
-[@@deriving eq, sexp_of, compare]
-
-let push_kind_label = function
-  | Session_end_push -> "session_end"
-  | Rebase_resolution_push -> "rebase_resolution"
-  | Conflict_resolution_push -> "conflict_resolution"
-
-let push_result_kind (r : Worktree.push_result) =
-  match r with
-  | Worktree.Push_ok -> "push_ok"
-  | Worktree.Push_up_to_date -> "push_up_to_date"
-  | Worktree.Push_no_commits -> "push_no_commits"
-  | Worktree.Push_rejected rej ->
-      "push_rejected:" ^ Push_reject_classify.short_label rej
-  | Worktree.Push_worktree_missing -> "push_worktree_missing"
-  | Worktree.Push_error _ -> "push_error"
-
-let log_push t ~patch_id ~kind ~result ~local_sha ~remote_tracking_sha ~base_sha
-    ~agent_before ~agent_after =
-  ignore t;
-  Telemetry_dispatch.emit
-    (Telemetry.Event.Action
-       {
-         patch_id;
-         session_uuid = None;
-         payload =
-           `Assoc
-             [
-               ("event_log_kind", `String "push");
-               ("push_kind", `String (push_kind_label kind));
-               ("result", `String (Worktree.show_push_result result));
-               ("result_kind", `String (push_result_kind result));
-               ("local_sha", opt_sha_json local_sha);
-               ("remote_tracking_sha", opt_sha_json remote_tracking_sha);
-               ("base_sha", opt_sha_json base_sha);
                ("agent_before", agent_json agent_before);
                ("agent_after", agent_json agent_after);
              ];

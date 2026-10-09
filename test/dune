@@ -21,6 +21,8 @@
 
 (test
  (name test_worktree_backend_integration)
+ (deps (package onton))
+ (action (setenv ONTON_SETSID_EXEC %{bin:onton-setsid-exec} (run %{test})))
  (modules test_worktree_backend_integration)
  (flags (:standard -w -40-42))
  (libraries onton onton_core onton_test_support eio_main unix qcheck-core))
@@ -45,7 +47,7 @@
 (test
  (name test_automerge_deadline_properties)
  (modules test_automerge_deadline_properties)
- (libraries onton onton_core onton_test_support qcheck-core qcheck-core.runner)
+ (libraries onton onton_core onton_core_test_support onton_test_support qcheck-core qcheck-core.runner)
  (ocamlopt_flags (:standard -w -40-42))
  (ocamlc_flags (:standard -w -40-42)))
 
@@ -83,7 +85,7 @@
 (test
  (name test_github_check_details)
  (modules test_github_check_details)
- (libraries onton onton_core base yojson))
+ (libraries onton onton_test_support onton_core base yojson))
 
 (test
  (name test_ci_rerun_decision_properties)
@@ -112,7 +114,7 @@
 (test
  (name test_patch_agent)
  (modules test_patch_agent)
- (libraries onton_core qcheck-core))
+ (libraries onton_core qcheck-core onton_core_test_support))
 
 (test
  (name test_codex_cost_properties)
@@ -215,28 +217,11 @@
  (ocamlc_flags (:standard -w -40-42)))
 
 (test
- (name test_rebase_decision_properties)
- (modules test_rebase_decision_properties)
- (libraries onton_core qcheck-core qcheck-core.runner)
+ (name test_replay_boundary_properties)
+ (modules test_replay_boundary_properties)
+ (libraries onton_core onton_core_test_support qcheck-core qcheck-core.runner)
  (ocamlopt_flags (:standard -w -40-42))
  (ocamlc_flags (:standard -w -40-42)))
-
-(test
- (name test_anchor)
- (modules test_anchor)
- (libraries onton_core qcheck-core qcheck-core.runner yojson)
- (ocamlopt_flags (:standard -w -40-42))
- (ocamlc_flags (:standard -w -40-42)))
-
-(test
- (name test_anchor_state_properties)
- (modules test_anchor_state_properties)
- (libraries onton_core qcheck-core))
-
-(test
- (name test_anchor_history_properties)
- (modules test_anchor_history_properties)
- (libraries onton_core qcheck-core))
 
 (test
  (name test_claude_process_properties)
@@ -323,9 +308,9 @@
  (libraries onton onton_core qcheck-core))
 
 (test
- (name test_rebase_state_machine)
- (modules test_rebase_state_machine)
- (libraries onton_core)
+ (name test_replay_boundary_state_machine)
+ (modules test_replay_boundary_state_machine)
+ (libraries onton_core onton_core_test_support)
  (ocamlopt_flags (:standard -w -40-42))
  (ocamlc_flags (:standard -w -40-42)))
 
@@ -374,7 +359,7 @@
 (test
  (name test_orchestrator_properties)
  (modules test_orchestrator_properties)
- (libraries onton onton_core onton_test_support qcheck-core))
+ (libraries onton onton_core onton_core_test_support onton_test_support qcheck-core))
 
 (test
  (name test_state_machine_properties)
@@ -401,7 +386,7 @@
 (test
  (name test_intervention_reason)
  (modules test_intervention_reason)
- (libraries onton onton_core qcheck-core))
+ (libraries onton onton_core onton_core_test_support qcheck-core))
 
 (test
  (name test_stream_parser)
@@ -418,7 +403,7 @@
 (test
  (name test_persistence_properties)
  (modules test_persistence_properties)
- (libraries onton onton_core onton_test_support qcheck-core qcheck-core.runner yojson)
+ (libraries onton onton_core onton_core_test_support onton_test_support qcheck-core qcheck-core.runner yojson)
  (ocamlopt_flags (:standard -w -40-42))
  (ocamlc_flags (:standard -w -40-42)))
 
@@ -435,7 +420,7 @@
 (test
  (name test_poll_cycle_properties)
  (modules test_poll_cycle_properties)
- (libraries onton_core onton_test_support qcheck-core qcheck-core.runner)
+ (libraries onton_core onton_core_test_support onton_test_support qcheck-core qcheck-core.runner)
  (ocamlopt_flags (:standard -w -40-42))
  (ocamlc_flags (:standard -w -40-42)))
 
@@ -447,14 +432,9 @@
 (test
  (name test_patch_decision)
  (modules test_patch_decision)
- (libraries onton_core qcheck-core)
+ (libraries onton_core onton_core_test_support qcheck-core)
  (ocamlopt_flags (:standard -w -40-42-4))
  (ocamlc_flags (:standard -w -40-42-4)))
-
-(test
- (name test_worktree_plan)
- (modules test_worktree_plan)
- (libraries onton_core qcheck-core))
 
 (test
  (name test_worktree_spawn_retry)
@@ -482,6 +462,11 @@
  (name test_rebase_onto)
  (modules test_rebase_onto)
  (locks git-integration)
+ (deps (package onton))
+ (action
+  (setenv ONTON_SETSID_EXEC
+   %{bin:onton-setsid-exec}
+   (run %{test})))
  (libraries onton onton_core onton_test_support qcheck-core qcheck-core.runner eio
    eio_main eio.unix)
  (ocamlopt_flags (:standard -w -40-42))
@@ -490,6 +475,11 @@
 (test
  (name test_worktree_missing_recovery)
  (modules test_worktree_missing_recovery)
+ (deps (package onton))
+ (action
+  (setenv ONTON_SETSID_EXEC
+   %{bin:onton-setsid-exec}
+   (run %{test})))
  (libraries onton onton_core eio eio_main eio.unix unix)
  (ocamlopt_flags (:standard -w -40-42))
  (ocamlc_flags (:standard -w -40-42)))
@@ -501,6 +491,8 @@
 
 (test
  (name test_worktree_start_point_integration)
+ (deps (package onton))
+ (action (setenv ONTON_SETSID_EXEC %{bin:onton-setsid-exec} (run %{test})))
  (modules test_worktree_start_point_integration)
  (locks git-integration)
  (libraries onton onton_core onton_test_support eio eio_main eio.unix unix)
@@ -510,6 +502,8 @@
 (test
  (name test_worktree_setup_base_fetch_integration)
  (modules test_worktree_setup_base_fetch_integration)
+ (deps (package onton))
+ (action (setenv ONTON_SETSID_EXEC %{bin:onton-setsid-exec} (run %{test})))
  (locks git-integration)
  (libraries onton onton_core onton_test_support eio eio_main eio.unix unix)
  (ocamlopt_flags (:standard -w -40-42))
@@ -518,6 +512,11 @@
 (test
  (name test_push_timeout_integration)
  (modules test_push_timeout_integration)
+ (deps (package onton))
+ (action
+  (setenv ONTON_SETSID_EXEC
+   %{bin:onton-setsid-exec}
+   (run %{test})))
  (locks git-integration)
  (libraries onton onton_core onton_test_support eio eio.mock eio_main unix)
  (ocamlopt_flags (:standard -w -40-42-4))
@@ -527,6 +526,11 @@
  (name test_push_plan_integration)
  (modules test_push_plan_integration)
  (locks git-integration)
+ (deps (package onton))
+ (action
+  (setenv ONTON_SETSID_EXEC
+   %{bin:onton-setsid-exec}
+   (run %{test})))
  (libraries onton onton_core onton_test_support eio eio_main eio.unix unix
    qcheck-core)
  (ocamlopt_flags (:standard -w -40-42-4))
@@ -561,6 +565,22 @@
  (ocamlc_flags (:standard -w -40-42)))
 
 (test
+ (name test_project_retirement_properties)
+ (modules test_project_retirement_properties)
+ (libraries onton_core qcheck-core qcheck-core.runner))
+
+(test
+ (name test_project_lifecycle)
+ (modules test_project_lifecycle)
+ (libraries onton onton_core unix qcheck-core)
+ (action (run %{test} %{exe:../bin/main.exe})))
+
+(test
+ (name test_project_lifecycle_state_machine)
+ (modules test_project_lifecycle_state_machine)
+ (libraries onton onton_core unix qcheck-core qcheck-core.runner))
+
+(test
  (name test_patch_pr_status_properties)
  (modules test_patch_pr_status_properties)
  (libraries onton_core qcheck-core qcheck-core.runner)
@@ -591,14 +611,14 @@
 (test
  (name test_poll_log_properties)
  (modules test_poll_log_properties)
- (libraries onton onton_core onton_test_support qcheck-core qcheck-core.runner)
+ (libraries onton onton_core onton_test_support qcheck-core qcheck-core.runner onton_core_test_support)
  (ocamlopt_flags (:standard -w -40-42))
  (ocamlc_flags (:standard -w -40-42)))
 
 (test
  (name test_interleaving_properties)
  (modules test_interleaving_properties)
- (libraries onton onton_core onton_test_support qcheck-core)
+ (libraries onton onton_core onton_core_test_support onton_test_support qcheck-core)
  (ocamlopt_flags (:standard -w -40-42))
  (ocamlc_flags (:standard -w -40-42)))
 
@@ -636,16 +656,9 @@
  (libraries onton onton_core))
 
 (test
- (name test_conflict_recovery_state_machine)
- (modules test_conflict_recovery_state_machine)
- (libraries onton onton_core onton_test_support qcheck-core qcheck-core.runner)
- (ocamlopt_flags (:standard -w -40-42))
- (ocamlc_flags (:standard -w -40-42)))
-
-(test
  (name test_action_outcome_properties)
  (modules test_action_outcome_properties)
- (libraries onton onton_core onton_test_support qcheck-core))
+ (libraries onton onton_core onton_core_test_support onton_test_support qcheck-core))
 
 (test
  (name test_backend_smoke)
@@ -660,10 +673,14 @@
 (test
  (name test_user_config)
  (modules test_user_config)
+ (deps (package onton))
+ (action (setenv ONTON_SETSID_EXEC %{bin:onton-setsid-exec} (run %{test})))
  (libraries onton onton_core eio eio_main eio.unix unix))
 
 (test
  (name test_repo_root)
+ (deps (package onton))
+ (action (setenv ONTON_SETSID_EXEC %{bin:onton-setsid-exec} (run %{test})))
  (modules test_repo_root)
  (libraries onton onton_core onton_test_support unix))
 
@@ -703,6 +720,15 @@
  (libraries onton_core qcheck-core qcheck-core.runner))
 
 (test
+ (name test_recovery_ref_prune)
+ (modules test_recovery_ref_prune)
+ (flags (:standard -w -40-42))
+ (libraries onton onton_core onton_test_support eio_main unix qcheck-core)
+ (deps (package onton))
+ (action
+  (setenv ONTON_SETSID_EXEC %{bin:onton-setsid-exec} (run %{test}))))
+
+(test
  (name test_sourcehut_builds_properties)
  (modules test_sourcehut_builds_properties)
  (libraries onton_core qcheck-core qcheck-core.runner))
@@ -720,7 +746,7 @@
 (test
  (name test_wontdo_session)
  (modules test_wontdo_session)
- (libraries onton onton_core eio_main unix)
+ (libraries onton onton_core onton_core_test_support eio_main unix)
  (ocamlopt_flags (:standard -w -40-42))
  (ocamlc_flags (:standard -w -40-42)))
 
@@ -750,7 +776,7 @@
 (test
  (name test_execution_mode_properties)
  (modules test_execution_mode_properties)
- (libraries onton_core qcheck-core qcheck-core.runner))
+ (libraries onton_core onton_core_test_support qcheck-core qcheck-core.runner))
 
 (test
  (name test_branch_poll_decision_properties)
@@ -760,10 +786,11 @@
 (test
  (name test_feature_branch_mode)
  (modules test_feature_branch_mode)
- (libraries onton onton_core eio_main))
+ (libraries onton onton_core onton_core_test_support onton_test_support eio_main))
 
 (test
  (name test_feature_branch_git)
+ (flags (:standard -w -40-42))
  (modules test_feature_branch_git)
  (libraries onton onton_core onton_test_support eio eio_main unix)
  (deps (package onton))
@@ -775,7 +802,8 @@
 (test
  (name test_feature_branch_cli)
  (modules test_feature_branch_cli)
- (deps ../bin/main.exe)
+ (deps ../bin/main.exe (package onton))
+ (action (setenv ONTON_SETSID_EXEC %{bin:onton-setsid-exec} (run %{test})))
  (libraries onton onton_core onton_test_support eio eio_main unix yojson))
 
 (test
@@ -785,8 +813,10 @@
 
 (test
  (name test_gameplan_publication)
+ (deps (package onton))
+ (action (setenv ONTON_SETSID_EXEC %{bin:onton-setsid-exec} (run %{test})))
  (modules test_gameplan_publication)
- (libraries onton onton_core onton_test_support eio_main unix))
+ (libraries onton onton_core onton_test_support eio_main unix onton_core_test_support))
 
 (test
  (name test_session_timeout)
@@ -813,7 +843,7 @@
 (test
  (name test_patch_agent_properties)
  (modules test_patch_agent_properties)
- (libraries onton_core base qcheck-core qcheck-core.runner))
+ (libraries onton_core onton_core_test_support base qcheck-core qcheck-core.runner))
 
 (test
  (name test_gameplan_parser_properties)
@@ -830,7 +860,7 @@
  (name test_branch_reconcile_properties)
  (modules test_branch_reconcile_properties)
  (flags (:standard -w -40-42))
- (libraries onton_core qcheck-core qcheck-core.runner))
+ (libraries onton_core onton_core_test_support qcheck-core qcheck-core.runner))
 
 (test
  (name test_git_observation_properties)
@@ -850,10 +880,21 @@
    (run %{test}))))
 
 (test
+ (name test_branch_remote_entrypoints)
+ (modules test_branch_remote_entrypoints)
+ (flags (:standard -w -40-42))
+ (libraries onton onton_core onton_test_support base eio_main unix)
+ (deps (package onton))
+ (action
+  (setenv ONTON_SETSID_EXEC
+   %{bin:onton-setsid-exec}
+   (run %{test}))))
+
+(test
  (name test_branch_reconcile_outbox)
  (modules test_branch_reconcile_outbox)
  (flags (:standard -w -40-42))
- (libraries onton onton_core qcheck-core qcheck-core.runner))
+ (libraries onton onton_core onton_test_support qcheck-core qcheck-core.runner))
 
 (test
  (name test_session_result_properties)
@@ -866,3 +907,138 @@
  (modules test_branch_reconcile_ownership)
  (flags (:standard -w -40-42))
  (libraries onton onton_core eio_main unix))
+
+(test
+ (name test_branch_reconcile_boundaries)
+ (modules test_branch_reconcile_boundaries)
+ (libraries onton onton_core onton_test_support eio_main unix)
+ (deps (package onton))
+ (action
+  (setenv ONTON_SETSID_EXEC
+   %{bin:onton-setsid-exec}
+   (run %{test}))))
+
+(test
+ (name test_branch_replay_evidence)
+ (modules test_branch_replay_evidence)
+ (flags (:standard -w -40-42))
+ (libraries onton onton_core onton_test_support eio_main unix)
+ (deps (package onton))
+ (action
+  (setenv ONTON_SETSID_EXEC
+   %{bin:onton-setsid-exec}
+   (run %{test}))))
+
+(test
+ (name test_forge_observation_properties)
+ (modules test_forge_observation_properties)
+ (flags (:standard -w -40-42))
+ (libraries onton_core qcheck-core qcheck-core.runner))
+
+(test
+ (name test_initial_tracking)
+ (modules test_initial_tracking)
+ (flags (:standard -w -40-42))
+ (libraries onton onton_core onton_test_support eio_main unix)
+ (deps (package onton))
+ (action
+  (setenv ONTON_SETSID_EXEC
+   %{bin:onton-setsid-exec}
+   (run %{test}))))
+
+(test
+ (name test_process_tree_cancellation)
+ (modules test_process_tree_cancellation)
+ (libraries onton onton_test_support eio_main unix)
+ (deps (package onton))
+ (action
+  (setenv ONTON_SETSID_EXEC
+   %{bin:onton-setsid-exec}
+   (run %{test}))))
+
+(test
+ (name test_publication_observation)
+ (modules test_publication_observation)
+ (libraries onton onton_test_support onton_core onton_core_test_support))
+
+(test
+ (name test_project_identity_properties)
+ (modules test_project_identity_properties)
+ (libraries onton_core qcheck-core qcheck-core.runner))
+
+(test
+ (name test_branch_provisioning_properties)
+ (modules test_branch_provisioning_properties)
+ (flags (:standard -w -42))
+ (libraries onton_core qcheck-core qcheck-core.runner))
+
+(test
+ (name test_worktree_provision_properties)
+ (modules test_worktree_provision_properties)
+ (libraries onton_core qcheck-core qcheck-core.runner)
+ (flags (:standard -w -42)))
+
+(test
+ (name test_worktree_hook_properties)
+ (modules test_worktree_hook_properties)
+ (libraries onton_core qcheck-core qcheck-core.runner)
+ (flags (:standard -w -40-42)))
+
+(test
+ (name test_types_state_properties)
+ (modules test_types_state_properties)
+ (libraries onton_core qcheck-core))
+
+(test
+ (name test_comment_id_allocation_properties)
+ (modules test_comment_id_allocation_properties)
+ (libraries onton_core qcheck-core qcheck-core.runner))
+
+(test
+ (name test_legacy_publication)
+ (modules test_legacy_publication)
+ (flags (:standard -w -42))
+ (libraries onton onton_core onton_core_test_support onton_test_support eio_main unix)
+ (deps (package onton))
+ (action
+  (setenv ONTON_SETSID_EXEC
+   %{bin:onton-setsid-exec}
+   (run %{test}))))
+
+(test
+ (name test_git_oid_properties)
+ (modules test_git_oid_properties)
+ (libraries onton_core qcheck-core qcheck-core.runner))
+
+(test
+ (name test_forge_observation_state_machine)
+ (modules test_forge_observation_state_machine)
+ (ocamlopt_flags (:standard -w -40-42))
+ (ocamlc_flags (:standard -w -40-42))
+ (libraries onton_core onton_core_test_support base qcheck-core qcheck-core.runner))
+
+(test
+ (name test_forge_poll_checkpoint)
+ (modules test_forge_poll_checkpoint)
+ (flags (:standard -w -40-42))
+ (libraries onton onton_core onton_core_test_support base eio_main))
+
+(test
+ (name test_forge_revision_confirmation)
+ (modules test_forge_revision_confirmation)
+ (libraries onton onton_core onton_test_support eio_main unix)
+ (deps (package onton))
+ (action
+  (setenv ONTON_SETSID_EXEC
+   %{bin:onton-setsid-exec}
+   (run %{test}))))
+
+(test
+ (name test_poller_revision_context)
+ (modules test_poller_revision_context)
+ (libraries onton onton_core onton_test_support base eio_main unix)
+ (deps (package onton))
+ (action
+  (setenv ONTON_SETSID_EXEC
+   %{bin:onton-setsid-exec}
+   (run %{test}))))

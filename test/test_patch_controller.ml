@@ -59,34 +59,38 @@ let make_orch patch agent =
     ~outbox:(Map.empty (module Message_id))
     ~main_branch:main ()
 
-let make_agent ?(merge_ready = false) ?(mergeability_unknown = false)
-    ?(merge_queue_required = false) ?(merge_queue_entry = None)
-    ?(native_stack = false) ?(checks_passing = false) ?(ci_checks = [])
-    ?(has_conflict = false) ?(head_oid = None) ?(review_decision = None)
-    ?(unresolved_comment_count = 0) ?(review_requested_for_oid = None)
-    ?(review_request_inflight = false) ?(automerge_enabled = false)
-    ?automerge_deadline ?(automerge_failure_count = 0) ~patch_id ~branch
-    ~pr_status ~merged ~queue ~base_branch ~is_draft ~pr_body_delivered
-    ~start_attempts_without_pr () =
+let make_agent ?(confirmed_pair = true) ?(merge_ready = false)
+    ?(mergeability_unknown = false) ?(merge_queue_required = false)
+    ?(merge_queue_entry = None) ?(native_stack = false)
+    ?(checks_passing = false) ?(ci_checks = []) ?(has_conflict = false)
+    ?(head_oid = None) ?(review_decision = None) ?(unresolved_comment_count = 0)
+    ?(review_requested_for_oid = None) ?(review_request_inflight = false)
+    ?(automerge_enabled = false) ?automerge_deadline
+    ?(automerge_failure_count = 0) ~patch_id ~branch ~pr_status ~merged ~queue
+    ~base_branch ~is_draft ~pr_body_delivered ~start_attempts_without_pr () =
   Patch_agent.restore ~patch_id ~branch ~pr_status ~has_session:false
-    ~busy:false ~merged ~queue ~satisfies:false ~changed:false ~has_conflict
-    ~base_branch ~notified_base_branch:base_branch ~ci_failure_count:0
+    ~busy:false ~merged ~queue ~satisfies:false ~changed:false ~base_branch
+    ~notified_base_branch:base_branch ~ci_failure_count:0
     ~session_fallback:Patch_agent.Fresh_available ~human_messages:[]
     ~inflight_human_messages:[] ~ci_checks ~merge_ready ~head_oid
     ~review_decision ~unresolved_comment_count ~mergeability_unknown
     ~merge_queue_required ~merge_queue_entry ~is_draft ~pr_body_delivered
     ~native_stack ~pr_body_artifact_miss_count:0 ~start_attempts_without_pr
-    ~conflict_noop_count:0 ~no_commits_push_count:0 ~context_exhaustion_count:0
-    ~push_failure_count:0 ~rebase_failure_count:0 ~branch_rebased_onto:None
-    ~branch_rebased_onto_sha:None ~merge_commit_sha:None
-    ~base_contains_merged_siblings:true
-    ~anchor_history:Onton_core.Anchor_history.empty ~checks_passing
-    ~current_op:None ~current_op_state:Patch_agent.Queued
-    ~current_message_id:None ~generation:0 ~worktree_path:None
-    ~branch_blocked:false ~llm_session_id:None ~automerge_enabled
-    ~automerge_deadline ~automerge_inflight:false ~review_requested_for_oid
-    ~review_request_inflight ~automerge_failure_count ~delivered_ci_run_ids:[]
-    ()
+    ~no_commits_push_count:0 ~context_exhaustion_count:0 ~merge_commit_sha:None
+    ~base_contains_merged_siblings:true ~checks_passing ~current_op:None
+    ~current_op_state:Patch_agent.Queued ~current_message_id:None ~generation:0
+    ~worktree_path:None ~branch_blocked:false ~llm_session_id:None
+    ~automerge_enabled ~automerge_deadline ~automerge_inflight:false
+    ~review_requested_for_oid ~review_request_inflight ~automerge_failure_count
+    ~delivered_ci_run_ids:[] ()
+  |> fun agent ->
+  let agent =
+    if has_conflict then Onton_core_test_support.Conflict_fixture.agent agent
+    else agent
+  in
+  if confirmed_pair then
+    Onton_core_test_support.Forge_fixture.readiness_agent agent
+  else agent
 
 let has_draft_effect effects =
   List.exists effects ~f:(function
@@ -258,24 +262,24 @@ let () =
           Patch_agent.restore ~patch_id:pid ~branch
             ~pr_status:(Patch_pr_status.Present (Pr_number.of_int 42))
             ~has_session:false ~busy:false ~merged:false ~queue:[]
-            ~satisfies:false ~changed:false ~has_conflict:false
-            ~base_branch:(Some main) ~notified_base_branch:(Some main)
-            ~ci_failure_count:0 ~session_fallback:Patch_agent.Fresh_available
-            ~human_messages:[] ~inflight_human_messages:[] ~ci_checks:[]
-            ~merge_ready:false ~mergeability_unknown:false
-            ~merge_queue_required:false ~merge_queue_entry:None ~is_draft:true
-            ~pr_body_delivered:true ~pr_body_artifact_miss_count:0
-            ~start_attempts_without_pr:0 ~conflict_noop_count:0
+            ~satisfies:false ~changed:false ~base_branch:(Some main)
+            ~notified_base_branch:(Some main) ~ci_failure_count:0
+            ~session_fallback:Patch_agent.Fresh_available ~human_messages:[]
+            ~inflight_human_messages:[] ~ci_checks:[] ~merge_ready:false
+            ~mergeability_unknown:false ~merge_queue_required:false
+            ~merge_queue_entry:None ~is_draft:true ~pr_body_delivered:true
+            ~pr_body_artifact_miss_count:0 ~start_attempts_without_pr:0
             ~no_commits_push_count:0 ~context_exhaustion_count:0
-            ~push_failure_count:0 ~rebase_failure_count:0
-            ~branch_rebased_onto:(Some main) ~branch_rebased_onto_sha:None
             ~merge_commit_sha:None ~base_contains_merged_siblings:true
-            ~anchor_history:Onton_core.Anchor_history.empty ~checks_passing:true
-            ~current_op:None ~current_op_state:Patch_agent.Queued
-            ~current_message_id:None ~generation:0 ~worktree_path:None
-            ~branch_blocked:false ~llm_session_id:None ~automerge_enabled:false
+            ~checks_passing:true ~current_op:None
+            ~current_op_state:Patch_agent.Queued ~current_message_id:None
+            ~generation:0 ~worktree_path:None ~branch_blocked:false
+            ~llm_session_id:None ~automerge_enabled:false
             ~automerge_deadline:None ~automerge_inflight:false
             ~automerge_failure_count:0 ~delivered_ci_run_ids:[] ()
+          |> Onton_core_test_support.Publication_fixture.reconciled_agent
+               ~base:main
+          |> Onton_core_test_support.Forge_fixture.readiness_agent
         in
         let orch = make_orch patch agent in
         begin try
@@ -310,22 +314,19 @@ let () =
           Patch_agent.restore ~patch_id:pid ~branch
             ~pr_status:(Patch_pr_status.Present (Pr_number.of_int 42))
             ~has_session:false ~busy:false ~merged:false ~queue:[]
-            ~satisfies:false ~changed:false ~has_conflict:false
-            ~base_branch:(Some main) ~notified_base_branch:(Some main)
-            ~ci_failure_count:0 ~session_fallback:Patch_agent.Fresh_available
-            ~human_messages:[] ~inflight_human_messages:[] ~ci_checks:[]
-            ~merge_ready:false ~mergeability_unknown:false
-            ~merge_queue_required:false ~merge_queue_entry:None ~is_draft:true
-            ~pr_body_delivered:true ~pr_body_artifact_miss_count:0
-            ~start_attempts_without_pr:0 ~conflict_noop_count:0
+            ~satisfies:false ~changed:false ~base_branch:(Some main)
+            ~notified_base_branch:(Some main) ~ci_failure_count:0
+            ~session_fallback:Patch_agent.Fresh_available ~human_messages:[]
+            ~inflight_human_messages:[] ~ci_checks:[] ~merge_ready:false
+            ~mergeability_unknown:false ~merge_queue_required:false
+            ~merge_queue_entry:None ~is_draft:true ~pr_body_delivered:true
+            ~pr_body_artifact_miss_count:0 ~start_attempts_without_pr:0
             ~no_commits_push_count:0 ~context_exhaustion_count:0
-            ~push_failure_count:0 ~rebase_failure_count:0
-            ~branch_rebased_onto:None ~branch_rebased_onto_sha:None
             ~merge_commit_sha:None ~base_contains_merged_siblings:true
-            ~anchor_history:Onton_core.Anchor_history.empty ~checks_passing:true
-            ~current_op:None ~current_op_state:Patch_agent.Queued
-            ~current_message_id:None ~generation:0 ~worktree_path:None
-            ~branch_blocked:false ~llm_session_id:None ~automerge_enabled:false
+            ~checks_passing:true ~current_op:None
+            ~current_op_state:Patch_agent.Queued ~current_message_id:None
+            ~generation:0 ~worktree_path:None ~branch_blocked:false
+            ~llm_session_id:None ~automerge_enabled:false
             ~automerge_deadline:None ~automerge_inflight:false
             ~automerge_failure_count:0 ~delivered_ci_run_ids:[] ()
         in
@@ -455,23 +456,18 @@ let () =
             ~pr_status:(Patch_pr_status.Present (Pr_number.of_int 42))
             ~has_session:true ~busy:false ~merged:false
             ~queue:[ Operation_kind.Rebase ] ~satisfies:false ~changed:false
-            ~has_conflict:false ~base_branch:(Some branch)
-            ~notified_base_branch:(Some branch) ~ci_failure_count:3
-            ~session_fallback:Patch_agent.Fresh_available ~human_messages:[]
-            ~inflight_human_messages:[] ~ci_checks:[] ~merge_ready:false
-            ~mergeability_unknown:false ~merge_queue_required:false
-            ~merge_queue_entry:None ~is_draft:false ~pr_body_delivered:true
-            ~pr_body_artifact_miss_count:0 ~start_attempts_without_pr:0
-            ~conflict_noop_count:0 ~no_commits_push_count:0
-            ~context_exhaustion_count:0 ~push_failure_count:0
-            ~rebase_failure_count:0 ~branch_rebased_onto:None
-            ~branch_rebased_onto_sha:None ~merge_commit_sha:None
-            ~base_contains_merged_siblings:true
-            ~anchor_history:Onton_core.Anchor_history.empty
-            ~checks_passing:false ~current_op:None
-            ~current_op_state:Patch_agent.Queued ~current_message_id:None
-            ~generation:0 ~worktree_path:None ~branch_blocked:false
-            ~llm_session_id:None ~automerge_enabled:false
+            ~base_branch:(Some branch) ~notified_base_branch:(Some branch)
+            ~ci_failure_count:3 ~session_fallback:Patch_agent.Fresh_available
+            ~human_messages:[] ~inflight_human_messages:[] ~ci_checks:[]
+            ~merge_ready:false ~mergeability_unknown:false
+            ~merge_queue_required:false ~merge_queue_entry:None ~is_draft:false
+            ~pr_body_delivered:true ~pr_body_artifact_miss_count:0
+            ~start_attempts_without_pr:0 ~no_commits_push_count:0
+            ~context_exhaustion_count:0 ~merge_commit_sha:None
+            ~base_contains_merged_siblings:true ~checks_passing:false
+            ~current_op:None ~current_op_state:Patch_agent.Queued
+            ~current_message_id:None ~generation:0 ~worktree_path:None
+            ~branch_blocked:false ~llm_session_id:None ~automerge_enabled:false
             ~automerge_deadline:None ~automerge_inflight:false
             ~automerge_failure_count:0 ~delivered_ci_run_ids:[] ()
         in
@@ -504,23 +500,18 @@ let () =
             ~pr_status:(Patch_pr_status.Present (Pr_number.of_int 42))
             ~has_session:true ~busy:false ~merged:false
             ~queue:[ Operation_kind.Ci ] ~satisfies:false ~changed:false
-            ~has_conflict:false ~base_branch:(Some branch)
-            ~notified_base_branch:(Some branch) ~ci_failure_count:3
-            ~session_fallback:Patch_agent.Fresh_available ~human_messages:[]
-            ~inflight_human_messages:[] ~ci_checks:[] ~merge_ready:false
-            ~mergeability_unknown:false ~merge_queue_required:false
-            ~merge_queue_entry:None ~is_draft:false ~pr_body_delivered:true
-            ~pr_body_artifact_miss_count:0 ~start_attempts_without_pr:0
-            ~conflict_noop_count:0 ~no_commits_push_count:0
-            ~context_exhaustion_count:0 ~push_failure_count:0
-            ~rebase_failure_count:0 ~branch_rebased_onto:None
-            ~branch_rebased_onto_sha:None ~merge_commit_sha:None
-            ~base_contains_merged_siblings:true
-            ~anchor_history:Onton_core.Anchor_history.empty
-            ~checks_passing:false ~current_op:None
-            ~current_op_state:Patch_agent.Queued ~current_message_id:None
-            ~generation:0 ~worktree_path:None ~branch_blocked:false
-            ~llm_session_id:None ~automerge_enabled:false
+            ~base_branch:(Some branch) ~notified_base_branch:(Some branch)
+            ~ci_failure_count:3 ~session_fallback:Patch_agent.Fresh_available
+            ~human_messages:[] ~inflight_human_messages:[] ~ci_checks:[]
+            ~merge_ready:false ~mergeability_unknown:false
+            ~merge_queue_required:false ~merge_queue_entry:None ~is_draft:false
+            ~pr_body_delivered:true ~pr_body_artifact_miss_count:0
+            ~start_attempts_without_pr:0 ~no_commits_push_count:0
+            ~context_exhaustion_count:0 ~merge_commit_sha:None
+            ~base_contains_merged_siblings:true ~checks_passing:false
+            ~current_op:None ~current_op_state:Patch_agent.Queued
+            ~current_message_id:None ~generation:0 ~worktree_path:None
+            ~branch_blocked:false ~llm_session_id:None ~automerge_enabled:false
             ~automerge_deadline:None ~automerge_inflight:false
             ~automerge_failure_count:0 ~delivered_ci_run_ids:[] ()
         in
@@ -695,19 +686,15 @@ let () =
           Patch_agent.restore ~patch_id:pid ~branch
             ~pr_status:(Patch_pr_status.Present (Pr_number.of_int 42))
             ~has_session:false ~busy:false ~merged:false ~queue:[]
-            ~satisfies:false ~changed:false ~has_conflict:false
-            ~base_branch:(Some branch) ~notified_base_branch:(Some branch)
-            ~ci_failure_count:0 ~session_fallback:Patch_agent.Fresh_available
-            ~human_messages:[] ~inflight_human_messages:[] ~ci_checks:[]
-            ~merge_ready:false ~mergeability_unknown:false
-            ~merge_queue_required:false ~merge_queue_entry:None ~is_draft:true
-            ~pr_body_delivered:false ~pr_body_artifact_miss_count:0
-            ~start_attempts_without_pr:0 ~conflict_noop_count:0
+            ~satisfies:false ~changed:false ~base_branch:(Some branch)
+            ~notified_base_branch:(Some branch) ~ci_failure_count:0
+            ~session_fallback:Patch_agent.Fresh_available ~human_messages:[]
+            ~inflight_human_messages:[] ~ci_checks:[] ~merge_ready:false
+            ~mergeability_unknown:false ~merge_queue_required:false
+            ~merge_queue_entry:None ~is_draft:true ~pr_body_delivered:false
+            ~pr_body_artifact_miss_count:0 ~start_attempts_without_pr:0
             ~no_commits_push_count:0 ~context_exhaustion_count:0
-            ~push_failure_count:0 ~rebase_failure_count:0
-            ~branch_rebased_onto:None ~branch_rebased_onto_sha:None
             ~merge_commit_sha:None ~base_contains_merged_siblings:true
-            ~anchor_history:Onton_core.Anchor_history.empty
             ~checks_passing:false ~current_op:None
             ~current_op_state:Patch_agent.Queued ~current_message_id:None
             ~generation:0 ~worktree_path:None ~branch_blocked:false
@@ -749,7 +736,9 @@ let () =
             ~pr_status:(Patch_pr_status.Present (Pr_number.of_int 42))
             ~merged:false ~queue:[] ~base_branch:(Some main) ~is_draft:true
             ~pr_body_delivered:true ~start_attempts_without_pr:0 ()
-          |> fun agent -> Patch_agent.set_branch_rebased_onto agent main
+          |> fun agent ->
+          Onton_core_test_support.Publication_fixture.reconciled_agent
+            ~base:main agent
         in
         let orch = make_orch patch agent in
         let poll =
@@ -760,9 +749,10 @@ let () =
             is_draft = true;
             merge_state = Pr_state.Mergeable;
             merge_ready = false;
-            base_branch = None;
-            base_oid = None;
-            head_oid = None;
+            base_branch = Some main;
+            base_oid =
+              Some (Onton_core_test_support.Publication_fixture.sha "base:main");
+            head_oid = agent.Patch_agent.head_oid;
             review_decision = None;
             unresolved_comment_count = 0;
             merge_queue_required = false;
@@ -773,7 +763,8 @@ let () =
           }
         in
         let orch, _logs, _newly_blocked =
-          Patch_controller.apply_poll_result orch pid
+          Onton_test_support.Forge_poll_fixture.apply
+            ?confirmed_remote_head:poll.Poller.head_oid orch pid
             (make_poll_observation poll)
         in
         let orch1, effects1, _actions1 = run_controller_cycle ~gameplan orch in
@@ -852,19 +843,15 @@ let () =
           Patch_agent.restore ~patch_id:pid ~branch
             ~pr_status:(Patch_pr_status.Present (Pr_number.of_int 42))
             ~has_session:false ~busy:false ~merged:false ~queue:[]
-            ~satisfies:false ~changed:false ~has_conflict:false
-            ~base_branch:(Some main) ~notified_base_branch:(Some main)
-            ~ci_failure_count:1 ~session_fallback:Patch_agent.Fresh_available
-            ~human_messages:[] ~inflight_human_messages:[] ~ci_checks:[]
-            ~merge_ready:false ~mergeability_unknown:false
-            ~merge_queue_required:false ~merge_queue_entry:None ~is_draft:false
-            ~pr_body_delivered:true ~pr_body_artifact_miss_count:0
-            ~start_attempts_without_pr:0 ~conflict_noop_count:0
+            ~satisfies:false ~changed:false ~base_branch:(Some main)
+            ~notified_base_branch:(Some main) ~ci_failure_count:1
+            ~session_fallback:Patch_agent.Fresh_available ~human_messages:[]
+            ~inflight_human_messages:[] ~ci_checks:[] ~merge_ready:false
+            ~mergeability_unknown:false ~merge_queue_required:false
+            ~merge_queue_entry:None ~is_draft:false ~pr_body_delivered:true
+            ~pr_body_artifact_miss_count:0 ~start_attempts_without_pr:0
             ~no_commits_push_count:0 ~context_exhaustion_count:0
-            ~push_failure_count:0 ~rebase_failure_count:0
-            ~branch_rebased_onto:None ~branch_rebased_onto_sha:None
             ~merge_commit_sha:None ~base_contains_merged_siblings:true
-            ~anchor_history:Onton_core.Anchor_history.empty
             ~checks_passing:false ~current_op:None
             ~current_op_state:Patch_agent.Queued ~current_message_id:None
             ~generation:0 ~worktree_path:None ~branch_blocked:false
@@ -928,19 +915,15 @@ let () =
           Patch_agent.restore ~patch_id:pid ~branch
             ~pr_status:(Patch_pr_status.Present (Pr_number.of_int 42))
             ~has_session:true ~busy:false ~merged:false ~queue:[]
-            ~satisfies:false ~changed:true ~has_conflict:false
-            ~base_branch:(Some main) ~notified_base_branch:(Some main)
-            ~ci_failure_count:0 ~session_fallback:Patch_agent.Fresh_available
-            ~human_messages:[] ~inflight_human_messages:[] ~ci_checks:[]
-            ~merge_ready:false ~mergeability_unknown:false
-            ~merge_queue_required:false ~merge_queue_entry:None ~is_draft:false
-            ~pr_body_delivered:true ~pr_body_artifact_miss_count:0
-            ~start_attempts_without_pr:0 ~conflict_noop_count:0
+            ~satisfies:false ~changed:true ~base_branch:(Some main)
+            ~notified_base_branch:(Some main) ~ci_failure_count:0
+            ~session_fallback:Patch_agent.Fresh_available ~human_messages:[]
+            ~inflight_human_messages:[] ~ci_checks:[] ~merge_ready:false
+            ~mergeability_unknown:false ~merge_queue_required:false
+            ~merge_queue_entry:None ~is_draft:false ~pr_body_delivered:true
+            ~pr_body_artifact_miss_count:0 ~start_attempts_without_pr:0
             ~no_commits_push_count:0 ~context_exhaustion_count:0
-            ~push_failure_count:0 ~rebase_failure_count:0
-            ~branch_rebased_onto:None ~branch_rebased_onto_sha:None
             ~merge_commit_sha:None ~base_contains_merged_siblings:true
-            ~anchor_history:Onton_core.Anchor_history.empty
             ~checks_passing:false ~current_op:None
             ~current_op_state:Patch_agent.Queued ~current_message_id:None
             ~generation:0 ~worktree_path:None ~branch_blocked:false
@@ -1005,19 +988,15 @@ let () =
           Patch_agent.restore ~patch_id:pid ~branch
             ~pr_status:(Patch_pr_status.Present (Pr_number.of_int 42))
             ~has_session:true ~busy:false ~merged:false ~queue:[]
-            ~satisfies:false ~changed:true ~has_conflict:false
-            ~base_branch:(Some main) ~notified_base_branch:(Some main)
-            ~ci_failure_count:1 ~session_fallback:Patch_agent.Fresh_available
-            ~human_messages:[] ~inflight_human_messages:[] ~ci_checks:[]
-            ~merge_ready:false ~mergeability_unknown:false
-            ~merge_queue_required:false ~merge_queue_entry:None ~is_draft:false
-            ~pr_body_delivered:true ~pr_body_artifact_miss_count:0
-            ~start_attempts_without_pr:0 ~conflict_noop_count:0
+            ~satisfies:false ~changed:true ~base_branch:(Some main)
+            ~notified_base_branch:(Some main) ~ci_failure_count:1
+            ~session_fallback:Patch_agent.Fresh_available ~human_messages:[]
+            ~inflight_human_messages:[] ~ci_checks:[] ~merge_ready:false
+            ~mergeability_unknown:false ~merge_queue_required:false
+            ~merge_queue_entry:None ~is_draft:false ~pr_body_delivered:true
+            ~pr_body_artifact_miss_count:0 ~start_attempts_without_pr:0
             ~no_commits_push_count:0 ~context_exhaustion_count:0
-            ~push_failure_count:0 ~rebase_failure_count:0
-            ~branch_rebased_onto:None ~branch_rebased_onto_sha:None
             ~merge_commit_sha:None ~base_contains_merged_siblings:true
-            ~anchor_history:Onton_core.Anchor_history.empty
             ~checks_passing:false ~current_op:None
             ~current_op_state:Patch_agent.Queued ~current_message_id:None
             ~generation:0 ~worktree_path:None ~branch_blocked:false
@@ -1074,23 +1053,18 @@ let () =
             ~pr_status:(Patch_pr_status.Present (Pr_number.of_int 42))
             ~has_session:true ~busy:false ~merged:false
             ~queue:[ Operation_kind.Ci ] ~satisfies:false ~changed:true
-            ~has_conflict:false ~base_branch:(Some main)
-            ~notified_base_branch:(Some main) ~ci_failure_count:0
-            ~session_fallback:Patch_agent.Fresh_available ~human_messages:[]
-            ~inflight_human_messages:[] ~ci_checks:[] ~merge_ready:false
-            ~mergeability_unknown:false ~merge_queue_required:false
-            ~merge_queue_entry:None ~is_draft:false ~pr_body_delivered:true
-            ~pr_body_artifact_miss_count:0 ~start_attempts_without_pr:0
-            ~conflict_noop_count:0 ~no_commits_push_count:0
-            ~context_exhaustion_count:0 ~push_failure_count:0
-            ~rebase_failure_count:0 ~branch_rebased_onto:None
-            ~branch_rebased_onto_sha:None ~merge_commit_sha:None
-            ~base_contains_merged_siblings:true
-            ~anchor_history:Onton_core.Anchor_history.empty
-            ~checks_passing:false ~current_op:None
-            ~current_op_state:Patch_agent.Queued ~current_message_id:None
-            ~generation:0 ~worktree_path:None ~branch_blocked:false
-            ~llm_session_id:None ~automerge_enabled:false
+            ~base_branch:(Some main) ~notified_base_branch:(Some main)
+            ~ci_failure_count:0 ~session_fallback:Patch_agent.Fresh_available
+            ~human_messages:[] ~inflight_human_messages:[] ~ci_checks:[]
+            ~merge_ready:false ~mergeability_unknown:false
+            ~merge_queue_required:false ~merge_queue_entry:None ~is_draft:false
+            ~pr_body_delivered:true ~pr_body_artifact_miss_count:0
+            ~start_attempts_without_pr:0 ~no_commits_push_count:0
+            ~context_exhaustion_count:0 ~merge_commit_sha:None
+            ~base_contains_merged_siblings:true ~checks_passing:false
+            ~current_op:None ~current_op_state:Patch_agent.Queued
+            ~current_message_id:None ~generation:0 ~worktree_path:None
+            ~branch_blocked:false ~llm_session_id:None ~automerge_enabled:false
             ~automerge_deadline:None ~automerge_inflight:false
             ~automerge_failure_count:0 ~delivered_ci_run_ids:[ old_run_id ] ()
         in
@@ -1268,25 +1242,24 @@ let () =
           Patch_agent.restore ~patch_id:pid ~branch
             ~pr_status:(Patch_pr_status.Present (Pr_number.of_int 42))
             ~has_session:false ~busy:false ~merged:false ~queue:[]
-            ~satisfies:false ~changed:false ~has_conflict:false
-            ~base_branch:(Some main) ~notified_base_branch:(Some main)
-            ~ci_failure_count:0 ~session_fallback:Patch_agent.Fresh_available
-            ~human_messages:[] ~inflight_human_messages:[] ~ci_checks:[]
-            ~merge_ready:false ~mergeability_unknown:false
-            ~merge_queue_required:false ~merge_queue_entry:None ~is_draft:true
-            ~pr_body_delivered:false ~pr_body_artifact_miss_count:0
-            ~start_attempts_without_pr:0 ~conflict_noop_count:0
+            ~satisfies:false ~changed:false ~base_branch:(Some main)
+            ~notified_base_branch:(Some main) ~ci_failure_count:0
+            ~session_fallback:Patch_agent.Fresh_available ~human_messages:[]
+            ~inflight_human_messages:[] ~ci_checks:[] ~merge_ready:false
+            ~mergeability_unknown:false ~merge_queue_required:false
+            ~merge_queue_entry:None ~is_draft:true ~pr_body_delivered:false
+            ~pr_body_artifact_miss_count:0 ~start_attempts_without_pr:0
             ~no_commits_push_count:0 ~context_exhaustion_count:0
-            ~push_failure_count:0 ~rebase_failure_count:0
-            ~branch_rebased_onto:(Some main) ~branch_rebased_onto_sha:None
             ~merge_commit_sha:None ~base_contains_merged_siblings:true
-            ~anchor_history:Onton_core.Anchor_history.empty
             ~checks_passing:false ~current_op:None
             ~current_op_state:Patch_agent.Queued ~current_message_id:None
             ~generation:0 ~worktree_path:None ~branch_blocked:false
             ~llm_session_id:None ~automerge_enabled:false
             ~automerge_deadline:None ~automerge_inflight:false
             ~automerge_failure_count:0 ~delivered_ci_run_ids:[] ()
+          |> Onton_core_test_support.Publication_fixture.reconciled_agent
+               ~base:main
+          |> Onton_core_test_support.Forge_fixture.readiness_agent
         in
         let orch = make_orch patch agent in
         begin try
@@ -1619,18 +1592,14 @@ let () =
           Patch_agent.restore ~patch_id:pid ~branch
             ~pr_status:Patch_pr_status.Absent ~has_session:true ~busy:false
             ~merged:false ~queue:[] ~satisfies:false ~changed:false
-            ~has_conflict:false ~base_branch:None ~notified_base_branch:None
-            ~ci_failure_count:0 ~session_fallback:Patch_agent.Fresh_available
-            ~human_messages:[] ~inflight_human_messages:[] ~ci_checks:[]
-            ~merge_ready:false ~mergeability_unknown:false
-            ~merge_queue_required:false ~merge_queue_entry:None ~is_draft:false
-            ~pr_body_delivered:true ~pr_body_artifact_miss_count:0
-            ~start_attempts_without_pr:0 ~conflict_noop_count:0
+            ~base_branch:None ~notified_base_branch:None ~ci_failure_count:0
+            ~session_fallback:Patch_agent.Fresh_available ~human_messages:[]
+            ~inflight_human_messages:[] ~ci_checks:[] ~merge_ready:false
+            ~mergeability_unknown:false ~merge_queue_required:false
+            ~merge_queue_entry:None ~is_draft:false ~pr_body_delivered:true
+            ~pr_body_artifact_miss_count:0 ~start_attempts_without_pr:0
             ~no_commits_push_count:0 ~context_exhaustion_count:0
-            ~push_failure_count:0 ~rebase_failure_count:0
-            ~branch_rebased_onto:None ~branch_rebased_onto_sha:None
             ~merge_commit_sha:None ~base_contains_merged_siblings:true
-            ~anchor_history:Onton_core.Anchor_history.empty
             ~checks_passing:false ~current_op:None
             ~current_op_state:Patch_agent.Queued ~current_message_id:None
             ~generation:0 ~worktree_path:None ~branch_blocked:false
@@ -1665,19 +1634,15 @@ let () =
           Patch_agent.restore ~patch_id:pid ~branch
             ~pr_status:(Patch_pr_status.Present (Pr_number.of_int 42))
             ~has_session:true ~busy:false ~merged:false ~queue:[]
-            ~satisfies:false ~changed:false ~has_conflict:false
-            ~base_branch:(Some main) ~notified_base_branch:(Some main)
-            ~ci_failure_count:0 ~session_fallback:Patch_agent.Fresh_available
-            ~human_messages:[] ~inflight_human_messages:[] ~ci_checks:[]
-            ~merge_ready:false ~mergeability_unknown:false
-            ~merge_queue_required:false ~merge_queue_entry:None ~is_draft:false
-            ~pr_body_delivered:true ~pr_body_artifact_miss_count:0
-            ~start_attempts_without_pr:0 ~conflict_noop_count:0
+            ~satisfies:false ~changed:false ~base_branch:(Some main)
+            ~notified_base_branch:(Some main) ~ci_failure_count:0
+            ~session_fallback:Patch_agent.Fresh_available ~human_messages:[]
+            ~inflight_human_messages:[] ~ci_checks:[] ~merge_ready:false
+            ~mergeability_unknown:false ~merge_queue_required:false
+            ~merge_queue_entry:None ~is_draft:false ~pr_body_delivered:true
+            ~pr_body_artifact_miss_count:0 ~start_attempts_without_pr:0
             ~no_commits_push_count:0 ~context_exhaustion_count:0
-            ~push_failure_count:0 ~rebase_failure_count:0
-            ~branch_rebased_onto:None ~branch_rebased_onto_sha:None
             ~merge_commit_sha:None ~base_contains_merged_siblings:true
-            ~anchor_history:Onton_core.Anchor_history.empty
             ~checks_passing:false ~current_op:None
             ~current_op_state:Patch_agent.Queued ~current_message_id:None
             ~generation:0 ~worktree_path:None ~branch_blocked:false
@@ -2228,10 +2193,10 @@ let () =
             && Pr_number.equal merge_pr_number pr_number
             && Patch_controller.equal_merge_action action
                  (Patch_controller.Dequeue entry.Pr_state.id)
-            && List.equal String.equal
+            && List.mem
                  (Patch_controller.dequeue_merge_queue_reasons agent
                     ~main_branch:main ~entry_id:entry.id)
-                 [ "merge conflict" ]
+                 "merge conflict" ~equal:String.equal
             && (Orchestrator.agent orch pid).Patch_agent.automerge_inflight
         | [ Patch_controller.Git_integrate _ ] | [] | _ :: _ :: _ -> false)
   in

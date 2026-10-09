@@ -551,13 +551,20 @@ let prop_drift_silent_on_match =
 
 let prop_drift_silent_on_none =
   QCheck2.Test.make
-    ~name:"drift: silent when branch_rebased_onto = None (pre-start)" ~count:1
-    QCheck2.Gen.(return ())
-    (fun () ->
+    ~name:
+      "drift: unknown base requires reconciliation only for published branches"
+    ~count:100 QCheck2.Gen.bool (fun has_pr ->
       let v =
-        mk_view ~id:(pid "p1") ~base_branch:main_br ~branch_rebased_onto:None ()
+        mk_view ~id:(pid "p1") ~base_branch:main_br ~branch_rebased_onto:None
+          ~has_pr ()
       in
-      List.is_empty (Reconciler.detect_notified_base_drift [ v ]))
+      match Reconciler.detect_notified_base_drift [ v ] with
+      | [] -> not has_pr
+      | [ Reconciler.Enqueue_rebase id ] ->
+          has_pr && Types.Patch_id.equal id v.id
+      | [ (Reconciler.Mark_merged _ | Reconciler.Start_operation _) ]
+      | _ :: _ :: _ ->
+          false)
 
 let prop_drift_silent_on_merged =
   QCheck2.Test.make ~name:"drift: silent on merged patches" ~count:1

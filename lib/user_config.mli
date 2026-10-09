@@ -31,8 +31,11 @@ val run_hook :
     or [dune build] spawning many compilers) from exhausting the shared host FD
     table — see issue #209.
 
-    A wall-clock [timeout] bounds the hook; on expiry the child is sent
-    [SIGKILL] and an [Error] is returned carrying any captured output.
+    A wall-clock [timeout] bounds the hook. All outcomes use the process-tree
+    supervisor: surviving group members are terminated and reaped before return,
+    including after a successful hook exits. Timeout returns [Error] with
+    captured output; external cancellation propagates after cleanup. A missing
+    supervisor prevents the hook from executing.
 
     Defaults (override per call or via env):
     - [timeout]: 600.0 seconds ([ONTON_HOOK_TIMEOUT])

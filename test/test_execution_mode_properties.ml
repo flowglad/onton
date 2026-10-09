@@ -75,15 +75,23 @@ let property name gen f =
   QCheck2.Test.make ~name ~count:500 gen (fun input ->
       try f input with _ -> false)
 
-let ready_agent () =
+let ready_agent_without_publication () =
   let a = Patch_agent.create ~branch:(branch 2) (id 2) in
-  Patch_agent.mark_branch_published a |> fun a ->
   Patch_agent.set_pr_body_delivered a true |> fun a ->
   Patch_agent.set_automerge_enabled a true |> fun a ->
   Patch_agent.set_base_branch a (branch 1) |> fun a ->
-  Patch_agent.set_branch_rebased_onto a (branch 1) |> fun a ->
   Patch_agent.set_head_oid a (Some "checked-head") |> fun a ->
   Patch_agent.set_checks_passing a true
+
+let ready_agent () =
+  let module F = Onton_core_test_support.Publication_fixture in
+  let candidate = F.sha "checked-head" in
+  ready_agent_without_publication ()
+  |> F.reconciled_agent ~base:(branch 1)
+  |> F.agent ~candidate
+  |> fun a ->
+  Patch_agent.set_head_oid a (Some candidate) |> fun a ->
+  Patch_agent.observe_publication_head a (Some candidate)
 
 let integration a =
   Execution_mode.integration_ready mode ~construction_open:true
@@ -96,7 +104,9 @@ let tests =
       (fun steps ->
         let root =
           Patch_agent.create ~branch:(branch 1) (id 1)
-          |> Patch_agent.mark_branch_published
+          |> Onton_core_test_support.Publication_fixture.agent
+               ~candidate:
+                 (Onton_core_test_support.Publication_fixture.sha "root")
         in
         let _, valid =
           List.fold steps ~init:(root, true)
@@ -119,6 +129,19 @@ let tests =
                      ((not busy) && not native_stack) ))
         in
         valid);
+    property "publication bypasses PR creation only for feature descendants"
+      (G.int_range 1 4) (fun n ->
+        let module F = Onton_core_test_support.Publication_fixture in
+        let a = Patch_agent.create ~branch:(branch n) (id n) in
+        let a = F.agent ~candidate:(F.sha "published") a in
+        Bool.equal (Execution_mode.branch_only_published mode a) (n <> 1)
+        && not (Execution_mode.branch_only_published Execution_mode.mainline a));
+    property "owner publication authorizes integration without legacy marker"
+      G.unit (fun () -> integration (ready_agent ()));
+    property "feature integration requires owner publication evidence" G.unit
+      (fun () ->
+        let a = ready_agent_without_publication () in
+        (not (Patch_agent.branch_published a)) && not (integration a));
     property "publication preserves the original root regardless of ID or order"
       (G.pair (G.int_range 1 1000) (G.shuffle_list [ 0; 1; 2 ]))
       (fun (n, order) ->
@@ -220,9 +243,13 @@ let tests =
       (fun (descendants_merged, pending, body_dirty) ->
         let root =
           Patch_agent.create ~branch:(branch 1) (id 1) |> fun a ->
+          Patch_agent.set_pr_number a (Pr_number.of_int 1) |> fun a ->
           Patch_agent.set_head_oid a (Some "checked-head") |> fun a ->
           Patch_agent.set_checks_passing a true |> fun a ->
-          Patch_agent.set_pr_body_delivered a true
+          Patch_agent.set_pr_body_delivered a true |> fun a ->
+          Patch_agent.set_pr_number a (Pr_number.of_int 1) |> fun a ->
+          Patch_agent.set_base_branch a main
+          |> Onton_core_test_support.Forge_fixture.readiness_agent
         in
         let root =
           if body_dirty then Patch_agent.request_pr_body_refresh root else root
@@ -232,19 +259,19 @@ let tests =
              ~has_merged:(fun _ -> descendants_merged)
              ~pending_integrations:pending root)
           (descendants_merged && (not pending) && not body_dirty));
-    property "feature publication defers only old or absent heads"
+    property "feature publication requires confirmed revision identity"
       (G.option G.string) (fun observed ->
+        let module F = Onton_core_test_support.Publication_fixture in
+        let candidate = F.sha "final-integration" in
+        let observed = Option.map observed ~f:F.sha in
         let a =
           ready_agent () |> fun a ->
-          Patch_agent.set_head_oid a (Some "before-first-integration")
-          |> fun a ->
-          Patch_agent.set_expected_remote_head_oid a (Some "final-integration")
+          Patch_agent.set_head_oid a (Some (F.sha "before-first-integration"))
+          |> F.agent ~candidate
         in
         Bool.equal
           (Execution_mode.observation_pending mode a observed)
-          (Option.is_none observed
-          || Option.equal String.equal observed
-               (Some "before-first-integration")));
+          (not (Option.equal String.equal observed (Some candidate))));
     property "integration branch cannot be main" G.unit (fun () ->
         Result.is_error
           (Execution_mode.validate_terminal mode
@@ -273,12 +300,13 @@ let tests =
       (G.pair G.bool G.bool) (fun (pending, settled) ->
         let a =
           ready_agent () |> fun a ->
-          Patch_agent.set_expected_remote_head_oid a
-            (if pending then Some "new-head" else None)
+          if pending then
+            let module F = Onton_core_test_support.Publication_fixture in
+            F.agent ~candidate:(F.sha "new-head") a
+          else a
         in
         let a =
-          if settled then a
-          else Patch_agent.set_branch_rebased_onto a (branch 3)
+          if settled then a else Patch_agent.set_base_branch a (branch 3)
         in
         Bool.equal (integration a) ((not pending) && settled));
     property "failure cap and toggle boundaries"

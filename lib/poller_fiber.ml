@@ -2,6 +2,7 @@
    @archlint.domain orchestrator *)
 
 open Base
+module Request_id = Session_id
 open Types
 module Forge_types = Forge
 
@@ -15,7 +16,6 @@ module Poller_env = struct
     val main_branch : Branch.t
     val poll_interval : float
     val repo_root : string
-    val find_pr_number : patch_id:Patch_id.t -> Pr_number.t option
 
     val register_pr_number :
       patch_id:Patch_id.t -> pr_number:Pr_number.t -> unit
@@ -59,6 +59,7 @@ module Make (Forge : Forge.S) (W : Worktree.S) (Env : Poller_env.S) = struct
         patch_id : Patch_id.t;
         pr_number : Pr_number.t;
         was_merged : bool;
+        requested : Patch_agent.t;
       }
 
   let poll_review_backends ~runtime ~patch_id ~findings_registry ~review_clients
@@ -116,14 +117,6 @@ module Make (Forge : Forge.S) (W : Worktree.S) (Env : Poller_env.S) = struct
                   };
                 { f with Review_service.id = key }))
 
-  (** Translate a [Forge] result into a [Poll_outcome.t]. Pure-modulo-show; the
-      boundary lets [Poll_cycle.classify] reason about timeouts the same way it
-      reasons about other failures, which is the invariant the interleaving
-      property tests exercise. *)
-  let poll_outcome_of_forge_result = function
-    | Ok pr_state -> Poll_outcome.Ok_pr_state pr_state
-    | Error err -> Forge.poll_error err
-
   let run (module StartupReconciler : STARTUP_RECONCILER) =
     let runtime = Env.runtime in
     let clock = Env.clock in
@@ -139,7 +132,9 @@ module Make (Forge : Forge.S) (W : Worktree.S) (Env : Poller_env.S) = struct
         Branch_reconcile_executor.make_io ~process_mgr ~clock ~path:repo_root
       in
       match
-        Branch_reconcile_executor.remote_head io
+        Branch_reconcile_executor.remote_head
+          ?operation:(Branch_reconcile.operation agent.branch_reconcile)
+          io
           ~branch:(Branch.to_string agent.branch)
       with
       | Ok head -> Option.map head ~f:Branch_reconcile.Commit.to_string
@@ -148,7 +143,20 @@ module Make (Forge : Forge.S) (W : Worktree.S) (Env : Poller_env.S) = struct
             ("Remote head confirmation unavailable: " ^ reason);
           None
     in
-    let find_pr_number = Env.find_pr_number in
+    let direct_remote_base ~patch_id branch =
+      let io =
+        Branch_reconcile_executor.make_io ~process_mgr ~clock ~path:repo_root
+      in
+      match
+        Branch_reconcile_executor.remote_base io
+          ~branch:(Branch.to_string branch)
+      with
+      | Ok base -> Option.map base ~f:Branch_reconcile.Commit.to_string
+      | Error reason ->
+          Runtime_logging.log_event runtime ~patch_id
+            ("Remote base confirmation unavailable: " ^ reason);
+          None
+    in
     let register_pr_number = Env.register_pr_number in
     let unregister_pr_number = Env.unregister_pr_number in
     let branch_of = Env.branch_of in
@@ -242,7 +250,8 @@ module Make (Forge : Forge.S) (W : Worktree.S) (Env : Poller_env.S) = struct
             |> List.filter ~f:(fun a ->
                 Orchestrator.is_feature_descendant snap.orchestrator
                   a.Patch_agent.patch_id
-                && a.branch_published && not a.merged))
+                && Patch_agent.branch_published a
+                && not a.merged))
       in
       Eio.Fiber.List.iter ~max_fibers:16
         (fun (a : Patch_agent.t) ->
@@ -253,7 +262,7 @@ module Make (Forge : Forge.S) (W : Worktree.S) (Env : Poller_env.S) = struct
                 Some (state, cached)
             | None | Some _ -> None
           in
-          let expected_head = a.Patch_agent.expected_remote_head_oid in
+          let expected_head = Patch_agent.expected_remote_head_oid a in
           let schedule = Option.map previous ~f:snd in
           let checks =
             Option.bind previous ~f:fst
@@ -290,7 +299,11 @@ module Make (Forge : Forge.S) (W : Worktree.S) (Env : Poller_env.S) = struct
                         expected_head;
                       } );
                   Runtime.update_orchestrator runtime (fun orch ->
-                      Orchestrator.set_checks_passing orch a.patch_id false);
+                      match Orchestrator.find_agent orch a.patch_id with
+                      | Some current
+                        when Poll_cycle.same_context ~requested:a ~current ->
+                          Orchestrator.set_checks_passing orch a.patch_id false
+                      | None | Some _ -> orch);
                   Runtime_logging.log_event runtime ~patch_id:a.patch_id
                     ("Branch checks unavailable — " ^ Forge.show_error e)
               | Ok observed ->
@@ -313,9 +326,21 @@ module Make (Forge : Forge.S) (W : Worktree.S) (Env : Poller_env.S) = struct
                         observed_head = Some observed.head_sha;
                         expected_head;
                       } );
+                  let confirmed_remote_head =
+                    if
+                      Patch_decision.defer_remote_head a
+                        (Some observed.head_sha)
+                    then direct_remote_head a
+                    else None
+                  in
                   Runtime.update_orchestrator runtime (fun orch ->
-                      Patch_controller.apply_branch_observation orch a.patch_id
-                        ~head_sha:observed.head_sha ~checks:observed.checks)))
+                      match Orchestrator.find_agent orch a.patch_id with
+                      | Some current
+                        when Poll_cycle.same_context ~requested:a ~current ->
+                          Patch_controller.apply_branch_observation
+                            ?confirmed_remote_head orch a.patch_id
+                            ~head_sha:observed.head_sha ~checks:observed.checks
+                      | None | Some _ -> orch)))
         branch_intents;
       let intents =
         Runtime.read runtime (fun snap ->
@@ -334,7 +359,7 @@ module Make (Forge : Forge.S) (W : Worktree.S) (Env : Poller_env.S) = struct
                   Patch_agent.has_pr agent
                   && ((not agent.Patch_agent.merged) || needs_merge_sha)
                 then
-                  match find_pr_number ~patch_id:agent.Patch_agent.patch_id with
+                  match Patch_agent.pr_number agent with
                   | None -> Some (Skip_no_pr agent.Patch_agent.patch_id)
                   | Some pr_number ->
                       Some
@@ -343,6 +368,7 @@ module Make (Forge : Forge.S) (W : Worktree.S) (Env : Poller_env.S) = struct
                              patch_id = agent.Patch_agent.patch_id;
                              pr_number;
                              was_merged = agent.Patch_agent.merged;
+                             requested = agent;
                            })
                 else None))
       in
@@ -352,10 +378,10 @@ module Make (Forge : Forge.S) (W : Worktree.S) (Env : Poller_env.S) = struct
           | Skip_no_pr patch_id ->
               if mark_skip_logged patch_id then
                 Runtime_logging.log_event runtime ~patch_id
-                  "Skipping poll — no PR number registered";
+                  "Skipping poll — PR identity missing";
               None
-          | Poll { patch_id; pr_number; was_merged } ->
-              Some (patch_id, pr_number, was_merged))
+          | Poll { patch_id; pr_number; was_merged; requested } ->
+              Some (patch_id, pr_number, was_merged, requested))
       in
       (* Phase 1a: parallel per-patch PR state fetch.
 
@@ -363,33 +389,97 @@ module Make (Forge : Forge.S) (W : Worktree.S) (Env : Poller_env.S) = struct
        is wedged in [SYN_SENT], the forge returns [Timeout] after the default
        GitHub request timeout — and every other patch's fiber proceeds
        independently. *)
+      let requests =
+        List.map poll_intents
+          ~f:(fun (patch_id, pr_number, _was_merged, requested) ->
+            let request =
+              Forge_observation.{ id = Request_id.mint (); pr_number }
+            in
+            (patch_id, requested, request))
+      in
+      let checkpoint = Project_store.snapshot_path project_name in
+      Project_store.ensure_dir (Stdlib.Filename.dirname checkpoint);
+      let requests =
+        match
+          Forge_poll.prepare ~runtime
+            ~persist:(Persistence.save_snapshot ~path:checkpoint)
+            requests
+        with
+        | Ok requests -> requests
+        | Error reason ->
+            Runtime_logging.log_event runtime
+              ("Forge request checkpoint failed: " ^ reason);
+            []
+      in
       let outcomes =
         Eio.Fiber.List.map ~max_fibers:16
-          (fun (patch_id, pr_number, was_merged) ->
-            let outcome =
-              poll_outcome_of_forge_result (Forge.pr_state pr_number)
-            in
-            (patch_id, pr_number, was_merged, outcome))
-          poll_intents
+          (fun ({ Forge_poll.patch_id; requested; ticket } :
+                 Forge_poll.prepared) ->
+            let request = ticket.Forge_observation.request in
+            let observation = Forge_poll.read (module Forge) request in
+            ( patch_id,
+              request.pr_number,
+              requested.Patch_agent.merged,
+              requested,
+              request,
+              ticket,
+              observation ))
+          requests
       in
       (* Phase 1b: pure classification. *)
       let plans =
-        List.map outcomes ~f:(fun (patch_id, pr_number, was_merged, outcome) ->
+        List.map outcomes
+          ~f:(fun
+              ( patch_id,
+                pr_number,
+                was_merged,
+                requested,
+                request,
+                ticket,
+                observation )
+            ->
             let cls =
-              Poll_cycle.classify { patch_id; pr_number; was_merged; outcome }
+              match
+                Forge_observation.validate ~expected:request observation
+              with
+              | Ok outcome ->
+                  Poll_cycle.classify
+                    { patch_id; pr_number; was_merged; outcome }
+              | Error reason ->
+                  Poll_cycle.Log_error
+                    {
+                      message =
+                        Printf.sprintf "Forge observation %s waiting: %s"
+                          request.id reason;
+                    }
             in
-            (patch_id, pr_number, cls))
+            (patch_id, pr_number, requested, request, ticket, observation, cls))
       in
       (* Phase 1c: per-patch effectful tail. Builds observations from
        [Apply_pr_state] plans, handles [Rediscover_pr] / [Skip_fork] /
        [Log_error]. *)
       let observations =
-        List.filter_map plans ~f:(fun (patch_id, pr_number, cls) ->
+        List.filter_map plans
+          ~f:(fun
+              (patch_id, pr_number, requested, request, ticket, envelope, cls)
+            ->
+            let consume_without_branch_updates () =
+              Runtime.update_orchestrator runtime (fun orch ->
+                  match Orchestrator.find_agent orch patch_id with
+                  | Some current
+                    when Poll_cycle.same_context ~requested ~current ->
+                      fst
+                        (Orchestrator.accept_forge_observation orch patch_id
+                           ~ticket ~confirmed_head:None envelope)
+                  | None | Some _ -> orch)
+            in
             match cls with
             | Poll_cycle.Log_error { message } ->
+                consume_without_branch_updates ();
                 Runtime_logging.log_event runtime ~patch_id message;
                 None
             | Poll_cycle.Skip_fork _ ->
+                consume_without_branch_updates ();
                 if mark_skip_logged patch_id then
                   Runtime_logging.log_event runtime ~patch_id
                     (Printf.sprintf
@@ -437,28 +527,57 @@ module Make (Forge : Forge.S) (W : Worktree.S) (Env : Poller_env.S) = struct
                       result = discover_result;
                     }
                 in
-                (match cls with
-                | Rediscover_decision.Switch_to_pr
-                    { new_pr; base_branch; merged } ->
-                    Runtime_logging.log_event runtime ~patch_id
-                      (Printf.sprintf "Switched to PR #%d"
-                         (Pr_number.to_int new_pr));
-                    register_pr_number ~patch_id ~pr_number:new_pr;
-                    (* Recovery transition: clear the vanish-log dedup so a
+                let applied =
+                  Runtime.update_orchestrator_returning runtime (fun orch ->
+                      match Orchestrator.find_agent orch patch_id with
+                      | Some current
+                        when Poll_cycle.same_context ~requested ~current -> (
+                          let orch, accepted =
+                            Orchestrator.accept_forge_observation orch patch_id
+                              ~ticket ~confirmed_head:None envelope
+                          in
+                          match accepted with
+                          | Error _ -> (orch, false)
+                          | Ok _ ->
+                              let next =
+                                match cls with
+                                | Rediscover_decision.Switch_to_pr
+                                    { new_pr; base_branch; merged } ->
+                                    Patch_controller.apply_replacement_pr orch
+                                      patch_id ~pr_number:new_pr ~base_branch
+                                      ~merged
+                                | Rediscover_decision.Clear_pr_for_recreate ->
+                                    Orchestrator.clear_pr orch patch_id
+                                | Rediscover_decision.Mark_pr_missing ->
+                                    Orchestrator.mark_pr_missing orch patch_id
+                                | Rediscover_decision.Log_error _ -> orch
+                              in
+                              (next, true))
+                      | Some _ | None -> (orch, false))
+                in
+                (if not applied then
+                   Runtime_logging.log_event runtime ~patch_id
+                     (Printf.sprintf
+                        "Discarded PR rediscovery %s: local context changed"
+                        request.id)
+                 else
+                   match cls with
+                   | Rediscover_decision.Switch_to_pr
+                       { new_pr; base_branch = _; merged = _ } ->
+                       Runtime_logging.log_event runtime ~patch_id
+                         (Printf.sprintf "Switched to PR #%d"
+                            (Pr_number.to_int new_pr));
+                       register_pr_number ~patch_id ~pr_number:new_pr;
+                       (* Recovery transition: clear the vanish-log dedup so a
                        future vanish/reopen/vanish cycle re-logs once. *)
-                    clear_vanish_logged patch_id;
-                    Runtime.update_orchestrator runtime (fun orch ->
-                        Patch_controller.apply_replacement_pr orch patch_id
-                          ~pr_number:new_pr ~base_branch ~merged)
-                | Rediscover_decision.Clear_pr_for_recreate ->
-                    Runtime_logging.log_event runtime ~patch_id
-                      "No open PR found — cleared stale PR state, will create \
-                       on next session";
-                    unregister_pr_number ~patch_id;
-                    Runtime.update_orchestrator runtime (fun orch ->
-                        Orchestrator.clear_pr orch patch_id)
-                | Rediscover_decision.Mark_pr_missing ->
-                    (* Ad-hoc PR vanished from remote. Surface for
+                       clear_vanish_logged patch_id
+                   | Rediscover_decision.Clear_pr_for_recreate ->
+                       Runtime_logging.log_event runtime ~patch_id
+                         "No open PR found — cleared stale PR state, will \
+                          create on next session";
+                       unregister_pr_number ~patch_id
+                   | Rediscover_decision.Mark_pr_missing -> (
+                       (* Ad-hoc PR vanished from remote. Surface for
                        intervention; keep the external pr_number registration
                        so a re-opened PR is discovered on the next poll. The
                        operator's [-N] clears the registration via
@@ -468,41 +587,37 @@ module Make (Forge : Forge.S) (W : Worktree.S) (Env : Poller_env.S) = struct
                        [Rediscover_decision.classify_vanish_log] decision so
                        the activity log stays clean while the agent remains
                        Missing across many poll cycles. *)
-                    (match
-                       Rediscover_decision.classify_vanish_log cls
-                         ~already_logged:(vanish_already_logged patch_id)
-                     with
-                    | Rediscover_decision.Log_emit ->
-                        Runtime_logging.log_event runtime ~patch_id
-                          (Printf.sprintf
-                             "PR #%d vanished from remote — marking agent for \
-                              intervention; use -%d to remove if intentional"
-                             (Pr_number.to_int pr_number)
-                             (Pr_number.to_int pr_number));
-                        mark_vanish_logged patch_id
-                    | Rediscover_decision.Log_skip -> ());
-                    Runtime.update_orchestrator runtime (fun orch ->
-                        Orchestrator.mark_pr_missing orch patch_id)
-                | Rediscover_decision.Log_error { message } ->
-                    Runtime_logging.log_event runtime ~patch_id
-                      (Printf.sprintf "PR re-discovery failed — %s" message));
+                       match
+                         Rediscover_decision.classify_vanish_log cls
+                           ~already_logged:(vanish_already_logged patch_id)
+                       with
+                       | Rediscover_decision.Log_emit ->
+                           Runtime_logging.log_event runtime ~patch_id
+                             (Printf.sprintf
+                                "PR #%d vanished from remote — marking agent \
+                                 for intervention; use -%d to remove if \
+                                 intentional"
+                                (Pr_number.to_int pr_number)
+                                (Pr_number.to_int pr_number));
+                           mark_vanish_logged patch_id
+                       | Rediscover_decision.Log_skip -> ())
+                   | Rediscover_decision.Log_error { message } ->
+                       Runtime_logging.log_event runtime ~patch_id
+                         (Printf.sprintf "PR re-discovery failed — %s" message));
                 None
             | Poll_cycle.Apply_pr_state
                 { pr_state; poll_result; ci_checks_truncated } ->
                 let confirmed_remote_head =
-                  let mode, agent =
+                  let agent =
                     Runtime.read runtime (fun snap ->
-                        let orch = snap.Runtime.orchestrator in
-                        ( Orchestrator.execution_mode orch,
-                          Orchestrator.find_agent orch patch_id ))
+                        Orchestrator.find_agent snap.Runtime.orchestrator
+                          patch_id)
                   in
-                  Option.bind agent ~f:(fun agent ->
-                      if
-                        Poller.has_conflict poll_result
-                        || Execution_mode.observation_pending mode agent
-                             poll_result.Poller.head_oid
-                      then direct_remote_head agent
-                      else None)
+                  Option.bind agent ~f:direct_remote_head
+                in
+                let confirmed_remote_base =
+                  Option.bind pr_state.Pr_state.base_branch
+                    ~f:(direct_remote_base ~patch_id)
                 in
                 (* Augment with findings from every configured review backend.
                  Failures inside [poll_review_backends] are logged but
@@ -611,7 +726,12 @@ module Make (Forge : Forge.S) (W : Worktree.S) (Env : Poller_env.S) = struct
                 Some
                   ( patch_id,
                     observation,
+                    requested,
+                    request,
+                    ticket,
+                    envelope,
                     confirmed_remote_head,
+                    confirmed_remote_base,
                     merge_queue_ejection_confirmed,
                     failed_ci,
                     ci_checks_truncated ))
@@ -621,7 +741,8 @@ module Make (Forge : Forge.S) (W : Worktree.S) (Env : Poller_env.S) = struct
        poll results are applied but the reconciler hasn't run yet. *)
       let terminal_patch_ids =
         let patch_ids =
-          List.filter_map observations ~f:(fun (patch_id, obs, _, _, _, _) ->
+          List.filter_map observations
+            ~f:(fun (patch_id, obs, _, _, _, _, _, _, _, _, _) ->
               if obs.Patch_controller.poll_result.merged then Some patch_id
               else None)
           |> List.dedup_and_sort ~compare:Patch_id.compare
@@ -653,38 +774,102 @@ module Make (Forge : Forge.S) (W : Worktree.S) (Env : Poller_env.S) = struct
                     (orch, poll_events, sides)
                     ( patch_id,
                       obs,
+                      requested,
+                      request,
+                      ticket,
+                      envelope,
                       confirmed_remote_head,
+                      confirmed_remote_base,
                       merge_queue_ejection_confirmed,
                       failed_ci,
                       ci_truncated )
                   ->
                   match Orchestrator.find_agent orch patch_id with
                   | None -> (orch, poll_events, sides)
-                  | Some agent_before ->
-                      let orch, log_entries, newly_blocked =
-                        Patch_controller.apply_poll_result
-                          ?confirmed_remote_head ~merge_queue_ejection_confirmed
-                          orch patch_id obs
+                  | Some current
+                    when not (Poll_cycle.same_context ~requested ~current) ->
+                      let message =
+                        "Discarded in-flight PR observation after branch \
+                         context changed"
                       in
-                      let agent_after = Orchestrator.agent orch patch_id in
-                      let log_messages =
-                        List.map log_entries
-                          ~f:(fun (e : Patch_controller.poll_log_entry) ->
-                            e.Patch_controller.message)
-                      in
+                      let entry = Patch_controller.{ patch_id; message } in
                       ( orch,
                         ( patch_id,
+                          request,
                           obs.Patch_controller.poll_result,
-                          agent_before,
-                          agent_after,
-                          log_messages )
+                          current,
+                          current,
+                          [ message ] )
                         :: poll_events,
-                        ( patch_id,
-                          log_entries,
-                          newly_blocked,
-                          failed_ci,
-                          ci_truncated )
-                        :: sides ))
+                        (patch_id, [ entry ], false, [], false) :: sides )
+                  | Some agent_before -> (
+                      let orch, accepted =
+                        Orchestrator.accept_forge_observation orch patch_id
+                          ~ticket ?confirmed_base:confirmed_remote_base
+                          ~confirmed_head:confirmed_remote_head envelope
+                      in
+                      let orch, accepted =
+                        match accepted with
+                        | Error _ -> (orch, accepted)
+                        | Ok outcome ->
+                            let owner =
+                              (Orchestrator.agent orch patch_id)
+                                .Patch_agent.branch_reconcile
+                            in
+                            if
+                              Forge_observation.can_apply
+                                (Branch_reconcile.forge_observations owner)
+                                outcome
+                            then (orch, accepted)
+                            else
+                              ( Orchestrator.defer_forge_revision_pair orch
+                                  patch_id,
+                                Error "unconfirmed_forge_revision_pair" )
+                      in
+                      match accepted with
+                      | Error reason ->
+                          let message =
+                            "Discarded forge observation: " ^ reason
+                          in
+                          let entry = Patch_controller.{ message; patch_id } in
+                          let agent_after = Orchestrator.agent orch patch_id in
+                          ( orch,
+                            ( patch_id,
+                              request,
+                              obs.Patch_controller.poll_result,
+                              agent_before,
+                              agent_after,
+                              [ message ] )
+                            :: poll_events,
+                            (patch_id, [ entry ], false, [], false) :: sides )
+                      | Ok _ ->
+                          let orch, log_entries, newly_blocked =
+                            Patch_controller.apply_poll_result
+                              ~previous_conflict:
+                                (Patch_agent.has_conflict agent_before)
+                              ?confirmed_remote_head
+                              ~merge_queue_ejection_confirmed orch patch_id obs
+                          in
+                          let agent_after = Orchestrator.agent orch patch_id in
+                          let log_messages =
+                            List.map log_entries
+                              ~f:(fun (e : Patch_controller.poll_log_entry) ->
+                                e.Patch_controller.message)
+                          in
+                          ( orch,
+                            ( patch_id,
+                              request,
+                              obs.Patch_controller.poll_result,
+                              agent_before,
+                              agent_after,
+                              log_messages )
+                            :: poll_events,
+                            ( patch_id,
+                              log_entries,
+                              newly_blocked,
+                              failed_ci,
+                              ci_truncated )
+                            :: sides )))
             in
             (* Recompute the base-containment cache for every agent: does each
                patch's resolved base branch already contain the merge commit
@@ -760,7 +945,9 @@ module Make (Forge : Forge.S) (W : Worktree.S) (Env : Poller_env.S) = struct
                   Reconciler.
                     {
                       id = a.Patch_agent.patch_id;
-                      has_pr = Patch_agent.has_pr a || a.branch_published;
+                      has_pr =
+                        Patch_agent.has_pr a
+                        || Orchestrator.branch_only_published orch a.patch_id;
                       merged = a.Patch_agent.merged;
                       busy = a.Patch_agent.busy;
                       needs_intervention = Patch_agent.needs_intervention a;
@@ -769,7 +956,7 @@ module Make (Forge : Forge.S) (W : Worktree.S) (Env : Poller_env.S) = struct
                       queue = a.Patch_agent.queue;
                       base_branch =
                         Option.value a.Patch_agent.base_branch ~default:main;
-                      branch_rebased_onto = a.Patch_agent.branch_rebased_onto;
+                      branch_rebased_onto = Patch_agent.branch_rebased_onto a;
                       base_contains_merged_siblings =
                         a.Patch_agent.base_contains_merged_siblings;
                       sibling_rebase_target;
@@ -805,9 +992,10 @@ module Make (Forge : Forge.S) (W : Worktree.S) (Env : Poller_env.S) = struct
       in
       (* Phase 3: Side effects — outside the lock *)
       List.iter poll_events
-        ~f:(fun (patch_id, poll_result, agent_before, agent_after, logs) ->
-          Event_log.log_poll event_log ~patch_id ~poll_result ~agent_before
-            ~agent_after ~logs);
+        ~f:(fun
+            (patch_id, request, poll_result, agent_before, agent_after, logs) ->
+          Event_log.log_poll ~request event_log ~patch_id ~poll_result
+            ~agent_before ~agent_after ~logs);
       List.iter per_patch_sides
         ~f:(fun
             (patch_id, log_entries, newly_blocked, _failed_ci, ci_truncated) ->

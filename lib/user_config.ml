@@ -102,51 +102,25 @@ let run_hook ~process_mgr ~clock ~script ~cwd ~env ?(timeout : float option)
   in
   let cmd = wrap_with_ulimit ~fd_limit script in
   try
-    Eio.Switch.run (fun sw ->
-        let child =
-          Eio.Process.spawn ~sw process_mgr ~cwd ~env:env_array
-            ~stdout:(Eio.Flow.buffer_sink stdout_buf)
-            ~stderr:(Eio.Flow.buffer_sink stderr_buf)
-            cmd
-        in
-        (* [Fun.protect] guarantees SIGKILL + await run on *every* exit path,
-           including cancellation from the outer fiber while we're blocked in
-           [Eio.Process.await] on the normal-exit branch. Signalling an
-           already-exited child is harmless (ESRCH), and [Eio.Process.await]
-           is idempotent, so the cleanup is safe even when the timeout arm
-           already handled things. SIGKILL only reaches the direct child
-           ([/bin/sh -c]); grandchildren from [npm install]/etc may outlive
-           the hook — killing the whole process tree needs [setpgid] or an
-           Eio fork-action pre-exec, both out of scope here. *)
-        Stdlib.Fun.protect
-          ~finally:(fun () ->
-            (try Eio.Process.signal child Stdlib.Sys.sigkill with _ -> ());
-            try ignore (Eio.Process.await child) with _ -> ())
-          (fun () ->
-            match
-              Eio.Time.with_timeout clock timeout (fun () ->
-                  Ok (Eio.Process.await child))
-            with
-            | Ok (`Exited 0) -> Ok ()
-            | Ok (`Exited code) ->
-                build_error
-                  ~status_msg:(Printf.sprintf "hook exited with code %d" code)
-                  stdout_buf stderr_buf
-            | Ok (`Signaled signal) ->
-                build_error
-                  ~status_msg:(Printf.sprintf "hook killed by signal %d" signal)
-                  stdout_buf stderr_buf
-            | Error `Timeout ->
-                build_error
-                  ~status_msg:
-                    (Printf.sprintf
-                       "hook timed out after %.1fs (ONTON_HOOK_TIMEOUT)" timeout)
-                  stdout_buf stderr_buf))
+    match
+      Eio.Time.with_timeout clock timeout (fun () ->
+          Ok
+            (Process_tree.run ~process_mgr ~clock ~env:env_array ~cwd
+               ~stdout:stdout_buf ~stderr:stderr_buf cmd))
+    with
+    | Ok (0, _, _) -> Ok ()
+    | Ok (code, _, _) ->
+        build_error
+          ~status_msg:(Printf.sprintf "hook exited with code %d" code)
+          stdout_buf stderr_buf
+    | Error `Timeout ->
+        build_error
+          ~status_msg:
+            (Printf.sprintf "hook timed out after %.1fs (ONTON_HOOK_TIMEOUT)"
+               timeout)
+          stdout_buf stderr_buf
   with
-  | Eio.Cancel.Cancelled _ as exn ->
-      (* Cancellation must propagate to the caller — never format it as a
-         hook failure. See Eio.Cancel docs. *)
-      raise exn
+  | exn when Process_tree.has_cancellation exn -> raise exn
   | exn ->
       build_error
         ~status_msg:(Stdlib.Printexc.to_string exn)

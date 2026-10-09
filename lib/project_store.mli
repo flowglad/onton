@@ -13,6 +13,10 @@ val slugify : string -> string
 val project_dir : string -> string
 (** Absolute path to a project's data directory. *)
 
+val lifecycle_dir : unit -> string
+(** Private registration locks and retirement journals, outside project
+    directories so their lock inodes survive project removal and recreation. *)
+
 val snapshot_path : string -> string
 (** Path to the project's persisted snapshot JSON. *)
 
@@ -93,10 +97,13 @@ val save_config :
   unit ->
   unit
 (** Persist project config to the data directory. Creates the directory if
-    needed. *)
+    needed. Production callers hold registration and project ownership through
+    resolution, configuration writes and startup; this function does not acquire
+    or release the caller's process-scoped locks. *)
 
 val load_config : project_name:string -> (stored_config, string) result
-(** Load a previously saved project config. *)
+(** Resolve the storage alias and verify the decoded name belongs to that same
+    directory. The returned name preserves the exact persisted identity. *)
 
 val save_gameplan_source : project_name:string -> source_path:string -> unit
 (** Copy the gameplan file into the project data directory. Detects [.yaml],

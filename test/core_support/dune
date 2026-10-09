@@ -1,0 +1,5 @@
+(library
+ (name onton_core_test_support)
+ (libraries onton_core base qcheck-core)
+ (ocamlopt_flags (:standard -w -40-42))
+ (ocamlc_flags (:standard -w -40-42)))

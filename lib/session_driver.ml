@@ -163,7 +163,7 @@ module Make (W : Worktree.S) (Env : ENV) = struct
 
   module WS = Worktree_setup.Make (W) (Env)
 
-  let publish_completion ~write_owner ~patch_id ~(agent : Patch_agent.t) ~path
+  let publish_completion ~write_owner ~patch_id ~(agent : Patch_agent.t) ~path:_
       completion =
     let base, policy =
       Runtime.read Env.runtime (fun snap ->
@@ -183,9 +183,7 @@ module Make (W : Worktree.S) (Env : ENV) = struct
       Persistence.save_snapshot
         ~path:(Project_store.snapshot_path Env.project_name)
     in
-    let execute =
-      W.reconcile ~path ~project_name:Env.project_name ~branch:agent.branch
-    in
+    let execute = WS.execute_reconciliation ~patch_id in
     let now () = Eio.Time.now Env.clock in
     let outcome =
       Branch_reconcile_runner.run_owned ~owner:write_owner ~persist ~now
@@ -246,22 +244,24 @@ module Make (W : Worktree.S) (Env : ENV) = struct
              ~guidance:agent.inflight_human_messages
              ~publication:agent.branch_reconcile)
     with
-    | Some completion -> (
-        match WS.ensure_worktree ~patch_id ~agent () with
-        | Worktree_setup.Missing | Worktree_setup.Refused ->
-            make_run_result `Retry_push []
-        | Worktree_setup.Path path ->
-            let disposition =
-              match
-                publish_completion ~write_owner ~patch_id ~agent ~path
-                  completion
-              with
-              | `Published -> `Ok
-              | `No_work -> `No_commits
-              | `Pending -> `Retry_push
-            in
-            make_run_result ~turn_accepted:completion.turn_accepted disposition
-              [])
+    | Some completion ->
+        (* Completed implementation resumes its captured publication. Replacing
+           that operation with provisioning would discard its fixed point and
+           could publish the same completed turn twice. The owned publication
+           executor performs any necessary checkout checks. *)
+        let path =
+          Option.value agent.worktree_path
+            ~default:(Worktree.worktree_dir ~project_name ~patch_id)
+        in
+        let disposition =
+          match
+            publish_completion ~write_owner ~patch_id ~agent ~path completion
+          with
+          | `Published -> `Ok
+          | `No_work -> `No_commits
+          | `Pending -> `Retry_push
+        in
+        make_run_result ~turn_accepted:completion.turn_accepted disposition []
     | None -> (
         match session_mode agent with
         | `Give_up ->
@@ -278,13 +278,8 @@ module Make (W : Worktree.S) (Env : ENV) = struct
               | `Resume id -> (Some id, false)
               | `Fresh -> (None, true)
             in
-            match WS.ensure_worktree ~patch_id ~agent () with
-            | Worktree_setup.Missing ->
-                Runtime.update_orchestrator runtime (fun orch ->
-                    Orchestrator.apply_session_result orch patch_id
-                      Orchestrator.Session_worktree_missing);
-                make_run_result `Failed []
-            | Worktree_setup.Refused -> make_run_result `Failed []
+            match WS.ensure_owned ~owner:write_owner () with
+            | Worktree_setup.Unavailable _ -> make_run_result `Failed []
             | Worktree_setup.Path worktree_path ->
                 let cwd = Eio.Path.(fs / worktree_path) in
                 let pre_session_branch_sha =
@@ -902,8 +897,6 @@ module Make (W : Worktree.S) (Env : ENV) = struct
                         | Orchestrator.Session_timed_out _
                         | Orchestrator.Session_failed _
                         | Orchestrator.Session_give_up
-                        | Orchestrator.Session_worktree_missing
-                        | Orchestrator.Session_push_failed _
                         | Orchestrator.Session_no_commits
                         | Orchestrator.Session_context_exhausted ->
                             subkind
@@ -1087,8 +1080,6 @@ module Make (W : Worktree.S) (Env : ENV) = struct
                           | Orchestrator.Session_failed _
                           | Orchestrator.Session_wontdo _
                           | Orchestrator.Session_give_up
-                          | Orchestrator.Session_worktree_missing
-                          | Orchestrator.Session_push_failed _
                           | Orchestrator.Session_context_exhausted ->
                               combined
                         in
@@ -1098,12 +1089,6 @@ module Make (W : Worktree.S) (Env : ENV) = struct
                               match publication with
                               | `Pending -> `Retry_push
                               | `Published | `No_work -> user_result)
-                          | Orchestrator.Session_push_failed _ ->
-                              (* LLM session ran fine but commits didn't ship because
-                         push failed — signal retry so the Respond path uses
-                         Respond_retry_push (clean complete) and the reconciler
-                         re-enqueues the operation naturally. *)
-                              `Retry_push
                           | Orchestrator.Session_no_commits -> `No_commits
                           | Orchestrator.Session_process_error _
                           | Orchestrator.Session_no_resume
@@ -1111,7 +1096,6 @@ module Make (W : Worktree.S) (Env : ENV) = struct
                           | Orchestrator.Session_failed _
                           | Orchestrator.Session_wontdo _
                           | Orchestrator.Session_give_up
-                          | Orchestrator.Session_worktree_missing
                           | Orchestrator.Session_context_exhausted ->
                               `Failed
                         in

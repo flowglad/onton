@@ -25,7 +25,8 @@ val ensure_managed_repo :
     transports mid-life, and reject an origin that does not match the requested
     forge and repository. [token] is installed as the selected forge's
     noninteractive HTTPS Git credential only after that check and before clone
-    or fetch. *)
+    or fetch. Git commands use the shared synchronous supervisor and retain
+    currently held project command guards through descendant cleanup. *)
 
 val url_scheme_of_string : string -> Onton_core.Github_target.url_scheme option
 (** Parse the persisted ["https"] / ["ssh"] form. Returns [None] for anything

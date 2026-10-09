@@ -10,7 +10,15 @@ val run_prune :
   unit ->
   int
 (** Remove stored projects whose gameplan patches are all terminal (merged or
-    closed).
+    closed) and have no unfinished reconciliation owner. Before removing data,
+    reclaim only that project's recovery namespace using captured ref tips and
+    reachability evidence from locked surviving projects. Keep required refs,
+    projects sharing an in-use repository, and managed clones still referenced
+    by another project. Probe, snapshot and inventory errors retain the data.
+    Registration and lifetime leases also exclude startup and workers that
+    bypass the exclusive supervisor lock. Eligible directories are retired by
+    atomic rename; interrupted journal cleanup cannot traverse a recreated
+    project.
 
     When [refresh] is [true], every project with at least one non-terminal patch
     (i.e. an agent with [merged = false] and a recorded PR number) is reconciled

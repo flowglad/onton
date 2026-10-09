@@ -13,11 +13,24 @@ let run ~backend ~cwd ~project_name ~patch_id ~complexity ~turn ~read_head ~now
       (None, "repair_head_probe_unavailable")
     else
       try
+        let session_uuid = Session_id.mint () in
+        Telemetry_dispatch.emit
+          (Telemetry.Event.Action
+             {
+               patch_id;
+               session_uuid = Some session_uuid;
+               payload =
+                 `Assoc
+                   [
+                     ("event_log_kind", `String "branch_repair_session_started");
+                     ("operation_id", `Int turn.Branch_reconcile.token.operation);
+                     ("command_id", `Int turn.Branch_reconcile.token.command);
+                   ];
+             });
         ( Some
             (backend.Llm_backend.run_streaming ~project_name ~cwd ~patch_id
                ~prompt:turn.Branch_reconcile.prompt ~resume_session:None
-               ~session_uuid:(Session_id.mint ()) ~complexity
-               ~on_event:(fun _ -> ())),
+               ~session_uuid ~complexity ~on_event:(fun _ -> ())),
           "" )
       with exn ->
         if Process_tree.has_cancellation exn then raise exn

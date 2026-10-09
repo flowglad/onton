@@ -483,10 +483,10 @@ let render_patch_layer ~(project_name : string) (patch : Patch.t) ?pr_number
   in
   let pr_instructions =
     (* Commit subjects are not rewritten or rejected downstream. The rebase
-       subject filter in [Worktree.rebase_onto] treats this prompt convention as
-       a best-effort agent contract: malformed subjects simply will not match
-       [Worktree.is_ancestor_patch_subject], so rebase falls back to the other
-       ancestry / patch-id paths. *)
+       subject filter in [Branch_reconcile.subject_boundary] treats this prompt
+       convention as best-effort evidence for explicitly scoped requests.
+       Malformed subjects do not establish a dependency boundary; the owner
+       can still attempt plain replay and bounded history recovery. *)
     let commit_block =
       Printf.sprintf
         {|
@@ -1558,228 +1558,6 @@ let render_uncommitted_changes_prompt ~(project_name : string) ?agents_md
   ^ render_turn_layer_uncommitted_changes ~project_name ?pr_number ~git_status
       ()
 
-let render_recovery_section (ci : Worktree.conflict_info) =
-  let bullet (c : Worktree.unique_commit) =
-    let short =
-      if String.length c.sha >= 7 then String.sub c.sha ~pos:0 ~len:7 else c.sha
-    in
-    Printf.sprintf "  %s %s" short c.subject
-  in
-  (* unique_commits is git-log order (newest-first); the bullet list reads
-     oldest-first so an agent reapplying with cherry-pick can scan top-to-bottom
-     in commit-order. *)
-  let commits_section =
-    if List.is_empty ci.Worktree.unique_commits then ""
-    else
-      let commits_lines =
-        List.rev ci.Worktree.unique_commits
-        |> List.map ~f:bullet |> String.concat ~sep:"\n"
-      in
-      Printf.sprintf "\n\nCommits unique to this patch (oldest first):\n%s"
-        commits_lines
-  in
-  let orig_head_block =
-    if String.is_empty ci.Worktree.orig_head then ""
-    else
-      Printf.sprintf
-        {|
-
-If you need to discard your in-progress conflict resolution and start over
-from your pre-rebase state, the supervisor captured your HEAD before the
-rebase began:
-
-    git reset --hard %s|}
-        ci.Worktree.orig_head
-  in
-  match ci.Worktree.strategy with
-  | Worktree.Onto ->
-      Printf.sprintf
-        {|
-
-## Recovery (if rebase state is lost)
-
-If `git status` no longer shows a rebase in progress (e.g. you ran
-`git rebase --abort` or the worktree was reset), do NOT run
-`git rebase %s` against your local tracking ref — it may be stale
-and would re-pick already-merged dependency commits.
-
-First refresh remote tracking refs, then restart with the same `--onto`
-range the supervisor used:
-
-    git fetch origin
-    git rebase --onto %s %s%s%s|}
-        ci.target ci.target ci.old_base commits_section orig_head_block
-  | Worktree.Plain ->
-      Printf.sprintf
-        {|
-
-## Recovery (if rebase state is lost)
-
-If `git status` no longer shows a rebase in progress, refresh remote
-tracking refs and restart with:
-
-    git fetch origin
-    git rebase %s
-
-(No per-patch commit list could be isolated — the supervisor fell back
-to a plain rebase against `%s` because no unique commits were
-identified.)%s|}
-        ci.target ci.target orig_head_block
-
-let render_turn_layer_merge_conflict ~(project_name : string) ?pr_number
-    ~(base_branch : string) ?(git_status = "") ?(git_diff = "") ?conflict_info
-    () : string =
-  let pr_ctx =
-    match pr_number with
-    | Some n -> Printf.sprintf "\n\nPR: #%d\n" (Pr_number.to_int n)
-    | None -> ""
-  in
-  let status_section =
-    if String.is_empty git_status then ""
-    else Printf.sprintf {|
-
-## Current rebase state
-
-```
-%s
-```|} git_status
-  in
-  let diff_section =
-    if String.is_empty git_diff then ""
-    else Printf.sprintf {|
-
-## Conflict markers
-
-```diff
-%s
-```|} git_diff
-  in
-  let recovery_section =
-    match conflict_info with
-    | Some ci -> render_recovery_section ci
-    | None -> ""
-  in
-  let old_base_var =
-    match conflict_info with Some ci -> ci.Worktree.old_base | None -> ""
-  in
-  let target_branch_var =
-    match conflict_info with Some ci -> ci.Worktree.target | None -> ""
-  in
-  let orig_head_var =
-    match conflict_info with Some ci -> ci.Worktree.orig_head | None -> ""
-  in
-  let vars =
-    [
-      ("project_name", project_name);
-      ("base_branch", base_branch);
-      ( "pr_number",
-        match pr_number with
-        | Some n -> Int.to_string (Pr_number.to_int n)
-        | None -> "" );
-      ("git_status", git_status);
-      ("git_diff", git_diff);
-      ("recovery_section", recovery_section);
-      ("old_base", old_base_var);
-      ("target_branch", target_branch_var);
-      ("orig_head", orig_head_var);
-    ]
-  in
-  render_with_override ~project_name ~name:"turn_merge_conflict" ~vars
-    ~default:(fun () ->
-      Printf.sprintf
-        {|# Merge Conflict%s
-
-A rebase onto `%s` is already in progress but hit conflicts.
-
-Resolve each conflicted file, then stage and continue:
-
-```
-git add <resolved files>
-git rebase --continue
-```
-
-If the rebase continues and hits further conflicts, repeat the process.
-
-Do NOT run `git rebase origin/%s` — the rebase is already set up with the
-correct --onto range. Starting a new rebase would re-introduce dependency
-commits that have already been stripped.
-
-After resolving all conflicts and completing the rebase, the supervisor will push the rebased commits for you — do not run `git push`.%s%s%s|}
-        pr_ctx base_branch base_branch status_section diff_section
-        recovery_section)
-
-let render_merge_conflict_prompt ~(project_name : string) ?agents_md ?pr_number
-    ?patch ?gameplan ~(base_branch : string) ?(git_status = "") ?(git_diff = "")
-    ?conflict_info () : string =
-  render_session_context ~project_name ?pr_number ?patch ?gameplan
-    ?base_branch:(Some base_branch) ?agents_md ()
-  ^ render_turn_layer_merge_conflict ~project_name ?pr_number ~base_branch
-      ~git_status ~git_diff ?conflict_info ()
-
-let render_turn_layer_root_merge_conflict ~(project_name : string) ?pr_number
-    ~(base_branch : string) ~(merge_head : string) ~(git_status : string)
-    ~(git_diff : string) () : string =
-  let vars =
-    [
-      ("project_name", project_name);
-      ("base_branch", base_branch);
-      ("merge_head", merge_head);
-      ( "pr_number",
-        match pr_number with
-        | Some n -> Int.to_string (Pr_number.to_int n)
-        | None -> "" );
-      ("git_status", git_status);
-      ("git_diff", git_diff);
-    ]
-  in
-  render_with_override ~project_name ~name:"turn_root_merge_conflict" ~vars
-    ~default:(fun () ->
-      Printf.sprintf
-        {|# Integration Root Merge Conflict
-
-A history-preserving merge of `%s` into this integration branch is in progress.
-The merge target captured in MERGE_HEAD is `%s`.
-
-Resolve the conflicted files, preserving both the integrated patches and upstream
-changes. Stage the resolved files and finish the merge:
-
-```
-git add <resolved files>
-git -c core.editor=true merge --continue
-```
-
-Preserve all published history. Never rebase, reset, or force-push this branch.
-If the merge was aborted, restart the same merge with:
-
-```
-git merge --no-ff --no-edit %s
-```
-
-The supervisor will publish the completed merge with a normal push. Do not run
-`git push` yourself.
-
-## Current merge state
-
-```
-%s
-```
-
-## Conflict markers
-
-```diff
-%s
-```
-|}
-        base_branch merge_head merge_head git_status git_diff)
-
-let render_root_merge_conflict_prompt ~(project_name : string) ?agents_md
-    ?pr_number ?patch ?gameplan ~(base_branch : string) ~(merge_head : string)
-    ~(git_status : string) ~(git_diff : string) () : string =
-  render_session_context ~project_name ?pr_number ?patch ?gameplan
-    ?base_branch:(Some base_branch) ?agents_md ()
-  ^ render_turn_layer_root_merge_conflict ~project_name ?pr_number ~base_branch
-      ~merge_head ~git_status ~git_diff ()
-
 let render_human_message_prompt ~(project_name : string)
     (messages : string list) =
   match messages with
@@ -2104,14 +1882,14 @@ let%test "ad-hoc turn prompts retain agents_md context" =
     render_findings_prompt ~project_name:"adhoc" ~agents_md
       ~artifact_dir:"/tmp/findings-wontfix" []
   in
-  let conflict_prompt =
-    render_merge_conflict_prompt ~project_name:"adhoc" ~agents_md
-      ~base_branch:"main" ()
+  let uncommitted_prompt =
+    render_uncommitted_changes_prompt ~project_name:"adhoc" ~agents_md
+      ~git_status:" M work" ()
   in
   String.is_prefix ci_prompt ~prefix:expected_prefix
   && String.is_prefix review_prompt ~prefix:expected_prefix
   && String.is_prefix findings_prompt ~prefix:expected_prefix
-  && String.is_prefix conflict_prompt ~prefix:expected_prefix
+  && String.is_prefix uncommitted_prompt ~prefix:expected_prefix
 
 (* === Three-layer invariants ===
 
@@ -2497,15 +2275,16 @@ let%test
           };
       ]
   in
-  let conflict_prompt =
-    render_merge_conflict_prompt ~project_name:"onton" ~agents_md ~pr_number
-      ~patch:patch_a ~gameplan ~base_branch:"main" ()
+  let uncommitted_prompt =
+    render_uncommitted_changes_prompt ~project_name:"onton" ~agents_md
+      ~pr_number ~patch:patch_a ~gameplan ~base_branch:"main"
+      ~git_status:" M work" ()
   in
   String.is_prefix start_prompt ~prefix
   && String.is_prefix ci_prompt ~prefix
   && String.is_prefix ci_unknown_prompt ~prefix
   && String.is_prefix review_prompt ~prefix
-  && String.is_prefix conflict_prompt ~prefix
+  && String.is_prefix uncommitted_prompt ~prefix
 
 let%test
     "render_patch_layer surfaces precedents to the implementer when present" =

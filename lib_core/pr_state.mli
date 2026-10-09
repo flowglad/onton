@@ -10,7 +10,7 @@ open Types
     world-has-conflict, world-ci-failed. *)
 
 type merge_state = Mergeable | Conflicting | Unknown
-[@@deriving show, eq, yojson]
+[@@deriving show, eq, compare, sexp_of, yojson]
 
 type check_status = Passing | Failing | Pending [@@deriving show, eq]
 type pr_status = Open | Merged | Closed [@@deriving show, eq]
@@ -42,6 +42,7 @@ type merge_ready_divergence = {
     [mergeStateStatus] as state or letting it drive any decision. *)
 
 type t = {
+  pr_number : Types.Pr_number.t option;
   status : pr_status;
   is_draft : bool;
   merge_state : merge_state;

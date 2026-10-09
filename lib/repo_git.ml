@@ -9,36 +9,15 @@ type process_capture = {
   stderr : string;
 }
 
-let read_channel_all ic =
-  let buf = Buffer.create 128 in
-  (try
-     while true do
-       Buffer.add_char buf (input_char ic)
-     done
-   with End_of_file -> ());
-  Buffer.contents buf
-
-(** Run [git -C repo_root ...] using argv rather than the shell, capture stdout
-    and stderr, and close all process pipes on exception paths. *)
+(** Capture Git through the shared synchronous supervisor. *)
 let run_git_capture ~repo_root args =
-  let argv = Array.of_list ("git" :: "-C" :: repo_root :: args) in
-  let env = Git_env.clean_env () in
-  match Unix.open_process_args_full "git" argv env with
-  | exception _ -> None
-  | in_ch, out_ch, err_ch ->
-      let status = ref None in
-      Stdlib.Fun.protect
-        ~finally:(fun () ->
-          if Base.Option.is_none !status then
-            try ignore (Unix.close_process_full (in_ch, out_ch, err_ch))
-            with _ -> ())
-        (fun () ->
-          close_out_noerr out_ch;
-          let stdout = read_channel_all in_ch in
-          let stderr = read_channel_all err_ch in
-          let s = Unix.close_process_full (in_ch, out_ch, err_ch) in
-          status := Some s;
-          Some { status = s; stdout; stderr })
+  try
+    let status, stdout, stderr =
+      Process_tree.run_sync ~env:(Git_env.clean_env ())
+        ("git" :: "-C" :: repo_root :: args)
+    in
+    Some { status; stdout; stderr }
+  with _ -> None
 
 let git_stdout ~repo_root args =
   match run_git_capture ~repo_root args with

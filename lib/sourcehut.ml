@@ -98,68 +98,26 @@ type capture = {
   stderr : string;
 }
 
-let setsid_exec () =
-  let candidate =
-    match Stdlib.Sys.getenv_opt "ONTON_SETSID_EXEC" with
-    | Some "" -> None
-    | Some path -> Some path
-    | None ->
-        Some
-          (Stdlib.Filename.concat
-             (Stdlib.Filename.dirname Stdlib.Sys.executable_name)
-             "onton-setsid-exec")
-  in
-  Option.filter candidate ~f:Stdlib.Sys.file_exists
-
 let run_process ?(timeout = git_timeout) ~clock ~process_mgr command =
-  let stdout = Buffer.create 256 in
-  let stderr = Buffer.create 256 in
-  let setsid_exec = setsid_exec () in
-  let command =
-    match setsid_exec with Some path -> path :: command | None -> command
-  in
   try
     let outcome =
-      Eio.Switch.run @@ fun sw ->
-      let child =
-        Eio.Process.spawn ~sw process_mgr ~env:(Git_env.clean_env ())
-          ~stdout:(Eio.Flow.buffer_sink stdout)
-          ~stderr:(Eio.Flow.buffer_sink stderr)
-          command
-      in
-      let pid = Eio.Process.pid child in
-      let kill_tree () =
-        match setsid_exec with
-        | Some _ -> (
-            try Unix.kill (-pid) Stdlib.Sys.sigkill
-            with Unix.Unix_error ((ESRCH | EPERM), _, _) -> ())
-        | None -> (
-            try Eio.Process.signal child Stdlib.Sys.sigkill with _ -> ())
-      in
-      Stdlib.Fun.protect
-        ~finally:(fun () ->
-          kill_tree ();
-          try ignore (Eio.Process.await child) with _ -> ())
-        (fun () ->
-          Eio.Time.with_timeout clock timeout (fun () ->
-              Ok (Eio.Process.await child)))
+      Eio.Time.with_timeout clock timeout (fun () ->
+          Ok
+            (Process_tree.run_status ~process_mgr ~clock
+               ~env:(Git_env.clean_env ()) command))
     in
     match outcome with
     | Error `Timeout -> Error (Timeout timeout)
-    | Ok status ->
+    | Ok (status, stdout, stderr) ->
         let status =
           match status with
           | `Exited code -> Unix.WEXITED code
           | `Signaled signal -> Unix.WSIGNALED signal
         in
         Ok
-          {
-            status;
-            stdout = String.strip (Buffer.contents stdout);
-            stderr = String.strip (Buffer.contents stderr);
-          }
+          { status; stdout = String.strip stdout; stderr = String.strip stderr }
   with
-  | Eio.Cancel.Cancelled _ as exn -> raise exn
+  | exn when Process_tree.has_cancellation exn -> raise exn
   | exn -> Error (Git_error (Exn.to_string exn))
 
 let run_git ~clock ~process_mgr ~repo_root args =
@@ -429,6 +387,7 @@ let make_with_builds ~read_builds ~net ~clock ~process_mgr ~token ~owner ~repo
                               comments = [];
                               unresolved_comment_count = 0;
                               findings = [];
+                              pr_number = Some pr_number;
                               node_id = None;
                               merge_queue_required = false;
                               merge_queue_entry = None;
