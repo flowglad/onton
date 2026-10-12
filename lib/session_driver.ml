@@ -436,6 +436,16 @@ module Make (W : Worktree.S) (Env : ENV) = struct
                earlier opt-out file. Keep the previous message in the event log. *)
                 (try Unix.unlink wontdo_path
                  with Unix.Unix_error (Unix.ENOENT, _, _) -> ());
+                let allows_wontdo =
+                  let is_gameplan_patch =
+                    Runtime.read runtime (fun snap ->
+                        List.exists snap.Runtime.gameplan.Types.Gameplan.patches
+                          ~f:(fun patch ->
+                            Types.Patch_id.equal patch.Types.Patch.id patch_id))
+                  in
+                  Patch_decision.session_allows_wontdo ~delivery_mode
+                    ~is_gameplan_patch
+                in
                 let prompt =
                   let context =
                     match resume_session with
@@ -447,33 +457,39 @@ module Make (W : Worktree.S) (Env : ENV) = struct
                       (Onton_core.Session_prompt.create ~context
                          ~turn:prompt.turn)
                   in
-                  if
-                    Patch_decision.session_prompt_requires_patch_instructions
-                      ~delivery_mode ~kind
-                  then
-                    let mode_instructions =
-                      Runtime.read runtime (fun snap ->
-                          let orch = snap.Runtime.orchestrator in
-                          if Orchestrator.is_feature_descendant orch patch_id
-                          then
-                            "\n\
-                             Feature branch construction: this patch publishes \
-                             a branch only. Do not create or modify a pull \
-                             request or PR body. Commit locally; the \
-                             supervisor pushes and integrates after branch \
-                             HEAD checks pass.\n"
-                          else if Orchestrator.is_integration_root orch patch_id
-                          then
-                            "\n\
-                             Integration root: preserve all published history. \
-                             Never rebase, reset, or force-push this branch. \
-                             Commit implementation changes locally; the \
-                             supervisor reconciles captured upstream revisions \
-                             and uses normal pushes. Do not merge other \
-                             branches.\n"
-                          else "")
-                    in
-                    prompt ^ mode_instructions
+                  let prompt =
+                    if
+                      Patch_decision.session_prompt_requires_patch_instructions
+                        ~delivery_mode ~kind
+                    then
+                      let mode_instructions =
+                        Runtime.read runtime (fun snap ->
+                            let orch = snap.Runtime.orchestrator in
+                            if Orchestrator.is_feature_descendant orch patch_id
+                            then
+                              "\n\
+                               Feature branch construction: this patch \
+                               publishes a branch only. Do not create or \
+                               modify a pull request or PR body. Commit \
+                               locally; the supervisor pushes and integrates \
+                               after branch HEAD checks pass.\n"
+                            else if
+                              Orchestrator.is_integration_root orch patch_id
+                            then
+                              "\n\
+                               Integration root: preserve all published \
+                               history. Never rebase, reset, or force-push \
+                               this branch. Commit implementation changes \
+                               locally; the supervisor reconciles captured \
+                               upstream revisions and uses normal pushes. Do \
+                               not merge other branches.\n"
+                            else "")
+                      in
+                      prompt ^ mode_instructions
+                    else prompt
+                  in
+                  if allows_wontdo then
+                    prompt
                     ^ Printf.sprintf
                         "\n\n\
                          Before making your first commit, you may opt out of \
@@ -1103,12 +1119,14 @@ module Make (W : Worktree.S) (Env : ENV) = struct
                         ignore (apply_result_and_emit_complete session_result);
                         raise exn);
                     let wontdo_content =
-                      try
-                        let ic = Stdlib.open_in_bin wontdo_path in
-                        Stdlib.Fun.protect
-                          ~finally:(fun () -> Stdlib.close_in_noerr ic)
-                          (fun () -> Some (Stdlib.In_channel.input_all ic))
-                      with Sys_error _ -> None
+                      if not allows_wontdo then None
+                      else
+                        try
+                          let ic = Stdlib.open_in_bin wontdo_path in
+                          Stdlib.Fun.protect
+                            ~finally:(fun () -> Stdlib.close_in_noerr ic)
+                            (fun () -> Some (Stdlib.In_channel.input_all ic))
+                        with Sys_error _ -> None
                     in
                     let final_head =
                       W.read_branch_sha ~path:worktree_path

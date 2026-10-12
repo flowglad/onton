@@ -112,6 +112,9 @@ type start_delivery =
 type delivery_mode = Session_result.delivery_mode = Start | Respond
 [@@deriving show, eq, sexp_of, compare]
 
+let session_allows_wontdo ~delivery_mode ~is_gameplan_patch =
+  is_gameplan_patch && equal_delivery_mode delivery_mode Start
+
 let session_prompt_requires_patch_instructions ~delivery_mode ~kind =
   match delivery_mode with
   | Start -> true
