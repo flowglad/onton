@@ -91,6 +91,34 @@ let integration a =
 
 let tests =
   [
+    property "root availability follows busy and native-stack interleavings"
+      (G.list (G.pair G.bool G.bool))
+      (fun steps ->
+        let root =
+          Patch_agent.create ~branch:(branch 1) (id 1)
+          |> Patch_agent.mark_branch_published
+        in
+        let _, valid =
+          List.fold steps ~init:(root, true)
+            ~f:(fun (root, valid) (busy, native_stack) ->
+              let root = Patch_agent.complete root in
+              let root =
+                if busy then
+                  Patch_agent.respond
+                    (Patch_agent.enqueue root Operation_kind.Ci)
+                    Operation_kind.Ci
+                else root
+              in
+              (* Two absent observations clear the native-stack debounce. *)
+              let root = Patch_agent.set_native_stack root native_stack in
+              let root = Patch_agent.set_native_stack root native_stack in
+              ( root,
+                valid
+                && Bool.equal
+                     (Execution_mode.integration_root_available root)
+                     ((not busy) && not native_stack) ))
+        in
+        valid);
     property "publication preserves the original root regardless of ID or order"
       (G.pair (G.int_range 1 1000) (G.shuffle_list [ 0; 1; 2 ]))
       (fun (n, order) ->

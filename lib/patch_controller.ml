@@ -923,23 +923,28 @@ let apply_branch_observation t patch_id ~head_sha ~checks =
     then Orchestrator.reset_ci_failure_count t patch_id
     else t
 
+let integration_root_available t =
+  Option.value_map
+    (Execution_mode.root (Orchestrator.execution_mode t))
+    ~default:false
+    ~f:(fun r ->
+      Execution_mode.integration_root_available (Orchestrator.agent t r))
+
+let descendant_ready_for_integration ?(ignore_inflight = false) t patch_id =
+  Execution_mode.integration_ready
+    (Orchestrator.execution_mode t)
+    ~construction_open:(Orchestrator.construction_open t)
+    ~ignore_inflight ~max_failures:automerge_max_failures
+    ~terminal:(Orchestrator.terminal_branch t patch_id)
+    (Orchestrator.agent t patch_id)
+
 let is_integration_candidate ?(ignore_inflight = false) t patch_id =
-  let root_unavailable =
-    Option.value_map
-      (Execution_mode.root (Orchestrator.execution_mode t))
-      ~default:true
-      ~f:(fun r ->
-        let root = Orchestrator.agent t r in
-        root.Patch_agent.native_stack || root.busy
-        || Branch_reconcile.is_unsettled root.branch_reconcile)
-  in
-  (not root_unavailable)
-  && Execution_mode.integration_ready
-       (Orchestrator.execution_mode t)
-       ~construction_open:(Orchestrator.construction_open t)
-       ~ignore_inflight ~max_failures:automerge_max_failures
-       ~terminal:(Orchestrator.terminal_branch t patch_id)
-       (Orchestrator.agent t patch_id)
+  integration_root_available t
+  && descendant_ready_for_integration ~ignore_inflight t patch_id
+
+let is_waiting_for_integration_root t patch_id =
+  (not (integration_root_available t))
+  && descendant_ready_for_integration t patch_id
 
 type merge_action = Direct_merge | Enqueue | Dequeue of string
 [@@deriving show, eq, sexp_of]

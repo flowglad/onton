@@ -766,3 +766,64 @@ let () =
       check "confirmed publication remains recorded on destination root"
         (List.length (B.publications (state orch)) = 1))
 [@@warning "-42"]
+
+let () =
+  let ready = ready_branch (fresh ()) 3 in
+  let waiting =
+    Orchestrator.fire
+      (Orchestrator.enqueue ready (id 1) Operation_kind.Ci)
+      (Orchestrator.Respond (id 1, Operation_kind.Ci))
+  in
+  let views orch =
+    Tui.views_of_orchestrator ~orchestrator:orch ~gameplan:gp ~activity:[]
+      ~resolve_routing:(fun ~complexity:_ ->
+        Backend_routing.{ backend = "test"; model = None; effort = None })
+      ()
+  in
+  let view orch n =
+    List.find_exn (views orch) ~f:(fun (v : Tui.patch_view) ->
+        Patch_id.equal v.Tui.patch_id (id n))
+  in
+  check "green child waits for busy integration root"
+    (Patch_controller.is_waiting_for_integration_root waiting (id 3)
+    && not (Patch_controller.is_integration_candidate waiting (id 3)));
+  check "waiting status explains integration blocker"
+    (Tui.equal_display_status (view waiting 3).Tui.status
+       Tui.Waiting_for_integration_root);
+  check "dependency badge shows the same integration blocker"
+    (List.exists (view waiting 4).Tui.dep_ids ~f:(fun (dep, status) ->
+         Patch_id.equal dep (id 3)
+         && Tui.equal_display_status status Tui.Waiting_for_integration_root));
+  check "root's active operation keeps its own status"
+    (Tui.equal_display_status (view waiting 1).Tui.status Tui.Fixing_ci);
+  let idle = Orchestrator.reset_busy waiting (id 1) in
+  check "root becoming idle clears waiting and enables integration"
+    ((not (Patch_controller.is_waiting_for_integration_root idle (id 3)))
+    && Patch_controller.is_integration_candidate idle (id 3)
+    && Tui.equal_display_status (view idle 3).Tui.status Tui.Approved_idle);
+  let not_green = Orchestrator.set_checks_passing waiting (id 3) false in
+  check "pending CI does not blame integration root"
+    ((not (Patch_controller.is_waiting_for_integration_root not_green (id 3)))
+    && Tui.equal_display_status (view not_green 3).Tui.status
+         Tui.Awaiting_feedback);
+  let queued = Orchestrator.enqueue waiting (id 3) Operation_kind.Ci in
+  check "queued child work takes precedence"
+    (Tui.equal_display_status (view queued 3).Tui.status Tui.Ci_queued);
+  let running =
+    Orchestrator.fire queued (Orchestrator.Respond (id 3, Operation_kind.Ci))
+  in
+  check "running child work takes precedence"
+    (Tui.equal_display_status (view running 3).Tui.status Tui.Fixing_ci);
+  let disabled = Orchestrator.set_automerge_enabled waiting (id 3) false in
+  check "disabled integration does not blame root"
+    (not (Patch_controller.is_waiting_for_integration_root disabled (id 3)));
+  check "mainline patches do not wait for integration roots"
+    (not
+       (Patch_controller.is_waiting_for_integration_root
+          (Orchestrator.create ~patches ~main_branch:main)
+          (id 3)));
+  check "waiting label is readable"
+    (String.equal
+       (Tui.label Tui.Waiting_for_integration_root)
+       "waiting-for-integration-root");
+  Stdlib.print_endline "PASS integration waiting status"

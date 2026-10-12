@@ -689,6 +689,7 @@ let all_display_statuses : Onton.Tui.display_status list =
     | Findings_queued -> Findings_queued
     | Cleanup_queued -> Cleanup_queued
     | Awaiting_feedback -> Awaiting_feedback
+    | Waiting_for_integration_root -> Waiting_for_integration_root
     | Blocked_by_dep -> Blocked_by_dep
     | Pending -> Pending
   in
@@ -715,6 +716,7 @@ let all_display_statuses : Onton.Tui.display_status list =
       Findings_queued;
       Cleanup_queued;
       Awaiting_feedback;
+      Waiting_for_integration_root;
       Blocked_by_dep;
       Pending;
     ]

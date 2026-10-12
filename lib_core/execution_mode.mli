@@ -65,6 +65,10 @@ val additions_allowed :
 val descendants_complete :
   t -> Graph.t -> has_merged:(Patch_id.t -> bool) -> bool
 
+val integration_root_available : Patch_agent.t -> bool
+(** Integration cannot modify a root while it is busy, reconciling, or
+    controlled by a native stack. *)
+
 val integration_ready :
   t ->
   construction_open:bool ->

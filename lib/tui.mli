@@ -31,6 +31,7 @@ type display_status = Display_status.t =
   | Findings_queued
   | Cleanup_queued
   | Awaiting_feedback
+  | Waiting_for_integration_root
   | Blocked_by_dep
   | Pending
 [@@deriving show, eq, sexp_of, compare, yojson]
