@@ -15,6 +15,65 @@ let mk_patches = Onton_test_support.Test_generators.mk_linear_patches
 let make_gameplan = Onton_test_support.Test_generators.make_test_gameplan
 let pid_of_idx = Onton_test_support.Test_generators.pid_of_idx
 
+let () =
+  QCheck2.Test.check_exn
+    (QCheck2.Test.make
+       ~name:"integration waiting tracks root availability and child readiness"
+       ~count:300
+       QCheck2.Gen.(pair bool (list (triple bool bool bool)))
+       (fun (feature, steps) ->
+         try
+           let patches = mk_patches 2 in
+           let root = pid_of_idx patches 0 in
+           let child = pid_of_idx patches 1 in
+           let orch = Orchestrator.create ~patches ~main_branch:main in
+           let orch =
+             if feature then
+               match Execution_mode.infer (Graph.of_patches patches) with
+               | Ok mode -> Orchestrator.set_execution_mode orch mode
+               | Error error -> failwith error
+             else orch
+           in
+           let terminal = Orchestrator.terminal_branch orch child in
+           let orch =
+             Orchestrator.set_pr_number orch root (Pr_number.of_int 1)
+             |> fun o ->
+             Orchestrator.mark_branch_published o child |> fun o ->
+             Orchestrator.set_pr_body_delivered o child true |> fun o ->
+             Orchestrator.set_base_branch o child terminal |> fun o ->
+             fst
+               (Orchestrator.apply_rebase_result o child Worktree.Noop terminal)
+             |> fun o -> Orchestrator.set_head_oid o child (Some "child-head")
+           in
+           let rec check orch = function
+             | [] -> true
+             | (busy, green, enabled) :: rest ->
+                 let orch = Orchestrator.reset_busy orch root in
+                 let orch =
+                   if busy then
+                     Orchestrator.fire
+                       (Orchestrator.enqueue orch root Operation_kind.Ci)
+                       (Orchestrator.Respond (root, Operation_kind.Ci))
+                   else orch
+                 in
+                 let orch =
+                   Orchestrator.set_checks_passing orch child green |> fun o ->
+                   Orchestrator.set_automerge_enabled o child enabled
+                 in
+                 Bool.equal
+                   (Patch_controller.is_waiting_for_integration_root orch child)
+                   (feature && busy && green && enabled)
+                 && Bool.equal
+                      (Patch_controller.is_integration_candidate orch child)
+                      (feature && (not busy) && green && enabled)
+                 && (not
+                       (Patch_controller.is_waiting_for_integration_root orch
+                          root))
+                 && check orch rest
+           in
+           check orch ((true, true, true) :: (false, true, true) :: steps)
+         with _ -> false))
+
 let gen_merge_queue_entry =
   let open QCheck2.Gen in
   let states =

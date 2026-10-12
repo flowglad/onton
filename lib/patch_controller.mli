@@ -284,6 +284,10 @@ val is_integration_candidate :
     post-claim recheck while holding the patch and root write locks; elsewhere
     it can admit a duplicate integration. *)
 
+val is_waiting_for_integration_root : Orchestrator.t -> Patch_id.t -> bool
+(** The descendant is ready to integrate, but its root is busy, reconciling, or
+    controlled by a native stack. Uses the same gates as integration. *)
+
 val apply_branch_observation :
   Orchestrator.t ->
   Patch_id.t ->

@@ -239,6 +239,7 @@ let gen_status : Display_status.t QCheck2.Gen.t =
         Findings_queued;
         Cleanup_queued;
         Awaiting_feedback;
+        Waiting_for_integration_root;
         Blocked_by_dep;
         Pending;
       ]

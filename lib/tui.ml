@@ -32,6 +32,7 @@ type display_status = Display_status.t =
   | Findings_queued
   | Cleanup_queued
   | Awaiting_feedback
+  | Waiting_for_integration_root
   | Blocked_by_dep
   | Pending
 [@@deriving show, eq, sexp_of, compare, yojson]
@@ -61,6 +62,7 @@ let label = function
   | Findings_queued -> "findings-queued"
   | Cleanup_queued -> "cleanup-queued"
   | Awaiting_feedback -> "awaiting-feedback"
+  | Waiting_for_integration_root -> "waiting-for-integration-root"
   | Blocked_by_dep -> "blocked-by-dep"
   | Pending -> "pending"
 
@@ -85,7 +87,7 @@ let color = function
   | Review_queued -> Term.Sgr.fg_yellow
   | Findings_queued -> Term.Sgr.fg_yellow
   | Cleanup_queued -> Term.Sgr.fg_yellow
-  | Awaiting_feedback -> Term.Sgr.fg_blue
+  | Awaiting_feedback | Waiting_for_integration_root -> Term.Sgr.fg_blue
   | Blocked_by_dep -> Term.Sgr.fg_blue
   | Pending -> Term.Sgr.fg_default
 
@@ -176,7 +178,7 @@ let status_style = function
   | Starting | Updating -> [ Term.Sgr.fg_cyan ]
   | Ci_queued | Review_queued | Findings_queued | Cleanup_queued ->
       [ Term.Sgr.fg_yellow ]
-  | Awaiting_feedback -> [ Term.Sgr.fg_blue ]
+  | Awaiting_feedback | Waiting_for_integration_root -> [ Term.Sgr.fg_blue ]
   | Blocked_by_dep -> [ Term.Sgr.fg_blue ]
   | Pending -> [ Term.Sgr.dim ]
 
@@ -193,7 +195,7 @@ let status_indicator = function
   | Rebasing -> "↻"
   | Starting | Updating -> "▶"
   | Ci_queued | Review_queued | Findings_queued | Cleanup_queued -> "◎"
-  | Awaiting_feedback -> "◎"
+  | Awaiting_feedback | Waiting_for_integration_root -> "◎"
   | Blocked_by_dep -> "◎"
   | Pending -> "·"
 
@@ -589,7 +591,7 @@ let is_running_status = function
       true
   | Merged | Wontdo | Needs_help | In_merge_queue | Approved_idle | Ci_queued
   | Review_queued | Findings_queued | Cleanup_queued | Awaiting_feedback
-  | Blocked_by_dep | Pending ->
+  | Waiting_for_integration_root | Blocked_by_dep | Pending ->
       false
 
 (** {1 Frame rendering} *)
@@ -700,7 +702,10 @@ let render_patch_row ~width ~selected ~now (pv : patch_view) =
     else ""
   in
   let dep_info =
-    if equal_display_status pv.status Blocked_by_dep then
+    if
+      equal_display_status pv.status Blocked_by_dep
+      || equal_display_status pv.status Waiting_for_integration_root
+    then
       match pv.base_branch with
       | Some b ->
           Term.styled [ Term.Sgr.dim ]
@@ -1443,6 +1448,10 @@ let views_of_orchestrator ~(orchestrator : Orchestrator.t)
       let pv =
         if Patch_controller.is_integration_candidate orchestrator agent.patch_id
         then { pv with status = Approved_idle }
+        else if
+          Patch_controller.is_waiting_for_integration_root orchestrator
+            agent.patch_id
+        then { pv with status = Waiting_for_integration_root }
         else pv
       in
       let pid_str = Patch_id.to_string agent.patch_id in
@@ -1472,6 +1481,23 @@ let views_of_orchestrator ~(orchestrator : Orchestrator.t)
         else None
       in
       { pv with recent_stream = List.take filtered 10; intervention_reason })
+  |> fun views ->
+  (* Views come from the orchestrator's unique agent IDs. *)
+  let statuses_by_id =
+    Map.of_alist_exn
+      (module Patch_id)
+      (List.map views ~f:(fun (pv : patch_view) -> (pv.patch_id, pv.status)))
+  in
+  List.map views ~f:(fun pv ->
+      {
+        pv with
+        dep_ids =
+          List.map pv.dep_ids ~f:(fun (dep_id, status) ->
+              let status =
+                Option.value (Map.find statuses_by_id dep_id) ~default:status
+              in
+              (dep_id, status));
+      })
   |> sort_views
 
 let render_frame ~width ~height ~selected ~scroll_offset ~view_mode

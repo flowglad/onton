@@ -116,6 +116,10 @@ let descendants_complete t graph ~has_merged =
   && List.for_all (Graph.all_patch_ids graph) ~f:(fun id ->
       is_root t id || has_merged id)
 
+let integration_root_available (root : Patch_agent.t) =
+  (not root.native_stack) && (not root.busy)
+  && not (Branch_reconcile.is_unsettled root.branch_reconcile)
+
 let integration_ready t ~construction_open ~ignore_inflight ~max_failures
     ~terminal (a : Patch_agent.t) =
   is_descendant t a.patch_id && construction_open && a.branch_published
