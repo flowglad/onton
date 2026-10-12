@@ -102,10 +102,12 @@ let detect_rebases graph views ~newly_merged =
     enqueued. *)
 
 let detect_notified_base_drift views =
+  (* The poller projects unsettled reconciliation owners as busy. Ordinary
+     agent intervention must still allow orchestrator-driven rebase demand. *)
   List.filter_map views ~f:(fun v ->
       if
         v.has_pr && (not v.merged) && (not v.in_merge_queue) && (not v.busy)
-        && (not v.needs_intervention) && (not v.branch_blocked)
+        && (not v.branch_blocked)
         && not
              (List.mem v.queue Operation_kind.Rebase ~equal:Operation_kind.equal)
       then
