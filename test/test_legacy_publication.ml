@@ -392,8 +392,7 @@ let () =
   print_endline
     "legacy publication verification, restarts and mutation refusal: OK"
 
-let () =
-  Eio_main.run @@ fun env ->
+let verification_without_provisioning env =
   List.iter
     (fun existing ->
       Git.with_temp_repo (fun remote ->
@@ -402,9 +401,28 @@ let () =
               Git.run_git ~cwd:managed [ "remote"; "add"; "origin"; remote ];
               Git.run_git ~cwd:managed [ "fetch"; "-q"; "origin" ];
               let path = Filename.concat managed "linked" in
+              let create_checkout () =
+                (* This fixture restores a known Git-owned checkout. Raw
+                   worktree-add would leave ambiguous legacy ownership, making
+                   verification depend on optional simgit discovery. *)
+                let module Provision =
+                  (val Worktree_backend.make ~fs:(Eio.Stdenv.fs env)
+                         ~clock:(Eio.Stdenv.clock env)
+                         ~process_mgr:(Eio.Stdenv.process_mgr env)
+                         ~repo_root:managed ~config:Worktree_lifecycle.git
+                         ~timeout_seconds:30.)
+                in
+                let _, created =
+                  Provision.materialize ~path
+                    ~branch:(Types.Branch.of_string "patch")
+                    ~expected_local:None
+                    (Start_point_plan.Create_new_branch_from_base
+                       { base_branch = "origin/main" })
+                in
+                check "fixture creates an owned Git checkout" created
+              in
               if existing then (
-                Git.run_git ~cwd:managed
-                  [ "worktree"; "add"; "-qb"; "patch"; path; "origin/main" ];
+                create_checkout ();
                 Git.run_git ~cwd:path
                   [ "push"; "-q"; "origin"; "HEAD:refs/heads/patch" ]);
               let module Real =
@@ -506,8 +524,7 @@ let () =
                 (Bool.equal (Sys.file_exists path) existing);
               if not existing then (
                 let saved = get (Persistence.load ~path:checkpoint) in
-                Git.run_git ~cwd:managed
-                  [ "worktree"; "add"; "-qb"; "patch"; path; "origin/main" ];
+                create_checkout ();
                 let feature = commit path "restored feature" in
                 Git.run_git ~cwd:path
                   [ "push"; "-q"; "origin"; "HEAD:refs/heads/patch" ];
@@ -527,7 +544,13 @@ let () =
                     ~execute:(Verification.execute_reconciliation ~patch_id)
                     B.Recover
                 in
-                check "restored checkout leaves legacy intervention"
+                check
+                  ("restored checkout leaves legacy intervention: "
+                  ^ Runtime.read Restored.runtime (fun snap ->
+                      B.yojson_of_t
+                        (Orchestrator.agent snap.Runtime.orchestrator patch_id)
+                          .Patch_agent.branch_reconcile
+                      |> Yojson.Safe.to_string))
                   (resumed = Branch_reconcile_runner.Idle && not !unwanted);
                 check
                   "resumed verification leaves the external commit untouched"
@@ -578,3 +601,22 @@ let () =
     [ false; true ];
   print_endline
     "legacy verification bypasses checkout creation, cleanup and hooks: OK"
+
+let () =
+  Eio_main.run (fun env ->
+      Git.with_temp_repo (fun bin ->
+          (* Make optional-backend discovery fail even on developer machines
+             with simgit installed, matching the CI environment. *)
+          List.iter
+            (fun name ->
+              let path = Filename.concat bin name in
+              Out_channel.with_open_bin path (fun channel ->
+                  output_string channel "#!/bin/sh\nexit 127\n");
+              Unix.chmod path 0o700)
+            [ "simgit"; "sg" ];
+          let previous = Option.value (Sys.getenv_opt "PATH") ~default:"" in
+          Fun.protect
+            ~finally:(fun () -> Unix.putenv "PATH" previous)
+            (fun () ->
+              Unix.putenv "PATH" (bin ^ ":" ^ previous);
+              verification_without_provisioning env)))
