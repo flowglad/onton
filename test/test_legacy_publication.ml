@@ -341,6 +341,14 @@ let () =
                          | B.Execute _ | B.Repair _ | B.Completed _ -> false)
                        effects);
                   Git.run_git ~cwd:dir [ "merge"; "--no-edit"; retained ];
+                  ignore
+                    (drive raw ~cut:0 ~after:true
+                       ~before_command:(fun _ -> ())
+                       (fst (B.step (restart claimed) B.Recover)));
+                  check "unreported merge cannot change the remote"
+                    (Git.git_capture ~cwd:remote
+                       [ "rev-parse"; "refs/heads/patch" ]
+                    = base);
                   let completed, _ =
                     B.step (restart claimed)
                       (B.Repair_completed { token; at = 100. })

@@ -1157,9 +1157,72 @@ let prop_merge_target_all_merged_is_main =
            ~branch_of ~main:main_br)
         main_br)
 
+let prop_rebase_detectors_skip_held_targets =
+  QCheck2.Test.make ~count:1
+    ~name:
+      "all rebase detectors skip busy intervention and branch-blocked targets"
+    QCheck2.Gen.unit (fun () ->
+      try
+        let a = pid "merged" and b = pid "open" and c = pid "fanin" in
+        let patch id dependencies : Types.Patch.t =
+          {
+            id;
+            title = Types.Patch_id.to_string id;
+            description = "";
+            branch = dep_br;
+            dependencies;
+            spec = "";
+            acceptance_criteria = [];
+            files = [];
+            classification = "";
+            changes = [];
+            test_stubs_introduced = [];
+            test_stubs_implemented = [];
+            complexity = None;
+            precedents = [];
+            required_context = [];
+          }
+        in
+        let graph =
+          Graph.of_patches [ patch a []; patch b [ a ]; patch c [ a; b ] ]
+        in
+        let view =
+          mk_view ~id:b ~base_branch:dep_br ~branch_rebased_onto:None ()
+        in
+        let fanin =
+          mk_view ~id:c ~base_contains_merged_siblings:false
+            ~sibling_rebase_target:(Some b) ()
+        in
+        let detectors =
+          [
+            (fun view ->
+              Reconciler.detect_rebases graph [ view ] ~newly_merged:[ a ]);
+            (fun view -> Reconciler.detect_notified_base_drift [ view ]);
+            (fun view ->
+              Reconciler.detect_stale_bases graph [ view ]
+                ~has_merged:(Types.Patch_id.equal a)
+                ~branch_of:(fun _ -> dep_br)
+                ~main:main_br);
+            (fun view ->
+              Reconciler.detect_sibling_stale_bases graph [ view; fanin ]
+                ~has_merged:(Types.Patch_id.equal a));
+          ]
+        in
+        List.for_all detectors ~f:(fun detect ->
+            (not (List.is_empty (detect view)))
+            && List.for_all
+                 [
+                   { view with busy = true };
+                   { view with needs_intervention = true };
+                   { view with branch_blocked = true };
+                 ]
+                 ~f:(fun held -> List.is_empty (detect held)))
+      with _ -> false)
+
 let () =
   let tests =
     [
+      prop_rebase_detectors_skip_held_targets;
       prop_detect_merges_only_mark_merged;
       prop_detect_merges_subset_of_merged_prs;
       prop_detect_merges_skips_already_merged;

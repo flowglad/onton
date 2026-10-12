@@ -2773,6 +2773,7 @@ let check_checkout ?operation (command : command) ~branch
         match operation with
         | Some op when agent_candidate op candidate ->
             Option.equal String.equal checkout.branch (Some branch)
+            && G.equal_sequencer checkout.sequencer G.None_active
             && String.equal checkout.head (Commit.to_string candidate)
         | Some _ | None -> named_head candidate
       then Ok ()

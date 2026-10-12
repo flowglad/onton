@@ -545,7 +545,7 @@
  (action
   (setenv ONTON_SETSID_EXEC
    %{bin:onton-setsid-exec}
-   (run ./test_push_plan_integration.exe))))
+   (run %{exe:test_push_plan_integration.exe}))))
 
 (test
  (name test_backend_routing)
@@ -943,7 +943,7 @@
  (action
   (setenv ONTON_SETSID_EXEC
    %{bin:onton-setsid-exec}
-   (run ./test_branch_reconcile_boundaries.exe))))
+   (run %{exe:test_branch_reconcile_boundaries.exe}))))
 
 (test
  (name test_branch_replay_evidence)

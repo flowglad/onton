@@ -332,7 +332,14 @@ let scenario env entrypoint policy interruption unrelated =
                 ignore (repair ());
                 check "duplicate completion cannot rerun repair" (!calls = 1);
                 check "exact repaired SHA published once"
-                  (!publications = 1 && B.publications (state ()) <> []);
+                  (match B.publications (state ()) with
+                  | [ receipt ] ->
+                      !publications = 1
+                      && B.Commit.to_string receipt.published_revision
+                         = Git.git_capture ~cwd:dir [ "rev-parse"; "HEAD" ]
+                      && Git.git_capture ~cwd:remote [ "rev-parse"; "patch" ]
+                         = B.Commit.to_string receipt.published_revision
+                  | _ -> false);
                 check "repair keeps incoming contribution"
                   (Git.git_exit_code ~cwd:dir
                      [ "merge-base"; "--is-ancestor"; incoming; "HEAD" ]

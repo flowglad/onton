@@ -49,7 +49,7 @@ let run ~context ~guidance ~backend ~on_event ~cwd ~project_name ~patch_id
     | None -> (false, false, failure_detail)
     | Some result ->
         ( result.Llm_backend.timed_out,
-          result.saw_final_result && result.exit_code = 0,
+          result.saw_final_result,
           if result.exit_code <> 0 && String.trim result.stderr = "" then
             "repair agent exited " ^ string_of_int result.exit_code
           else result.stderr )

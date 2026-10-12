@@ -609,7 +609,15 @@ let () =
                       (B.operation (F.state finished pid))
                       ~default:false
                       ~f:(fun op ->
-                        String.equal op.B.intent.B.base (Branch.to_string main)))
+                        String.equal op.B.intent.B.base (Branch.to_string main)
+                        && Option.equal B.equal_phase
+                             (B.phase (F.state finished pid))
+                             (Some B.Preparing)
+                        && Option.value_map
+                             (B.pending (F.state finished pid))
+                             ~default:false
+                             ~f:(fun command ->
+                               B.equal_command_kind command.B.kind B.Observe)))
               && Option.equal Branch.equal
                    (Patch_agent.branch_rebased_onto
                       (Orchestrator.agent finished pid))

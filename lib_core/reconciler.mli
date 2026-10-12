@@ -92,7 +92,8 @@ val detect_rebases :
     dependents of [newly_merged] patches that have a PR, are not merged, and do
     not already have a rebase queued. Suppresses targets that are in the merge
     queue: they are already being validated by GitHub and their head branch is
-    push-locked until merge or ejection. *)
+    push-locked until merge or ejection. Also skips busy patches, patches
+    needing intervention, and branch-blocked patches. *)
 
 val detect_notified_base_drift : patch_view list -> action list
 (** [detect_notified_base_drift views] returns [Enqueue_rebase] for agents whose
@@ -105,7 +106,8 @@ val detect_notified_base_drift : patch_view list -> action list
     passes.
 
     Same precondition guards as other rebase detectors: has_pr, !merged,
-    !in_merge_queue, !Rebase-in-queue. *)
+    !in_merge_queue, !busy, !needs_intervention, !branch_blocked,
+    !Rebase-in-queue. *)
 
 val detect_stale_bases :
   Graph.t ->
@@ -119,7 +121,8 @@ val detect_stale_bases :
     [base_branch] differs from the structural base computed by
     [Graph.initial_base]. Same rebase-demand gate as the other detectors:
     suppresses patches in the merge queue because GitHub already validates them
-    against current base and their heads are push-locked. *)
+    against current base and their heads are push-locked. Also skips busy
+    patches, patches needing intervention, and branch-blocked patches. *)
 
 val detect_sibling_stale_bases :
   Graph.t ->
@@ -137,11 +140,11 @@ val detect_sibling_stale_bases :
     [Start (P, base = B)] ([Base_missing_merged_sibling]) relies on exactly this
     demand to ever become runnable. The target is enqueued (not [P]); [P]'s own
     start/rebase is gated separately by [Start_eligibility]. Skips when the
-    target has no PR yet, is in the merge queue, or already has a [Rebase]
-    queued, so queued/unstarted dependencies are never rebase-enqueued by this
-    detector. This is the demand that the other three detectors miss, because
-    the chain layers are *siblings* of [P]'s merged deps, not dependents of
-    them. *)
+    target has no PR yet, is busy, needs intervention, is branch-blocked, is in
+    the merge queue, or already has a [Rebase] queued, so queued/unstarted
+    dependencies are never rebase-enqueued by this detector. This is the demand
+    that the other three detectors miss, because the chain layers are *siblings*
+    of [P]'s merged deps, not dependents of them. *)
 
 val plan_operations :
   patch_view list ->

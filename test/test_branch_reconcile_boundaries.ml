@@ -244,6 +244,9 @@ let scenario env selected boundary =
                 ~before_head:(Some before) ~after_head:(Some after)
                 ~timed_out:false ~final_result:true ~detail:"staged resolution"
           in
+          (* Initial recovery checks precede the agent turn. Acceptance must
+             not repeat those independent checks after its completion report. *)
+          let prior_verifications = !verifications in
           let reached = ref false and refuse = ref false in
           let failing_persist snapshot =
             if completion && not !reached then (
@@ -328,6 +331,8 @@ let scenario env selected boundary =
                      [ "merge-base"; "--is-ancestor"; revision; "patch" ]
                   = 0))
               [ source; target ];
+            check "accepted recovery skips independent verification"
+              (!verifications = prior_verifications);
             check "accepted recovery keeps agent-reported evidence"
               (List.exists
                  (fun receipt ->

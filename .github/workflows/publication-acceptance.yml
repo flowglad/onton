@@ -14,17 +14,21 @@ jobs:
   publication:
     name: Real Git publication and checkpoint races
     runs-on: blacksmith-4vcpu-ubuntu-2404
-    timeout-minutes: 45
+    timeout-minutes: 60
     defaults:
       run:
         shell: bash
     steps:
       - uses: useblacksmith/checkout@41cdeedae8edb2e684ba22896a5fd2a3cb85db6b # v4
+        with:
+          persist-credentials: false
       - uses: ocaml/setup-ocaml@e32b06a3e831ff2fbc6f08cf35be2085e3918014 # v3.6.1
+        timeout-minutes: 10
         with:
           ocaml-compiler: '5.5.0'
           dune-cache: true
       - name: Install dependencies
+        timeout-minutes: 15
         run: |
           opam option 'archive-mirrors=["https://opam.ocaml.org/cache"]'
           opam install . --deps-only --with-test -y < /dev/null

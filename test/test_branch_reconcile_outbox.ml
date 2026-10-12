@@ -469,7 +469,8 @@ let tests =
           && Option.value (Json.bool_field "runnable" json) ~default:false
           && List.exists (pending restored.orchestrator) ~f:(fun message ->
               Message_id.equal message.Orchestrator.message_id retry.message_id)
-          && B.equal owner (state restored.orchestrator)
+          && Option.equal B.equal_operation (B.operation owner)
+               (B.operation (state restored.orchestrator))
         with _ -> false);
     QCheck2.Test.make
       ~name:"terminal patch completes held reconciliation delivery" ~count:50

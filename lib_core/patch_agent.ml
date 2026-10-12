@@ -498,18 +498,7 @@ let set_base_branch t branch =
         fst
           (Branch_reconcile.step t.branch_reconcile
              (Branch_reconcile.Request
-                {
-                  op.intent with
-                  base = Branch.to_string branch;
-                  purpose =
-                    (match op.intent.purpose with
-                    | Publish_revision _ | Publish_session _
-                    | Integrate_revision _ | Verify_publication ->
-                        Reconcile_base
-                    | Reconcile_base | Reconcile_request _ | Reconcile_scoped _
-                    | Provision_checkout _ ->
-                        op.intent.purpose);
-                }))
+                { op.intent with base = Branch.to_string branch }))
     | Some _ | None -> t.branch_reconcile
   in
   {

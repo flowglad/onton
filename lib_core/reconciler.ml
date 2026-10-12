@@ -197,8 +197,9 @@ let detect_sibling_stale_bases_with_mode ~mode graph views ~has_merged =
                   %s"
                  (Patch_id.to_string v.id)))
   in
-  (* [b] is rebasable only once it has a PR and does not already have a Rebase
-     queued. Guarding on [b]'s own view (and only [b]'s — the fan-in patch [v]
+  (* [b] is rebasable only once it has a PR, is outside the merge queue,
+     is not busy, does not need intervention, is not branch-blocked, and does
+     not already have a Rebase queued. Guarding on [b]'s own view (and only [b]'s — the fan-in patch [v]
      may itself be unstarted) keeps this detector as disciplined as the other
      three, which only ever enqueue a rebase for a patch they have validated.
      In particular, an unstarted/queued dep with no worktree leaves the fan-in

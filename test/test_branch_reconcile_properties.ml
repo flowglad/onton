@@ -247,6 +247,41 @@ let fails_recovery state interrupted =
 
 let[@warning "-4"] tests =
   [
+    QCheck2.Test.make ~count:100
+      ~name:"BR agent publication rejects every active sequencer"
+      Gen.(int_range 0 3)
+      (fun kind ->
+        try
+          let state, _ = accepted_recovery () in
+          let operation = Option.get (B.operation state) in
+          let command = Option.get (B.pending state) in
+          let sequencer =
+            match kind with
+            | 0 -> Git_observation.None_active
+            | 1 -> Git_observation.Merge { target = B.Commit.to_string target }
+            | 2 ->
+                Git_observation.Cherry_pick
+                  { target = B.Commit.to_string target }
+            | _ ->
+                Git_observation.Rebase
+                  {
+                    target = B.Commit.to_string target;
+                    original = B.Commit.to_string source;
+                    step = "1";
+                    head_ref = "refs/heads/patch";
+                    merge_heads = [];
+                  }
+          in
+          let checkout =
+            Git_observation.of_porcelain ~branch:(Some "patch")
+              ~head:(B.Commit.to_string candidate)
+              ~sequencer ""
+          in
+          Bool.equal
+            (B.check_checkout ~operation command ~branch:"patch" checkout
+            = Ok ())
+            (kind = 0)
+        with _ -> false);
     QCheck2.Test.make ~count:200
       ~name:"BR successful evidence resets only its observation budget" Gen.bool
       (fun mutate ->
@@ -452,26 +487,23 @@ let[@warning "-4"] tests =
       ~name:"BR accepted repair confirms publication after lost acknowledgement"
       Gen.bool (fun restart ->
         try
-          let state, _ = accepted_recovery () in
+          let state, token = accepted_recovery () in
           let state =
             fst (reply_raw state (B.Attempt_failed "lost acknowledgement"))
           in
           let state = if restart then restore state else state in
           let state = fst (B.step state (B.Tick 1000.)) in
+          let pending = Option.get (B.pending state) in
+          let inspecting = B.equal_command_kind pending.kind B.Inspect in
           let state =
             fst
               (reply_raw state
-                 (B.Inspected
-                    {
-                      observation with
-                      source = candidate;
-                      head = candidate;
-                      remote = Some candidate;
-                    }))
+                 (B.Remote { sha = Some candidate; topology = B.Equal }))
           in
-          B.phase state = Some B.Settled
+          inspecting
+          && B.phase state = Some B.Settled
           && (Option.get (B.operation state)).candidate_evidence
-             <> Some B.Executed
+             = Some (B.Agent_reported token)
         with _ -> false);
     QCheck2.Test.make
       ~name:"BR publication rejection offers bounded complete repair" ~count:100

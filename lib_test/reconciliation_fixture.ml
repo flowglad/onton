@@ -76,7 +76,13 @@ let reply t pid result =
 let verify_scope t pid =
   P.verify_scope ~step:(fun t e -> step t pid e) ~state:(fun t -> state t pid) t
 
-let confirm t pid candidate =
+let[@warning "-42"] confirm t pid candidate =
+  let operation_id =
+    Option.value_map
+      (B.operation (state t pid))
+      ~default:(-1)
+      ~f:(fun op -> op.B.id)
+  in
   let t =
     reply t pid (B.Remote { sha = Some candidate; topology = B.Equal })
     |> fun t -> verify_scope t pid
@@ -85,8 +91,9 @@ let confirm t pid candidate =
     not
       (List.exists
          (B.publications (state t pid))
-         ~f:(fun receipt ->
-           B.Commit.equal receipt.B.published_revision candidate))
+         ~f:(fun (receipt : B.publication_receipt) ->
+           Int.equal receipt.B.operation_id operation_id
+           && B.Commit.equal receipt.B.published_revision candidate))
   then
     QCheck2.Test.fail_reportf "fixture captured reconciliation did not publish";
   let head = B.Commit.to_string candidate in

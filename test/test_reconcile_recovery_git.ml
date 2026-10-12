@@ -285,6 +285,60 @@ let checkout_recovery env detached =
                  [ "cat-file"; "-e"; "patch:interrupted" ]
                <> 0)))
 
+let repair_capture_checkout_change env detached =
+  Git.with_temp_repo (fun remote ->
+      let base = commit remote "base" "base\n" "base" in
+      Git.with_temp_repo (fun dir ->
+          prepare remote dir;
+          ignore (commit dir "work" "work\n" "work");
+          write dir "unfinished" "unfinished\n";
+          ignore (commit remote "upstream" "upstream\n" "upstream");
+          let runtime = make_runtime () in
+          let io =
+            E.make_io
+              ~process_mgr:(Eio.Stdenv.process_mgr env)
+              ~clock:(Eio.Stdenv.clock env) ~path:dir
+          in
+          let checkpoint = Filename.temp_file "capture-checkout" ".json" in
+          Fun.protect
+            ~finally:(fun () -> Sys.remove checkpoint)
+            (fun () ->
+              ignore
+                (run runtime (persist checkpoint) io
+                   (B.Materialized (B.New_branch (sha base))));
+              let token =
+                require_turn
+                  (run runtime (persist checkpoint) io (B.Request intent))
+              in
+              ignore
+                (run runtime (persist checkpoint) io (B.Repair_started token));
+              if detached then
+                Git.run_git ~cwd:dir [ "checkout"; "--detach"; "-q" ]
+              else Git.run_git ~cwd:dir [ "checkout"; "-q"; "-b"; "other" ];
+              let capture, _ =
+                B.step (state runtime) (B.Repair_completed { token; at = 100. })
+              in
+              let result =
+                execute io
+                  ~operation:(Option.get (B.operation capture))
+                  (Option.get (B.pending capture))
+              in
+              check "changed repair checkout requires recovery"
+                (result = B.Recovery_required "repair_capture_checkout_changed");
+              let outcome =
+                run runtime (persist checkpoint) io
+                  (B.Repair_completed { token; at = 100. })
+              in
+              check "changed repair checkout offers visible owned recovery"
+                (match outcome with
+                | R.Repair_needed _ | R.Intervention _ -> true
+                | R.Idle | R.Waiting | R.Checkpoint_failed _ -> false);
+              check "changed repair checkout cannot publish"
+                (B.publications (state runtime) = []
+                && Git.git_exit_code ~cwd:remote
+                     [ "rev-parse"; "--verify"; "patch" ]
+                   <> 0))))
+
 let trusted_migration_repair ?(lost_checkpoint = false) env ~held ~lost_capture
     ~lost_ack =
   Git.with_temp_repo (fun remote ->
@@ -362,7 +416,13 @@ let trusted_migration_repair ?(lost_checkpoint = false) env ~held ~lost_capture
               (* The repair owns repository-wide changes and finishes the merge. *)
               Git.run_git ~cwd:dir [ "add"; "snapshot.json" ];
               Git.run_git ~cwd:dir [ "commit"; "-qm"; "snapshot work" ];
-              ignore (io.git [ "merge"; "--no-edit"; "origin/main" ]);
+              let merge_code, _, _ =
+                io.git [ "merge"; "--no-edit"; "origin/main" ]
+              in
+              check "upstream merge reports a conflict" (merge_code = 1);
+              check "upstream merge is in progress"
+                (Git.git_capture ~cwd:dir [ "rev-parse"; "MERGE_HEAD" ]
+                = Git.git_capture ~cwd:dir [ "rev-parse"; "origin/main" ]);
               Git.run_git ~cwd:dir [ "rm"; "-f"; "migration.sql" ];
               write dir "renamed-migration.sql"
                 "validated patch and upstream schema\n";
@@ -731,6 +791,8 @@ let () =
   trusted_migration_repair ~lost_checkpoint:true env ~held:false
     ~lost_capture:false ~lost_ack:false;
   trusted_migration_repair env ~held:true ~lost_capture:false ~lost_ack:false;
+  repair_capture_checkout_change env false;
+  repair_capture_checkout_change env true;
   checkout_recovery env false;
   checkout_recovery env true;
   publication_recovery env ~persistent:false ~timeout:false ~local_hook:false;

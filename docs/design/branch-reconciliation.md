@@ -28,7 +28,7 @@ errors, distinct from successfully observing absent refs or absent sequencers.
 Onton's deterministic continuation uses the observed index and sequencer to
 recognize ready and empty replay steps. Once a repair agent is dispatched, the
 agent owns the entire repair: resolve conflicts, make necessary repository-wide
-changes, finish the merge or rebase, commit, and run applicable repository checks.
+changes, finish the merge or rebase, commit if needed, and run applicable repository checks.
 Successful repair may change both the tree and commit topology.
 
 ## Durable protocol
@@ -172,8 +172,10 @@ publication is accepted. Its private certificate binds the exact contract and
 candidate. The executor predicts the tree independently from immutable inputs,
 checks the complete candidate history, and permits differences from the
 prediction only on Git-reported conflict paths. Publication repeats this check
-before the lease-protected push. Stale results, changed requests and a backend's
-success report is recorded separately as agent-reported evidence rather than this certificate.
+before the lease-protected push. Stale command results are ignored, and changed
+requests cannot reuse the certificate. Only a successful repair turn is recorded
+separately as agent-reported evidence; a backend success report does not supply
+a deterministic scope certificate.
 
 Remote replay records a separate durable integration receipt before publication,
 including source, preserved candidate, chosen boundary, resulting revision, and

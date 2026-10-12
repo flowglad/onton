@@ -910,12 +910,15 @@ let execute ~io ~prefix ~branch ~(operation : Branch_reconcile.operation)
             | Deterministic | Accepted_agent_repair _ ->
                 raise (Probe_failed "repair completion receipt missing")
           in
-          let actual_branch =
-            checked io [ "symbolic-ref"; "--quiet"; "--short"; "HEAD" ]
+          let code, actual_branch, err =
+            io.git [ "symbolic-ref"; "--quiet"; "--short"; "HEAD" ]
           in
-          if not (String.equal actual_branch branch) then
-            Branch_reconcile.Retryable
-              { reason = "repair_capture_checkout_changed"; retry_after = None }
+          if code <> 0 && code <> 1 then
+            raise
+              (Probe_failed ("cannot inspect repair checkout branch: " ^ err));
+          if code = 1 || not (String.equal (String.strip actual_branch) branch)
+          then
+            Branch_reconcile.Recovery_required "repair_capture_checkout_changed"
           else
             let ref_name =
               Printf.sprintf "%s/%d/%d/accepted-agent-repair" prefix
