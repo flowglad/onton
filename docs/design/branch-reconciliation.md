@@ -25,19 +25,11 @@ records. Filenames containing whitespace, quotes, or newlines remain literal.
 Malformed status output cannot establish a clean checkout. Failed probes are
 errors, distinct from successfully observing absent refs or absent sequencers.
 
-A staged conflict resolution is ready for continuation when the sequencer is
-active, the index has no unmerged entries, and tracked files have no unstaged
-changes. It does not require an agent commit. The sequencer identity contains
-its pinned target and replay step; incidental HEAD changes do not establish
-repair progress. A rebase that is recreating a merge also records its active
-merge heads. An empty staged diff at that step still requires a merge commit to
-retain its parents; only an empty ordinary replay step is skipped. The core
-checkpoints a dedicated merge-completion command before Onton commits that
-resolution, then checkpoints the resulting head before continuing the rebase.
-Recovery verifies the exact parents, unchanged tree identity, and remaining
-sequencer context to recognize a completed merge after lost acknowledgement.
-Repeated deterministic failure can escalate to independently verified history
-recovery, including completion of the interrupted merge.
+Onton's deterministic continuation uses the observed index and sequencer to
+recognize ready and empty replay steps. Once a repair agent is dispatched, the
+agent owns the entire repair: resolve conflicts, make necessary repository-wide
+changes, finish the merge or rebase, commit, and run applicable repository checks.
+Successful repair may change both the tree and commit topology.
 
 ## Durable protocol
 
@@ -130,19 +122,34 @@ the prompt and streamed output to the same transcript. All recovery modes use
 this path. Resume failure never selects a fresh conversation. If the patch has
 never had a conversation, its first repair initializes the normal patch session;
 a committed turn makes that identity resumable across restart. Repair does not
-invoke ordinary implementation-session completion or publication. The repair claim captures the checkout HEAD, which
-can differ from the named branch during a rebase. The handler checks that HEAD
-before dispatch; subsequent inspection checks the captured HEAD and sequencer
-even after a lost probe or restart. Unexpected agent commits, resets or
-sequencer changes stop continuation while retaining work. A completed
-agent turn triggers inspection, then Onton continues the sequencer. Two consecutive completed turns at the same
-step without reducing the number of index conflicts exhaust content repair and
-enter history recovery with reason `repair_no_structural_progress`. Advancing a step or resolving additional
-conflicts resets this budget. Transport failures and restart do not spend it.
+invoke ordinary implementation-session completion or publication. The handler
+checks the captured HEAD before dispatch to fence the turn's checkout identity.
+Failed or interrupted turns remain pending recovery. Failed accepted turns spend
+the bounded repair budget; transport interruptions do not. Polling and restart
+preserve intervention and exhausted budgets. Explicit resume or human guidance
+can authorize another complete repair turn.
+
+Successful completion checkpoints `Capture_agent_repair` with the operation and
+turn identity before reading HEAD. The executor reads and pins HEAD, then the
+owner checkpoints `Accepted_agent_repair` containing that turn and exact SHA.
+The result ref is keyed by the repair turn, so a lost receipt write recovers the
+same pinned SHA across command retries and restart. A failed HEAD read retries capture without rerunning the successful turn. Duplicate
+completion or command results cannot accept or publish a different candidate.
+Legacy attempt counters never synthesize an accepted repair receipt.
 
 Publication retains the candidate after failures and uses its immutable SHA
 and an explicit expected remote SHA, including the empty lease for an absent
-remote branch. PR #482's content-checked `Rewrite_lineage` proof is shared by
+remote branch. Accepted agent repairs retain their provenance through publication,
+confirmation, settlement and restart. Onton trusts the agent's repository
+validation and publishes the exact accepted SHA. It does not apply tree
+prediction, conflict-path restrictions, replay reconstruction, ancestry,
+local-extension or rewrite-lineage approval to these candidates. A changed lease
+retains the accepted candidate and requests repair against the observed remote.
+Direct equality, or a confirmed remote descendant, settles an already-published
+candidate. Operation tokens, checkout identity, destination and remote leases
+continue to fence routing and concurrency.
+
+For deterministic candidates, PR #482's content-checked `Rewrite_lineage` proof is shared by
 the existing publisher and the new executor through
 `Git_publication_evidence`. A refreshed lease alone never grants rewrite
 permission. Remote integration first verifies the preserved local candidate,
@@ -160,13 +167,13 @@ agent repair. Legacy checkout/reset and merge-todo checkpoint commands cannot
 bypass these checks. Managed rebases explicitly disable automatic ref updates,
 autostash, merge recreation, autosquash and fork-point inference.
 
-`Verify_scope` is a separate owned observation before an integration receipt or
+For deterministic candidates, `Verify_scope` is a separate owned observation before an integration receipt or
 publication is accepted. Its private certificate binds the exact contract and
 candidate. The executor predicts the tree independently from immutable inputs,
 checks the complete candidate history, and permits differences from the
 prediction only on Git-reported conflict paths. Publication repeats this check
 before the lease-protected push. Stale results, changed requests and a backend's
-success report cannot substitute for this certificate.
+success report is recorded separately as agent-reported evidence rather than this certificate.
 
 Remote replay records a separate durable integration receipt before publication,
 including source, preserved candidate, chosen boundary, resulting revision, and
@@ -218,7 +225,7 @@ silently substitute a rewrite for a recorded merge. The preservation requirement
 is captured separately from that strategy: an adopted merge may strengthen a
 rewrite request, but an adopted rebase cannot weaken an ancestry-preserving
 request or a root contribution. Integration completion, publication, confirmation,
-and completed-candidate restart inspection enforce the captured requirement.
+and completed-candidate restart inspection enforce the captured requirement for deterministic candidates.
 Remote integration successors retain its original source and target obligations.
 Recovery prompts explicitly distinguish ancestry requirements from permitted
 verified rewrites. Legacy checkpoints recover a missing requirement from the
@@ -246,56 +253,26 @@ commands are bounded mutation attempts because their outcome may be uncertain;
 confirmation precedes another push. Permission failures receive bounded recovery.
 The agent may repair local causes, but cannot change permissions or publish.
 
-Onton retains publication authority. The recovery agent requests publication;
-Onton inspects the actual checkout and sequencer, verifies preservation evidence,
-and publishes a captured candidate with an explicit lease. Neither an agent's
-success report nor a refreshed lease establishes that remote work was retained.
-Unverifiable preservation produces a specific intervention reason with recovery
-refs retained. Recovery turns have durable identities and a bounded progress
-budget, so restart and duplicate results cannot dispatch or charge a turn twice.
-The last claimed repair token is retained separately from the current command
-sequence, so inspection and infrastructure retries do not relabel the agent
-turn. Diagnostics expose that identity, mode, completion state and no-progress
-count. Recovery prompts carry the turn identity and distinguish recorded replay
-boundaries from best-effort inference. Older checkpoints without the retained
-identity remain readable and report it as unknown.
+Onton retains publication authority. A successful repair report authorizes HEAD
+capture and exact-SHA publication with the captured remote lease. Integration
+receipts record `Agent_reported` with the repair turn identity, distinct from
+independently verified deterministic evidence. The agent owns checkout cleanliness,
+required contributions, resulting history and repository validation. Prompts retain
+captured revisions, recovery refs, project context, human guidance and publication
+policy; they allow repository-wide edits and complete Git repair.
 
-History recovery is a distinct mode of the durable agent-turn protocol. It is
-entered after exhausted staged conflict repair, invalidated Git preconditions,
-unexpected agent Git mutations, uncertain local integration and publication
-state, or a completed publication check that cannot establish preservation of
-remote work. A negative preservation result is distinct from a failed probe:
-only the failed probe retries as infrastructure. A checkpointed verification command pins the captured
-revisions and every observed recovery HEAD, named branch tip and remote tip before
-offering a turn. These revisions become durable preservation obligations across
-later turns and restarts. Recovery may change
-HEAD; staged content repair may not. Both modes share duplicate-safe claims,
-interruption handling and structural-progress accounting.
+Recovery observations pin source, target, candidates and newly observed remote
+revisions before another turn. These refs retain work across restart and upgrade;
+they do not require Onton to independently reconstruct the agent's result. An old
+held checkpoint remains held. Resume starts a complete repair turn, which can
+inspect an existing candidate and report completion without creating a commit.
 
-After a recovery turn, Onton verifies a clean named checkout, the captured
-integration target and the contribution contract. For replay repair it follows
-the recorded first-parent range, omits merge commits and side-parent history,
-and composes an independent tree prediction from the remaining commits. For a
-merge it predicts exactly the two authorized inputs. A repaired candidate must
-have the authorized ancestry and match that prediction outside conflict paths.
-
-Retention and inclusion are separate. Original inputs, observed remote heads and
-rejected repair commits stay pinned and in the pruning inventory. Retaining a
-revision does not grant permission to merge it into the patch. A newly observed
-remote is compared with the captured lease, not the set of retained backups;
-a valid local repair can therefore proceed to a separately verified remote
-integration even if that remote was already observed before the agent ran.
-Capacity acquisition and completion remain fenced by owned observations.
-
-`Finish_local_work` authorizes ordinary commits extending the captured source.
-`Repair_publication` can authorize ordinary source fixes extending a candidate
-that already passed scope verification. Both require a private certificate of
-the complete linear continuation; a merge cannot widen their authority.
-History reconstruction has no such permission to add content. These checks
-establish the scope of Git history transformations, while source edits explicitly
-requested by an implementation or publication-repair task remain that task's
-responsibility. Dirty work finishes before deferred base reconciliation, and
-completed local work causes the deferred base to be freshly observed.
+An unchanged captured HEAD that already includes its target satisfies integration
+before pending files are considered. Onton verifies and confirms that committed
+revision while preserving staged, unstaged and untracked files. Rebase demand is
+suppressed while the owner is active, waiting, repairing or held. A changed base
+becomes deferred intent and runs after the captured operation finishes. Satisfied
+queued rebase obligations and pending messages are retired.
 
 Live reconciliation paths route exhausted recovery through this owner. The
 legacy conflict-info/reset/rebase prompt renderers are removed; the captured
@@ -458,15 +435,15 @@ dependent cuts even when legacy CI and base observations still look ready.
 
 The runner resumes checkpointed Git work under scoped patch ownership. It checks
 the operation identity again after acquiring ownership. Content repair continues
-the patch agent conversation with staged-resolution instructions under patch
+the patch agent conversation with complete Git-repair instructions under patch
 ownership and the session concurrency limit. Waiting for an agent slot
 holds neither patch nor root Git ownership. After capacity becomes available,
 the runner acquires ownership and revalidates the durable turn claim before
 invoking the backend. Ordinary Start and Respond actions use the same resource
 order, and cancellation while waiting still completes their busy lifecycle.
 Each agent turn releases capacity and ownership before another turn is queued.
-The handler inspects the
-index and sequencer after the turn and lets the core authorize continuation.
+The handler checkpoints successful completion, then captures and pins HEAD.
+The core retains the accepted repair receipt through publication and confirmation.
 An interrupted backend leaves pending work; restart inspects Git before a
 replacement turn. Infrastructure failures back off without spending repair
 budget.
@@ -615,14 +592,12 @@ strings describe decisions; they are not a fallback allowlist.
 
 `Branch_reconcile` constructs this plan from captured intent, typed observations
 and durable progress. A recovery task distinguishes finishing local work,
-reconstructing history, and repairing rejected publication. Finishing local work
-unlocks deterministic base integration only after independent verification.
-A repair reservation is distinct from backend dispatch. Newly discovered dirty
-work during a capacity wait can select finishing local work; the owner checkpoints
-an execution fence immediately before invoking the backend. Once dispatched,
-history reconstruction cannot gain source-extension authority by leaving dirty
-files and restarting. Legacy checkpoints default to the conservative dispatched
-state. Recovery sessions receive patch/project context and queued human guidance;
+reconstructing history, and repairing rejected publication. Every successful repair task completes its repository validation and Git integration
+before reporting success. A repair reservation is distinct from backend dispatch;
+the owner fences the captured checkout immediately before invoking the backend.
+Legacy checkpoints retain their captured inputs, candidates and attempt budgets,
+and cannot acquire accepted repair authority from an attempt counter.
+Recovery sessions receive patch/project context and queued human guidance;
 guidance remains available for normal task delivery.
 
 `Attempt_failed` records an executed mutation failure, including validation
@@ -632,9 +607,8 @@ resets it. Repeated probe failures request diagnosis with environmental repair w
 spending mutation attempts. A complete observation resets the separate
 `observation_failures` count; the general backoff counter cannot trigger or
 exhaust recovery. Rejected lease/queue publication attempts use the mutation
-retry budget. Backend failures before turn acceptance remain infrastructure waits. A backend failure after acceptance is verified and charged
-as a completed unsuccessful attempt when it made no verified progress. Two
-completed full-recovery turns without progress hold the operation with its work
+retry budget. Backend failures before turn acceptance remain infrastructure waits. A failed accepted backend turn is charged as an unsuccessful repair attempt. Two
+failed full-recovery turns without progress hold the operation with its work
 retained. Explicit resume authorizes a new budget.
 
 A publication rejection is an unsatisfied publication obligation even when the
@@ -675,16 +649,16 @@ dispatch outside that state machine.
 
 Valid detached or wrong-branch observations also reach recovery. The observed
 HEAD, managed branch tip and remote revisions are retained before dispatch;
-verification requires the managed branch to be checked out. Old intervention
-checkpoints without evidence of an exhausted agent budget receive a fresh
-inspection on upgrade, including intermediate snapshots that already contain
-planning counters. Captured authority and exhausted agent budgets survive.
+capture requires the managed branch to be checked out. Old intervention checkpoints
+stay held on upgrade. Explicit resume starts a complete repair turn; it can validate
+and report an existing candidate without creating another commit. Captured authority,
+operation identities, retained candidates and exhausted agent budgets survive.
 
 Real-Git acceptance in `test_reconcile_recovery_git` covers dirty restart/bump/
 human guidance, repeated merge validation and push timeouts, local hook bypass,
 remote hook rejection, exhausted publication repair, and switched/detached checkouts.
 Timeouts inject the executor's exit-124 outcome; they do not wait 120 wall-clock
-seconds. Recovery uses controlled fixture agents and independent Git verification,
+seconds. Recovery uses controlled fixture agents, with independent Git assertions in the tests,
 not a live model success-rate trial. Full qualification is recorded in the
 [M3 audit](../workstreams/branch-reconciliation-m3-audit.md).
 
@@ -700,3 +674,8 @@ Onton-owned Git subprocesses disable local hooks through the process-scoped clea
 Git environment. User and agent Git commands retain repository hooks. Remote
 server policy still applies; local transport test fixtures must explicitly model
 the server environment rather than inherit the client's hook override.
+
+GitHub polling reads the current base branch target (`baseRef.target.oid`)
+for revision-pair confirmation. The PR's recorded `baseRefOid` can lag the live
+branch indefinitely and does not identify the branch head. Direct Git head and
+base confirmation still fence readiness when the live observations disagree.

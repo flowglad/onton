@@ -530,19 +530,22 @@
  (ocamlopt_flags (:standard -w -40-42-4))
  (ocamlc_flags (:standard -w -40-42-4)))
 
-(test
+(executable
  (name test_push_plan_integration)
  (modules test_push_plan_integration)
+ (libraries onton onton_core onton_test_support eio eio_main eio.unix unix
+   qcheck-core)
+ (ocamlopt_flags (:standard -w -40-42-4))
+ (ocamlc_flags (:standard -w -40-42-4)))
+
+(rule
+ (alias publication-acceptance)
  (locks git-integration)
  (deps (package onton))
  (action
   (setenv ONTON_SETSID_EXEC
    %{bin:onton-setsid-exec}
-   (run %{test})))
- (libraries onton onton_core onton_test_support eio eio_main eio.unix unix
-   qcheck-core)
- (ocamlopt_flags (:standard -w -40-42-4))
- (ocamlc_flags (:standard -w -40-42-4)))
+   (run ./test_push_plan_integration.exe))))
 
 (test
  (name test_backend_routing)
@@ -922,15 +925,19 @@
  (flags (:standard -w -40-42))
  (libraries onton_core onton_core_test_support qcheck-core qcheck-core.runner))
 
-(test
+(executable
  (name test_branch_reconcile_boundaries)
  (modules test_branch_reconcile_boundaries)
- (libraries onton onton_core onton_test_support eio_main unix)
+ (libraries onton onton_core onton_test_support eio_main unix))
+
+(rule
+ (alias reconciliation-checkpoint-acceptance)
+ (locks git-integration)
  (deps (package onton))
  (action
   (setenv ONTON_SETSID_EXEC
    %{bin:onton-setsid-exec}
-   (run %{test}))))
+   (run ./test_branch_reconcile_boundaries.exe))))
 
 (test
  (name test_branch_replay_evidence)

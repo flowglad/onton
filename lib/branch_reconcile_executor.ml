@@ -900,6 +900,67 @@ let execute ~io ~prefix ~branch ~(operation : Branch_reconcile.operation)
               ~target:None ~original_source:None
           in
           Branch_reconcile.inspection_result operation ~branch o checkout
+      | Branch_reconcile.Inspect
+        when match operation.candidate_origin with
+             | Branch_reconcile.Capture_agent_repair _ -> true
+             | Deterministic | Accepted_agent_repair _ -> false ->
+          let turn =
+            match operation.candidate_origin with
+            | Branch_reconcile.Capture_agent_repair turn -> turn
+            | Deterministic | Accepted_agent_repair _ ->
+                raise (Probe_failed "repair completion receipt missing")
+          in
+          let actual_branch =
+            checked io [ "symbolic-ref"; "--quiet"; "--short"; "HEAD" ]
+          in
+          if not (String.equal actual_branch branch) then
+            Branch_reconcile.Retryable
+              { reason = "repair_capture_checkout_changed"; retry_after = None }
+          else
+            let ref_name =
+              Printf.sprintf "%s/%d/%d/accepted-agent-repair" prefix
+                turn.operation turn.command
+            in
+            let code, _, err =
+              io.git [ "show-ref"; "--verify"; "--quiet"; ref_name ]
+            in
+            let head =
+              match code with
+              | 0 -> resolve io ref_name
+              | 1 ->
+                  let head = resolve io "HEAD" in
+                  pin io ~prefix turn "accepted-agent-repair" head;
+                  head
+              | _ ->
+                  raise
+                    (Probe_failed ("repair capture ref probe failed: " ^ err))
+            in
+            Branch_reconcile.Integrated head
+      | Branch_reconcile.Inspect
+        when Option.exists operation.candidate
+               ~f:(Branch_reconcile.agent_candidate operation) ->
+          pin_captured ();
+          let candidate =
+            match operation.candidate with
+            | Some candidate -> candidate
+            | None -> raise (Probe_failed "accepted repair candidate missing")
+          in
+          let actual_branch =
+            checked io [ "symbolic-ref"; "--quiet"; "--short"; "HEAD" ]
+          in
+          let actual_head = resolve io "HEAD" in
+          if
+            not
+              (String.equal actual_branch branch
+              && Branch_reconcile.Commit.equal actual_head candidate)
+          then
+            Branch_reconcile.Recovery_required
+              "accepted_repair_checkout_changed"
+          else
+            let sha = remote io ~destination branch in
+            Option.iter sha ~f:(pin io ~prefix command.token "confirmed-remote");
+            Branch_reconcile.Remote
+              { sha; topology = topology io candidate sha }
       | Branch_reconcile.Inspect ->
           pin_captured ();
           if Option.is_none operation.source then refresh_base ();
@@ -912,7 +973,8 @@ let execute ~io ~prefix ~branch ~(operation : Branch_reconcile.operation)
           if
             o.clean && Option.is_none o.sequencer
             && Option.exists operation.candidate ~f:(fun candidate ->
-                not (ancestry_preserved io operation candidate))
+                (not (Branch_reconcile.agent_candidate operation candidate))
+                && not (ancestry_preserved io operation candidate))
           then Branch_reconcile.Recovery_required "ancestry_not_preserved"
           else (
             complete_initial_tracking io ~destination ~branch ~operation
@@ -944,89 +1006,13 @@ let execute ~io ~prefix ~branch ~(operation : Branch_reconcile.operation)
               pin io ~prefix command.token
                 ("observed-remote/" ^ Branch_reconcile.Commit.to_string remote)
                 remote);
-          let ready =
-            G.clean checkout && Option.is_none o.sequencer
-            && Option.equal String.equal checkout.branch (Some branch)
-          in
-          let extension_contract =
-            Branch_reconcile.local_extension_contract operation
-          in
-          let local_extension =
-            if ready then
-              Option.bind extension_contract ~f:(fun (original, _) ->
-                  try
-                    Some
-                      (capture_replay_scope io ~source:o.source
-                         (Branch_reconcile.Recorded original))
-                  with Scope_required _ -> None)
-            else None
-          in
-          let extension_verified =
-            match (extension_contract, local_extension) with
-            | Some (_, contract), Some extension ->
-                Option.is_some (Replay_scope.extend_local contract extension)
-            | None, _ | _, None -> false
-          in
-          let scoped =
-            if ready then
-              try
-                Some
-                  (verify_candidate_scope io ~request:operation.approved_scope
-                     ~candidate:o.source)
-              with Scope_required _ -> None
-            else None
-          in
-          let preserved original =
-            if ancestor io original o.source then true
-            else if
-              Branch_reconcile.equal_policy
-                (Branch_reconcile.execution_policy operation)
-                Branch_reconcile.Preserve_ancestry
-            then false
-            else if
-              Option.exists scoped ~f:(fun proof ->
-                  match proof.Replay_scope.request with
-                  | Replay_scope.Replay { source; _ } ->
-                      String.equal source
-                        (Branch_reconcile.Commit.to_string original)
-                  | Replay_scope.Unproven | Identity _ | Merge _ -> false)
-            then true
-            else
-              let candidate =
-                if extension_verified then
-                  match extension_contract with
-                  | Some (baseline, Replay_scope.Identity _) -> baseline
-                  | Some (_, (Replay_scope.Unproven | Replay _ | Merge _))
-                  | None ->
-                      o.source
-                else o.source
-              in
-              match
-                Git_publication_evidence.rewrite_authority ~git:io.git ~branch
-                  ~local_sha:(Branch_reconcile.Commit.to_string candidate)
-                  ~remote_sha:(Branch_reconcile.Commit.to_string original)
-              with
-              | Error reason -> raise (Probe_failed reason)
-              | Ok None -> false
-              | Ok (Some evidence) ->
-                  Rewrite_lineage.authorizes evidence ~branch
-                    ~local_sha:(Branch_reconcile.Commit.to_string candidate)
-                    ~remote_sha:(Branch_reconcile.Commit.to_string original)
-          in
+          ignore (checkout : Git_observation.t);
           Branch_reconcile.Recovery_verified
             {
               observation = o;
-              local_extension;
-              source_preserved =
-                ready
-                && List.for_all operation.recovery_revisions ~f:preserved
-                && (extension_verified
-                   || Option.is_some scoped
-                      && ancestry_preserved io operation o.source);
-              remote_preserved =
-                ready
-                && Option.for_all operation.expected ~f:preserved
-                && Option.for_all o.remote ~f:preserved;
+              local_extension = None;
+              source_preserved = false;
+              remote_preserved = false;
             }
       | Branch_reconcile.Plan_remote_replay request -> (
           pin_captured ();
@@ -1222,52 +1208,56 @@ let execute ~io ~prefix ~branch ~(operation : Branch_reconcile.operation)
                 mutation_result io ~operation code err)
       | Branch_reconcile.Publish { candidate; expected } -> (
           pin_captured ();
-          ignore
-            (verify_candidate_scope io ~request:operation.approved_scope
-               ~candidate
-              : Replay_scope.verified);
+          if not (Branch_reconcile.agent_candidate operation candidate) then
+            ignore
+              (verify_candidate_scope io ~request:operation.approved_scope
+                 ~candidate
+                : Replay_scope.verified);
           let checkout = observe_checkout io in
           match
             Branch_reconcile.check_checkout ~operation command ~branch checkout
           with
           | Error reason -> Branch_reconcile.Recovery_required reason
           | Ok () -> (
-              if not (ancestry_preserved io operation candidate) then
-                Branch_reconcile.Recovery_required "ancestry_not_preserved"
+              if
+                (not (Branch_reconcile.agent_candidate operation candidate))
+                && not (ancestry_preserved io operation candidate)
+              then Branch_reconcile.Recovery_required "ancestry_not_preserved"
               else if
-                not
-                  (Option.for_all expected ~f:(fun remote ->
-                       if ancestor io remote candidate then true
-                       else if
-                         Option.value_map
-                           (Branch_reconcile.rewrite_publication_input operation
-                              ~candidate ~expected:remote) ~default:false
-                           ~f:(fun (source, upstream) ->
-                             ancestor io upstream remote
-                             && ancestor io remote source)
-                       then true
-                       else if
-                         Branch_reconcile.equal_policy
-                           (Branch_reconcile.execution_policy operation)
-                           Branch_reconcile.Preserve_ancestry
-                       then false
-                       else
-                         match
-                           Git_publication_evidence.rewrite_authority
-                             ~git:io.git ~branch
-                             ~local_sha:
-                               (Branch_reconcile.Commit.to_string candidate)
-                             ~remote_sha:
-                               (Branch_reconcile.Commit.to_string remote)
-                         with
-                         | Error reason -> raise (Probe_failed reason)
-                         | Ok None -> false
-                         | Ok (Some evidence) ->
-                             Rewrite_lineage.authorizes evidence ~branch
-                               ~local_sha:
-                                 (Branch_reconcile.Commit.to_string candidate)
-                               ~remote_sha:
-                                 (Branch_reconcile.Commit.to_string remote)))
+                (not (Branch_reconcile.agent_candidate operation candidate))
+                && not
+                     (Option.for_all expected ~f:(fun remote ->
+                          if ancestor io remote candidate then true
+                          else if
+                            Option.value_map
+                              (Branch_reconcile.rewrite_publication_input
+                                 operation ~candidate ~expected:remote)
+                              ~default:false ~f:(fun (source, upstream) ->
+                                ancestor io upstream remote
+                                && ancestor io remote source)
+                          then true
+                          else if
+                            Branch_reconcile.equal_policy
+                              (Branch_reconcile.execution_policy operation)
+                              Branch_reconcile.Preserve_ancestry
+                          then false
+                          else
+                            match
+                              Git_publication_evidence.rewrite_authority
+                                ~git:io.git ~branch
+                                ~local_sha:
+                                  (Branch_reconcile.Commit.to_string candidate)
+                                ~remote_sha:
+                                  (Branch_reconcile.Commit.to_string remote)
+                            with
+                            | Error reason -> raise (Probe_failed reason)
+                            | Ok None -> false
+                            | Ok (Some evidence) ->
+                                Rewrite_lineage.authorizes evidence ~branch
+                                  ~local_sha:
+                                    (Branch_reconcile.Commit.to_string candidate)
+                                  ~remote_sha:
+                                    (Branch_reconcile.Commit.to_string remote)))
               then
                 Branch_reconcile.Recovery_required
                   "remote_work_not_incorporated"
@@ -1309,10 +1299,13 @@ let execute ~io ~prefix ~branch ~(operation : Branch_reconcile.operation)
           then
             Branch_reconcile.Needs_diagnosis
               "legacy_publication_checkout_changed"
-          else if not (ancestry_preserved io operation candidate) then
-            Branch_reconcile.Recovery_required "ancestry_not_preserved"
+          else if
+            (not (Branch_reconcile.agent_candidate operation candidate))
+            && not (ancestry_preserved io operation candidate)
+          then Branch_reconcile.Recovery_required "ancestry_not_preserved"
           else
             let sha = remote io ~destination branch in
+            Option.iter sha ~f:(pin io ~prefix command.token "confirmed-remote");
             complete_initial_tracking io ~destination ~branch ~operation
               ~remote:sha;
             Branch_reconcile.Remote

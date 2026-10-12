@@ -87,7 +87,7 @@ let pr_response ~truncated nodes =
        "pullRequest":{"id":"pr","number":1,"state":"OPEN","mergeable":"MERGEABLE",
          "mergeStateStatus":"CLEAN","baseRefName":"main",
          "headRefName":"feature","headRefOid":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-         "baseRefOid":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+         "baseRef":{"target":{"oid":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}},
          "mergeQueueEntry":{"id":"entry","state":"QUEUED","position":1},
          "commits":{"nodes":[{"commit":{"statusCheckRollup":%s}}]}}}}}|}
     (rollup ~truncated nodes)

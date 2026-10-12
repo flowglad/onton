@@ -600,9 +600,16 @@ let () =
               in
               let finished = F.resolve_conflict conflicted pid in
               retained
-              && Option.equal B.equal_phase
-                   (B.phase (F.state finished pid))
-                   (Some B.Settled)
+              && (if Branch.equal new_base main then
+                    Option.equal B.equal_phase
+                      (B.phase (F.state finished pid))
+                      (Some B.Settled)
+                  else
+                    Option.value_map
+                      (B.operation (F.state finished pid))
+                      ~default:false
+                      ~f:(fun op ->
+                        String.equal op.B.intent.B.base (Branch.to_string main)))
               && Option.equal Branch.equal
                    (Patch_agent.branch_rebased_onto
                       (Orchestrator.agent finished pid))

@@ -48,7 +48,11 @@ let run ~context ~guidance ~backend ~on_event ~cwd ~project_name ~patch_id
     match result with
     | None -> (false, false, failure_detail)
     | Some result ->
-        (result.Llm_backend.timed_out, result.saw_final_result, result.stderr)
+        ( result.Llm_backend.timed_out,
+          result.saw_final_result && result.exit_code = 0,
+          if result.exit_code <> 0 && String.trim result.stderr = "" then
+            "repair agent exited " ^ string_of_int result.exit_code
+          else result.stderr )
   in
   Branch_reconcile.repair_result ~turn ~turn_accepted:!turn_accepted
     ~at:(now ()) ~before_head ~after_head ~timed_out ~final_result ~detail

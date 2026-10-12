@@ -235,16 +235,40 @@ let deep_stack env empty_tip =
                                else "upstream\nresolved one\nresolved two\n");
                             close_out channel;
                             Git.run_git ~cwd:dir [ "add"; "conflict" ];
-                            check
-                              "stack repair stages without owning continuation"
-                              (Git_observation.repair_ready
-                                 (E.observe_checkout io));
+                            ignore
+                              (io.git
+                                 [
+                                   "-c";
+                                   "core.editor=true";
+                                   "rebase";
+                                   "--continue";
+                                 ]);
+                            if
+                              not
+                                (Git_observation.equal_sequencer
+                                   (E.observe_checkout io).sequencer
+                                   Git_observation.None_active)
+                            then (
+                              incr repairs;
+                              let channel =
+                                open_out (Filename.concat dir "conflict")
+                              in
+                              output_string channel
+                                "upstream\nresolved one\nresolved two\n";
+                              close_out channel;
+                              Git.run_git ~cwd:dir [ "add"; "conflict" ];
+                              Git.run_git ~cwd:dir
+                                [
+                                  "-c";
+                                  "core.editor=true";
+                                  "rebase";
+                                  "--continue";
+                                ]);
                             let after =
                               sha
                                 (Git.git_capture ~cwd:dir
                                    [ "rev-parse"; "HEAD" ])
                             in
-                            check "stack repair does not commit" (before = after);
                             restore
                               (fst
                                  (B.step claimed

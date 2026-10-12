@@ -80,6 +80,8 @@ let detect_rebases graph views ~newly_merged =
       | Some v
         when (not (Set.mem newly_merged_set dep_id))
              && v.has_pr && (not v.merged) && (not v.in_merge_queue)
+             && (not v.busy) && (not v.needs_intervention)
+             && (not v.branch_blocked)
              && not
                   (List.mem v.queue Operation_kind.Rebase
                      ~equal:Operation_kind.equal) ->
@@ -102,7 +104,8 @@ let detect_rebases graph views ~newly_merged =
 let detect_notified_base_drift views =
   List.filter_map views ~f:(fun v ->
       if
-        v.has_pr && (not v.merged) && (not v.in_merge_queue)
+        v.has_pr && (not v.merged) && (not v.in_merge_queue) && (not v.busy)
+        && (not v.needs_intervention) && (not v.branch_blocked)
         && not
              (List.mem v.queue Operation_kind.Rebase ~equal:Operation_kind.equal)
       then
@@ -121,7 +124,8 @@ let detect_stale_bases_with_mode ~mode graph views ~has_merged ~branch_of ~main
     =
   List.filter_map views ~f:(fun v ->
       if
-        v.has_pr && (not v.merged) && (not v.in_merge_queue)
+        v.has_pr && (not v.merged) && (not v.in_merge_queue) && (not v.busy)
+        && (not v.needs_intervention) && (not v.branch_blocked)
         && (not
               (List.mem v.queue Operation_kind.Rebase
                  ~equal:Operation_kind.equal))
@@ -203,7 +207,9 @@ let detect_sibling_stale_bases_with_mode ~mode graph views ~has_merged =
   let base_rebasable b =
     match Map.find view_by_id b with
     | Some bv ->
-        bv.has_pr && (not bv.in_merge_queue)
+        bv.has_pr && (not bv.in_merge_queue) && (not bv.busy)
+        && (not bv.needs_intervention)
+        && (not bv.branch_blocked)
         && not
              (List.mem bv.queue Operation_kind.Rebase
                 ~equal:Operation_kind.equal)

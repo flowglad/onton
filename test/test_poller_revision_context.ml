@@ -267,7 +267,7 @@ let run env provider scenario =
                           in
                           let body =
                             Printf.sprintf
-                              {|{"data":{"repository":{"pullRequest":{"number":7,"state":"OPEN","mergeable":"MERGEABLE","isDraft":true,"mergeStateStatus":"BLOCKED","headRefName":"patch","headRefOid":%S,"baseRefName":%S,"baseRefOid":%S,"headRepositoryOwner":{"login":"fixture"},"commits":{"nodes":[]},"reviewThreads":{"nodes":[]},"mergeCommit":null,"mergeQueueEntry":null,"stack":%s}}}}|}
+                              {|{"data":{"repository":{"pullRequest":{"number":7,"state":"OPEN","mergeable":"MERGEABLE","isDraft":true,"mergeStateStatus":"BLOCKED","headRefName":"patch","headRefOid":%S,"baseRefName":%S,"baseRef":{"target":{"oid":%S}},"headRepositoryOwner":{"login":"fixture"},"commits":{"nodes":[]},"reviewThreads":{"nodes":[]},"mergeCommit":null,"mergeQueueEntry":null,"stack":%s}}}}|}
                               (if scenario = Head_reversion && !calls >= 2 then
                                  older_head
                                else head)
@@ -602,7 +602,7 @@ let concurrent_confirmations env =
                   in
                   let body =
                     Printf.sprintf
-                      {|{"data":{"repository":{"pullRequest":{"number":%d,"state":"OPEN","mergeable":"MERGEABLE","isDraft":true,"mergeStateStatus":"BLOCKED","headRefName":%S,"headRefOid":%S,"baseRefName":%S,"baseRefOid":%S,"headRepositoryOwner":{"login":"fixture"},"commits":{"nodes":[]},"reviewThreads":{"nodes":[]},"mergeCommit":null,"mergeQueueEntry":null,"stack":null}}}}|}
+                      {|{"data":{"repository":{"pullRequest":{"number":%d,"state":"OPEN","mergeable":"MERGEABLE","isDraft":true,"mergeStateStatus":"BLOCKED","headRefName":%S,"headRefOid":%S,"baseRefName":%S,"baseRef":{"target":{"oid":%S}},"headRepositoryOwner":{"login":"fixture"},"commits":{"nodes":[]},"reviewThreads":{"nodes":[]},"mergeCommit":null,"mergeQueueEntry":null,"stack":null}}}}|}
                       (Pr_number.to_int number) name sha (name ^ "-base") sha
                   in
                   Github.parse_response ~owner:"fixture" body

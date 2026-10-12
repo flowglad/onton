@@ -398,7 +398,11 @@ let highest_priority t =
       Int.compare (Priority.priority a) (Priority.priority b))
 
 let enqueue t k =
-  if List.mem t.queue k ~equal:Operation_kind.equal then t
+  if
+    Operation_kind.equal k Operation_kind.Rebase
+    && Branch_reconcile.is_unsettled t.branch_reconcile
+    || List.mem t.queue k ~equal:Operation_kind.equal
+  then t
   else { t with queue = k :: t.queue }
 
 let mark_merged t = { t with merged = true }
@@ -486,7 +490,34 @@ let set_base_branch t branch =
       match t.notified_base_branch with None -> Some branch | some -> some
     else t.notified_base_branch
   in
-  { t with base_branch = Some branch; notified_base_branch = notified }
+  let branch_reconcile =
+    match Branch_reconcile.operation t.branch_reconcile with
+    | Some op
+      when Branch_reconcile.is_unsettled t.branch_reconcile
+           && not (Option.equal Branch.equal t.base_branch (Some branch)) ->
+        fst
+          (Branch_reconcile.step t.branch_reconcile
+             (Branch_reconcile.Request
+                {
+                  op.intent with
+                  base = Branch.to_string branch;
+                  purpose =
+                    (match op.intent.purpose with
+                    | Publish_revision _ | Publish_session _
+                    | Integrate_revision _ | Verify_publication ->
+                        Reconcile_base
+                    | Reconcile_base | Reconcile_request _ | Reconcile_scoped _
+                    | Provision_checkout _ ->
+                        op.intent.purpose);
+                }))
+    | Some _ | None -> t.branch_reconcile
+  in
+  {
+    t with
+    base_branch = Some branch;
+    notified_base_branch = notified;
+    branch_reconcile;
+  }
 
 let set_notified_base_branch t branch =
   { t with notified_base_branch = Some branch }
@@ -1105,7 +1136,26 @@ let reconcile_branch t event =
   let branch_reconcile, commands =
     Branch_reconcile.step t.branch_reconcile event
   in
-  let t = { t with branch_reconcile } in
+  let obligation_unpublished =
+    Option.value_map (Branch_reconcile.operation t.branch_reconcile)
+      ~default:false ~f:(fun op ->
+        not
+          (List.exists (Branch_reconcile.publications t.branch_reconcile)
+             ~f:(fun receipt -> receipt.operation_id = op.id)))
+  in
+  let queue =
+    if
+      obligation_unpublished
+      && (not (Branch_reconcile.is_unsettled branch_reconcile))
+      && Option.equal Branch.equal
+           (branch_rebased_onto { t with branch_reconcile })
+           t.base_branch
+    then
+      List.filter t.queue ~f:(fun kind ->
+          not (Operation_kind.equal kind Operation_kind.Rebase))
+    else t.queue
+  in
+  let t = { t with branch_reconcile; queue } in
   let t =
     if (not previously_published) && branch_published t then
       { t with start_attempts_without_pr = 0 }

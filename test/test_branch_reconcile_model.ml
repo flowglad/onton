@@ -397,11 +397,13 @@ module Conflicting_sequencer = struct
       step state
         (B.Request B.{ base = "main"; policy; purpose = Reconcile_base })
     in
-    let execute ~request ~captured command =
+    let execute ~request ~captured ~capturing command =
       match command.B.kind with
       | B.Observe -> B.Observed (observe ())
       | B.Inspect ->
           if not captured then B.Observed (observe ())
+          else if capturing then B.Integrated !repo.head
+          else if !repo.integrated then B.Inspected (observe ())
           else (
             repo := { !repo with pinned = true };
             B.Inspected_active { observation = observe (); ready = !staged })
@@ -473,7 +475,14 @@ module Conflicting_sequencer = struct
                         (match B.operation state with
                         | Some op -> op.approved_scope
                         | None -> Replay_scope.Unproven)
-                      ~captured command
+                      ~captured
+                      ~capturing:
+                        (match
+                           (Option.get (B.operation state)).candidate_origin
+                         with
+                        | B.Capture_agent_repair _ -> true
+                        | B.Deterministic | B.Accepted_agent_repair _ -> false)
+                      command
                 in
                 let event =
                   B.Result { token = command.token; at = !now; result }
@@ -513,7 +522,15 @@ module Conflicting_sequencer = struct
                               (B.Repair_interrupted
                                  { token; at = !now; reason = "backend outage" })
                           else (
-                            staged := true;
+                            cursor := steps;
+                            active := false;
+                            repo :=
+                              {
+                                !repo with
+                                head = integrated;
+                                integrated = true;
+                                mutations = !repo.mutations + steps;
+                              };
                             step (roundtrip claimed)
                               (B.Repair_completed { token; at = !now })))))
       in
@@ -552,7 +569,7 @@ module Conflicting_sequencer = struct
         finish (act state 5) (fuel - 1)
     in
     let settled = finish state (30 + (steps * 10)) in
-    assert (!starts = 1 && !continuations = steps);
+    assert (!starts = 1 && !continuations = 0);
     assert (!repo.head = integrated && !repo.remote = Some integrated);
     assert (!repo.mutations = steps + 1);
     let before = !repo in
@@ -754,7 +771,12 @@ module Remote_writers = struct
     | B.Observe -> (repo, B.Observed (observation repo op))
     | B.Inspect ->
         ( repo,
-          if Option.is_none op.source then B.Observed (observation repo op)
+          if
+            match op.candidate_origin with
+            | B.Capture_agent_repair _ -> true
+            | B.Deterministic | B.Accepted_agent_repair _ -> false
+          then B.Integrated repo.head
+          else if Option.is_none op.source then B.Observed (observation repo op)
           else B.Inspected (observation repo op) )
     | B.Pin { source; target } ->
         ignore (find repo source);
@@ -990,23 +1012,41 @@ module Remote_writers = struct
                     (scope_inputs repo op.approved_scope)
                     ~default:([ root ], [])
                 in
-                let parents, all =
-                  if action = Bad_repair then (
-                    incr bad_turns;
-                    ([ root ], []))
-                  else (parents, all)
-                in
-                let repo, head = create repo ~parents ~content:all in
-                let repo = { repo with head; mutations = repo.mutations + 1 } in
-                (step state (B.Repair_completed { token; at = !now }), repo)
+                if action = Bad_repair then (
+                  incr bad_turns;
+                  ( step state
+                      (B.Repair_failed
+                         {
+                           token;
+                           at = !now;
+                           reason = "agent validation failed";
+                         }),
+                    repo ))
+                else
+                  let parents =
+                    List.sort_uniq B.Commit.compare
+                      ((repo.head :: repo.remote :: parents)
+                      @ Option.to_list op.source @ Option.to_list op.target
+                      @ Option.to_list op.expected @ op.recovery_revisions)
+                  in
+                  let all =
+                    union all
+                      (union repo.obligations
+                         (union (content repo repo.head)
+                            (content repo repo.remote)))
+                  in
+                  let repo, head = create repo ~parents ~content:all in
+                  let repo =
+                    { repo with head; mutations = repo.mutations + 1 }
+                  in
+                  (step state (B.Repair_completed { token; at = !now }), repo)
           | None, _ | _, None -> (step state (B.Tick !now), repo))
     in
     let state, repo = List.fold_left act (state, repo) actions in
     if expect_drop then assert (!drops > 0);
     if expect_stopped then (
       assert (!bad_turns = 2);
-      assert (
-        B.phase state = Some (B.Intervention "recovery_preservation_unproven"));
+      assert (B.phase state = Some (B.Intervention "repair_attempts_exhausted"));
       assert (repo.remote = source);
       assert (B.pending state = None);
       let stopped, unchanged =
@@ -1216,7 +1256,7 @@ module Remote_writers = struct
             QCheck2.Test.make ~count:1
               ~name:
                 ("model: two invalid " ^ label
-               ^ " repairs stop before publication")
+               ^ " failed repair turns stop before publication")
               (Gen.return
                  [
                    Step;
@@ -1225,7 +1265,9 @@ module Remote_writers = struct
                    Step;
                    Bad_repair;
                    Step;
+                   Step;
                    Bad_repair;
+                   Step;
                    Step;
                  ])
               (fun actions ->

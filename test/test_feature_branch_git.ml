@@ -295,7 +295,36 @@ let () =
                   "shared";
                 ];
               if untracked then Unix.unlink (root_path ^ "/user-change");
-              drive (module W) publication B.Recover;
+              let rec offer remaining state effects =
+                if remaining = 0 then failwith "root repair was not offered";
+                match
+                  List.find_map effects ~f:(function
+                    | B.Repair token -> Some token
+                    | B.Execute _ | B.Start_repair _ | B.Completed _ -> None)
+                with
+                | Some token -> (state, token)
+                | None ->
+                    let operation = Stdlib.Option.get (B.operation state) in
+                    let command = Stdlib.Option.get (B.pending state) in
+                    let result =
+                      W.reconcile ~path:root_path ~project_name:"git-test"
+                        ~branch:(Branch.of_string "root") ~operation command
+                    in
+                    let state, effects =
+                      B.step state
+                        (B.Result { token = command.B.token; at = 100.; result })
+                    in
+                    offer (remaining - 1) state effects
+              in
+              let resumed, effects = B.step !publication B.Recover in
+              let resumed, token = offer 10 resumed effects in
+              let resumed = fst (B.step resumed (B.Repair_started token)) in
+              Git.run_git ~cwd:root_path [ "merge"; "--no-edit"; dirty_head ];
+              publication := resumed;
+              drive
+                (module W)
+                publication
+                (B.Repair_completed { token; at = 100. });
               ignore (integrated !publication);
               check "explicit resume publishes the retained contribution"
                 (Git.git_exit_code ~cwd:bare

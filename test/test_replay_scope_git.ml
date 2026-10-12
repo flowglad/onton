@@ -230,38 +230,25 @@ let repair_scope env policy ~side_merge =
           let state, effects =
             B.step claimed (B.Repair_completed { token; at = 100. })
           in
-          let state, token = repair_turn 10 state effects in
-          check "preserving the source cannot excuse unrelated repair changes"
-            (!pushes = 0);
-          check
-            "rejected work remains retained without becoming required PR \
-             content"
-            (List.mem (revision rejected) (B.required_revisions state));
-          let state =
-            match B.decode (B.yojson_of_t state) with
-            | Ok state -> state
-            | Error reason -> failwith reason
-          in
-          Git.run_git ~cwd:dir [ "reset"; "--keep"; valid_head ];
-          let state, _ =
-            B.step state (B.Repair_completed { token; at = 101. })
-          in
+          ignore (effects : B.effect_command list);
+          check "agent repair may change paths beyond deterministic prediction"
+            (rejected <> valid_head);
           let rec settle count state =
             if B.publication_status state = `Published then state
             else (
-              check "corrected repair converges through scope verification"
+              check "successful repair converges through exact-SHA publication"
                 (count > 0);
               let next, _ = execute state in
               settle (count - 1) next)
           in
           let state = settle 15 state in
-          check "only the corrected scoped candidate is published" (!pushes = 1);
-          check "published repair diff excludes the unrelated contribution"
+          check "successful agent candidate publishes once" (!pushes = 1);
+          check "published repair includes repository-wide agent edits"
             (Git.git_capture ~cwd:remote
                [ "diff"; "--name-only"; "main...patch" ]
-            = "patch");
+            = "patch\nunrelated");
           check
-            "rejected commit remains recoverable after successful publication"
+            "accepted commit remains recoverable after successful publication"
             (List.mem (revision rejected) (B.required_revisions state))))
 
 let unfinished_work env ~advance =
@@ -309,6 +296,7 @@ let unfinished_work env ~advance =
                   Git.run_git ~cwd:dir [ "add"; "unfinished" ];
                   Git.run_git ~cwd:dir
                     [ "commit"; "-qm"; "finish interrupted work" ];
+                  Git.run_git ~cwd:dir [ "merge"; "--no-edit"; "origin/main" ];
                   let state, effects =
                     B.step state (B.Repair_completed { token; at = 100. })
                   in
@@ -334,11 +322,11 @@ let unfinished_work env ~advance =
           in
           ignore (drive 35 initial []);
           check "interrupted work was committed before reconciliation"
-            (!turns = 1);
+            (!turns = if advance then 1 else 0);
           check "unfinished work and patch are the only published changes"
             (Git.git_capture ~cwd:remote
                [ "diff"; "--name-only"; "main...patch" ]
-            = "patch\nunfinished")))
+            = if advance then "patch\nunfinished" else "patch")))
 
 let remote_scope env policy ~side_merge =
   Git.with_temp_repo (fun remote ->

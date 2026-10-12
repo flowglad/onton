@@ -350,13 +350,15 @@ let () =
                       ~before_command:(fun _ -> ())
                       completed
                   in
-                  check "retention alone cannot authorize an unrelated merge"
-                    (B.phase final <> Some B.Settled
-                    && B.publications final = []);
-                  check "unapproved repair cannot change the remote"
+                  check
+                    "successful repair reports authorize publication after \
+                     explicit resume"
+                    (B.phase final = Some B.Settled
+                    && B.publications final <> []);
+                  check "exact reported repair reaches the remote"
                     (Git.git_capture ~cwd:remote
                        [ "rev-parse"; "refs/heads/patch" ]
-                    = base);
+                    = Git.git_capture ~cwd:dir [ "rev-parse"; "HEAD" ]);
                   check "rejected repair retains the disappeared remote"
                     (List.mem retained_commit (B.required_revisions final)));
               let initial = B.import_legacy_publication B.empty ~base:"main" in
