@@ -1109,3 +1109,14 @@
  (deps test_supervisor_escape.py (package onton))
  (action
   (run python3 %{dep:test_supervisor_escape.py} %{bin:onton-setsid-exec})))
+
+(test
+ (name test_poller_batch)
+ (modules test_poller_batch)
+ (flags (:standard -w -40-42))
+ (libraries onton onton_core onton_test_support eio_main unix)
+ (deps (package onton))
+ (action
+  (setenv ONTON_SETSID_EXEC
+   %{bin:onton-setsid-exec}
+   (run %{test}))))

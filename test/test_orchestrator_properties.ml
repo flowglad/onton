@@ -1335,3 +1335,37 @@ let () =
                                .Patch_agent.branch_reconcile)))
                     (not replace)
          with _ -> false))
+
+let () =
+  QCheck2.Test.check_exn
+    (QCheck2.Test.make
+       ~name:
+         "containment refresh interleavings preserve request and message \
+          identity"
+       ~count:500
+       QCheck2.Gen.(list bool)
+       (fun values ->
+         try
+           let pid = Patch_id.of_string "projection" in
+           let initial =
+             Orchestrator.create
+               ~patches:[ patch "projection" ]
+               ~main_branch:main
+             |> fun orch -> Orchestrator.enqueue orch pid Operation_kind.Rebase
+           in
+           let requested = Orchestrator.agent initial pid in
+           let _, valid =
+             List.fold values ~init:(initial, true)
+               ~f:(fun (orch, valid) value ->
+                 let orch =
+                   Orchestrator.set_base_contains_merged_siblings orch pid value
+                 in
+                 let current = Orchestrator.agent orch pid in
+                 ( orch,
+                   valid
+                   && Bool.equal
+                        current.Patch_agent.base_contains_merged_siblings value
+                   && Poll_cycle.same_context ~requested ~current ))
+           in
+           valid
+         with _ -> false))

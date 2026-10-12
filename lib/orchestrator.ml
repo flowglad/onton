@@ -847,8 +847,14 @@ let set_merge_commit_sha t patch_id sha =
   update_agent t patch_id ~f:(fun a -> Patch_agent.set_merge_commit_sha a sha)
 
 let set_base_contains_merged_siblings t patch_id v =
-  update_agent t patch_id ~f:(fun a ->
-      Patch_agent.set_base_contains_merged_siblings a v)
+  (* A refreshed scheduling projection must not mint implementation intent or
+     invalidate request tickets. Runnable-message admission reads this flag
+     directly, including the fail-closed interval during a polling batch. *)
+  match find_agent t patch_id with
+  | None -> t
+  | Some agent ->
+      let agent = Patch_agent.set_base_contains_merged_siblings agent v in
+      { t with agents = Map.set t.agents ~key:patch_id ~data:agent }
 
 let set_is_draft t patch_id v =
   update_agent t patch_id ~f:(fun a -> Patch_agent.set_is_draft a v)

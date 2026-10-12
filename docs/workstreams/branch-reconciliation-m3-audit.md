@@ -829,8 +829,9 @@ its existing process-group/launchd cleanup; this change does not add Linux
 subreaper semantics to macOS.
 
 PR polling checkpoints the request batch before starting up to 16 workers. Each
-worker fetches, confirms, and atomically applies one PR observation together with
-reconciliation, without waiting for other workers' network operations. Head and
+worker fetches, confirms, and atomically applies one PR observation without
+waiting for other workers' network operations. Project-wide reconciliation is
+coalesced once per batch, as described in the F-001 correction below. Head and
 base confirmation run concurrently within that worker. Durable request tickets,
 remote destination binding, terminal-operation ownership, and application-time
 context checks still govern acceptance. The next poll cycle still waits for the
@@ -852,3 +853,42 @@ Qualification passed: `opam exec -- dune build @all @fmt @check`,
 production sources and exercised in a Debian Linux container; the macOS Dune
 run skips that Linux-only fixture. Optional simgit integration remained skipped
 because `ONTON_TEST_SIMGIT` was unset.
+
+
+## Deep Review F-001: coalesce global polling work
+
+The [Deep Review](https://app.notion.com/p/3f75035caf2881b89d5ae57b52695fa0)
+identified one confirmed finding: independent PR workers repeated the same
+project-wide containment/reconciliation pass. The final completed worker now
+owns that pass, atomically with its response. Other workers apply their results
+immediately. Empty batches and non-applicable responses still reach the global
+pass; cancellation abandons the batch and the next cycle starts fresh.
+
+Before dispatch, the poller derives containment with a fail-closed oracle.
+Trivial main/no-merged-dependency cases stay available; fan-in requiring Git
+proof cannot authorize Start/Rebase while the batch is incomplete. The final
+pass derives fresh results from the current graph, including negative and
+unavailable ancestry outcomes. No branch-name ancestry result is cached across
+batches. Refreshing this scheduling projection preserves patch-message
+generation and forge-ticket scope; runnable-message admission reads its current
+value directly. The existing bounded concurrency, parallel head/base probes,
+and stale-response checks remain in place.
+
+`test_poller_batch` promotes the review's stable-context fixture into 24 runtime
+cases (0/1/3/17 requests, positive/negative/unavailable ancestry, normal/skipped
+responses). Positive containment requires exactly one ancestry call regardless
+of PR count; negative/unavailable cases require two for containment and frontier
+selection, also independent of PR count. Every applicable response must confirm
+its exact revision pair. Slow-provider cases assert immediate fast application,
+no premature global probes, and fail-closed fan-in readiness until completion.
+The orchestrator property suite additionally checks 500 generated refresh
+sequences preserve request/message identity. Existing delayed-context tests
+retain the stale-ticket rejection control.
+
+F-001 qualification passed: `opam exec -- dune build @all @fmt @check`,
+`opam exec -- dune runtest`, `bash scripts/check-no-raw-yojson.sh`, and pinned
+archlint (`855690b`). The full run includes the existing slow-confirmation and
+stale-context controls and real-Git/checkpoint suites. Optional simgit integration
+was skipped because `ONTON_TEST_SIMGIT` was unset; the Linux-only supervisor
+fixture is also skipped on this macOS host (its unchanged source was qualified
+in Linux for the preceding supervisor fix).

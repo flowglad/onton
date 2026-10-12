@@ -243,7 +243,7 @@ module Make (Forge : Forge.S) (W : Worktree.S) (Env : Poller_env.S) = struct
         Stdlib.Hashtbl.t =
       Stdlib.Hashtbl.create 16
     in
-    let process_request request =
+    let process_request ~remaining request =
       (* None runs reconciliation when there are no PRs to poll. *)
       let requests = Option.to_list request in
       let outcomes =
@@ -569,9 +569,9 @@ module Make (Forge : Forge.S) (W : Worktree.S) (Env : Poller_env.S) = struct
                     failed_ci,
                     ci_checks_truncated ))
       in
-      (* Phase 2: Atomic application of this observation + reconciliation.
-     This prevents the runner from seeing an intermediate state where
-     poll results are applied but the reconciler hasn't run yet. *)
+      (* Phase 2: Apply this response atomically. The final worker also runs
+         project-wide containment and reconciliation; other responses do not
+         repeat unchanged Git work or wait behind unfinished network reads. *)
       let terminal_patch_ids =
         let patch_ids =
           List.filter_map observations
@@ -704,7 +704,15 @@ module Make (Forge : Forge.S) (W : Worktree.S) (Env : Poller_env.S) = struct
                               ci_truncated )
                             :: sides )))
             in
-            (* Recompute the base-containment cache for every agent: does each
+            (* Each response becomes visible immediately. The last completed
+               worker owns the single project-wide pass, in the same atomic
+               update as its response. This includes error/rediscovery workers;
+               none may strand the batch's reconciliation. *)
+            remaining := !remaining - 1;
+            let orch, reconcile_logs =
+              if !remaining > 0 then (orch, [])
+              else
+                (* Recompute the base-containment cache for every agent: does each
              patch's resolved base branch already contain the merge commit
              ([mergeCommit.oid], whatever the repo's merge method produced) of
              every *merged* dependency of that patch? This is the only git I/O
@@ -714,111 +722,116 @@ module Make (Forge : Forge.S) (W : Worktree.S) (Env : Poller_env.S) = struct
              [false] when a dep's merge SHA is not yet recorded — the
              dependent then defers until [detect_sibling_stale_bases] rebases
              the base (which also fetches the merge commit into the repo). *)
-            let graph = Orchestrator.graph orch in
-            let has_merged pid =
-              match Orchestrator.find_agent orch pid with
-              | Some a -> a.Patch_agent.merged
-              | None -> false
-            in
-            let merge_sha pid =
-              match Orchestrator.find_agent orch pid with
-              | Some a -> a.Patch_agent.merge_commit_sha
-              | None -> None
-            in
-            (* [main_root] and the [is_ancestor] git calls are deferred until
+                let graph = Orchestrator.graph orch in
+                let has_merged pid =
+                  match Orchestrator.find_agent orch pid with
+                  | Some a -> a.Patch_agent.merged
+                  | None -> false
+                in
+                let merge_sha pid =
+                  match Orchestrator.find_agent orch pid with
+                  | Some a -> a.Patch_agent.merge_commit_sha
+                  | None -> None
+                in
+                (* [main_root] and the [is_ancestor] git calls are deferred until
              actually needed: [contains_merged_siblings] short-circuits
              (no oracle call) for a base on main or a patch with no merged
              deps, so projects with no fan-in-mid-merge pay no git cost here.
              The oracle is fail-closed: a transient git spawn failure returns
              [false] rather than aborting the whole reconcile tick (it runs
              under the runtime lock). Cancellation must still propagate. *)
-            let main_root = lazy (W.resolve_main_root ()) in
-            let ancestor_oracle ancestor ~descendant =
-              try
-                W.is_ancestor ~path:(Lazy.force main_root) ~ancestor ~descendant
-              with
-              | Eio.Cancel.Cancelled _ as exn -> raise exn
-              | _ -> false
-            in
-            let orch =
-              (* Cancellation can interrupt this fold after updating only a
+                let main_root = lazy (W.resolve_main_root ()) in
+                let ancestor_oracle ancestor ~descendant =
+                  try
+                    W.is_ancestor ~path:(Lazy.force main_root) ~ancestor
+                      ~descendant
+                  with
+                  | Eio.Cancel.Cancelled _ as exn -> raise exn
+                  | _ -> false
+                in
+                let orch =
+                  (* Cancellation can interrupt this fold after updating only a
                prefix of agents. That partial cache is acceptable: the tick is
                aborting anyway, and the next reconcile invocation recomputes
                every agent from a fresh [main_root] lazy value. Agents skipped
                by a cancelled tick simply retain a fail-closed/stale cache for
                at most that aborted tick, deferring Start/Rebase until the next
                successful pass. *)
-              List.fold (Orchestrator.all_agents orch) ~init:orch
-                ~f:(fun orch (a : Patch_agent.t) ->
-                  let contains =
-                    Base_containment.contains_merged_siblings_with_mode
-                      ~mode:(Orchestrator.execution_mode orch)
-                      ~graph ~patch_id:a.Patch_agent.patch_id ~has_merged
-                      ~merge_sha ~branch_of ~main ~ancestor_oracle
-                  in
-                  Orchestrator.set_base_contains_merged_siblings orch
-                    a.Patch_agent.patch_id contains)
-            in
-            (* Reconcile — detect merges and enqueue rebases *)
-            let agents = Orchestrator.all_agents orch in
-            let patch_views =
-              List.map agents ~f:(fun (a : Patch_agent.t) ->
-                  (* The frontier is only meaningful (and only worth the extra
+                  List.fold (Orchestrator.all_agents orch) ~init:orch
+                    ~f:(fun orch (a : Patch_agent.t) ->
+                      let contains =
+                        Base_containment.contains_merged_siblings_with_mode
+                          ~mode:(Orchestrator.execution_mode orch)
+                          ~graph ~patch_id:a.Patch_agent.patch_id ~has_merged
+                          ~merge_sha ~branch_of ~main ~ancestor_oracle
+                      in
+                      Orchestrator.set_base_contains_merged_siblings orch
+                        a.Patch_agent.patch_id contains)
+                in
+                (* Reconcile — detect merges and enqueue rebases *)
+                let agents = Orchestrator.all_agents orch in
+                let patch_views =
+                  List.map agents ~f:(fun (a : Patch_agent.t) ->
+                      (* The frontier is only meaningful (and only worth the extra
                    [is_ancestor] probes) when containment just computed
                    false; everywhere else the detector ignores it. Same
                    oracle and inputs as the containment fold above. *)
-                  let sibling_rebase_target =
-                    if a.Patch_agent.base_contains_merged_siblings then None
-                    else
-                      Base_containment.stale_chain_rebase_target_with_mode
-                        ~mode:(Orchestrator.execution_mode orch)
-                        ~graph ~patch_id:a.Patch_agent.patch_id ~has_merged
-                        ~merge_sha ~branch_of ~main ~ancestor_oracle
-                  in
-                  Reconciler.
-                    {
-                      id = a.Patch_agent.patch_id;
-                      has_pr =
-                        Patch_agent.has_pr a
-                        || Orchestrator.branch_only_published orch a.patch_id;
-                      merged = a.Patch_agent.merged;
-                      busy = a.Patch_agent.busy;
-                      needs_intervention = Patch_agent.needs_intervention a;
-                      branch_blocked = a.Patch_agent.branch_blocked;
-                      in_merge_queue = Patch_agent.in_merge_queue a;
-                      queue = a.Patch_agent.queue;
-                      base_branch =
-                        Option.value a.Patch_agent.base_branch ~default:main;
-                      branch_rebased_onto = Patch_agent.branch_rebased_onto a;
-                      base_contains_merged_siblings =
-                        a.Patch_agent.base_contains_merged_siblings;
-                      sibling_rebase_target;
-                    })
+                      let sibling_rebase_target =
+                        if a.Patch_agent.base_contains_merged_siblings then None
+                        else
+                          Base_containment.stale_chain_rebase_target_with_mode
+                            ~mode:(Orchestrator.execution_mode orch)
+                            ~graph ~patch_id:a.Patch_agent.patch_id ~has_merged
+                            ~merge_sha ~branch_of ~main ~ancestor_oracle
+                      in
+                      Reconciler.
+                        {
+                          id = a.Patch_agent.patch_id;
+                          has_pr =
+                            Patch_agent.has_pr a
+                            || Orchestrator.branch_only_published orch
+                                 a.patch_id;
+                          merged = a.Patch_agent.merged;
+                          busy = a.Patch_agent.busy;
+                          needs_intervention = Patch_agent.needs_intervention a;
+                          branch_blocked = a.Patch_agent.branch_blocked;
+                          in_merge_queue = Patch_agent.in_merge_queue a;
+                          queue = a.Patch_agent.queue;
+                          base_branch =
+                            Option.value a.Patch_agent.base_branch ~default:main;
+                          branch_rebased_onto =
+                            Patch_agent.branch_rebased_onto a;
+                          base_contains_merged_siblings =
+                            a.Patch_agent.base_contains_merged_siblings;
+                          sibling_rebase_target;
+                        })
+                in
+                let merged_patches =
+                  List.filter_map agents ~f:(fun (a : Patch_agent.t) ->
+                      if a.Patch_agent.merged then Some a.Patch_agent.patch_id
+                      else None)
+                in
+                let actions =
+                  Reconciler.reconcile_with_mode
+                    ~mode:(Orchestrator.execution_mode orch)
+                    ~graph:(Orchestrator.graph orch) ~main
+                    ~merged_pr_patches:merged_patches ~branch_of patch_views
+                in
+                let rec_logs = ref [] in
+                let orch =
+                  List.fold actions ~init:orch ~f:(fun orch action ->
+                      match action with
+                      | Reconciler.Mark_merged pid ->
+                          Orchestrator.mark_merged orch pid
+                      | Reconciler.Enqueue_rebase pid ->
+                          rec_logs :=
+                            ("rebase enqueued by reconciler", pid) :: !rec_logs;
+                          Orchestrator.enqueue orch pid Operation_kind.Rebase
+                      | Reconciler.Start_operation _ -> orch)
+                in
+                (orch, List.rev !rec_logs)
             in
-            let merged_patches =
-              List.filter_map agents ~f:(fun (a : Patch_agent.t) ->
-                  if a.Patch_agent.merged then Some a.Patch_agent.patch_id
-                  else None)
-            in
-            let actions =
-              Reconciler.reconcile_with_mode
-                ~mode:(Orchestrator.execution_mode orch)
-                ~graph:(Orchestrator.graph orch) ~main
-                ~merged_pr_patches:merged_patches ~branch_of patch_views
-            in
-            let rec_logs = ref [] in
-            let orch =
-              List.fold actions ~init:orch ~f:(fun orch action ->
-                  match action with
-                  | Reconciler.Mark_merged pid ->
-                      Orchestrator.mark_merged orch pid
-                  | Reconciler.Enqueue_rebase pid ->
-                      rec_logs :=
-                        ("rebase enqueued by reconciler", pid) :: !rec_logs;
-                      Orchestrator.enqueue orch pid Operation_kind.Rebase
-                  | Reconciler.Start_operation _ -> orch)
-            in
-            (orch, (List.rev poll_events, List.rev sides, List.rev !rec_logs)))
+            (orch, (List.rev poll_events, List.rev sides, reconcile_logs)))
       in
       let poll_events, per_patch_sides, reconcile_logs =
         with_terminal_ownership terminal_patch_ids apply_poll_results
@@ -959,6 +972,30 @@ module Make (Forge : Forge.S) (W : Worktree.S) (Env : Poller_env.S) = struct
                             ~head_sha:observed.head_sha ~checks:observed.checks
                       | None | Some _ -> orch)))
         branch_intents;
+      (* While responses arrive independently, only trivial containment is
+         usable. Fan-in requiring Git stays fail-closed until the batch owner
+         checks the complete current graph. Main/no-merged-dependency cases
+         remain ready without waiting for unrelated network operations. *)
+      Runtime.update_orchestrator runtime (fun orch ->
+          let graph = Orchestrator.graph orch in
+          let has_merged pid =
+            Option.value_map (Orchestrator.find_agent orch pid) ~default:false
+              ~f:(fun a -> a.Patch_agent.merged)
+          in
+          let merge_sha pid =
+            Option.bind (Orchestrator.find_agent orch pid) ~f:(fun a ->
+                a.Patch_agent.merge_commit_sha)
+          in
+          List.fold (Orchestrator.all_agents orch) ~init:orch
+            ~f:(fun orch (a : Patch_agent.t) ->
+              let contains =
+                Base_containment.contains_merged_siblings_with_mode
+                  ~mode:(Orchestrator.execution_mode orch)
+                  ~graph ~patch_id:a.patch_id ~has_merged ~merge_sha ~branch_of
+                  ~main ~ancestor_oracle:(fun _ ~descendant:_ -> false)
+              in
+              Orchestrator.set_base_contains_merged_siblings orch a.patch_id
+                contains));
       let intents =
         Runtime.read runtime (fun snap ->
             let agents = Orchestrator.all_agents snap.Runtime.orchestrator in
@@ -1025,11 +1062,12 @@ module Make (Forge : Forge.S) (W : Worktree.S) (Env : Poller_env.S) = struct
               ("Forge request checkpoint failed: " ^ reason);
             []
       in
+      let remaining = ref (Int.max 1 (List.length requests)) in
       (match requests with
-      | [] -> process_request None
+      | [] -> process_request ~remaining None
       | _ ->
           Eio.Fiber.List.iter ~max_fibers:16
-            (fun request -> process_request (Some request))
+            (fun request -> process_request ~remaining (Some request))
             requests);
       Eio.Time.sleep clock poll_interval;
       loop ()
