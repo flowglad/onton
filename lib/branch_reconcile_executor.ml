@@ -207,9 +207,22 @@ let verify_candidate_scope io ~request ~candidate =
         "--";
       ]
   in
+  let merge_inputs_included =
+    match request with
+    | Replay_scope.Merge { source; target } when String.is_empty history ->
+        List.for_all [ source; target ] ~f:(fun input ->
+            match
+              io.git [ "merge-base"; "--is-ancestor"; input; candidate ]
+            with
+            | 0, _, _ -> true
+            | 1, _, _ -> false
+            | _, _, err ->
+                raise (Probe_failed ("merge ancestry probe failed: " ^ err)))
+    | Replay_scope.Merge _ | Unproven | Identity _ | Replay _ -> false
+  in
   match
-    Replay_scope.verify plan ~candidate ~tree:candidate_tree ~history
-      ~changed_paths
+    Replay_scope.verify ~merge_inputs_included plan ~candidate
+      ~tree:candidate_tree ~history ~changed_paths
   with
   | Ok proof -> proof
   | Error reason -> raise (Scope_required reason)
@@ -761,31 +774,26 @@ let complete_initial_tracking io ~destination ~branch ~operation ~remote =
       | None -> ()
       | Some edits ->
           let ref_name = "refs/remotes/origin/" ^ branch in
-          let code, _, err =
-            io.git [ "show-ref"; "--verify"; "--quiet"; ref_name ]
+          let code, out, err =
+            io.git [ "rev-parse"; "--verify"; "--quiet"; ref_name ]
           in
-          (match code with
-          | 0 -> ()
-          | 1 ->
-              let code, _, err =
-                io.git
-                  [
-                    "update-ref";
-                    ref_name;
-                    Branch_reconcile.Commit.to_string candidate;
-                    "";
-                  ]
-              in
-              if code <> 0 then
-                let exists, _, _ =
-                  io.git [ "show-ref"; "--verify"; "--quiet"; ref_name ]
-                in
-                if exists <> 0 then
-                  raise
-                    (Probe_failed ("cannot install initial tracking ref: " ^ err))
-          | _ ->
-              raise
-                (Probe_failed ("cannot inspect initial tracking ref: " ^ err)));
+          let previous =
+            match code with
+            | 0 ->
+                let previous = String.strip out in
+                if not (Git_oid.valid previous) then
+                  raise (Probe_failed "invalid initial tracking ref");
+                previous
+            | 1 -> ""
+            | _ ->
+                raise
+                  (Probe_failed ("cannot inspect initial tracking ref: " ^ err))
+          in
+          let confirmed = Branch_reconcile.Commit.to_string candidate in
+          if not (String.equal previous confirmed) then
+            ignore
+              (checked io [ "update-ref"; ref_name; confirmed; previous ]
+                : string);
           List.iter edits ~f:(fun (key, value) ->
               ignore (checked io [ "config"; "--local"; key; value ] : string)))
 
@@ -1011,6 +1019,7 @@ let execute ~io ~prefix ~branch ~(operation : Branch_reconcile.operation)
               local_extension;
               source_preserved =
                 ready
+                && List.for_all operation.recovery_revisions ~f:preserved
                 && (extension_verified
                    || Option.is_some scoped
                       && ancestry_preserved io operation o.source);
@@ -1055,14 +1064,6 @@ let execute ~io ~prefix ~branch ~(operation : Branch_reconcile.operation)
               in
               match select [] with
               | Branch_reconcile.Recorded _ as boundary ->
-                  if
-                    Branch_reconcile.equal_policy
-                      (Branch_reconcile.execution_policy operation)
-                      Branch_reconcile.Preserve_ancestry
-                  then
-                    ignore
-                      (capture_replay_scope io ~source:request.incoming boundary
-                        : Replay_scope.t);
                   Branch_reconcile.Remote_replay_selected boundary
               | Branch_reconcile.Plain | Branch_reconcile.Inferred _
               | Branch_reconcile.Patch_equivalent _
@@ -1099,13 +1100,16 @@ let execute ~io ~prefix ~branch ~(operation : Branch_reconcile.operation)
               match operation.remote_replay with
               | Some replay ->
                   let scope =
-                    capture_replay_scope io ~source:replay.incoming
-                      (Branch_reconcile.Recorded replay.upstream)
+                    match policy with
+                    | Branch_reconcile.Preserve_ancestry -> None
+                    | Branch_reconcile.Rewrite ->
+                        Some
+                          (capture_replay_scope io ~source:replay.incoming
+                             (Branch_reconcile.Recorded replay.upstream))
                   in
                   if
-                    List.is_empty scope.commits
-                    && Branch_reconcile.equal_policy policy
-                         Branch_reconcile.Rewrite
+                    Option.exists scope ~f:(fun scope ->
+                        List.is_empty scope.Replay_scope.commits)
                   then Branch_reconcile.Integrated replay.preserved
                   else
                     let args =
@@ -1124,7 +1128,8 @@ let execute ~io ~prefix ~branch ~(operation : Branch_reconcile.operation)
                               "--empty=drop";
                               "--no-rerere-autoupdate";
                             ]
-                            @ scope.commits
+                            @ Option.value_map scope ~default:[]
+                                ~f:(fun scope -> scope.Replay_scope.commits)
                       | Branch_reconcile.Preserve_ancestry ->
                           [
                             "merge";

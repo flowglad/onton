@@ -18,12 +18,15 @@ let () =
         ~name:"only complete lowercase SHA1 and SHA256 identifiers are accepted"
         ~count:500
         G.(
-          pair (int_range 0 100)
-            (oneof_list [ 'a'; 'f'; '0'; '9'; 'A'; 'g'; '/'; ' ' ]))
-        (fun (length, digit) ->
-          Git_oid.valid (String.make length digit)
-          = ((length = 40 || length = 64)
-            && List.mem digit [ 'a'; 'f'; '0'; '9' ]));
+          string_size
+            ~gen:(oneof_list [ 'a'; 'f'; '0'; '9'; 'A'; 'g'; '/'; ' ' ])
+            (oneof [ int_range 0 100; return 40; return 64 ]))
+        (fun value ->
+          Git_oid.valid value
+          = ((String.length value = 40 || String.length value = 64)
+            && String.for_all
+                 (function '0' .. '9' | 'a' .. 'f' -> true | _ -> false)
+                 value));
       QCheck2.Test.make
         ~name:"valid OIDs remain valid under character permutation" ~count:300
         G.(

@@ -36,7 +36,10 @@ let verified request revision =
   match plan with
   | Error reason -> B.Recovery_required reason
   | Ok plan -> (
-      match S.verify plan ~candidate ~tree ~history ~changed_paths:"" with
+      match
+        S.verify ~merge_inputs_included:true plan ~candidate ~tree ~history
+          ~changed_paths:""
+      with
       | Ok proof -> B.Scope_verified proof
       | Error reason -> B.Recovery_required reason)
 

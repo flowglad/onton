@@ -566,7 +566,14 @@ let rec apply_command orch patches cmd =
              match
                Branch_reconcile.phase agent.Patch_agent.branch_reconcile
              with
-             | Some (Branch_reconcile.Repairing _) -> true
+             | Some
+                 (Branch_reconcile.Repairing
+                    { mode = Content_repair; conflicts; _ }) ->
+                 conflicts > 0
+             | Some
+                 (Branch_reconcile.Repairing
+                    { mode = Diagnosis _ | History_recovery _; _ }) ->
+                 false
              | None
              | Some
                  ( Branch_reconcile.Preparing | Integrating | Publishing

@@ -33,6 +33,48 @@ let plan conflicts =
 let () =
   QCheck_base_runner.run_tests_main
     [
+      QCheck2.Test.make ~count:100
+        ~name:
+          "merge verification rejects descendants even with the predicted tree"
+        (G.int_range 1 10) (fun count ->
+          try
+            let source = scope.S.source in
+            let plan =
+              get
+                (S.prepare_merge ~source ~target ~status:0
+                   (nul [ expected_tree ]))
+            in
+            let extra =
+              List.init count (fun i ->
+                  Printf.sprintf "%s\000%s\n" (oid (601 + i)) (oid (600 + i)))
+              |> List.rev
+            in
+            let history =
+              String.concat "" extra
+              ^ Printf.sprintf "%s\000%s %s\n" (oid 600) source target
+            in
+            Result.is_error
+              (S.verify plan
+                 ~candidate:(oid (600 + count))
+                 ~tree:expected_tree ~history ~changed_paths:"")
+          with _ -> false);
+      QCheck2.Test.make ~count:100
+        ~name:"merge fast-forward requires explicit ancestry evidence"
+        G.(pair bool bool)
+        (fun (choose_source, included) ->
+          try
+            let source = scope.S.source in
+            let plan =
+              get
+                (S.prepare_merge ~source ~target ~status:0
+                   (nul [ expected_tree ]))
+            in
+            Result.is_ok
+              (S.verify ~merge_inputs_included:included plan
+                 ~candidate:(if choose_source then source else target)
+                 ~tree:expected_tree ~history:"" ~changed_paths:"")
+            = included
+          with _ -> false);
       QCheck2.Test.make ~count:1000
         ~name:"merge continuation binds both exact captured parents"
         G.(triple (int_range 0 3) bool bool)

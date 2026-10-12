@@ -7,6 +7,36 @@ module G = QCheck2.Gen
 
 let tests =
   [
+    QCheck2.Test.make ~count:1000
+      ~name:
+        "restore/allocation interleavings keep IDs unique and exhaustion sticky"
+      G.(
+        list_size (int_range 0 100)
+          (option
+             (oneof [ int; return min_int; return (min_int + 1); return 0 ])))
+      (fun events ->
+        let rec check current issued = function
+          | [] -> true
+          | Some observed :: rest ->
+              let next = A.seed_floor ~current ~observed:[ observed ] in
+              next <= current && next <= observed
+              && (current <> min_int || next = min_int)
+              && check next issued rest
+          | None :: rest -> (
+              match A.next current with
+              | None -> current = min_int && check current issued rest
+              | Some next ->
+                  current <> min_int && next < current && next < 0
+                  && (not (List.mem next issued))
+                  && check next (next :: issued) rest)
+        in
+        check 0 [] events);
+    QCheck2.Test.make ~count:500 ~name:"allocation never wraps at exhaustion"
+      G.(oneof [ int; return min_int; return (min_int + 1); return max_int ])
+      (fun current ->
+        match A.next current with
+        | None -> current = min_int
+        | Some next -> next < 0 && next < current && next = min current 0 - 1);
     QCheck2.Test.make ~count:500
       ~name:"comment ID restoration is total and bounded"
       G.(pair int (list_size (int_range 0 100) int))

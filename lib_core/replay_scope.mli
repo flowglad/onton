@@ -80,10 +80,11 @@ type tree_plan = private {
 
 val prepare :
   t -> target:string -> status:int -> string -> (tree_plan, string) result
-(** Decode [merge-tree --write-tree --no-messages --name-only -z] computed
-    against this range's explicit boundary. The predicted tree and conflict
-    paths are independent of the recovery agent's output. Exit 0 must have no
-    conflicts; exit 1 must have at least one. Other exits are never evidence. *)
+(** Decode [merge-tree --write-tree --no-messages --name-only -z] computed for
+    each origin commit against [origin^], composing onto the target tree. The
+    predicted tree and conflict paths are independent of the recovery agent's
+    output. Exit 0 must have no conflicts; exit 1 must have at least one. Other
+    exits are never evidence. *)
 
 val prepare_composed :
   t ->
@@ -113,19 +114,24 @@ type verified = private { request : request; candidate : string; tree : string }
 [@@deriving eq, compare, sexp_of]
 
 val verify :
+  ?merge_inputs_included:bool ->
   tree_plan ->
   candidate:string ->
   tree:string ->
   history:string ->
   changed_paths:string ->
   (verified, string) result
-(** Verify the complete candidate history above the exact captured target and
-    its tree relative to the independently predicted tree. Recovery may resolve
-    only captured conflict paths; every other tree entry must match exactly.
-    [changed_paths] is the complete NUL-terminated [git diff --name-only -z]
-    result between predicted and candidate trees, without rename detection. This
-    establishes a structural input-scope guarantee, not semantic approval of an
-    agent's choices inside an explicitly authorized conflict. *)
+(** [merge_inputs_included] defaults to false. An empty merge history is
+    accepted only with direct ancestry evidence that both captured inputs reach
+    the candidate. Nonempty merge history must consist of exactly the captured
+    two-parent merge. Verify the complete candidate history above the exact
+    captured target and its tree relative to the independently predicted tree.
+    Recovery may resolve only captured conflict paths; every other tree entry
+    must match exactly. [changed_paths] is the complete NUL-terminated
+    [git diff --name-only -z] result between predicted and candidate trees,
+    without rename detection. This establishes a structural input-scope
+    guarantee, not semantic approval of an agent's choices inside an explicitly
+    authorized conflict. *)
 
 val matches :
   verified ->

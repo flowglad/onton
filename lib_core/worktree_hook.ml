@@ -53,12 +53,12 @@ let decode json =
 
 let next t ~path ~branch =
   match t with
-  | None | Some { status = Finished _; _ } -> Ready
   | Some r
     when not
            (String.equal r.request.path path
            && String.equal r.request.branch branch) ->
       Stop "worktree_create_hook_context_changed"
+  | None | Some { status = Finished _; _ } -> Ready
   | Some { status = Running; _ } -> Stop "worktree_create_hook_outcome_unknown"
   | Some { status = Planned; attempts; request } ->
       if attempts = Int.max_value then

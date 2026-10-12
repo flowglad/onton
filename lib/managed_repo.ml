@@ -304,10 +304,12 @@ let infer_github_token () =
             | Some
                 {
                   status = Unix.WEXITED _ | Unix.WSIGNALED _ | Unix.WSTOPPED _;
+                  stderr;
                   _;
-                }
-            | None ->
+                } ->
+                Stdlib.prerr_string stderr;
                 ""
+            | None -> ""
           with _ -> ""))
 
 let infer_sourcehut_token () =

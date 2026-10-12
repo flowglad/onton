@@ -70,7 +70,23 @@ let supervised_command ~supervisor ~streaming args =
   :: Int.to_string (List.length guards)
   :: (guards @ args)
 
-let run_sync ~env args =
+let rec retry_sync_spawn ?(attempts = 4) f =
+  try f ()
+  with
+  | Unix.Unix_error ((Unix.EAGAIN | Unix.ENOMEM | Unix.EINTR), _, _)
+  when attempts > 1
+  ->
+    Unix.sleepf 0.01;
+    retry_sync_spawn ~attempts:(attempts - 1) f
+
+let run_sync ?(timeout = 120.) ~env args =
+  let exception Timed_out in
+  let deadline = Unix.gettimeofday () +. Float.max 0. timeout in
+  let remaining () =
+    let time = deadline -. Unix.gettimeofday () in
+    if Float.(time <= 0.) then raise Timed_out;
+    time
+  in
   let supervisor = supervisor_path () in
   if String.is_empty supervisor || not (Stdlib.Sys.file_exists supervisor) then
     (Unix.WEXITED 127, "", "Process-tree supervisor unavailable: " ^ supervisor)
@@ -121,7 +137,8 @@ let run_sync ~env args =
           supervised_command ~supervisor ~streaming:false args |> Array.of_list
         in
         let pid =
-          Unix.create_process_env supervisor argv env stdin out_w err_w
+          retry_sync_spawn (fun () ->
+              Unix.create_process_env supervisor argv env stdin out_w err_w)
         in
         child := Some pid;
         List.iter [ stdin; out_w; err_w ] ~f:close;
@@ -132,7 +149,7 @@ let run_sync ~env args =
         in
         let rec ready fds =
           try
-            let readable, _, _ = Unix.select fds [] [] (-1.) in
+            let readable, _, _ = Unix.select fds [] [] (remaining ()) in
             readable
           with Unix.Unix_error (Unix.EINTR, _, _) -> ready fds
         in
@@ -151,9 +168,26 @@ let run_sync ~env args =
             in
             drain remaining
         in
-        drain [ (out_r, stdout); (err_r, stderr) ];
-        let _, status = wait [] pid in
-        child := None;
+        let status =
+          try
+            drain [ (out_r, stdout); (err_r, stderr) ];
+            let rec await () =
+              match wait [ Unix.WNOHANG ] pid with
+              | 0, _ ->
+                  Unix.sleepf (Float.min 0.01 (remaining ()));
+                  await ()
+              | _, status ->
+                  child := None;
+                  status
+            in
+            await ()
+          with Timed_out ->
+            stop pid;
+            child := None;
+            Buffer.add_string stderr
+              (Printf.sprintf "\nCommand timed out after %.1fs" timeout);
+            Unix.WEXITED 124
+        in
         (status, Buffer.contents stdout, Buffer.contents stderr))
 
 let run_status ?cwd ?stdout ?stderr ~process_mgr ?clock ~env args =

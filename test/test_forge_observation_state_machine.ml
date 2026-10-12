@@ -522,7 +522,7 @@ let tests =
             `Assoc
               [ ("next_sequence", `Int number); ("pending", `String value) ]
           in
-          ignore (F.decode_history json);
+          assert (Result.is_error (F.decode_history json));
           let raw = F.yojson_of_history F.empty_history in
           let overflow =
             match raw with

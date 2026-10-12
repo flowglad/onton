@@ -1,7 +1,7 @@
 # Branch reconciliation M3 completion audit
 
 The corrected M3 recovery boundary is locally qualified. Ordinary reconciliation
-failures reach agent recovery or observation-only diagnosis before an exhausted
+failures reach agent recovery or diagnosis with environmental repair before an exhausted
 recovery hold. The current evidence is recorded in the M3 audit; earlier
 qualification did not cover this complete boundary. No PR has been opened.
 

@@ -235,33 +235,25 @@ let prepare_identity ~source ~tree =
 type verified = { request : request; candidate : string; tree : string }
 [@@deriving eq, compare, sexp_of]
 
-let merge_history ~source ~target ~candidate history =
+let merge_history ~merge_inputs_included ~source ~target ~candidate history =
   if String.is_empty history then
-    String.equal candidate source || String.equal candidate target
-  else if not (String.is_suffix history ~suffix:"\n") then false
+    merge_inputs_included
+    && (String.equal candidate source || String.equal candidate target)
   else
-    let rec walk expected seen = function
-      | [] -> false
-      | line :: rest -> (
-          match String.split line ~on:'\000' with
-          | [ revision; parents ]
-            when valid_oid revision
-                 && String.equal revision expected
-                 && not (Set.mem seen revision) -> (
-              match String.split parents ~on:' ' with
-              | [ first; second ] ->
-                  List.is_empty rest
-                  && ((String.equal first source && String.equal second target)
-                     || (String.equal first target && String.equal second source)
-                     )
-              | [ parent ] when valid_oid parent ->
-                  walk parent (Set.add seen revision) rest
-              | _ -> false)
-          | _ -> false)
-    in
-    walk candidate (Set.empty (module String)) (String.split_lines history)
+    match String.split_lines history with
+    | [ line ] when String.is_suffix history ~suffix:"\n" -> (
+        match String.split line ~on:'\000' with
+        | [ revision; parents ] when String.equal revision candidate -> (
+            match String.split parents ~on:' ' with
+            | [ first; second ] ->
+                (String.equal first source && String.equal second target)
+                || (String.equal first target && String.equal second source)
+            | _ -> false)
+        | _ -> false)
+    | _ -> false
 
-let verify (plan : tree_plan) ~candidate ~tree ~history ~changed_paths =
+let verify ?(merge_inputs_included = false) (plan : tree_plan) ~candidate ~tree
+    ~history ~changed_paths =
   let topology =
     match plan.request with
     | Unproven -> false
@@ -270,7 +262,7 @@ let verify (plan : tree_plan) ~candidate ~tree ~history ~changed_paths =
     | Replay { target; _ } ->
         Result.is_ok (capture ~boundary:(Some target) ~source:candidate history)
     | Merge { source; target } ->
-        merge_history ~source ~target ~candidate history
+        merge_history ~merge_inputs_included ~source ~target ~candidate history
   in
   if not (valid_oid candidate && valid_oid tree) then
     Error "replay_scope_invalid_candidate_tree"

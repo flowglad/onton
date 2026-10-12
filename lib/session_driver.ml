@@ -170,7 +170,9 @@ module Make (W : Worktree.S) (Env : ENV) = struct
   let begin_transcript ~patch_id ~backend_name ~resume_session ~prompt =
     let buf = Buffer.create 4096 in
     Option.iter (Stdlib.Hashtbl.find_opt Env.transcripts patch_id)
-      ~f:(fun previous -> Buffer.add_string buf previous);
+      ~f:(fun previous ->
+        Buffer.add_string buf previous;
+        if not (String.is_empty previous) then Buffer.add_char buf '\n');
     let tm = Unix.localtime (Unix.gettimeofday ()) in
     Buffer.add_string buf
       (Printf.sprintf
@@ -201,7 +203,6 @@ module Make (W : Worktree.S) (Env : ENV) = struct
         ~resume_session ~prompt
     in
     let captured_session = ref resume_session in
-    let gate = ref (Content_gate.create ()) in
     let streamed_text = ref false in
     let sync () = publish_transcript ~patch_id (Buffer.contents text_buf) in
     let on_event event =
@@ -235,45 +236,58 @@ module Make (W : Worktree.S) (Env : ENV) = struct
           | Some expected when not (String.equal expected session_id) ->
               failwith "repair backend changed the patch conversation identity"
           | Some _ | None -> captured_session := Some session_id));
-      sync ();
-      let next_gate, persist = Content_gate.should_persist !gate event in
-      gate := next_gate;
-      if persist then
-        Option.iter !captured_session ~f:(fun session_id ->
-            let snapshot_path = Project_store.snapshot_path Env.project_name in
-            (match
-               Runtime.update_persisting Env.runtime
-                 ~persist:(Persistence.save_snapshot ~path:snapshot_path)
-                 (fun snap ->
-                   let orch =
-                     Orchestrator.set_llm_session_id snap.Runtime.orchestrator
-                       patch_id (Some session_id)
-                   in
-                   let orch =
-                     Orchestrator.clear_session_fallback orch patch_id
-                   in
-                   let transcripts = Hashtbl.copy snap.transcripts in
-                   Hashtbl.set transcripts ~key:patch_id
-                     ~data:(Buffer.contents text_buf);
-                   ({ snap with Runtime.orchestrator = orch; transcripts }, ()))
-             with
-            | Ok () -> ()
-            | Error error ->
-                failwith ("Cannot checkpoint repair conversation: " ^ error));
-            match
-              Persistence.record_session_id
-                ~snapshot_path:(Project_store.snapshot_path Env.project_name)
-                ~patch_id ~session_id
-            with
-            | Ok () -> ()
-            | Error error ->
-                Runtime_logging.log_event Env.runtime ~patch_id
-                  ("Failed to persist repair conversation: " ^ error))
+      sync ()
     in
     Exn.protect ~finally:sync ~f:(fun () ->
-        Branch_repair_session.run ~backend ~context ~guidance ~on_event ~cwd
-          ~project_name:Env.project_name ~patch_id ~complexity ~resume_session
-          ~session_uuid ~turn ~read_head ~now:(fun () -> Eio.Time.now Env.clock))
+        let result =
+          Branch_repair_session.run ~backend ~context ~guidance ~on_event ~cwd
+            ~project_name:Env.project_name ~patch_id ~complexity ~resume_session
+            ~session_uuid ~turn ~read_head ~now:(fun () ->
+              Eio.Time.now Env.clock)
+        in
+        (match result with
+        | Branch_reconcile.Repair_completed _ ->
+            Option.iter !captured_session ~f:(fun session_id ->
+                let snapshot_path =
+                  Project_store.snapshot_path Env.project_name
+                in
+                let save_error = ref None in
+                Runtime.update Env.runtime (fun snap ->
+                    let orchestrator =
+                      Orchestrator.set_llm_session_id snap.Runtime.orchestrator
+                        patch_id (Some session_id)
+                      |> fun orch ->
+                      Orchestrator.clear_session_fallback orch patch_id
+                    in
+                    let transcripts = Hashtbl.copy snap.transcripts in
+                    Hashtbl.set transcripts ~key:patch_id
+                      ~data:(Buffer.contents text_buf);
+                    let next =
+                      { snap with Runtime.orchestrator; transcripts }
+                    in
+                    (match
+                       Persistence.save_snapshot ~path:snapshot_path next
+                     with
+                    | Ok () -> ()
+                    | Error error -> save_error := Some error);
+                    next);
+                Option.iter !save_error ~f:(fun error ->
+                    Runtime_logging.log_event Env.runtime ~patch_id
+                      ("Failed to checkpoint repair conversation: " ^ error));
+                match
+                  Persistence.record_session_id ~snapshot_path ~patch_id
+                    ~session_id
+                with
+                | Ok () -> ()
+                | Error error ->
+                    Runtime_logging.log_event Env.runtime ~patch_id
+                      ("Failed to persist repair conversation: " ^ error))
+        | Worktree_hook _ | Publication_observed _ | Materialized _ | Request _
+        | Result _ | Repair_invalidated _ | Repair_dispatched _
+        | Repair_started _ | Repair_interrupted _ | Repair_failed _ | Tick _
+        | Recover | Reconfirm_publication | Resume | Refresh _ ->
+            ());
+        result)
 
   let publish_completion ~write_owner ~patch_id ~(agent : Patch_agent.t) ~path:_
       completion =

@@ -538,6 +538,34 @@ let () =
                       | Error _, _ | _, Error _ -> false)))
         with _ -> false)
   in
+  let v2_ignores_legacy_owner_evidence =
+    QCheck2.Test.make ~name:"v2 ignores obsolete anchors and publication flags"
+      ~count:100 gen_patch_agent_fully_populated (fun agent ->
+        try
+          let gameplan = gameplan_for_agent agent in
+          match Onton.Persistence.patch_agent_to_yojson agent with
+          | `Assoc fields -> (
+              let json =
+                `Assoc
+                  ([
+                     ("branch_published", `Bool true);
+                     ("branch_rebased_onto_sha", `String (String.make 40 'a'));
+                     ("anchor_history", `List [ `String (String.make 40 'b') ]);
+                   ]
+                  @ fields)
+              in
+              match
+                Onton.Persistence.patch_agent_of_yojson ~snapshot_version:2
+                  ~main_branch:(Branch.of_string "main") ~gameplan json
+              with
+              | Ok restored ->
+                  Onton_core.Branch_reconcile.equal
+                    agent.Onton_core.Patch_agent.branch_reconcile
+                    restored.Onton_core.Patch_agent.branch_reconcile
+              | Error _ -> false)
+          | _ -> false
+        with _ -> false)
+  in
   let v2_requires_branch_checkpoint =
     QCheck2.Test.make ~name:"v2 rejects absent or null branch checkpoint"
       ~count:100 gen_patch_agent_fully_populated (fun agent ->
@@ -1343,6 +1371,7 @@ let () =
         obsolete_branch_fields_ignored;
         base_evidence_roundtrip;
         v2_requires_branch_checkpoint;
+        v2_ignores_legacy_owner_evidence;
         legacy_architecture_snapshot;
         legacy_feature_fields_default_false;
         applied_control_ids_decode;

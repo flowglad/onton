@@ -184,9 +184,9 @@ retains the complete captured candidate list.
 
 Confirmation directly observes the remote and its topology. Exact equality
 completes publication after candidate scope verification. A remote descendant
-requires its own bounded contribution check; ancestry alone cannot acknowledge
-unknown added work. Lost push
-acknowledgements therefore do not repeat implementation. PR #483's
+also confirms that the verified candidate was published. This acknowledges
+publication only; it does not import or certify the descendant's added work.
+Lost push acknowledgements therefore do not repeat implementation. PR #483's
 agent-published resolution with a stale remote-tracking ref is the same
 confirmation contract: direct remote equality settles publication without
 another push, rebase, or repair turn. If the remote still matches the captured
@@ -243,8 +243,8 @@ candidate and remote revisions, provenance, and the strategies already tried.
 The agent inspects history and repairs a candidate while preserving valid patch
 and remote work. Failed transport probes do not consume mutation or agent budgets. Failed push
 commands are bounded mutation attempts because their outcome may be uncertain;
-confirmation precedes another push. Explicit write-permission failures remain
-authority holds.
+confirmation precedes another push. Permission failures receive bounded recovery.
+The agent may repair local causes, but cannot change permissions or publish.
 
 Onton retains publication authority. The recovery agent requests publication;
 Onton inspects the actual checkout and sequencer, verifies preservation evidence,
@@ -659,7 +659,7 @@ environment configuration. Repairs must be verified by rerunning the failing
 command or gate. Stale gate or lock state can be cleared only after checking
 ownership and prerequisites; checks, approvals and repository policies cannot
 be bypassed. Diagnosis permits these environmental repairs while prohibiting
-changes to patch content, Git history, the index, sequencer and remote destinations.
+changes to patch content, Git history, branches, the index, sequencer and remote destinations.
 These are prompt instructions, not an OS-enforced sandbox. Backend final results are forwarded to the
 activity log, including diagnostic findings that require external action. Owner mutation predicates remain unchanged,
 and a diagnosis cannot grant publication authority, rebind a destination, or replay

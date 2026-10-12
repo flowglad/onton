@@ -21,12 +21,20 @@ val supervised_command :
 (** Capture the current parent PID and held project command guards into the
     supervisor dispatch protocol. *)
 
+val retry_sync_spawn : ?attempts:int -> (unit -> 'a) -> 'a
+(** Synchronous bounded retry for EAGAIN, ENOMEM and EINTR at process creation.
+*)
+
 val run_sync :
-  env:string array -> string list -> Unix.process_status * string * string
+  ?timeout:float ->
+  env:string array ->
+  string list ->
+  Unix.process_status * string * string
 (** Synchronous startup counterpart of [run_status], with the same supervisor
     and project guards. Drains both output pipes together and closes stdin.
-    Returns after group cleanup; exception paths stop and reap the supervisor.
-    This does not require an Eio scheduler. *)
+    Returns after group cleanup; exception paths stop and reap the supervisor. A
+    command deadline (120 seconds by default) initiates supervised termination
+    and reaping, returning exit 124. This does not require an Eio scheduler. *)
 
 val run :
   ?cwd:Eio.Fs.dir_ty Eio.Path.t ->

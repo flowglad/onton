@@ -441,18 +441,22 @@ let remote_scope env policy ~side_merge =
           check "remote replay never resets the managed checkout" (!resets = 0);
           check "incoming remote remains recoverable"
             (List.mem (revision incoming) (B.required_revisions state));
-          if side_merge && policy = B.Preserve_ancestry then (
-            check "ancestry preservation cannot approve foreign side history"
-              (B.publication_status state = `Pending);
-            check "unapproved remote is left intact"
-              (Git.git_capture ~cwd:remote [ "rev-parse"; "patch" ] = incoming))
-          else (
-            check "only authorized remote and local changes enter the PR diff"
-              (Git.git_capture ~cwd:remote
-                 [ "diff"; "--name-only"; "main...patch" ]
-              = "local\npatch\nremote");
-            check "remote scope preserves normal deterministic progress"
-              (!repairs = if side_merge then 1 else 0))))
+          check "captured merge inputs are preserved by ancestry policy"
+            (if policy = B.Preserve_ancestry then
+               Git.git_exit_code ~cwd:dir
+                 [ "merge-base"; "--is-ancestor"; incoming; "HEAD" ]
+               = 0
+             else true);
+          check
+            "only the policy-authorized input contributions enter the PR diff"
+            (Git.git_capture ~cwd:remote
+               [ "diff"; "--name-only"; "main...patch" ]
+            =
+            if side_merge && policy = B.Preserve_ancestry then
+              "foreign\nlocal\npatch\nremote"
+            else "local\npatch\nremote");
+          check "remote scope preserves normal deterministic progress"
+            (!repairs = if side_merge && policy = B.Rewrite then 1 else 0)))
 
 let () =
   Eio_main.run (fun env ->

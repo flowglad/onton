@@ -34,7 +34,16 @@ let () =
   Unix.putenv "ONTON_DATA_DIR" root;
   Fun.protect
     ~finally:(fun () ->
-      Unix.putenv "ONTON_DATA_DIR" (Option.value before ~default:""))
+      Unix.putenv "ONTON_DATA_DIR" (Option.value before ~default:"");
+      let rec remove path =
+        if (Unix.lstat path).Unix.st_kind = Unix.S_DIR then (
+          Array.iter
+            (fun name -> remove (Filename.concat path name))
+            (Sys.readdir path);
+          Unix.rmdir path)
+        else Sys.remove path
+      in
+      remove root)
     (fun () ->
       let registration = get (L.acquire_registration ()) in
       check "same-process nested acquisition cannot release a held POSIX lock"

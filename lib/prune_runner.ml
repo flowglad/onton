@@ -104,7 +104,7 @@ let refresh_agents_from_forge
                 try
                   Result.map_error (Forge.pr_state pr_number) ~f:(fun _ -> ())
                 with
-                | Eio.Cancel.Cancelled _ as exn -> raise exn
+                | exn when Process_tree.has_cancellation exn -> raise exn
                 | _ -> Error ()
               in
               (patch_id, pr_number, result))
@@ -300,27 +300,34 @@ let reclaim_project ~registration ~process_mgr ~clock ~slug ~remove =
                         ~finally:(fun () ->
                           Project_lifecycle.release_retirement lifecycle)
                         (fun () ->
-                          let* snapshot =
-                            Persistence.load
-                              ~path:(Project_store.snapshot_path other)
+                          let path = Project_store.snapshot_path other in
+                          let missing =
+                            try
+                              ignore (Unix.lstat path);
+                              false
+                            with Unix.Unix_error (Unix.ENOENT, _, _) -> true
                           in
-                          let agents =
-                            Orchestrator.agents_map
-                              snapshot.Runtime.orchestrator
-                          in
-                          let dependencies =
-                            match
-                              Prune_decision.classify_snapshot
-                                ~patches:snapshot.gameplan.Gameplan.patches
-                                ~agents ~closed_patch_ids:[]
-                            with
-                            | Prune_decision.All_terminal -> []
-                            | Prune_decision.Not_terminal
-                            | Prune_decision.No_patches ->
-                                Prune_decision.recovery_dependencies agents
-                          in
-                          inspect rest (dependencies @ required)
-                            (project :: protected_projects))))
+                          if missing then
+                            inspect rest required (project :: protected_projects)
+                          else
+                            let* snapshot = Persistence.load ~path in
+                            let agents =
+                              Orchestrator.agents_map
+                                snapshot.Runtime.orchestrator
+                            in
+                            let dependencies =
+                              match
+                                Prune_decision.classify_snapshot
+                                  ~patches:snapshot.gameplan.Gameplan.patches
+                                  ~agents ~closed_patch_ids:[]
+                              with
+                              | Prune_decision.All_terminal -> []
+                              | Prune_decision.Not_terminal
+                              | Prune_decision.No_patches ->
+                                  Prune_decision.recovery_dependencies agents
+                            in
+                            inspect rest (dependencies @ required)
+                              (project :: protected_projects))))
   in
   Project_store.list_projects ()
   |> List.filter ~f:(fun other -> not (String.equal slug other))
@@ -449,7 +456,7 @@ let run_prune_registered ~registration ~net ~clock ~process_mgr ~github_token
                                in
                                (status, refresh_summary))))
               with
-              | Eio.Cancel.Cancelled _ as exn -> raise exn
+              | exn when Process_tree.has_cancellation exn -> raise exn
               | exn -> Error (Exn.to_string exn)
             with
             | Error msg ->

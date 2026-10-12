@@ -261,6 +261,20 @@ let waiting_repair ~root ~stale ~changed =
                 failwith "repair handoff cannot blindly mutate Git")
           ~perform:(fun ~agent:_ ~turn ->
             incr calls;
+            check "dispatch uses the newly offered claim after external work"
+              (if changed then not (B.equal_token turn.token token) else true);
+            let active =
+              Runtime.read runtime (fun snap ->
+                  B.operation
+                    (Orchestrator.agent snap.Runtime.orchestrator id)
+                      .Patch_agent.branch_reconcile)
+            in
+            check "dispatched token belongs to the current owner claim"
+              (match active with
+              | Some op ->
+                  Option.bind op.B.repair (fun repair -> repair.B.last_turn)
+                  = Some turn.token
+              | None -> false);
             check "backend owns capacity" !has_capacity;
             check_exclusive (fun f ->
                 Runtime.with_patch_ownership runtime ~patch_id:id (fun _ ->

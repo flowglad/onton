@@ -17,7 +17,10 @@ let run_git_capture ~repo_root args =
         ("git" :: "-C" :: repo_root :: args)
     in
     Some { status; stdout; stderr }
-  with _ -> None
+  with
+  | Sys.Break -> raise Sys.Break
+  | exn when Process_tree.has_cancellation exn -> raise exn
+  | _ -> None
 
 let git_stdout ~repo_root args =
   match run_git_capture ~repo_root args with
@@ -69,7 +72,10 @@ let make ~repo_root =
         | Some { status = Unix.WSTOPPED _; _ }
         | None ->
             None
-      with _ -> None
+      with
+      | Sys.Break -> raise Sys.Break
+      | exn when Process_tree.has_cancellation exn -> raise exn
+      | _ -> None
 
     let infer_sourcehut_owner_repo () =
       try
@@ -81,7 +87,10 @@ let make ~repo_root =
         | Some { status = Unix.WSTOPPED _; _ }
         | None ->
             None
-      with _ -> None
+      with
+      | Sys.Break -> raise Sys.Break
+      | exn when Process_tree.has_cancellation exn -> raise exn
+      | _ -> None
 
     (** Fetch the [origin] remote in an existing onton-managed repo. Best-effort
         -- a network-down resume should not fail the whole session. *)

@@ -40,7 +40,17 @@ let tests =
               | None -> false)
         with _ -> false);
     QCheck2.Test.make ~name:"retirement arbitrary manifests cannot select paths"
-      ~count:1000 G.string (fun text ->
+      ~count:1000
+      G.(
+        map
+          (fun slug -> "onton-retired-project-v1\n" ^ slug ^ "\n")
+          (oneof
+             [
+               valid_slug;
+               string;
+               oneof_list [ "../escape"; "/tmp"; ".."; "a/b"; "a\000b" ];
+             ]))
+      (fun text ->
         match P.decode text with
         | None -> true
         | Some manifest ->

@@ -1,6 +1,15 @@
 (* @archlint.module interface
    @archlint.domain project-lifecycle *)
 
+(** Registration serializes startup/configuration and pruning. A shared use
+    lease survives registration and prevents retirement for the process
+    lifetime. Supervisors hold the exclusive writer counterpart even when they
+    bypass the PID-file lock. Retirement also takes the exclusive counterpart,
+    then atomically moves the owned project into a private journal. Cleanup only
+    traverses journal payloads; interrupted cleanup cannot delete a new project
+    at the original path. Releases are idempotent and inherited handles cannot
+    unlock a parent's lease. *)
+
 type error = Project_retirement.error = Busy of string | Io_error of string
 type registration
 type use
@@ -32,13 +41,4 @@ val acquire_retirement :
 val release_retirement : retirement -> unit
 val retire : registration -> retirement -> (unit, error) result
 val cleanup_retired : registration -> (unit, error) result
-
 val error_message : error -> string
-(** Registration serializes startup/configuration and pruning. A shared use
-    lease survives registration and prevents retirement for the process
-    lifetime. Supervisors hold the exclusive writer counterpart even when they
-    bypass the PID-file lock. Retirement also takes the exclusive counterpart,
-    then atomically moves the owned project into a private journal. Cleanup only
-    traverses journal payloads; interrupted cleanup cannot delete a new project
-    at the original path. Releases are idempotent and inherited handles cannot
-    unlock a parent's lease. *)

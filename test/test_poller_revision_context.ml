@@ -240,7 +240,13 @@ let run env provider scenario =
                       check "stale metadata did not revert the controller head"
                         ((current ()).Patch_agent.head_oid = Some head);
                       Git.run_git ~cwd:remote
-                        [ "update-ref"; "refs/heads/patch"; older_head; head ]);
+                        [ "update-ref"; "refs/heads/patch"; older_head; head ];
+                      Git.run_git ~cwd:dir
+                        [
+                          "fetch";
+                          "origin";
+                          "+refs/heads/patch:refs/remotes/origin/patch";
+                        ]);
                     let response =
                       match provider with
                       | Sourcehut -> Real.pr_state number

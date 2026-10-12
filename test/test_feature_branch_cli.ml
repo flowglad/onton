@@ -276,7 +276,18 @@ let () =
               Git.run_git ~cwd:dir
                 [ "config"; "user.email"; "test@example.com" ];
               Git.run_git ~cwd:dir [ "commit"; "--allow-empty"; "-m"; "base" ];
-              Git.run_git ~cwd:dir [ "update-ref"; recovery_ref; "HEAD" ];
+              let retained =
+                Git.git_capture ~cwd:dir
+                  [
+                    "commit-tree";
+                    "HEAD^{tree}";
+                    "-p";
+                    "HEAD";
+                    "-m";
+                    "retained work";
+                  ]
+              in
+              Git.run_git ~cwd:dir [ "update-ref"; recovery_ref; retained ];
               List.iter [ "NEW_FEATURE"; "new feature"; "new-feature!" ]
                 ~f:(fun alias ->
                   rejects
@@ -293,6 +304,28 @@ let () =
                           ~branch:"new-feature/patch-1"
                        ^ "/source")
                        recovery_ref);
+                  let io =
+                    Branch_reconcile_executor.make_io
+                      ~process_mgr:(Eio.Stdenv.process_mgr env)
+                      ~clock:(Eio.Stdenv.clock env) ~path:dir
+                  in
+                  let revision =
+                    match Branch_reconcile.Commit.make retained with
+                    | Some revision -> revision
+                    | None -> failwith "invalid fixture commit"
+                  in
+                  check
+                    "alias-derived pruning inspects and retains the owned \
+                     namespace"
+                    (match
+                       Recovery_ref_prune.reclaim ~io
+                         ~project:config.Project_store.project_name
+                         ~protected_projects:[] ~required:[ revision ]
+                     with
+                    | Ok (Recovery_ref_prune.Retained revisions) ->
+                        List.mem revisions revision
+                          ~equal:Branch_reconcile.Commit.equal
+                    | Ok Recovery_ref_prune.Pruned | Error _ -> false);
                   Git.run_git ~cwd:dir [ "show-ref"; "--verify"; recovery_ref ]);
               (* A copied/misfiled configuration must not redirect startup or
                  authorize pruning another project's exact recovery namespace. *)

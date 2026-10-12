@@ -17,5 +17,6 @@ val prepare :
   (prepared list, string) result
 (** Checkpoint the batch of still-current requests before exposing any for
     network I/O. Persistence failure leaves runtime unchanged and returns no
-    dispatchable ticket. Returned snapshots include the pending ticket, so the
-    apply-time context check can reject intervening Git or forge transitions. *)
+    dispatchable ticket. Returned prepared entries include the pending ticket,
+    so the apply-time context check can reject intervening Git or forge
+    transitions. *)

@@ -98,7 +98,19 @@ let tests =
         with _ -> false);
     QCheck2.Test.make
       ~name:"only contradictory materialization evidence is permanent"
-      ~count:1000 G.string (fun reason ->
+      ~count:1000
+      G.(
+        oneof
+          [
+            string;
+            oneof_list
+              [
+                "materialization_revision_changed";
+                "materialization_branch_changed";
+                "contradictory_materialization_receipts";
+              ];
+          ])
+      (fun reason ->
         try
           let failure = P.materialization_failure reason in
           let unsafe =

@@ -14,7 +14,9 @@ type boundary =
   | Merge_config
   | Confirmation
 
-type tracking = Absent | Inherited | External
+type tracking = Absent | Inherited | External | Stale_ref
+
+exception Interrupted
 
 let check message condition = if not condition then failwith message
 
@@ -41,7 +43,7 @@ let () =
   in
   let cases =
     List.map (fun fault -> (fault, Absent)) cases
-    @ [ (None, Inherited); (None, External) ]
+    @ [ (None, Inherited); (None, External); (None, Stale_ref) ]
   in
   List.iter
     (fun (fault, tracking) ->
@@ -54,7 +56,7 @@ let () =
                 [ "checkout"; "-q"; "--no-track"; "-b"; "patch"; "origin/main" ];
               let candidate = commit dir "work" in
               (match tracking with
-              | Absent -> ()
+              | Absent | Stale_ref -> ()
               | Inherited | External ->
                   Git.run_git ~cwd:dir
                     [
@@ -106,7 +108,10 @@ let () =
                     incr successful_pushes;
                     (* Model a restart with no tracking ref. The public ref and the
                  owner's private recovery refs remain intact. *)
-                    Git.run_git ~cwd:dir [ "update-ref"; "-d"; tracking_ref ]
+                    Git.run_git ~cwd:dir [ "update-ref"; "-d"; tracking_ref ];
+                    if tracking = Stale_ref then
+                      Git.run_git ~cwd:dir
+                        [ "update-ref"; tracking_ref; "origin/main" ]
                 | _ -> ());
                 result
               in
@@ -120,6 +125,8 @@ let () =
                           when !armed && matches boundary args ->
                             armed := false;
                             if after then ignore (execute_git args);
+                            if boundary = Tracking_ref && after then
+                              raise (Eio.Cancel.Cancelled Interrupted);
                             (124, "", "injected initial-tracking interruption")
                         | Some _ | None -> execute_git args);
                   }
@@ -155,17 +162,31 @@ let () =
                                command);
                         state
                         (* Loss of acknowledgement: retain the preceding checkpoint. *)
-                    | None ->
-                        let result =
-                          E.execute ~io ~prefix ~branch:"patch" ~operation
-                            command
-                        in
-                        drive (remaining - 1)
-                          (fst
-                             (B.step state
-                                (B.Result
-                                   { token = command.token; at = 100.; result })))
-                    )
+                    | None -> (
+                        try
+                          let result =
+                            E.execute ~io ~prefix ~branch:"patch" ~operation
+                              command
+                          in
+                          drive (remaining - 1)
+                            (fst
+                               (B.step state
+                                  (B.Result
+                                     {
+                                       token = command.token;
+                                       at = 100.;
+                                       result;
+                                     })))
+                        with Eio.Cancel.Cancelled Interrupted ->
+                          check "ref interruption precedes tracking config"
+                            (Git.git_exit_code ~cwd:dir
+                               [ "config"; "--get"; "branch.patch.remote" ]
+                            <> 0);
+                          check "ref exists at the discarded command boundary"
+                            (Git.git_capture ~cwd:dir
+                               [ "rev-parse"; tracking_ref ]
+                            = candidate);
+                          state))
                 | None, _ | _, None -> state
               in
               let intent =
@@ -187,7 +208,7 @@ let () =
                 (Git.git_capture ~cwd:remote [ "rev-parse"; "patch" ]
                 = candidate);
               (match tracking with
-              | Absent | Inherited ->
+              | Absent | Inherited | Stale_ref ->
                   check "upstream is usable after recovery"
                     (Git.git_capture ~cwd:dir
                        [ "rev-parse"; "--abbrev-ref"; "patch@{upstream}" ]

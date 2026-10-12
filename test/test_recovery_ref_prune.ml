@@ -349,6 +349,8 @@ let () =
               ~process_mgr:(Eio.Stdenv.process_mgr env)
               ~github_token:"" ~refresh:false ()
           in
+          save "never-started" false false;
+          Sys.remove (Project_store.snapshot_path "never-started");
           save "a-owner" true false;
           let registration =
             match Project_lifecycle.acquire_registration () with

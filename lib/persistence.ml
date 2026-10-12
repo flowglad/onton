@@ -313,6 +313,23 @@ let patch_agent_of_yojson ?(snapshot_version = 1) ~main_branch ~gameplan json =
         Ok (Some completion)
   in
   let has_session = bool_member "has_session" json in
+  let migrate agent =
+    if snapshot_version <> 1 then agent
+    else
+      Patch_agent.migrate_legacy_branch_state ~main_branch
+        ~revision:
+          (Option.value
+             (Json.field "branch_rebased_onto_sha" json)
+             ~default:`Null)
+        ~published:
+          (Option.value
+             (bool_member_opt "branch_published" json)
+             ~default:false)
+        ~owner_missing:(Option.is_none (Json.field "branch_reconcile" json))
+        ~anchors:
+          (Option.value (Json.field "anchor_history" json) ~default:`Null)
+        agent
+  in
   Ok
     ( Patch_agent.restore ~session_completion ~branch_reconcile
         ~patch_id:(Patch_id.of_string (string_member "patch_id" json))
@@ -543,20 +560,7 @@ let patch_agent_of_yojson ?(snapshot_version = 1) ~main_branch ~gameplan json =
               |> List.dedup_and_sort ~compare:Int.compare
           | _ -> [])
         ()
-    |> Patch_agent.migrate_legacy_branch_state ~main_branch
-         ~revision:
-           (Option.value
-              (Json.field "branch_rebased_onto_sha" json)
-              ~default:`Null)
-         ~published:
-           (Option.value
-              (bool_member_opt "branch_published" json)
-              ~default:false)
-         ~owner_missing:
-           (snapshot_version = 1
-           && Option.is_none (Json.field "branch_reconcile" json))
-         ~anchors:
-           (Option.value (Json.field "anchor_history" json) ~default:`Null)
+    |> migrate
     |> fun agent ->
       if Option.value (bool_member_opt "has_conflict" json) ~default:false then
         Patch_agent.set_mergeability_unknown

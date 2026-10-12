@@ -1114,7 +1114,7 @@
  (name test_poller_batch)
  (modules test_poller_batch)
  (flags (:standard -w -40-42))
- (libraries onton onton_core onton_test_support eio_main unix)
+ (libraries onton onton_core onton_test_support base eio_main unix)
  (deps (package onton))
  (action
   (setenv ONTON_SETSID_EXEC

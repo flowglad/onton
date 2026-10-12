@@ -17,6 +17,26 @@ let finish (run : H.run) outcome =
 let tests =
   [
     QCheck2.Test.make ~count:100
+      ~name:"finished hooks retain path and branch context"
+      G.(pair bool bool)
+      (fun (same_path, same_branch) ->
+        try
+          let state = H.step H.empty (H.Plan (request "hook")) in
+          match decision state with
+          | H.Run run ->
+              let state =
+                H.step state (H.Started run) |> fun s ->
+                H.step s (finish run H.Succeeded)
+              in
+              H.next state
+                ~path:(if same_path then "/checkout" else "/other")
+                ~branch:(if same_branch then "patch" else "other")
+              =
+              if same_path && same_branch then H.Ready
+              else H.Stop "worktree_create_hook_context_changed"
+          | H.Ready | H.Stop _ -> false
+        with _ -> false);
+    QCheck2.Test.make ~count:100
       ~name:
         "legacy owners default to no hook and read-only verification cannot \
          schedule one" G.bool (fun verify ->

@@ -190,7 +190,7 @@ let () =
         (Patch_agent.expected_remote_head_oid agent)
         (Some pushed_head));
     List.for_all
-      [ pushed_head; F.sha "newer-remote-head" ]
+      [ pushed_head; F.sha "newer-remote-head"; F.sha "old-pre-push-head" ]
       ~f:(fun head ->
         let t =
           apply ~confirmed_remote_head:head t

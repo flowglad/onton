@@ -105,13 +105,17 @@ let run_hook ~process_mgr ~clock ~script ~cwd ~env ?(timeout : float option)
     match
       Eio.Time.with_timeout clock timeout (fun () ->
           Ok
-            (Process_tree.run ~process_mgr ~clock ~env:env_array ~cwd
+            (Process_tree.run_status ~process_mgr ~clock ~env:env_array ~cwd
                ~stdout:stdout_buf ~stderr:stderr_buf cmd))
     with
-    | Ok (0, _, _) -> Ok ()
-    | Ok (code, _, _) ->
+    | Ok (`Exited 0, _, _) -> Ok ()
+    | Ok (`Exited code, _, _) ->
         build_error
           ~status_msg:(Printf.sprintf "hook exited with code %d" code)
+          stdout_buf stderr_buf
+    | Ok (`Signaled signal, _, _) ->
+        build_error
+          ~status_msg:(Printf.sprintf "hook terminated by signal %d" signal)
           stdout_buf stderr_buf
     | Error `Timeout ->
         build_error

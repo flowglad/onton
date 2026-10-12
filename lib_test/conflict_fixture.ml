@@ -19,22 +19,29 @@ let conflict t pid =
     t
 
 let resolve t pid =
+  let before = (Orchestrator.agent t pid).Patch_agent.branch_reconcile in
   let t =
     C.resolve
       ~step:(fun t event -> fst (Orchestrator.reconcile_branch t pid event))
       ~state:(fun t -> (Orchestrator.agent t pid).Patch_agent.branch_reconcile)
       t
   in
-  match
-    Branch_reconcile.publication_observation_target
+  if
+    Branch_reconcile.equal before
       (Orchestrator.agent t pid).Patch_agent.branch_reconcile
-  with
-  | None -> t
-  | Some identity ->
-      let head =
-        Some
-          (Branch_reconcile.Commit.to_string identity.Branch_reconcile.revision)
-      in
-      Orchestrator.observe_publication_head
-        (Orchestrator.set_head_oid t pid head)
-        pid head
+  then t
+  else
+    match
+      Branch_reconcile.publication_observation_target
+        (Orchestrator.agent t pid).Patch_agent.branch_reconcile
+    with
+    | None -> t
+    | Some identity ->
+        let head =
+          Some
+            (Branch_reconcile.Commit.to_string
+               identity.Branch_reconcile.revision)
+        in
+        Orchestrator.observe_publication_head
+          (Orchestrator.set_head_oid t pid head)
+          pid head

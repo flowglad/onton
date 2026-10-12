@@ -212,11 +212,19 @@ let run env root ~existing mode =
               stderr = "";
               got_events = true;
               saw_final_result = true;
-              timed_out = false;
+              timed_out = !calls = 6;
             });
       }
   in
-  for attempt = 1 to 5 do
+  for attempt = 1 to 7 do
+    if attempt = 6 then
+      Runtime.update_orchestrator runtime (fun orch ->
+          Orchestrator.set_tried_fresh
+            (Orchestrator.set_session_failed orch id)
+            id);
+    if attempt = 7 then (
+      Sys.rename snapshot_path (snapshot_path ^ ".saved");
+      Unix.mkdir snapshot_path 0o700);
     let agent =
       Runtime.read runtime (fun snap -> Orchestrator.agent snap.orchestrator id)
     in
@@ -237,8 +245,18 @@ let run env root ~existing mode =
       (B.equal before after.branch_reconcile);
     check "patch session identity survives repair"
       (after.llm_session_id = !conversation);
-    check "successful repair leaves ordinary turns resumable"
-      (SD.session_mode after = `Resume (Option.get !conversation));
+    if attempt = 6 then
+      check "final-result followed by timeout preserves exhausted fallback"
+        (after.session_fallback = agent.session_fallback
+        && after.session_fallback = Patch_agent.Given_up)
+    else
+      check "successful repair leaves ordinary turns resumable"
+        (SD.session_mode after = `Resume (Option.get !conversation));
+    if attempt = 7 then (
+      check "checkpoint failure retains accepted repair in memory"
+        (after.session_fallback = Patch_agent.Fresh_available);
+      Unix.rmdir snapshot_path;
+      Sys.rename (snapshot_path ^ ".saved") snapshot_path);
     let text = Hashtbl.find Env.transcripts id in
     List.iter
       (fun expected ->
@@ -258,6 +276,9 @@ let run env root ~existing mode =
         (Base.String.is_substring text ~substring:"backend transport failed");
     check "repair publishes the normal transcript update"
       (Hashtbl.find Env.transcript_updates id = text);
+    check "transcript separator has a blank line after previous text"
+      (Base.String.is_substring text
+         ~substring:"Existing implementation transcript\n\n---");
     let saved = get (Persistence.load ~path:snapshot_path) in
     let saved_text = Base.Hashtbl.find saved.transcripts id |> Option.get in
     check "completed repair transcript is checkpointed"
@@ -266,7 +287,7 @@ let run env root ~existing mode =
       ((Orchestrator.agent saved.orchestrator id).llm_session_id = !conversation);
     Runtime.update_orchestrator runtime (fun _ -> saved.orchestrator)
   done;
-  check "one backend invocation per repair, no fresh retry" (!calls = 5)
+  check "one backend invocation per repair, no fresh retry" (!calls = 7)
 
 let () =
   let root = Filename.temp_dir "repair-session-test" "" in

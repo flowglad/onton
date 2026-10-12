@@ -557,9 +557,6 @@ patches:
       - path: lib/branch_repair_session.ml
         action: modify
         description: Complete the owned milestone guarantee and its direct verification.
-      - path: lib/branch_reconcile_runner.ml
-        action: modify
-        description: Report missing durable operation identity as checkpoint failure.
       - path: lib/branch_repair_session.mli
         action: modify
         description: Require project context and retained human guidance for owned recovery.

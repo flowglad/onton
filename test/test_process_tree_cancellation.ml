@@ -6,6 +6,26 @@ module Git = Onton_test_support.Git_env
 
 let check message condition = if not condition then failwith message
 
+let () =
+  let attempts = ref 0 in
+  let result =
+    Process_tree.retry_sync_spawn (fun () ->
+        incr attempts;
+        if !attempts < 4 then raise (Unix.Unix_error (Unix.EAGAIN, "spawn", ""));
+        42)
+  in
+  check "synchronous spawning retries transient failures"
+    (result = 42 && !attempts = 4);
+  attempts := 0;
+  try
+    ignore
+      (Process_tree.retry_sync_spawn (fun () ->
+           incr attempts;
+           raise (Unix.Unix_error (Unix.EAGAIN, "spawn", ""))));
+    failwith "retry exhaustion must raise"
+  with Unix.Unix_error (Unix.EAGAIN, _, _) ->
+    check "synchronous retry count is bounded" (!attempts = 4)
+
 let scenario env ~streaming graceful =
   Git.with_temp_repo (fun dir ->
       let path name = Filename.concat dir name in
@@ -352,7 +372,38 @@ let synchronous_capture () =
         [ ("TERM", Sys.sigterm); ("KILL", Sys.sigkill) ];
       let status, stdout, _ = run "cat; printf stdin-closed" in
       check "synchronous commands receive stdin EOF"
-        (status = Unix.WEXITED 0 && stdout = "stdin-closed"))
+        (status = Unix.WEXITED 0 && stdout = "stdin-closed");
+      List.iter
+        (fun close_outputs ->
+          let pid_file = Filename.temp_file "timed-out-pid" "" in
+          let started = Unix.gettimeofday () in
+          let status, _, stderr =
+            Process_tree.run_sync ~timeout:0.2 ~env:(Unix.environment ())
+              [
+                "/bin/sh";
+                "-c";
+                "echo $$ > " ^ Filename.quote pid_file ^ "; "
+                ^ (if close_outputs then "exec >/dev/null 2>&1; " else "")
+                ^ "trap '' TERM; while :; do sleep 30; done";
+              ]
+          in
+          check "synchronous command deadline terminates and reaps"
+            (status = Unix.WEXITED 124);
+          check "deadline retains diagnostics"
+            (Base.String.is_substring stderr ~substring:"timed out");
+          check "deadline is bounded even without output"
+            (Unix.gettimeofday () -. started < 6.);
+          let pid =
+            In_channel.with_open_bin pid_file In_channel.input_all
+            |> String.trim |> int_of_string
+          in
+          check "timed out leader is gone"
+            (try
+               Unix.kill pid 0;
+               false
+             with Unix.Unix_error (Unix.ESRCH, _, _) -> true);
+          Sys.remove pid_file)
+        [ false; true ])
 
 let missing_default env =
   Git.with_temp_repo (fun dir ->
