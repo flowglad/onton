@@ -109,7 +109,6 @@ val mark_pr_missing : t -> Patch_id.t -> t
 
 val set_session_failed : t -> Patch_id.t -> t
 
-val set_branch_rebased_onto_sha : t -> Patch_id.t -> string option -> t
 (** Record the SHA the base ref resolved to at the moment of a successful rebase
     / start. Called by the runner fiber after [W.read_branch_sha] captures the
     new value. [None] clears the field. *)
@@ -118,9 +117,23 @@ val set_tried_fresh : t -> Patch_id.t -> t
 val clear_session_fallback : t -> Patch_id.t -> t
 val on_session_failure : t -> Patch_id.t -> is_fresh:bool -> t
 val on_pr_discovery_failure : t -> Patch_id.t -> t
-val set_has_conflict : t -> Patch_id.t -> t
-val clear_has_conflict : t -> Patch_id.t -> t
-val reset_conflict_noop_count : t -> Patch_id.t -> t
+
+val begin_forge_observation :
+  t ->
+  Types.Patch_id.t ->
+  request:Forge_observation.request ->
+  t * Forge_observation.ticket option
+
+val accept_forge_observation :
+  ?confirmed_base:string ->
+  t ->
+  Types.Patch_id.t ->
+  ticket:Forge_observation.ticket ->
+  confirmed_head:string option ->
+  Forge_observation.t ->
+  t * (Poll_outcome.t, string) Result.t
+
+val defer_forge_revision_pair : t -> Patch_id.t -> t
 val set_base_branch : t -> Patch_id.t -> Branch.t -> t
 val set_notified_base_branch : t -> Patch_id.t -> Branch.t -> t
 val increment_ci_failure_count : t -> Patch_id.t -> t
@@ -135,11 +148,10 @@ val record_delivered_ci_run_ids : t -> Patch_id.t -> int list -> t
 val set_checks_passing : t -> Patch_id.t -> bool -> t
 val set_merge_ready : t -> Patch_id.t -> bool -> t
 val set_head_oid : t -> Patch_id.t -> string option -> t
-val set_expected_remote_head_oid : t -> Patch_id.t -> string option -> t
 
-(* Discard in-flight push expectations when restoring a snapshot. No push
-   fiber survives a process restart, so a retained marker may never settle. *)
-val clear_pending_remote_heads : t -> t
+val observe_publication_head :
+  ?confirmed_remote_head:string -> t -> Patch_id.t -> string option -> t
+
 val set_review_decision : t -> Patch_id.t -> string option -> t
 val set_unresolved_comment_count : t -> Patch_id.t -> int -> t
 val set_mergeability_unknown : t -> Patch_id.t -> bool -> t
@@ -283,10 +295,6 @@ type session_result = Session_result.t =
       (** Explicit pre-commit opt-out. Retains the explanation and pauses work
           until a human reprompt or intervention reset. *)
   | Session_give_up
-  | Session_worktree_missing
-  | Session_push_failed of Push_reject_classify.rejection option
-      (** [Some r] carries a classified server-side rejection; [None] reflects a
-          transport / local [git push] failure ([Push_error]). *)
   | Session_no_commits
   | Session_context_exhausted
       (** The session exhausted the model's context window. Clears
@@ -306,57 +314,15 @@ val apply_session_result : t -> Patch_id.t -> session_result -> t
     \+ complete, consuming inflight guidance without restoring it to the inbox
     and preserving the session for a human reprompt. [Session_give_up] ->
     set_session_failed + set_tried_fresh + clear llm_session_id +
-    complete_failed. [Session_worktree_missing] -> on_pre_session_failure +
-    clear_worktree_path
-    + complete_failed.
+    complete_failed.
 
-    {b Deferred completion}: [Session_push_failed] and [Session_no_commits] do
-    NOT complete the agent — they only adjust state ([clear_session_fallback] in
-    both cases; [increment_no_commits_push_count] for [Session_no_commits];
-    [increment_push_failure_count] and possible escalation to [Given_up] for
-    [Session_push_failed]). [busy] remains [true]. The caller MUST follow up in
-    the same atomic snapshot write with either
-    [apply_start_outcome _ Start_failed] (Start path) or
-    [apply_respond_outcome _ _ Respond_no_commits] /
-    [apply_respond_outcome _ _ Respond_retry_push] (Respond path) to clear
-    [busy]. This two-phase design is deliberate: the LLM session itself
-    succeeded (messages were delivered; commits were made locally), so any
-    inflight payload from a PR-backed Human Respond has already been consumed at
-    acceptance and uses plain [complete]. A Human-carrying Start deliberately
-    retains its payload and its [Start_failed] follow-up restores it. After 2
-    consecutive [Session_no_commits] outcomes, [needs_intervention] fires via
-    [no_commits_push_count >= 2]. After 3 consecutive [Session_push_failed]
-    outcomes (or a single one carrying a permanent rejection),
-    [needs_intervention] fires via [push_failure_count >= 3] or [Given_up]. *)
-
-val combine_session_and_push :
-  delivery_mode:Patch_decision.delivery_mode ->
-  branch_changed:bool ->
-  session:session_result ->
-  push:Worktree.push_result ->
-  session_result
-(** Pure: fold the LLM session outcome and the supervisor's post-session push
-    outcome into a single [session_result] for [apply_session_result].
-    - A pre-existing LLM failure ([Session_process_error], [Session_failed],
-      [Session_timed_out], [Session_no_resume], [Session_wontdo],
-      [Session_give_up], [Session_worktree_missing], [Session_push_failed _]) is
-      preserved unchanged — the push outcome doesn't change anything.
-    - [Session_ok] with [Push_ok] or [Push_up_to_date] stays [Session_ok] when
-      [branch_changed] is true or the delivery is [Start]. A successful Start
-      can publish a PR from commits pushed by an earlier failed session. For
-      [Respond], when [branch_changed] is false, it becomes
-      [Session_no_commits]: the agent turn finished but did not create a new
-      commit, even if the branch already had older commits ahead of base.
-    - [Session_ok] with [Push_rejected reason] becomes
-      [Session_push_failed (Some reason)] — the LLM ran fine but the remote
-      refused commits; the classified reason rides along so the orchestrator can
-      escalate immediately on permanent rejections (workflow-scope,
-      branch-protection, push-pattern, hook).
-    - [Session_ok] with [Push_error _] becomes [Session_push_failed None] — a
-      transport/local git error, always treated as transient.
-    - [Session_ok] with [Push_no_commits] becomes [Session_no_commits] — the
-      branch has no commits ahead of base, so the push was skipped (a base-equal
-      branch can't become a PR). *)
+    [Session_ok] and [Session_no_commits] defer completion to the action's
+    outcome transition. [Session_no_commits] clears session fallback and
+    increments its implementation budget; two empty sessions need intervention.
+    Publication failures belong to [Branch_reconcile] and cannot change the
+    implementation-session budget. A completed PR-backed Human turn has already
+    consumed its guidance at acceptance; failed Start restores retained guidance
+    through [apply_start_outcome _ Start_failed]. *)
 
 type start_outcome = Start_ok | Start_failed | Start_stale
 [@@deriving show, eq, sexp_of]
@@ -383,7 +349,7 @@ val apply_respond_outcome :
   t -> Patch_id.t -> Operation_kind.t -> respond_outcome -> t
 (** Apply the outcome of a Respond action fiber. [Respond_ok] -> complete +
     reset_no_commits_push_count + kind-specific transitions (Merge_conflict ->
-    clear_has_conflict + reset_conflict_noop_count; Review_comments ->
+    preserves owner conflict evidence; Review_comments ->
     reset_review_unresolved_cycle_count so the cap counts only consecutive
     non-converged cycles; Pr_body -> set_pr_body_delivered +
     reset_pr_body_artifact_miss_count so the cap counts only consecutive
@@ -427,155 +393,6 @@ val apply_force_complete :
     - If [busy] AND inflight is empty: routes through plain [complete].
     - If not [busy]: skip the complete step. *)
 
-(** Side effects emitted by rebase result application. The runner is responsible
-    for executing these (e.g. force-pushing the branch to the remote). Modeled
-    as data so property tests can assert on effect presence. *)
-type rebase_effect = Push_branch [@@deriving show, eq, sexp_of]
-
-val apply_rebase_result :
-  t ->
-  Patch_id.t ->
-  Worktree.rebase_result ->
-  Branch.t ->
-  t * rebase_effect list
-(** Apply a rebase outcome to the orchestrator state. Pure function. [Ok] ->
-    set_base_branch + reset_rebase_failure_count + clear_has_conflict +
-    reset_conflict_noop_count + rewrite cascade + complete + [[Push_branch]].
-    [Noop] -> set_base_branch + reset_rebase_failure_count + complete +
-    [[Push_branch]]. [Conflict] -> set_base_branch + reset_rebase_failure_count
-    \+ set_has_conflict + enqueue Merge_conflict + complete.
-    [Uncommitted_changes _] -> set_base_branch + increment rebase_failure_count
-    \+ enqueue Uncommitted_changes + complete. [Error _] ->
-    increment_rebase_failure_count + complete.
-
-    The {e rewrite cascade} on [Ok] is the dual of [mark_merged]'s eager
-    enqueue: a completed rebase force-replaces the branch's commits, leaving
-    stacked children (open dependents with PRs whose [branch_rebased_onto] names
-    this branch) on dead history that every name-based detector reads as fresh.
-    Each such child gets a [Rebase] enqueued; each child's own [Ok] re-fires the
-    cascade, so the wave walks an open stack one layer per round, serialized
-    bottom-up by the eligibility gate. [Noop] deliberately does not cascade —
-    the branch was not rewritten. *)
-
-val apply_rebase_with_anchor :
-  t ->
-  Patch_id.t ->
-  Worktree.rebase_result ->
-  Branch.t ->
-  Worktree_plan.anchor_event list ->
-  t * rebase_effect list
-(** Atomic variant of {!apply_rebase_result} that also folds the executor's
-    {!Worktree_plan.anchor_event} observations into the agent. The two
-    transitions are combined so the orchestrator can never observe a half-
-    applied state where (say) the rebase succeeded but the anchor was not
-    recorded. Each [Anchor_recorded] event calls {!Patch_agent.record_anchor};
-    [Anchor_capture_failed] events are ignored (the prior anchor is preserved).
-*)
-
-type rebase_push_resolution =
-  | Rebase_push_ok
-  | Rebase_push_failed
-  | Rebase_push_queue_locked
-  | Rebase_push_error
-[@@deriving show, eq, sexp_of]
-
-val apply_rebase_push_result :
-  t -> Patch_id.t -> Worktree.push_result option -> t * rebase_push_resolution
-(** Pure second stage of rebase handling. Takes the push outcome from executing
-    the [Push_branch] effect ([None] when no push was requested). Returns the
-    updated state and resolution.
-
-    - [Rebase_push_ok]: push succeeded or was up-to-date; no further action.
-    - [Rebase_push_failed]: push was rejected (lease failure); resets conflict
-      state and enqueues [Merge_conflict] so the next poll cycle retries.
-    - [Rebase_push_queue_locked]: push was rejected because the PR is queued in
-      a merge queue ([Push_reject_classify.Merge_queue_locked]). Inert: no
-      conflict state, no enqueue. The local rebase already landed so
-      [branch_rebased_onto] is current; a merge from the queue needs nothing
-      further, and an ejection-as-Conflicting surfaces through the poll path,
-      whose conflict-resolution no-op + now-unlocked push syncs the remote.
-    - [Rebase_push_error]: infrastructure error; enqueues [Rebase] to retry
-      without entering the conflict path. *)
-
-type conflict_rebase_decision =
-  | Conflict_resolved
-  | Deliver_to_agent
-  | Cleanup_needed
-  | Conflict_failed
-[@@deriving show, eq, sexp_of]
-
-val apply_conflict_rebase_result :
-  t ->
-  Patch_id.t ->
-  Worktree.rebase_result ->
-  Branch.t ->
-  t * conflict_rebase_decision * rebase_effect list
-(** Apply a rebase outcome during merge-conflict resolution. Pure function. [Ok]
-    -> set_base_branch + reset_rebase_failure_count + clear_has_conflict +
-    reset_conflict_noop_count + rewrite cascade (see {!apply_rebase_result} —
-    conflict resolution rewrites the branch just like a clean rebase) + complete
-    + [Conflict_resolved] + [[Push_branch]]. [Noop] -> set_base_branch +
-      reset_rebase_failure_count + clear_has_conflict +
-      increment_conflict_noop_count + complete + [Conflict_resolved] +
-      [[Push_branch]] (local is correct; has_conflict cleared so it purely
-      tracks GitHub state — the poller will re-set and re-enqueue if conflict
-      persists; no cascade — the branch was not rewritten). [Conflict] ->
-      set_base_branch + reset_rebase_failure_count + set_has_conflict +
-      [Deliver_to_agent] + [[]]. [Uncommitted_changes _] -> set_base_branch +
-      increment_rebase_failure_count + enqueue Uncommitted_changes + complete +
-      [Cleanup_needed]. [Error _] -> increment_rebase_failure_count + complete +
-      [Conflict_failed]. *)
-
-val apply_conflict_rebase_with_anchor :
-  t ->
-  Patch_id.t ->
-  Worktree.rebase_result ->
-  Branch.t ->
-  Worktree_plan.anchor_event list ->
-  t * conflict_rebase_decision * rebase_effect list
-(** Atomic variant of {!apply_conflict_rebase_result} that also folds
-    {!Worktree_plan.anchor_event} observations into the agent. Same policy as
-    {!apply_rebase_with_anchor}: [Anchor_recorded] calls
-    {!Patch_agent.record_anchor}; [Anchor_capture_failed] is ignored. *)
-
-val apply_anchor_events :
-  t -> Patch_id.t -> Worktree_plan.anchor_event list -> t
-(** Fold {!Worktree_plan.anchor_event} observations into the agent without any
-    other transition. Called by the runner Start path after executing
-    {!Worktree_plan.for_start} to record the initial anchor for a
-    freshly-branched-off-dep patch, before the LLM session begins. Materialized
-    retries do not emit anchor events. *)
-
-type conflict_resolution =
-  | Conflict_done
-  | Conflict_retry_push
-  | Conflict_needs_agent
-  | Conflict_cleanup_queued
-  | Conflict_give_up
-[@@deriving show, eq, sexp_of]
-
-val apply_conflict_push_result :
-  t ->
-  Patch_id.t ->
-  conflict_rebase_decision ->
-  Worktree.push_result option ->
-  t * conflict_resolution
-(** Pure second stage of merge-conflict resolution. Takes the rebase decision
-    from [apply_conflict_rebase_result] and the outcome of executing the
-    [Push_branch] effect ([None] when no push was requested). Returns the final
-    resolution and updated state.
-
-    - [Conflict_done]: conflict fully resolved (rebase succeeded and push
-      landed).
-    - [Conflict_retry_push]: rebase succeeded locally but push failed;
-      re-enqueues [Merge_conflict] so the next cycle retries.
-    - [Conflict_needs_agent]: the coding agent must resolve the conflict
-      manually (rebase was noop/conflict — push result is irrelevant because the
-      rebase itself didn't resolve the conflict).
-    - [Conflict_cleanup_queued]: the rebase was blocked before it began and an
-      Uncommitted_changes feedback operation is queued for the patch agent.
-    - [Conflict_give_up]: unrecoverable rebase error. *)
-
 val restore :
   ?promotion_claimed:bool ->
   graph:Graph.t ->
@@ -617,6 +434,7 @@ val respond_pr_number :
 (** PR receiving a response. Descendant implementation notes belong to the
     integration root PR; all other responses address the patch's own PR. *)
 
+val branch_only_published : t -> Patch_id.t -> bool
 val terminal_branch : t -> Patch_id.t -> Branch.t
 val open_deps : t -> Patch_id.t -> Patch_id.t list
 val expected_base : t -> Patch_id.t -> Branch.t option
@@ -625,7 +443,6 @@ val claim_promotion : t -> t
 val release_promotion : t -> t
 val additions_allowed : t -> dependencies:Patch_id.t list -> bool
 val invalidate_root_readiness : t -> t
-val mark_branch_published : t -> Patch_id.t -> t
 val refresh_base_branch : t -> Patch_id.t -> t
 val promotion_claimed : t -> bool
 val settle_restored_promotion : t -> t

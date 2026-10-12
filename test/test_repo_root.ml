@@ -88,6 +88,7 @@ let test_non_repo_passthrough () =
       assert_eq ~ctx:"non-repo" tmp got)
 
 let () =
+  Unix.putenv "ONTON_SETSID_EXEC" (Process_tree.supervisor_path ());
   test_main_from_main_repo ();
   test_main_from_worktree ();
   test_absolute_worktree_path_resolves ();

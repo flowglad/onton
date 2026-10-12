@@ -1,5 +1,5 @@
 (* @archlint.module state
-   @archlint.domain anchor *)
+   @archlint.domain types *)
 
 open Base
 open Ppx_yojson_conv_lib.Yojson_conv.Primitives
@@ -93,24 +93,22 @@ module Comment_id = struct
   let to_int t = t
   let counter = Atomic.make 0
 
-  let next_synthetic () =
-    (* Atomically claim the next synthetic ID. fetch_and_add returns the old
-       counter value and decrements it, so counter always equals the last issued
-       ID after each call. Subtract 1 from the old value to get the new value;
-       this ensures the first call returns -1 (counter: 0 → -1, result: 0-1=-1)
-       and 0 is never issued. seed_synthetic_counter relies on this: seeding to
-       min_id causes the next call to return min_id-1, safely below all existing
-       IDs. *)
-    Atomic.fetch_and_add counter (-1) - 1
+  let rec next_synthetic () =
+    let current = Atomic.get counter in
+    match Comment_id_allocation.next current with
+    | None -> failwith "synthetic comment IDs exhausted"
+    | Some next ->
+        if Atomic.compare_and_set counter current next then next
+        else next_synthetic ()
 
   let seed_synthetic_counter ids =
-    let min_id =
-      List.fold ids ~init:0 ~f:(fun acc id -> Int.min acc (to_int id))
-    in
+    let observed = List.map ids ~f:to_int in
     let rec try_seed () =
       let current = Atomic.get counter in
-      if min_id < current then
-        if not (Atomic.compare_and_set counter current min_id) then try_seed ()
+      let restored = Comment_id_allocation.seed_floor ~current ~observed in
+      if restored < current then
+        if not (Atomic.compare_and_set counter current restored) then
+          try_seed ()
     in
     try_seed ()
 end

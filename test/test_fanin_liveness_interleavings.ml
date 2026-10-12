@@ -163,18 +163,17 @@ type fired_rebase = {
     properties: which patch fired, whether it rewrote anything, the merge SHAs
     it absorbed, where its branch sat beforehand, and the target. *)
 
-(** Complete a rebase of [pid] onto [base], mirroring production's
-    [Worktree.rebase_onto] outcome split: when the branch already contains
-    everything the target has (production:
-    [merge-base --is-ancestor target HEAD]; model: the target's absorbed SHA set
-    is a subset of the branch's), the result is [Noop] — the anchor is still
-    recorded but nothing is rewritten and the rewrite cascade does not fire.
-    Otherwise [Ok]: the branch re-cuts onto the target, absorbing its current
-    merge SHAs, and stacked children are cascade-enqueued. The Ok/Noop fidelity
-    is what makes the NUR (parsimony) properties meaningful: a redundant queued
-    rebase on an already-fresh branch must register as no-work, exactly as in
-    production. Returns the {!fired_rebase} observation alongside the new model.
-*)
+(** Complete a rebase of [pid] onto [base] through the owner, modelling the
+    repository observation split: when the branch already contains everything
+    the target has (production: [merge-base --is-ancestor target HEAD]; model:
+    the target's absorbed SHA set is a subset of the branch's), the result is
+    [Noop] — the anchor is still recorded but nothing is rewritten and the
+    rewrite cascade does not fire. Otherwise [Ok]: the branch re-cuts onto the
+    target, absorbing its current merge SHAs, and stacked children are
+    cascade-enqueued. The Ok/Noop fidelity is what makes the NUR (parsimony)
+    properties meaningful: a redundant queued rebase on an already-fresh branch
+    must register as no-work, exactly as in production. Returns the
+    {!fired_rebase} observation alongside the new model. *)
 let do_rebase_traced m pid base =
   let agent = Orchestrator.agent m.orch pid in
   if
@@ -184,7 +183,7 @@ let do_rebase_traced m pid base =
   else
     let base_set = absorbed_of m (Branch.to_string base) in
     let own_set = absorbed_of m (Branch.to_string agent.Patch_agent.branch) in
-    let anchor_before = agent.Patch_agent.branch_rebased_onto in
+    let anchor_before = Patch_agent.branch_rebased_onto agent in
     let orch = Orchestrator.fire m.orch (Orchestrator.Rebase (pid, base)) in
     (* [Patch_agent.rebase] clears [checks_passing] (the force-push re-runs CI).
        Under fair scheduling CI re-passes promptly; this suite neutralizes the
@@ -192,8 +191,9 @@ let do_rebase_traced m pid base =
        never spuriously blocks on a mid-flight rebase. Re-establish it after the
        rebase completes. *)
     if Set.is_subset base_set ~of_:own_set then
-      let orch, _effects =
-        Orchestrator.apply_rebase_result orch pid Worktree.Noop base
+      let orch =
+        Onton_test_support.Reconciliation_fixture.rebase ~noop:true orch pid
+          base
       in
       let orch = Orchestrator.set_checks_passing orch pid true in
       ( { m with orch },
@@ -206,8 +206,8 @@ let do_rebase_traced m pid base =
             fired_target = base;
           } )
     else
-      let orch, _effects =
-        Orchestrator.apply_rebase_result orch pid Worktree.Ok base
+      let orch =
+        Onton_test_support.Reconciliation_fixture.rebase orch pid base
       in
       let orch = Orchestrator.set_checks_passing orch pid true in
       ( absorb { m with orch } ~branch:agent.Patch_agent.branch ~from:base,
@@ -360,7 +360,7 @@ let view_of_agent ~sibling_rebase_target (a : Patch_agent.t) :
     in_merge_queue = Patch_agent.in_merge_queue a;
     queue = a.Patch_agent.queue;
     base_branch = Option.value a.Patch_agent.base_branch ~default:main;
-    branch_rebased_onto = a.Patch_agent.branch_rebased_onto;
+    branch_rebased_onto = Patch_agent.branch_rebased_onto a;
     base_contains_merged_siblings = a.Patch_agent.base_contains_merged_siblings;
     sibling_rebase_target;
   }
@@ -748,10 +748,9 @@ let started_everywhere m =
     transitively p3) on dead history that lacks p0's squash: every name-based
     detector reads p2 as fresh, and the sibling detector used to rebase only p3
     — onto a branch-p2 that still lacked the squash — re-firing forever while p4
-    never became startable. The rewrite cascade
-    ([Orchestrator.apply_rebase_result] → stranded dependents) plus the
-    frontier-targeted sibling demand drive the squash up the chain one layer per
-    round; p4 then starts. *)
+    never became startable. The rewrite cascade (owner integration receipt →
+    stranded dependents) plus the frontier-targeted sibling demand drive the
+    squash up the chain one layer per round; p4 then starts. *)
 let prop_chain_fanin_rewrite_witness =
   QCheck2.Test.make ~count:1
     ~name:
@@ -844,7 +843,7 @@ let relevant_shas m pid =
     cannot waste work, and its eventual Start cuts fresh. *)
 let rebase_demand_justified m pid =
   let agent = Orchestrator.agent m.orch pid in
-  match agent.Patch_agent.branch_rebased_onto with
+  match Patch_agent.branch_rebased_onto agent with
   | None -> true
   | Some anchor ->
       let structurally_misplaced =

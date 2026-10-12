@@ -25,13 +25,11 @@ type t = {
   pr_status : Patch_pr_status.t;
   complexity : int option;
   has_session : bool;
-  branch_published : bool;
   busy : bool;
   merged : bool;
   queue : Operation_kind.t list;
   satisfies : bool;
   changed : bool;
-  has_conflict : bool;
   base_branch : Branch.t option;
   notified_base_branch : Branch.t option;
   ci_failure_count : int;
@@ -45,7 +43,6 @@ type t = {
   ci_checks : Ci_check.t list;
   merge_ready : bool;
   head_oid : string option;
-  expected_remote_head_oid : string option;
   review_decision : string option;
   unresolved_comment_count : int;
   mergeability_unknown : bool;
@@ -91,7 +88,6 @@ type t = {
           forever. At [>= 2] contributes to [needs_intervention]. Reset by a
           fully-converged review cycle and by [reset_intervention_state]. *)
   start_attempts_without_pr : int;
-  conflict_noop_count : int;
   no_commits_push_count : int;
   context_exhaustion_count : int;
       (** Consecutive sessions that ended by exhausting the model's context
@@ -101,20 +97,6 @@ type t = {
           [needs_intervention]: a *fresh* session that still overflows means the
           task does not fit one context window and needs a human. Reset on a
           successful session. *)
-  push_failure_count : int;
-  rebase_failure_count : int;
-      (** Consecutive worktree rebase failures ([Worktree.Error]) since the last
-          successful/noop rebase. At [>= 2] contributes to [needs_intervention].
-          Kept separate from [session_fallback] so git fetch/ref-lock failures
-          are not rendered as LLM session failures. *)
-  branch_rebased_onto : Branch.t option;
-  branch_rebased_onto_sha : string option;
-  anchor_history : Anchor_history.t;
-      (** Newest-first log of {!Anchor.t} values recorded over this agent's
-          lifetime. The newest entry mirrors
-          [(branch_rebased_onto, branch_rebased_onto_sha)] as a derived view;
-          older entries serve as divergence fallbacks for
-          {!Rebase_decision.plan}. Capped at {!Anchor_history.cap}. *)
   checks_passing : bool;
   current_op : Operation_kind.t option;
   current_op_state : op_state;
@@ -158,6 +140,37 @@ type t = {
 let pp fmt t = Sexp.pp_hum fmt (sexp_of_t t)
 let show t = Sexp.to_string_hum (sexp_of_t t)
 let has_pr t = Patch_pr_status.has_pr t.pr_status
+
+let forge_scope (t : t) : Forge_observation.scope =
+  {
+    pr_number = Patch_pr_status.pr_number t.pr_status;
+    branch = Branch.to_string t.branch;
+    generation = t.generation;
+    head = t.head_oid;
+    base_branch = Option.map t.base_branch ~f:Branch.to_string;
+  }
+
+let forge_revision_pair_confirmed t =
+  Patch_pr_status.is_pr_present t.pr_status
+  && Option.exists
+       (Forge_observation.latest_fact
+          (Branch_reconcile.forge_observations t.branch_reconcile))
+       ~f:(fun fact ->
+         Forge_observation.revisions_confirmed fact
+         && Forge_observation.fact_matches_scope fact (forge_scope t))
+
+let has_conflict t =
+  Branch_reconcile.has_conflict t.branch_reconcile ~scope:(forge_scope t)
+
+let branch_rebased_onto t =
+  List.find_map (Branch_reconcile.integrations t.branch_reconcile)
+    ~f:(fun receipt ->
+      Option.map receipt.Branch_reconcile.capture.base_branch
+        ~f:Branch.of_string)
+
+let branch_published t =
+  not (List.is_empty (Branch_reconcile.publications t.branch_reconcile))
+
 let is_pr_present t = Patch_pr_status.is_pr_present t.pr_status
 let is_pr_missing t = Patch_pr_status.is_missing t.pr_status
 let pr_number t = Patch_pr_status.pr_number t.pr_status
@@ -170,17 +183,17 @@ let default_max_ci_failures = 3
    drift. The label strings are stable and intended to land verbatim in the
    event log so operators can grep for "why is this patch stuck?" by
    reason. *)
-let intervention_reason_of_fields ~merged ~has_pr ~is_pr_missing
-    ~session_given_up ~wontdo_reason ~human_pending ~ci_failure_count
-    ~max_ci_failures ~start_attempts_without_pr ~conflict_noop_count
-    ~no_commits_push_count ~context_exhaustion_count ~push_failure_count
-    ~rebase_failure_count ~pr_body_artifact_miss_count
-    ~review_unresolved_cycle_count =
-  if merged then None
-  else if Option.is_some wontdo_reason then Some "wontdo"
-  else if session_given_up then Some "session_fallback=given_up"
-  else if is_pr_missing then Some "pr_missing"
-    (* The Human exemption lets a newly-arrived human message be delivered
+let intervention_reason_of_fields ~branch_reconcile ~merged ~has_pr
+    ~is_pr_missing ~session_given_up ~wontdo_reason ~human_pending
+    ~ci_failure_count ~max_ci_failures ~start_attempts_without_pr
+    ~no_commits_push_count ~context_exhaustion_count
+    ~pr_body_artifact_miss_count ~review_unresolved_cycle_count =
+  let existing =
+    if merged then None
+    else if Option.is_some wontdo_reason then Some "wontdo"
+    else if session_given_up then Some "session_fallback=given_up"
+    else if is_pr_missing then Some "pr_missing"
+      (* The Human exemption lets a newly-arrived human message be delivered
        even to an agent with a high ci_failure_count or other failure state.
        However, the exemption does NOT apply when session_fallback = Given_up:
        a Given_up agent cannot start any session, so the delivery attempt
@@ -192,21 +205,34 @@ let intervention_reason_of_fields ~merged ~has_pr ~is_pr_missing
        [merged] is terminal — a merged agent never needs intervention, so
        short-circuit on it to keep the predicate self-consistent even for
        callers that don't pre-filter by [merged]. *)
-  else if human_pending then None
-  else if ci_failure_count >= max_ci_failures then
-    Some (Printf.sprintf "ci_failure_count>=%d" max_ci_failures)
-  else if (not has_pr) && start_attempts_without_pr >= 2 then
-    Some "start_attempts_without_pr>=2"
-  else if conflict_noop_count >= 2 then Some "conflict_noop_count>=2"
-  else if no_commits_push_count >= 2 then Some "no_commits_push_count>=2"
-  else if context_exhaustion_count >= 2 then Some "context_exhaustion_count>=2"
-  else if push_failure_count >= 3 then Some "push_failure_count>=3"
-  else if rebase_failure_count >= 2 then Some "rebase_failure_count>=2"
-  else if pr_body_artifact_miss_count >= 2 then
-    Some "pr_body_artifact_miss_count>=2"
-  else if review_unresolved_cycle_count >= 2 then
-    Some "review_unresolved_cycle_count>=2"
-  else None
+    else if human_pending then None
+    else if ci_failure_count >= max_ci_failures then
+      Some (Printf.sprintf "ci_failure_count>=%d" max_ci_failures)
+    else if (not has_pr) && start_attempts_without_pr >= 2 then
+      Some "start_attempts_without_pr>=2"
+    else if no_commits_push_count >= 2 then Some "no_commits_push_count>=2"
+    else if context_exhaustion_count >= 2 then
+      Some "context_exhaustion_count>=2"
+    else if pr_body_artifact_miss_count >= 2 then
+      Some "pr_body_artifact_miss_count>=2"
+    else if review_unresolved_cycle_count >= 2 then
+      Some "review_unresolved_cycle_count>=2"
+    else None
+  in
+  match existing with
+  | Some _ -> existing
+  | None -> (
+      match Branch_reconcile.phase branch_reconcile with
+      | Some (Branch_reconcile.Intervention reason) when not merged ->
+          Some reason
+      | Some (Branch_reconcile.Intervention _) -> None
+      | None
+      | Some
+          ( Branch_reconcile.Preparing | Branch_reconcile.Integrating
+          | Branch_reconcile.Repairing _ | Branch_reconcile.Publishing
+          | Branch_reconcile.Confirming | Branch_reconcile.Waiting _
+          | Branch_reconcile.Recovering | Branch_reconcile.Settled ) ->
+          None)
 
 let intervention_reason t =
   (* Accepting a Human operation moves it out of [queue] and into
@@ -218,53 +244,30 @@ let intervention_reason t =
     List.mem t.queue Operation_kind.Human ~equal:Operation_kind.equal
     || not (List.is_empty t.inflight_human_messages)
   in
-  let existing =
-    intervention_reason_of_fields ~merged:t.merged
-      ~has_pr:(has_pr t || t.branch_published)
-      ~is_pr_missing:(is_pr_missing t)
-      ~session_given_up:(equal_session_fallback t.session_fallback Given_up)
-      ~wontdo_reason:t.wontdo_reason ~human_pending
-      ~ci_failure_count:t.ci_failure_count ~max_ci_failures:t.max_ci_failures
-      ~start_attempts_without_pr:t.start_attempts_without_pr
-      ~conflict_noop_count:t.conflict_noop_count
-      ~no_commits_push_count:t.no_commits_push_count
-      ~context_exhaustion_count:t.context_exhaustion_count
-      ~push_failure_count:t.push_failure_count
-      ~rebase_failure_count:t.rebase_failure_count
-      ~pr_body_artifact_miss_count:t.pr_body_artifact_miss_count
-      ~review_unresolved_cycle_count:t.review_unresolved_cycle_count
-  in
-  match existing with
-  | Some _ -> existing
-  | None -> (
-      match Branch_reconcile.phase t.branch_reconcile with
-      | Some (Branch_reconcile.Intervention reason) when not t.merged ->
-          Some reason
-      | Some (Branch_reconcile.Intervention _) -> None
-      | None
-      | Some
-          ( Branch_reconcile.Preparing | Branch_reconcile.Integrating
-          | Branch_reconcile.Repairing _ | Branch_reconcile.Publishing
-          | Branch_reconcile.Confirming | Branch_reconcile.Waiting _
-          | Branch_reconcile.Recovering | Branch_reconcile.Awaiting_session
-          | Branch_reconcile.Settled ) ->
-          None)
+  intervention_reason_of_fields ~branch_reconcile:t.branch_reconcile
+    ~merged:t.merged ~has_pr:(has_pr t) ~is_pr_missing:(is_pr_missing t)
+    ~session_given_up:(equal_session_fallback t.session_fallback Given_up)
+    ~wontdo_reason:t.wontdo_reason ~human_pending
+    ~ci_failure_count:t.ci_failure_count ~max_ci_failures:t.max_ci_failures
+    ~start_attempts_without_pr:t.start_attempts_without_pr
+    ~no_commits_push_count:t.no_commits_push_count
+    ~context_exhaustion_count:t.context_exhaustion_count
+    ~pr_body_artifact_miss_count:t.pr_body_artifact_miss_count
+    ~review_unresolved_cycle_count:t.review_unresolved_cycle_count
 
 let needs_intervention t = Option.is_some (intervention_reason t)
 
-let needs_intervention_of_fields ~merged ~has_pr ~is_pr_missing
-    ~session_given_up ~wontdo_reason ~human_pending ~ci_failure_count
-    ~max_ci_failures ~start_attempts_without_pr ~conflict_noop_count
-    ~no_commits_push_count ~context_exhaustion_count ~push_failure_count
-    ~rebase_failure_count ~pr_body_artifact_miss_count
-    ~review_unresolved_cycle_count =
+let needs_intervention_of_fields ~branch_reconcile ~merged ~has_pr
+    ~is_pr_missing ~session_given_up ~wontdo_reason ~human_pending
+    ~ci_failure_count ~max_ci_failures ~start_attempts_without_pr
+    ~no_commits_push_count ~context_exhaustion_count
+    ~pr_body_artifact_miss_count ~review_unresolved_cycle_count =
   Option.is_some
-    (intervention_reason_of_fields ~merged ~has_pr ~is_pr_missing
-       ~session_given_up ~wontdo_reason ~human_pending ~ci_failure_count
-       ~max_ci_failures ~start_attempts_without_pr ~conflict_noop_count
-       ~no_commits_push_count ~context_exhaustion_count ~push_failure_count
-       ~rebase_failure_count ~pr_body_artifact_miss_count
-       ~review_unresolved_cycle_count)
+    (intervention_reason_of_fields ~branch_reconcile ~merged ~has_pr
+       ~is_pr_missing ~session_given_up ~wontdo_reason ~human_pending
+       ~ci_failure_count ~max_ci_failures ~start_attempts_without_pr
+       ~no_commits_push_count ~context_exhaustion_count
+       ~pr_body_artifact_miss_count ~review_unresolved_cycle_count)
 
 let create ~branch ?(max_ci_failures = default_max_ci_failures) patch_id =
   {
@@ -275,13 +278,11 @@ let create ~branch ?(max_ci_failures = default_max_ci_failures) patch_id =
     pr_status = Patch_pr_status.Absent;
     complexity = None;
     has_session = false;
-    branch_published = false;
     busy = false;
     merged = false;
     queue = [];
     satisfies = false;
     changed = false;
-    has_conflict = false;
     base_branch = None;
     notified_base_branch = None;
     ci_failure_count = 0;
@@ -293,7 +294,6 @@ let create ~branch ?(max_ci_failures = default_max_ci_failures) patch_id =
     ci_checks = [];
     merge_ready = false;
     head_oid = None;
-    expected_remote_head_oid = None;
     review_decision = None;
     unresolved_comment_count = 0;
     mergeability_unknown = false;
@@ -312,14 +312,8 @@ let create ~branch ?(max_ci_failures = default_max_ci_failures) patch_id =
     pr_body_artifact_miss_count = 0;
     review_unresolved_cycle_count = 0;
     start_attempts_without_pr = 0;
-    conflict_noop_count = 0;
     no_commits_push_count = 0;
     context_exhaustion_count = 0;
-    push_failure_count = 0;
-    rebase_failure_count = 0;
-    branch_rebased_onto = None;
-    branch_rebased_onto_sha = None;
-    anchor_history = Anchor_history.empty;
     checks_passing = false;
     current_op = None;
     current_op_state = Queued;
@@ -346,13 +340,11 @@ let create_adhoc ~complexity ~patch_id ~branch ~pr_number ~max_ci_failures =
     pr_status = Patch_pr_status.Present pr_number;
     complexity;
     has_session = false;
-    branch_published = false;
     busy = false;
     merged = false;
     queue = [];
     satisfies = false;
     changed = false;
-    has_conflict = false;
     base_branch = None;
     notified_base_branch = None;
     ci_failure_count = 0;
@@ -364,7 +356,6 @@ let create_adhoc ~complexity ~patch_id ~branch ~pr_number ~max_ci_failures =
     ci_checks = [];
     merge_ready = false;
     head_oid = None;
-    expected_remote_head_oid = None;
     review_decision = None;
     unresolved_comment_count = 0;
     mergeability_unknown = false;
@@ -383,14 +374,8 @@ let create_adhoc ~complexity ~patch_id ~branch ~pr_number ~max_ci_failures =
     pr_body_artifact_miss_count = 0;
     review_unresolved_cycle_count = 0;
     start_attempts_without_pr = 0;
-    conflict_noop_count = 0;
     no_commits_push_count = 0;
     context_exhaustion_count = 0;
-    push_failure_count = 0;
-    rebase_failure_count = 0;
-    branch_rebased_onto = None;
-    branch_rebased_onto_sha = None;
-    anchor_history = Anchor_history.empty;
     checks_passing = false;
     current_op = None;
     current_op_state = Queued;
@@ -458,18 +443,11 @@ let clear_session_fallback t = { t with session_fallback = Fresh_available }
     - Resume failure: escalate to Tried_fresh (will try fresh next)
     - Fresh failure (respond path): escalate one step via set_tried_fresh *)
 let on_session_failure t ~is_fresh =
-  if (not (has_pr t || t.branch_published)) && is_fresh then
+  if (not (has_pr t || branch_published t)) && is_fresh then
     (* Start path fresh failure: full reset for clean retry *)
     { t with session_fallback = Fresh_available; llm_session_id = None }
   else if is_fresh then set_tried_fresh t
   else set_session_failed t
-
-let set_has_conflict t = { t with has_conflict = true }
-let clear_has_conflict t = { t with has_conflict = false }
-let reset_conflict_noop_count t = { t with conflict_noop_count = 0 }
-
-let increment_conflict_noop_count t =
-  { t with conflict_noop_count = t.conflict_noop_count + 1 }
 
 let increment_no_commits_push_count t =
   { t with no_commits_push_count = t.no_commits_push_count + 1 }
@@ -489,16 +467,6 @@ let on_context_exhausted t =
   }
 
 let reset_context_exhaustion_count t = { t with context_exhaustion_count = 0 }
-
-let increment_push_failure_count t =
-  { t with push_failure_count = t.push_failure_count + 1 }
-
-let reset_push_failure_count t = { t with push_failure_count = 0 }
-
-let increment_rebase_failure_count t =
-  { t with rebase_failure_count = t.rebase_failure_count + 1 }
-
-let reset_rebase_failure_count t = { t with rebase_failure_count = 0 }
 
 let increment_pr_body_artifact_miss_count t =
   { t with pr_body_artifact_miss_count = t.pr_body_artifact_miss_count + 1 }
@@ -531,8 +499,32 @@ let base_branch_changed t =
 let set_merge_ready t v = { t with merge_ready = v }
 let set_head_oid t head_oid = { t with head_oid }
 
-let set_expected_remote_head_oid t expected_remote_head_oid =
-  { t with expected_remote_head_oid }
+let expected_remote_head_oid t =
+  Option.map
+    (Branch_reconcile.publication_observation_pending t.branch_reconcile)
+    ~f:(fun publication ->
+      Branch_reconcile.Commit.to_string publication.revision)
+
+let observe_publication_head ?confirmed_remote_head t head_oid =
+  let branch_reconcile =
+    match
+      ( Branch_reconcile.publication_observation_target t.branch_reconcile,
+        Option.bind head_oid ~f:Branch_reconcile.Commit.make )
+    with
+    | Some publication, Some head ->
+        fst
+          (Branch_reconcile.step t.branch_reconcile
+             (Branch_reconcile.Publication_observed
+                {
+                  publication;
+                  head;
+                  remote =
+                    Option.bind confirmed_remote_head
+                      ~f:Branch_reconcile.Commit.make;
+                }))
+    | None, _ | _, None -> t.branch_reconcile
+  in
+  { t with branch_reconcile }
 
 let set_review_decision t review_decision = { t with review_decision }
 
@@ -584,7 +576,8 @@ let on_pr_discovery_failure t =
   if has_pr t then t else increment_start_attempts_without_pr t
 
 let on_pre_session_failure t =
-  if has_pr t then t else increment_start_attempts_without_pr t
+  if has_pr t || branch_published t then t
+  else increment_start_attempts_without_pr t
 
 let set_checks_passing t v = { t with checks_passing = v }
 let set_worktree_path t path = { t with worktree_path = Some path }
@@ -602,8 +595,12 @@ let worktree_state t =
    reads [Unknown], surfaced as [mergeStateStatus = UNKNOWN]) — see
    [Patch_controller.automerge_transient_hold]. *)
 let is_approved_modulo_merge_ready t ~main_branch =
-  is_pr_present t && (not t.busy)
+  is_pr_present t
+  && forge_revision_pair_confirmed t
+  && (not t.busy)
+  && (not (has_conflict t))
   && (not (Branch_reconcile.is_unsettled t.branch_reconcile))
+  && Option.is_none (Branch_reconcile.unobserved_publication t.branch_reconcile)
   && (not (needs_intervention t))
   && (not t.is_draft) && (not t.branch_blocked)
   && Option.equal Branch.equal t.base_branch (Some main_branch)
@@ -612,8 +609,11 @@ let is_approved t ~main_branch =
   t.merge_ready && is_approved_modulo_merge_ready t ~main_branch
 
 let should_request_review t ~main_branch =
-  has_pr t && (not t.has_conflict)
+  has_pr t
+  && forge_revision_pair_confirmed t
+  && (not (has_conflict t))
   && (not (Branch_reconcile.is_unsettled t.branch_reconcile))
+  && Option.is_none (Branch_reconcile.unobserved_publication t.branch_reconcile)
   && (not t.mergeability_unknown)
   && t.checks_passing
   && t.unresolved_comment_count = 0
@@ -731,22 +731,12 @@ let reset_intervention_state t =
   {
     t with
     branch_reconcile;
-    queue =
-      (if
-         Option.equal Branch_reconcile.equal_phase
-           (Branch_reconcile.phase branch_reconcile)
-           (Some Branch_reconcile.Awaiting_session)
-       then (enqueue t Operation_kind.Uncommitted_changes).queue
-       else t.queue);
     session_fallback = Fresh_available;
     wontdo_reason = None;
     ci_failure_count = 0;
     start_attempts_without_pr = 0;
-    conflict_noop_count = 0;
     no_commits_push_count = 0;
     context_exhaustion_count = 0;
-    push_failure_count = 0;
-    rebase_failure_count = 0;
     pr_body_artifact_miss_count = 0;
     review_unresolved_cycle_count = 0;
   }
@@ -754,22 +744,19 @@ let reset_intervention_state t =
 let reset_busy t = if not t.busy then t else { t with busy = false }
 
 let restore ?(session_completion = None)
-    ?(branch_reconcile = Branch_reconcile.empty) ?(branch_published = false)
-    ~patch_id ~branch ~pr_status ?(complexity = None) ~has_session ~busy ~merged
-    ~queue ~satisfies ~changed ~has_conflict ~base_branch ~notified_base_branch
-    ~ci_failure_count ?(max_ci_failures = default_max_ci_failures)
-    ~session_fallback ?(wontdo_reason = None) ~human_messages
-    ~inflight_human_messages ~ci_checks ~merge_ready ?(head_oid = None)
-    ?(expected_remote_head_oid = None) ?(review_decision = None)
+    ?(branch_reconcile = Branch_reconcile.empty) ~patch_id ~branch ~pr_status
+    ?(complexity = None) ~has_session ~busy ~merged ~queue ~satisfies ~changed
+    ~base_branch ~notified_base_branch ~ci_failure_count
+    ?(max_ci_failures = default_max_ci_failures) ~session_fallback
+    ?(wontdo_reason = None) ~human_messages ~inflight_human_messages ~ci_checks
+    ~merge_ready ?(head_oid = None) ?(review_decision = None)
     ?(unresolved_comment_count = 0) ~mergeability_unknown ~merge_queue_required
     ~merge_queue_entry ?(native_stack = false) ?(native_stack_absent_polls = 0)
     ~merge_commit_sha ~base_contains_merged_siblings ~is_draft
     ~pr_body_delivered ?(pr_body_refresh_pending = false)
     ?(pr_body_refresh_version = 0) ~pr_body_artifact_miss_count
     ?(review_unresolved_cycle_count = 0) ~start_attempts_without_pr
-    ~conflict_noop_count ~no_commits_push_count ~context_exhaustion_count
-    ~push_failure_count ~rebase_failure_count ~branch_rebased_onto
-    ~branch_rebased_onto_sha ~anchor_history ~checks_passing ~current_op
+    ~no_commits_push_count ~context_exhaustion_count ~checks_passing ~current_op
     ~current_op_state ~current_message_id ~generation ~worktree_path
     ~branch_blocked ~llm_session_id ~automerge_enabled ~automerge_deadline
     ~automerge_inflight ?(review_requested_for_oid = None)
@@ -783,13 +770,11 @@ let restore ?(session_completion = None)
     pr_status;
     complexity;
     has_session;
-    branch_published;
     busy;
     merged;
     queue;
     satisfies;
     changed;
-    has_conflict;
     base_branch;
     notified_base_branch;
     ci_failure_count;
@@ -801,7 +786,6 @@ let restore ?(session_completion = None)
     ci_checks;
     merge_ready;
     head_oid;
-    expected_remote_head_oid;
     review_decision;
     unresolved_comment_count;
     mergeability_unknown;
@@ -821,14 +805,8 @@ let restore ?(session_completion = None)
     pr_body_artifact_miss_count;
     review_unresolved_cycle_count;
     start_attempts_without_pr;
-    conflict_noop_count;
     no_commits_push_count;
     context_exhaustion_count;
-    push_failure_count;
-    rebase_failure_count;
-    branch_rebased_onto;
-    branch_rebased_onto_sha;
-    anchor_history;
     checks_passing;
     current_op;
     current_op_state;
@@ -867,7 +845,6 @@ let set_pr_number t pr_number =
         is_draft = true;
         merge_ready = false;
         head_oid = None;
-        expected_remote_head_oid = None;
         review_decision = None;
         unresolved_comment_count = 0;
         mergeability_unknown = false;
@@ -893,7 +870,6 @@ let clear_pr t =
     is_draft = false;
     merge_ready = false;
     head_oid = None;
-    expected_remote_head_oid = None;
     review_decision = None;
     unresolved_comment_count = 0;
     mergeability_unknown = false;
@@ -926,7 +902,6 @@ let mark_pr_missing t =
     is_draft = false;
     merge_ready = false;
     head_oid = None;
-    expected_remote_head_oid = None;
     review_decision = None;
     unresolved_comment_count = 0;
     mergeability_unknown = false;
@@ -952,11 +927,6 @@ let start t ~base_branch =
           not (Operation_kind.equal k Operation_kind.Human))
     else t.queue
   in
-  let branch_rebased_onto =
-    match worktree_state t with
-    | Unmaterialized -> Some base_branch
-    | Materialized _ -> t.branch_rebased_onto
-  in
   {
     t with
     has_session = true;
@@ -973,37 +943,11 @@ let start t ~base_branch =
     satisfies = true;
     base_branch = Some base_branch;
     notified_base_branch = Some base_branch;
-    (* The initial Start plants the branch on [base_branch]. A retry in an
-       existing checkout only changes the structural base supplied to the
-       session; it does not physically rebase that checkout. *)
-    branch_rebased_onto;
     ci_checks = [];
   }
 
-let set_branch_rebased_onto t branch =
-  { t with branch_rebased_onto = Some branch }
-
-let set_branch_rebased_onto_sha t sha =
-  match sha with
-  | None -> { t with branch_rebased_onto_sha = None }
-  | Some s ->
-      let s = String.strip s in
-      if String.is_empty s then { t with branch_rebased_onto_sha = None }
-      else { t with branch_rebased_onto_sha = Some s }
-
-let record_anchor t anchor =
-  let anchor_history = Anchor_history.push t.anchor_history anchor in
-  {
-    t with
-    anchor_history;
-    branch_rebased_onto = Some (Anchor.base anchor);
-    branch_rebased_onto_sha = Some (Anchor.sha anchor);
-  }
-
-let anchor_history t = t.anchor_history
-
 let rebase t ~base_branch =
-  if not (is_pr_present t || t.branch_published) then
+  if not (is_pr_present t || branch_published t) then
     invalid_arg "Patch_agent.rebase: patch has no PR (or PR is missing)";
   if t.merged then invalid_arg "Patch_agent.rebase: patch is merged";
 
@@ -1036,7 +980,7 @@ let rebase t ~base_branch =
   }
 
 let respond t k =
-  if not (is_pr_present t || t.branch_published) then
+  if not (is_pr_present t || branch_published t) then
     invalid_arg "Patch_agent.respond: patch has no PR (or PR is missing)";
   if t.merged then invalid_arg "Patch_agent.respond: patch is merged";
 
@@ -1051,13 +995,7 @@ let respond t k =
   | Some hp when Operation_kind.equal hp k -> ()
   | _ -> invalid_arg "Patch_agent.respond: not highest priority");
   let queue =
-    if
-      Operation_kind.equal k Operation_kind.Uncommitted_changes
-      && Option.equal Branch_reconcile.equal_phase
-           (Branch_reconcile.phase t.branch_reconcile)
-           (Some Branch_reconcile.Awaiting_session)
-    then t.queue
-    else List.filter t.queue ~f:(fun j -> not (Operation_kind.equal j k))
+    List.filter t.queue ~f:(fun j -> not (Operation_kind.equal j k))
   in
   let equal_k = Operation_kind.equal k in
   let is_human = equal_k Human in
@@ -1162,93 +1100,85 @@ let%test "on_pr_discovery_failure is no-op when agent has a PR" =
   let t = on_pr_discovery_failure t in
   t.start_attempts_without_pr = 0
 
-let mark_branch_published t =
-  { t with branch_published = true; start_attempts_without_pr = 0 }
-
 let reconcile_branch t event =
-  let was_awaiting_session =
-    Option.equal Branch_reconcile.equal_phase
-      (Branch_reconcile.phase t.branch_reconcile)
-      (Some Branch_reconcile.Awaiting_session)
-  in
-  let prior = List.hd (Branch_reconcile.integrations t.branch_reconcile) in
+  let previously_published = branch_published t in
   let branch_reconcile, commands =
     Branch_reconcile.step t.branch_reconcile event
   in
   let t = { t with branch_reconcile } in
   let t =
-    if
-      Option.equal Branch_reconcile.equal_phase
-        (Branch_reconcile.phase branch_reconcile)
-        (Some Branch_reconcile.Awaiting_session)
-    then enqueue t Operation_kind.Uncommitted_changes
-    else if was_awaiting_session then
-      {
-        t with
-        queue =
-          List.filter t.queue ~f:(fun kind ->
-              not (Operation_kind.equal kind Operation_kind.Uncommitted_changes));
-      }
+    if (not previously_published) && branch_published t then
+      { t with start_attempts_without_pr = 0 }
     else t
   in
-  let t =
-    match List.hd (Branch_reconcile.integrations branch_reconcile) with
-    | Some receipt
-      when not
-             (Option.equal Branch_reconcile.equal_integration_receipt prior
-                (Some receipt)) -> (
-        match receipt.capture.base_branch with
-        | None -> t
-        | Some base -> (
-            let base = Branch.of_string base in
-            let sha =
-              Branch_reconcile.Commit.to_string receipt.capture.target_revision
-            in
-            let t =
-              t |> reset_rebase_failure_count |> clear_has_conflict
-              |> reset_conflict_noop_count
-            in
-            let t =
-              set_branch_rebased_onto t base |> fun t ->
-              set_branch_rebased_onto_sha t (Some sha)
-            in
-            match Anchor.make ~base ~sha ~observed_at_remote:true with
-            | Some anchor -> record_anchor t anchor
-            | None -> t))
-    | Some _ | None -> t
-  in
   (t, commands)
+
+let begin_forge_observation t ~request =
+  let branch_reconcile, ticket =
+    Branch_reconcile.begin_forge_observation t.branch_reconcile ~request
+      ~scope:(forge_scope t)
+  in
+  ({ t with branch_reconcile }, ticket)
+
+let accept_forge_observation ?confirmed_base t ~ticket ~confirmed_head
+    observation =
+  let branch_reconcile, result =
+    Branch_reconcile.accept_forge_observation ?confirmed_base t.branch_reconcile
+      ~ticket ~current:(forge_scope t) ~confirmed_head observation
+  in
+  ({ t with branch_reconcile }, result)
+
+let defer_forge_revision_pair t =
+  {
+    t with
+    merge_ready = false;
+    mergeability_unknown = true;
+    checks_passing = false;
+    queue =
+      List.filter t.queue ~f:(fun kind ->
+          not
+            (Operation_kind.equal kind Operation_kind.Merge_conflict
+            || Operation_kind.equal kind Operation_kind.Ci));
+  }
 
 let record_session_completion t completion =
   { t with session_completion = Some completion }
 
-let migrate_legacy_branch_state ~main_branch t =
-  if not (Branch_reconcile.equal t.branch_reconcile Branch_reconcile.empty) then
-    t
-  else
-    let branch_reconcile =
-      if
-        t.has_session || t.branch_published || has_pr t
-        || Option.is_some t.worktree_path
-      then
-        fst
-          (Branch_reconcile.step Branch_reconcile.empty
-             (Branch_reconcile.Request
-                {
-                  base =
-                    Branch.to_string
-                      (Option.value t.base_branch ~default:main_branch);
-                  policy = Preserve_ancestry;
-                  purpose = Publish_session "legacy-snapshot-migration";
-                }))
-      else Branch_reconcile.empty
-    in
-    {
-      t with
-      branch_reconcile;
-      conflict_noop_count = 0;
-      no_commits_push_count = 0;
-      push_failure_count = 0;
-      rebase_failure_count = 0;
-      expected_remote_head_oid = None;
-    }
+let migrate_legacy_branch_state ?(revision = `Null) ~main_branch ~owner_missing
+    ~anchors ~published t =
+  let t =
+    if
+      published || (not owner_missing)
+      || not (Branch_reconcile.equal t.branch_reconcile Branch_reconcile.empty)
+    then t
+    else
+      let branch_reconcile =
+        if t.has_session || has_pr t || Option.is_some t.worktree_path then
+          fst
+            (Branch_reconcile.step Branch_reconcile.empty
+               (Branch_reconcile.Request
+                  {
+                    base =
+                      Branch.to_string
+                        (Option.value t.base_branch ~default:main_branch);
+                    policy = Preserve_ancestry;
+                    purpose = Publish_session "legacy-snapshot-migration";
+                  }))
+        else Branch_reconcile.empty
+      in
+      { t with branch_reconcile; no_commits_push_count = 0 }
+  in
+  {
+    t with
+    branch_reconcile =
+      (let owner =
+         Branch_reconcile.import_legacy_anchors ~revision t.branch_reconcile
+           anchors
+       in
+       if published then
+         Branch_reconcile.import_legacy_publication owner
+           ~base:
+             (Branch.to_string
+                (Option.value t.base_branch ~default:main_branch))
+       else owner);
+  }

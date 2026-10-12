@@ -118,29 +118,6 @@ let parse_porcelain ~cwd ~repo_root raw =
   in
   parse [] None None lines
 
-type unique_commit = { sha : string; subject : string }
-[@@deriving show, eq, sexp_of, compare]
-
-type rebase_strategy = Onto | Plain [@@deriving show, eq, sexp_of, compare]
-
-type conflict_info = {
-  target : string;
-  old_base : string;
-  unique_commits : unique_commit list;
-  strategy : rebase_strategy;
-  orig_head : string;
-}
-[@@deriving show, eq, sexp_of, compare]
-
-type rebase_result =
-  | Ok
-  | Noop
-  | Conflict of conflict_info
-  | Merge_conflict of string
-  | Uncommitted_changes of string
-  | Error of string
-[@@deriving show, eq, sexp_of, compare]
-
 (* Git's unmerged index and MERGE_HEAD identify a content conflict; an exit
    code or human-readable diagnostic alone also includes command/hook errors. *)
 let classify_merge_failure ~code ~stdout ~stderr ~merge_head ~unmerged_paths =
@@ -158,20 +135,8 @@ let classify_merge_failure ~code ~stdout ~stderr ~merge_head ~unmerged_paths =
       in
       `Error (Printf.sprintf "Root merge failed (exit %d): %s" code detail)
 
-let classify_rebase_worktree_status ~code ~stdout ~stderr =
-  if code <> 0 then
-    Some
-      (Error
-         (Printf.sprintf "git status before rebase failed (exit %d): %s" code
-            (String.strip stderr))
-        : rebase_result)
-  else
-    let status = String.strip stdout in
-    if String.is_empty status then None else Some (Uncommitted_changes status)
-
-(** Recognize a commit subject as one of an ancestor patch's commits via the
-    project-prefixed pattern [[<project>] Patch <id>:]. Used during rebase to
-    drop ancestor commits before computing the [--onto] anchor. *)
+(** Match a scoped dependency subject for the reconciliation owner's best-effort
+    replay-boundary inference. This predicate grants no provenance. *)
 let is_ancestor_patch_subject ~project_name ~ancestor_ids subject =
   if String.is_empty project_name || List.is_empty ancestor_ids then false
   else
@@ -192,83 +157,6 @@ let is_ancestor_patch_subject ~project_name ~ancestor_ids subject =
         && List.mem ancestor_ids
              (Types.Patch_id.of_string id_str)
              ~equal:Types.Patch_id.equal
-
-(** Parse [git log --format=%H %s] output into [unique_commit] records, dropping
-    entries whose subject matches an ancestor patch. Preserves git's
-    newest-first emission order. *)
-let classify_unique_commits ~project_name ~ancestor_ids log_output =
-  let lines = String.split_lines log_output in
-  let kept =
-    List.filter_map lines ~f:(fun line ->
-        let line = String.rstrip line ~drop:(Char.equal '\r') in
-        if String.is_empty (String.strip line) then None
-        else
-          match String.lsplit2 line ~on:' ' with
-          | None -> None
-          | Some ("", _) -> None
-          | Some (sha, subject) ->
-              if is_ancestor_patch_subject ~project_name ~ancestor_ids subject
-              then None
-              else Some { sha; subject })
-  in
-  match List.last kept with
-  | Some last -> Result.Ok (kept, last.sha)
-  | None -> Result.Error "no unique commits found"
-
-let oldest_non_ancestor_commit ~project_name ~ancestor_ids log_output =
-  Result.map
-    (classify_unique_commits ~project_name ~ancestor_ids log_output)
-    ~f:snd
-
-type onto_anchor =
-  | Anchor of string
-      (** resolved old-base SHA for [git rebase --onto target <sha>] *)
-  | No_anchor of string  (** no usable anchor (reason); caller must fall back *)
-[@@deriving show, eq, sexp_of, compare]
-
-(** Pure: interpret the [git rev-parse <oldest>~1] probe that resolves the
-    [--onto] old-base anchor, from its exit [code] and [stdout].
-
-    [No_anchor] when git failed (non-zero [code]) {e or} returned a blank SHA on
-    success. The blank-on-success case is the load-bearing one: it arises when
-    the oldest unique commit is a root commit (no parent), and some git versions
-    resolve [<root>~1] to an empty string with exit 0 rather than erroring.
-    Trusting that empty string fed [""] straight into
-    [git rebase --onto target ""], which aborts with
-    [fatal: invalid upstream ''] (observed only on CI's older git; newer git
-    exits non-zero for the same input and so took the failure branch). Treating
-    both as [No_anchor] routes the caller to the documented plain/upstream
-    rebase fallback instead of passing an empty upstream to git. *)
-let classify_onto_anchor ~code ~stdout =
-  if code <> 0 then
-    No_anchor (Printf.sprintf "rev-parse oldest~1 failed (exit %d)" code)
-  else
-    let s = String.strip stdout in
-    if String.is_empty s then
-      No_anchor
-        "rev-parse oldest~1 returned empty (oldest unique commit has no parent)"
-    else Anchor s
-
-(** Assemble a [conflict_info] from the contents of [.git/rebase-merge/onto],
-    [.git/rebase-merge/upstream], and [.git/rebase-merge/orig-head] together
-    with [git log --format=%H %s <upstream>..<orig-head>]. Returns [None] only
-    when [onto] or [upstream] is blank. *)
-let parse_rebase_merge_state ~onto_contents ~upstream_contents
-    ~orig_head_contents ~log_format_h_s ~project_name ~ancestor_ids ~target =
-  let onto = String.strip onto_contents in
-  let old_base = String.strip upstream_contents in
-  let orig_head = String.strip orig_head_contents in
-  if String.is_empty onto || String.is_empty old_base then None
-  else
-    let commits =
-      match
-        classify_unique_commits ~project_name ~ancestor_ids log_format_h_s
-      with
-      | Result.Ok (commits, _oldest_sha) -> commits
-      | Result.Error _ -> []
-    in
-    Some
-      { target; old_base; unique_commits = commits; strategy = Onto; orig_head }
 
 (** Classify a [git fetch origin] invocation from its exit code and stderr. *)
 let classify_fetch_result ~code ~stderr =
@@ -324,9 +212,7 @@ let classify_fetch_branch_result ~code ~stderr =
 type push_result =
   | Push_ok
   | Push_up_to_date
-  | Push_no_commits
   | Push_rejected of Push_reject_classify.rejection
-  | Push_worktree_missing
   | Push_error of string
 [@@deriving show, eq, sexp_of, compare]
 

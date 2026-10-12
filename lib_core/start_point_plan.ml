@@ -15,8 +15,7 @@ type action =
 [@@deriving show, eq, sexp_of, compare]
 
 type refusal =
-  | Local_diverged_from_remote of { local_sha : sha; remote_sha : sha }
-  | Local_has_unpushed_commits of { local_sha : sha; remote_sha : sha }
+  | Ancestry_unavailable of { local_sha : sha; remote_sha : sha }
   | Branch_checked_out_in_main_root
   | Worktree_already_registered of { existing_path : string }
 [@@deriving show, eq, sexp_of, compare]
@@ -25,8 +24,7 @@ type decision = Plan of action | Refuse of refusal
 [@@deriving show, eq, sexp_of, compare]
 
 let plan ~local_ref ~remote_ref ~ancestry ~base_branch
-    ~local_changes_represented_remotely ~branch_checked_out_in_main_root
-    ~existing_worktree_path =
+    ~branch_checked_out_in_main_root ~existing_worktree_path =
   if branch_checked_out_in_main_root then Refuse Branch_checked_out_in_main_root
   else
     match existing_worktree_path with
@@ -49,19 +47,19 @@ let plan ~local_ref ~remote_ref ~ancestry ~base_branch
             match ancestry with
             | Equal | Remote_ahead ->
                 Plan (Reset_and_use_remote_tracking { remote_sha })
-            | Local_ahead ->
-                Refuse (Local_has_unpushed_commits { local_sha; remote_sha })
-            | (Diverged | Unknown) when local_changes_represented_remotely ->
-                Plan (Reset_and_use_remote_tracking { remote_sha })
-            | Diverged | Unknown ->
-                Refuse (Local_diverged_from_remote { local_sha; remote_sha })))
+            | Local_ahead | Diverged ->
+                (* Provisioning cannot discard unique local history. The
+                   reconciliation owner integrates observed remote work and
+                   verifies preservation before it authorizes publication. *)
+                Plan (Use_local_branch_unchanged { local_sha })
+            | Unknown -> Refuse (Ancestry_unavailable { local_sha; remote_sha })
+            ))
 
 let short_label = function
   | Plan (Reset_and_use_remote_tracking _) -> "reset_to_remote"
   | Plan (Use_local_branch_unchanged _) -> "use_local_unchanged"
   | Plan (Create_new_branch_from_base _) -> "create_from_base"
-  | Refuse (Local_diverged_from_remote _) -> "refuse_local_diverged"
-  | Refuse (Local_has_unpushed_commits _) -> "refuse_local_ahead"
+  | Refuse (Ancestry_unavailable _) -> "ancestry_unavailable"
   | Refuse Branch_checked_out_in_main_root -> "refuse_main_checkout"
   | Refuse (Worktree_already_registered _) -> "refuse_wt_registered"
 

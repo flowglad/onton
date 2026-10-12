@@ -8,19 +8,12 @@
     rejection status to stdout and server diagnostics to stderr. Distinguishing
     causes matters because:
 
-    - [Workflow_scope_missing] / [Permission_denied] / [Branch_protection] /
-      [Push_pattern_block] / [Hook_failure] are {e permanent} under the current
-      credentials — retrying will just hit the same wall. The orchestrator
-      escalates these directly to [needs_intervention] instead of looping. See
-      [is_permanent].
-    - [Lease_violation] is a real race (the remote ref advanced between fetch
-      and push). Retrying after a re-fetch is the correct response.
-    - [Merge_queue_locked] is {e transient} by construction: GitHub locks the
-      head branch of a PR that is queued in a merge queue, and the lock clears
-      by itself when the PR merges or is dequeued/ejected.
-    - [Unknown] is anything we don't recognize; treated conservatively as
-      transient so we don't accidentally trip intervention on novel server
-      messages. *)
+    The classifier reports evidence, not a scheduler disposition. The branch
+    reconciliation owner distinguishes authority denials, lease/queue waits and
+    locally repairable publication failures. Hook or branch-policy rejection
+    therefore reaches bounded agent recovery before intervention. [is_permanent]
+    describes whether unchanged credentials and branch state can succeed on a
+    retry; it does not authorize bypassing recovery. *)
 
 type rejection =
   | Workflow_scope_missing
@@ -72,8 +65,8 @@ remote: associated pull request.
   | Local_state_unsafe of { reason : string }
       (** Pre-flight refusal produced by [Push_plan.plan] — the local worktree
           state would make the push unsafe (wrong branch checked out, local
-          missing remote commits, etc.). Permanent: a retry without human action
-          cannot fix it. [reason] is a short human-readable label drawn from
+          missing remote commits, etc.). Recovery must repair the observed state
+          before retrying. [reason] is a short human-readable label drawn from
           [Push_plan.short_label]. *)
 [@@deriving show, eq, sexp_of, compare, yojson]
 
@@ -100,5 +93,6 @@ val is_permanent : rejection -> bool
     [Branch_protection], [Push_pattern_block], [Hook_failure]); [false] for
     [Lease_violation] (genuine race), [Merge_queue_locked] (self-clears when the
     queued PR merges or is dequeued) and [Unknown] (conservative — we don't
-    escalate on something we don't understand). The orchestrator uses this to
-    short-circuit the push-failure counter and flip directly to intervention. *)
+    escalate on something we don't understand). This compatibility projection is
+    not the owner's recovery decision: the owner consumes the typed rejection
+    and offers local repair when it has authority. *)

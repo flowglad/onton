@@ -75,6 +75,193 @@ let poll t n =
 
 let tests =
   [
+    QCheck2.Test.make ~count:100
+      ~name:
+        "scheduler holds queued recovery during automerge and resumes after \
+         failure" QCheck2.Gen.bool (fun merged ->
+        try
+          let t = request (create ()) in
+          let msg = one_pending t in
+          let t = Orchestrator.set_automerge_inflight t pid true in
+          assert (List.is_empty (Orchestrator.runnable_messages t));
+          let t, accepted = Orchestrator.accept_message t msg.message_id in
+          assert (Option.is_none accepted);
+          assert (not (Orchestrator.agent t pid).busy);
+          let t =
+            if merged then Orchestrator.mark_merged t pid
+            else Orchestrator.set_automerge_inflight t pid false
+          in
+          if merged then List.is_empty (Orchestrator.runnable_messages t)
+          else
+            let _, accepted = Orchestrator.accept_message t msg.message_id in
+            Option.is_some accepted
+        with _ -> false);
+    QCheck2.Test.make ~count:500
+      ~name:"scheduler restart resumes captured reconciliation once per runtime"
+      ~print:(fun actions ->
+        String.concat ~sep:"," (List.map actions ~f:Int.to_string))
+      QCheck2.Gen.(list_size (int_range 0 60) (int_range 0 3))
+      (fun actions ->
+        try
+          Eio_main.run (fun _ ->
+              let initial = request (create ()) in
+              let original = one_pending initial in
+              let owner = state initial in
+              let accepted = ref false in
+              let tick t =
+                let next, _, dispatched =
+                  Patch_controller.tick t ~project_name:gameplan.project_name
+                    ~gameplan
+                in
+                assert (List.length dispatched = if !accepted then 0 else 1);
+                assert (
+                  List.for_all dispatched ~f:(fun action ->
+                      Orchestrator.equal_action action
+                        (Orchestrator.message_action original)));
+                accepted := true;
+                assert (
+                  Option.equal Message_id.equal
+                    (Orchestrator.agent next pid).Patch_agent.current_message_id
+                    (Some original.message_id));
+                assert (B.equal owner (state next));
+                assert (Orchestrator.agent next pid).Patch_agent.busy;
+                next
+              in
+              let restart t =
+                let snapshot =
+                  Runtime.
+                    {
+                      orchestrator = t;
+                      gameplan;
+                      activity_log = Activity_log.empty;
+                      transcripts = Hashtbl.create (module Patch_id);
+                      applied_control_ids = [];
+                    }
+                in
+                let snapshot =
+                  Result.ok_or_failwith
+                    (Persistence.snapshot_of_yojson
+                       (Persistence.snapshot_to_yojson snapshot))
+                in
+                let runtime =
+                  Runtime.create ~gameplan ~main_branch:main ~snapshot ()
+                in
+                Runtime.update_orchestrator runtime (fun t ->
+                    Orchestrator.reset_busy t pid);
+                let restored =
+                  Runtime.read runtime (fun snapshot ->
+                      snapshot.Runtime.orchestrator)
+                in
+                assert (B.equal owner (state restored));
+                assert (
+                  List.exists (Orchestrator.all_messages restored)
+                    ~f:(fun message ->
+                      Message_id.equal message.Orchestrator.message_id
+                        original.message_id));
+                accepted := false;
+                restored
+              in
+              let final =
+                List.fold actions ~init:(tick initial) ~f:(fun t action ->
+                    match action with
+                    | 0 -> tick t
+                    | 1 -> poll t 1
+                    | 2 -> request t
+                    | _ -> restart t)
+              in
+              let final = tick final in
+              ignore (tick final);
+              true)
+        with exn -> QCheck2.Test.fail_report (Exn.to_string exn));
+    QCheck2.Test.make ~count:1000
+      ~name:
+        "scheduler accepts one reconciliation across mixed trigger histories"
+      ~print:(fun (root, actions) ->
+        Bool.to_string root ^ ":"
+        ^ String.concat ~sep:"," (List.map actions ~f:Int.to_string))
+      QCheck2.Gen.(pair bool (list_size (int_range 0 100) (int_range 0 4)))
+      (fun (root, actions) ->
+        try
+          let initial = create () in
+          let initial =
+            if root then
+              Orchestrator.set_execution_mode initial
+                (Result.ok_or_failwith (Execution_mode.infer_gameplan gameplan))
+            else initial
+          in
+          let initial = request initial in
+          let original = one_pending initial in
+          let tick t =
+            Patch_controller.tick t ~project_name:gameplan.project_name
+              ~gameplan
+          in
+          let running, _, dispatched = tick initial in
+          assert (List.length dispatched = 1);
+          assert (
+            match List.hd_exn dispatched with
+            | Orchestrator.Reconcile_branch (id, _) -> Patch_id.equal id pid
+            | Orchestrator.Start _ | Orchestrator.Respond _
+            | Orchestrator.Rebase _ ->
+                false);
+          let owner = state running in
+          let completion =
+            Session_result.
+              {
+                session_uuid = "completed-during-reconciliation";
+                delivery_mode = Start;
+                kind = None;
+                message_id = None;
+                result = Session_ok;
+                head = None;
+                guidance = [];
+                turn_accepted = true;
+              }
+          in
+          let receipt_seen = ref false in
+          let final =
+            List.fold actions ~init:running ~f:(fun t action ->
+                let t =
+                  match action with
+                  | 0 -> poll t 1
+                  | 1 -> request t
+                  | 2 ->
+                      let next, _, dispatched = tick t in
+                      assert (List.is_empty dispatched);
+                      next
+                  | 3 ->
+                      let snapshot =
+                        Runtime.
+                          {
+                            orchestrator = t;
+                            gameplan;
+                            activity_log = Activity_log.empty;
+                            transcripts = Hashtbl.create (module Patch_id);
+                            applied_control_ids = [];
+                          }
+                      in
+                      (Result.ok_or_failwith
+                         (Persistence.snapshot_of_yojson
+                            (Persistence.snapshot_to_yojson snapshot)))
+                        .orchestrator
+                  | _ ->
+                      receipt_seen := true;
+                      Orchestrator.record_session_completion t pid completion
+                in
+                assert (B.equal owner (state t));
+                assert (Orchestrator.agent t pid).Patch_agent.busy;
+                assert (
+                  Option.is_none
+                    (snd (Orchestrator.accept_message t original.message_id)));
+                if !receipt_seen then
+                  assert (
+                    Option.equal Session_result.equal_completion
+                      (Orchestrator.agent t pid).Patch_agent.session_completion
+                      (Some completion));
+                t)
+          in
+          let _, _, dispatched = tick final in
+          List.is_empty dispatched
+        with exn -> QCheck2.Test.fail_report (Exn.to_string exn));
     QCheck2.Test.make
       ~name:
         "unfinished branch work blocks stale readiness after releasing capacity"
@@ -88,7 +275,8 @@ let tests =
             Orchestrator.set_merge_ready t pid true |> fun t ->
             Orchestrator.set_checks_passing t pid true |> fun t ->
             Orchestrator.set_pr_body_delivered t pid true |> fun t ->
-            fst (Orchestrator.apply_rebase_result t pid Worktree.Noop main)
+            Onton_test_support.Reconciliation_fixture.rebase ~noop:true t pid
+              main
           in
           let branch = (Orchestrator.agent ready pid).Patch_agent.branch in
           let can_cut t =
@@ -118,7 +306,7 @@ let tests =
                           {
                             token = command.token;
                             at = 100.;
-                            result = Permanent "policy";
+                            result = Needs_diagnosis "policy";
                           }))
             else fail_transport t
           in
@@ -193,6 +381,88 @@ let tests =
                (B.operation (state t))
                ~default:false
                ~f:(fun op -> op.failures = 1 && Option.is_none op.repair)
+        with _ -> false);
+    QCheck2.Test.make
+      ~name:
+        "publication backoff permits independent Start and exports runnable \
+         work"
+      ~count:100
+      QCheck2.Gen.(int_range 0 20)
+      (fun polls ->
+        try
+          let other = Patch_id.of_string "2" in
+          let template = List.hd_exn gameplan.patches in
+          let patches =
+            [
+              template;
+              {
+                template with
+                Patch.id = other;
+                branch = Branch.of_string "reconcile-test/patch-2";
+              };
+            ]
+          in
+          let gameplan = { gameplan with Gameplan.patches } in
+          let t =
+            Orchestrator.reconcile_branch
+              (Orchestrator.create ~patches ~main_branch:main)
+              pid
+              (B.Request
+                 {
+                   base = "main";
+                   policy = Rewrite;
+                   purpose =
+                     Publish_revision
+                       (Option.value_exn (B.Commit.make (String.make 40 'a')));
+                 })
+            |> fst |> fail_transport
+          in
+          let retry = one_pending t in
+          let owner = state t in
+          let t =
+            List.fold
+              (List.init (polls + 1) ~f:Fn.id)
+              ~init:t
+              ~f:(fun t _ ->
+                let t, _, _ =
+                  Patch_controller.plan_tick_messages t
+                    ~project_name:gameplan.project_name ~gameplan
+                in
+                t)
+          in
+          let start =
+            List.find_exn (pending t) ~f:(fun message ->
+                match message.Orchestrator.action with
+                | Orchestrator.Start (patch, _) -> Patch_id.equal patch other
+                | Orchestrator.Respond _ | Orchestrator.Rebase _
+                | Orchestrator.Reconcile_branch _ ->
+                    false)
+          in
+          let t, accepted = Orchestrator.accept_message t start.message_id in
+          let snapshot =
+            Runtime.
+              {
+                orchestrator = t;
+                gameplan;
+                activity_log = Activity_log.empty;
+                transcripts = Hashtbl.create (module Patch_id);
+                applied_control_ids = [];
+              }
+          in
+          let json = Persistence.snapshot_to_yojson snapshot in
+          let restored =
+            Result.ok_or_failwith (Persistence.snapshot_of_yojson json)
+          in
+          Option.is_some accepted
+          && (Orchestrator.agent t other).Patch_agent.busy
+          && (not (Orchestrator.agent t pid).Patch_agent.busy)
+          && B.equal owner (state t)
+          && (not (B.can_execute_git ~at:104. (state t)))
+          && B.can_execute_git ~at:105. (state t)
+          && Option.value (Json.bool_field "runnable" json) ~default:false
+          && List.exists (pending restored.orchestrator) ~f:(fun message ->
+              Message_id.equal message.Orchestrator.message_id retry.message_id)
+          && B.equal owner (state restored.orchestrator)
         with _ -> false);
     QCheck2.Test.make
       ~name:"terminal patch completes held reconciliation delivery" ~count:50
@@ -312,8 +582,13 @@ let () =
          {
            token = command.token;
            at = 100.;
-           result = B.Permanent "permissions";
+           result = B.Needs_diagnosis "permissions";
          })
+  in
+  let stopped =
+    Onton_core_test_support.Publication_fixture.exhaust_diagnosis ~state
+      ~step:(fun t e -> fst (Orchestrator.reconcile_branch t pid e))
+      stopped
   in
   assert (List.is_empty (pending stopped));
   List.iter [ false; true ] ~f:(fun human ->
@@ -365,7 +640,11 @@ let () =
          })
     |> fun t ->
     reply t B.Pinned |> fun t ->
-    reply t (B.Integrated (sha candidate)) |> fun t ->
+    reply t (B.Integrated (sha candidate))
+    |> Onton_core_test_support.Publication_fixture.verify_scope
+         ~step:(fun t event -> fst (Orchestrator.reconcile_branch t pid event))
+         ~state
+    |> fun t ->
     reply t B.Published |> fun t ->
     reply t (B.Remote { sha = Some (sha candidate); topology = B.Equal })
   in
@@ -397,12 +676,31 @@ let () =
         worktree_path = None;
       }
   in
-  let verified = state t in
+  let initial_publication = t in
+  let receipt = Option.value_exn (B.unobserved_publication (state t)) in
+  let generation = (Orchestrator.agent t pid).Patch_agent.generation in
+  let direct = Orchestrator.observe_publication_head t pid (Some candidate) in
+  assert ((Orchestrator.agent direct pid).Patch_agent.generation = generation);
+  assert (
+    Option.is_none
+      (Patch_agent.expected_remote_head_oid (Orchestrator.agent direct pid)));
+  let unidentified = Orchestrator.observe_publication_head t pid None in
+  assert (B.equal (state t) (state unidentified));
+  let verified =
+    fst
+      (B.step (state t)
+         (B.Publication_observed
+            {
+              publication = B.publication_identity receipt;
+              head = sha candidate;
+              remote = Some (sha candidate);
+            }))
+  in
   let repeated =
     List.fold (List.init 5 ~f:Fn.id) ~init:t ~f:(fun t _ ->
         let t, logs, _ =
-          Patch_controller.apply_poll_result ~confirmed_remote_head:candidate t
-            pid (observation candidate)
+          Onton_test_support.Forge_poll_fixture.apply
+            ~confirmed_remote_head:candidate t pid (observation candidate)
         in
         assert (not (List.is_empty logs));
         let agent = Orchestrator.agent t pid in
@@ -412,25 +710,107 @@ let () =
             (List.mem agent.queue Operation_kind.Merge_conflict
                ~equal:Operation_kind.equal));
         assert (
-          agent.conflict_noop_count = 0
-          && B.equal verified agent.branch_reconcile);
+          Option.equal B.equal_operation (B.operation verified)
+            (B.operation agent.branch_reconcile));
+        assert (
+          List.equal B.equal_integration_receipt (B.integrations verified)
+            (B.integrations agent.branch_reconcile));
+        assert (
+          List.equal B.equal_publication_receipt (B.publications verified)
+            (B.publications agent.branch_reconcile));
+        assert (
+          Option.is_some
+            (Forge_observation.latest_fact
+               (B.forge_observations agent.branch_reconcile)));
         t)
   in
-  let t =
-    Orchestrator.set_head_oid repeated pid (Some source) |> fun t ->
-    Orchestrator.set_expected_remote_head_oid t pid (Some candidate)
-  in
+  assert (
+    Option.is_none
+      (Patch_agent.expected_remote_head_oid (Orchestrator.agent repeated pid)));
   List.iter [ None; Some candidate; Some source ]
     ~f:(fun confirmed_remote_head ->
-      let t, _, _ =
-        Patch_controller.apply_poll_result ?confirmed_remote_head t pid
+      let observed, _, _ =
+        Onton_test_support.Forge_poll_fixture.apply ?confirmed_remote_head
+          repeated pid (observation source)
+      in
+      let agent = Orchestrator.agent observed pid in
+      if Option.equal String.equal confirmed_remote_head (Some source) then (
+        assert (Patch_agent.has_conflict agent);
+        assert (Option.equal String.equal agent.head_oid (Some source)))
+      else (
+        assert (not (Patch_agent.has_conflict agent));
+        assert ((not agent.checks_passing) && not agent.merge_ready);
+        assert (Option.equal String.equal agent.head_oid (Some candidate))));
+  let t = Orchestrator.set_head_oid initial_publication pid (Some source) in
+  let restored =
+    Persistence.patch_agent_to_yojson (Orchestrator.agent t pid)
+    |> Persistence.patch_agent_of_yojson ~main_branch:main ~gameplan
+    |> Result.ok_or_failwith
+  in
+  assert (
+    Option.equal String.equal
+      (Patch_agent.expected_remote_head_oid restored)
+      (Some candidate));
+  (* Restart preserves both the pending identity and an accepted acknowledgement.
+     No process-local publication marker may erase or re-arm either state. *)
+  List.iter [ false; true ] ~f:(fun acknowledged ->
+      let before =
+        if acknowledged then
+          Orchestrator.observe_publication_head t pid (Some candidate)
+        else t
+      in
+      let runtime =
+        Runtime.create ~gameplan ~main_branch:main
+          ~snapshot:
+            {
+              Runtime.orchestrator = before;
+              activity_log = Activity_log.empty;
+              gameplan;
+              transcripts = Hashtbl.create (module Patch_id);
+              applied_control_ids = [];
+            }
+          ()
+      in
+      let after =
+        Runtime.read runtime (fun snapshot -> snapshot.Runtime.orchestrator)
+      in
+      assert (B.equal (state before) (state after));
+      assert (
+        Option.equal String.equal
+          (Patch_agent.expected_remote_head_oid (Orchestrator.agent after pid))
+          (if acknowledged then None else Some candidate)));
+  List.iter [ None; Some candidate; Some source ]
+    ~f:(fun confirmed_remote_head ->
+      let observed, _, _ =
+        Onton_test_support.Forge_poll_fixture.apply ?confirmed_remote_head t pid
           (observation source)
       in
-      let agent = Orchestrator.agent t pid in
-      assert (not agent.has_conflict);
-      assert (
-        Option.equal String.equal agent.expected_remote_head_oid
-          (Some candidate)))
+      let agent = Orchestrator.agent observed pid in
+      if Option.equal String.equal confirmed_remote_head (Some source) then (
+        assert (Patch_agent.has_conflict agent);
+        assert (Option.is_none (Patch_agent.expected_remote_head_oid agent));
+        assert (Option.equal String.equal agent.head_oid (Some source)))
+      else (
+        assert (not (Patch_agent.has_conflict agent));
+        assert (
+          Option.equal String.equal
+            (Patch_agent.expected_remote_head_oid agent)
+            (Some candidate))));
+  let unidentified = observation candidate in
+  let unidentified =
+    {
+      unidentified with
+      poll_result = { unidentified.poll_result with head_oid = None };
+    }
+  in
+  let observed, _, _ =
+    Patch_controller.apply_poll_result ~confirmed_remote_head:candidate t pid
+      unidentified
+  in
+  assert (
+    Option.equal String.equal
+      (Patch_agent.expected_remote_head_oid (Orchestrator.agent observed pid))
+      (Some candidate))
 
 let () =
   List.iter [ false; true ] ~f:(fun merged ->

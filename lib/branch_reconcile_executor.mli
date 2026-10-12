@@ -4,9 +4,20 @@
 type io = { git : string list -> int * string * string }
 
 val remote_head :
-  io -> branch:string -> (Branch_reconcile.Commit.t option, string) result
+  ?operation:Branch_reconcile.operation ->
+  io ->
+  branch:string ->
+  (Branch_reconcile.Commit.t option, string) result
 (** Observe the configured push destination directly without changing tracking
-    refs. A missing ref is [Ok None]; a failed probe is [Error]. *)
+    refs. When an operation is supplied, reject a changed or unconfirmed
+    destination before probing the remote. A missing ref is [Ok None]; a failed
+    probe is [Error]. *)
+
+val remote_base :
+  io -> branch:string -> (Branch_reconcile.Commit.t option, string) result
+(** Read the base branch from origin's fetch destination without fetching or
+    updating tracking refs. Missing refs and unavailable probes stay distinct.
+*)
 
 val observe_checkout : io -> Git_observation.t
 (** Raises on failed probes; failed inspection never establishes clean state. *)

@@ -133,32 +133,12 @@ val render_turn_layer_uncommitted_changes :
   unit ->
   string
 
-val render_turn_layer_merge_conflict :
-  project_name:string ->
-  ?pr_number:Pr_number.t ->
-  base_branch:string ->
-  ?git_status:string ->
-  ?git_diff:string ->
-  ?conflict_info:Worktree.conflict_info ->
-  unit ->
-  string
-
 val render_turn_layer_findings :
   project_name:string ->
   ?pr_number:Pr_number.t ->
   ?current_head_sha:string ->
   artifact_dir:string ->
   Review_service.finding list ->
-  string
-
-val render_turn_layer_root_merge_conflict :
-  project_name:string ->
-  ?pr_number:Pr_number.t ->
-  base_branch:string ->
-  merge_head:string ->
-  git_status:string ->
-  git_diff:string ->
-  unit ->
   string
 
 (** {1 Composed prompts}
@@ -281,42 +261,6 @@ val render_uncommitted_changes_prompt :
   git_status:string ->
   unit ->
   string
-
-val render_root_merge_conflict_prompt :
-  project_name:string ->
-  ?agents_md:string ->
-  ?pr_number:Types.Pr_number.t ->
-  ?patch:Patch.t ->
-  ?gameplan:Gameplan.t ->
-  base_branch:string ->
-  merge_head:string ->
-  git_status:string ->
-  git_diff:string ->
-  unit ->
-  string
-(** Repair a pending history-preserving root merge, including restart guidance
-    pinned to its original MERGE_HEAD rather than a moving upstream ref. The
-    turn layer can be overridden with [prompts/turn_root_merge_conflict.md]
-    using [project_name], [pr_number], [base_branch], [merge_head],
-    [git_status], and [git_diff] variables. Gameplan and patch layers remain
-    independent. *)
-
-val render_merge_conflict_prompt :
-  project_name:string ->
-  ?agents_md:string ->
-  ?pr_number:Pr_number.t ->
-  ?patch:Patch.t ->
-  ?gameplan:Gameplan.t ->
-  base_branch:string ->
-  ?git_status:string ->
-  ?git_diff:string ->
-  ?conflict_info:Worktree.conflict_info ->
-  unit ->
-  string
-(** Render the merge-conflict prompt. When [~conflict_info] is provided, the
-    output includes a "Recovery" section with the exact [git rebase --onto]
-    command and the patch's unique commit list, so an agent that aborts the
-    in-progress rebase can reconstruct it. *)
 
 val render_human_message_prompt : project_name:string -> string list -> string
 

@@ -213,7 +213,6 @@ struct
         let main_branch = Env.config.main_branch
         let poll_interval = Env.config.poll_interval
         let repo_root = Env.config.repo_root
-        let find_pr_number = Env.find_pr_number
         let register_pr_number = Env.register_pr_number
         let unregister_pr_number = Env.unregister_pr_number
         let findings_registry = Env.findings_registry
@@ -481,11 +480,11 @@ let finalize_run ~project_name ~repo_coords ~run_knobs ~backend_inputs
       project name.
     - [PROJECT] only: load stored config + gameplan. CLI flags override stored
       values. *)
-let resolve_config ~project ~gameplan_path ~forge ~github_token ~backend ~model
-    ~main_branch ~poll_interval ~(repo_root : string option) ~max_concurrency
-    ~(max_ci_failures : int option) ~(automerge_timeout : float option)
-    ~headless ~worktree_backend ~worktree_executable
-    ~(clone_scheme : string option) ~publish_gameplan =
+let resolve_config ~claim_project ~project ~gameplan_path ~forge ~github_token
+    ~backend ~model ~main_branch ~poll_interval ~(repo_root : string option)
+    ~max_concurrency ~(max_ci_failures : int option)
+    ~(automerge_timeout : float option) ~headless ~worktree_backend
+    ~worktree_executable ~(clone_scheme : string option) ~publish_gameplan =
   let clone_scheme_override =
     match clone_scheme with
     | None -> None
@@ -541,6 +540,7 @@ let resolve_config ~project ~gameplan_path ~forge ~github_token ~backend ~model
           Printf.sprintf "sourcehut-%s-%s" owner repo
         else Printf.sprintf "%s-%s" owner repo
       in
+      let project_name = claim_project project_name in
       let gameplan : Gameplan.t =
         {
           project_name;
@@ -588,6 +588,7 @@ let resolve_config ~project ~gameplan_path ~forge ~github_token ~backend ~model
             | Some p -> p
             | None -> gameplan.Gameplan.project_name
           in
+          let project_name = claim_project project_name in
           let owner = Base.String.strip gameplan.Gameplan.repo_owner in
           let repo = Base.String.strip gameplan.Gameplan.repo_name in
           let forge = if String.equal forge "auto" then "github" else forge in
@@ -663,6 +664,7 @@ let resolve_config ~project ~gameplan_path ~forge ~github_token ~backend ~model
                     ~backend_inputs:(cli_backend_inputs ()) ~main_branch
                     ~gameplan ~publish_gameplan ~source_path:(Some gp_path))))
   | Some proj, None -> (
+      let proj = claim_project proj in
       if not (Project_store.project_exists proj) then
         Error
           [
@@ -964,56 +966,12 @@ let construct_capabilities ~net (setup : runtime_setup) =
   in
   let module Forge = (val forge) in
   let worktree_client =
-    Worktree.make_with_protection
-      ~protected_branch:
-        (Runtime.read setup.runtime (fun snap ->
-             Option.map
-               (fun id ->
-                 (Orchestrator.agent snap.orchestrator id).Patch_agent.branch)
-               (Execution_mode.root
-                  (Orchestrator.execution_mode snap.Runtime.orchestrator))))
-      ~fs:setup.fs ~config:config.Resolved_config.worktree ~clock:setup.clock
-      ~process_mgr:setup.process_mgr ~repo_root
+    Worktree.make ~fs:setup.fs ~config:config.Resolved_config.worktree
+      ~clock:setup.clock ~process_mgr:setup.process_mgr ~repo_root
   in
   let module WorktreeClient = (val worktree_client) in
-  (* Establish the published root head before the first forge observation. This
-     also recovers publication that completed after the last snapshot. *)
-  let root_agent =
-    Runtime.read setup.runtime (fun snap ->
-        Option.bind
-          (Execution_mode.root
-             (Orchestrator.execution_mode snap.Runtime.orchestrator))
-          (fun id ->
-            let a = Orchestrator.agent snap.orchestrator id in
-            if a.Patch_agent.merged then None else Some a))
-  in
-  (match root_agent with
-  | None -> ()
-  | Some a -> (
-      match
-        WorktreeClient.fetch_origin_branch ~fetch_lock:(Eio.Mutex.create ())
-          ~branch:(Branch.to_string a.Patch_agent.branch)
-      with
-      | Worktree.Fetch_branch_error e ->
-          Printf.eprintf "Error: cannot establish integration root head: %s\n%!"
-            e;
-          Stdlib.exit 1
-      | Worktree.Fetch_branch_no_remote_ref ->
-          if Patch_agent.has_pr a then (
-            Printf.eprintf
-              "Error: integration root branch is missing from origin.\n%!";
-            Stdlib.exit 1)
-      | Worktree.Fetch_branch_ok ->
-          let sha =
-            WorktreeClient.read_branch_sha ~path:repo_root
-              ~ref_name:("refs/remotes/origin/" ^ Branch.to_string a.branch)
-          in
-          if Option.is_none sha then (
-            Printf.eprintf "Error: integration root head could not be read.\n%!";
-            Stdlib.exit 1);
-          Runtime.update_orchestrator setup.runtime (fun orch ->
-              Orchestrator.set_expected_remote_head_oid orch a.patch_id sha)));
-
+  (* Publication recovery is checkpointed by Branch_reconcile_runner. A fetch
+     from origin cannot establish publication at the owner's push destination. *)
   (match Forge.check_repo_access () with
   | Ok () -> ()
   | Error err ->
@@ -1035,21 +993,33 @@ let construct_capabilities ~net (setup : runtime_setup) =
       match Sys.getenv_opt "ONTON_SETSID_EXEC" with
       | Some "" -> None
       | Some p -> Some p
-      | None ->
-          Some
-            (Filename.concat
-               (Filename.dirname Sys.executable_name)
-               "onton-setsid-exec")
+      | None -> (
+          let sibling =
+            Filename.concat
+              (Filename.dirname Sys.executable_name)
+              "onton-setsid-exec"
+          in
+          if Sys.file_exists sibling then Some sibling
+          else
+            match Backend_preflight.find_executable "onton-setsid-exec" with
+            | Some _ as found -> found
+            | None -> Some sibling)
     in
     match candidate with
     | Some p when Sys.file_exists p -> Some p
     | Some p ->
-        Eio.traceln
-          "onton-setsid-exec not found at %s; grandchildren will reparent to \
-           PID 1 on teardown"
+        Printf.eprintf
+          "Error: process-tree supervisor not found at %s; install \
+           onton-setsid-exec or set ONTON_SETSID_EXEC to its executable path.\n\
+           %!"
           p;
-        None
-    | None -> None
+        Stdlib.exit 1
+    | None ->
+        Printf.eprintf
+          "Error: ONTON_SETSID_EXEC is empty; a process-tree supervisor is \
+           required to launch agent sessions.\n\
+           %!";
+        Stdlib.exit 1
   in
   let effective_model_opt =
     if Base.String.is_empty model then None else Some model
@@ -1514,8 +1484,8 @@ let apply_pr_ops ~(setup : runtime_setup) ~(cap : constructed_capabilities)
         | Adhoc_target.Remove_pr n -> apply_remove_pr ~setup ~cap n)
       ops
 
-let run_with_config ~no_lock ~auto_merge ~pr_ops ~headless_transcript
-    (config : config) gameplan existing_snapshot =
+let run_with_config ~auto_merge ~pr_ops ~headless_transcript (config : config)
+    gameplan existing_snapshot =
   let resolved = Resolved_config.of_config config |> ok_or_exit in
   let {
     Resolved_config.forge;
@@ -1555,27 +1525,6 @@ let run_with_config ~no_lock ~auto_merge ~pr_ops ~headless_transcript
       end
     end
   in
-  let lock =
-    if no_lock then None
-    else
-      let project_dir = Project_store.project_dir project_name in
-      match
-        Project_lock.acquire ~project_dir ~on_stale:(fun stale_pid ->
-            if stale_pid > 0 then
-              Printf.eprintf "onton: reclaiming stale lock from pid %d\n%!"
-                stale_pid)
-      with
-      | Ok l -> Some l
-      | Error e ->
-          Printf.eprintf "onton: %s\n"
-            (Format.asprintf "%a" Project_lock.pp_error e);
-          Printf.eprintf
-            "       pass --no-lock (or set ONTON_NO_LOCK=1) to bypass.\n%!";
-          Stdlib.exit 75
-  in
-  Stdlib.Fun.protect ~finally:(fun () ->
-      Base.Option.iter lock ~f:Project_lock.release)
-  @@ fun () ->
   Eio_main.run @@ fun env ->
   let setup = setup_runtime env ~config:resolved ~gameplan ~existing_snapshot in
   let mode =
@@ -1638,6 +1587,65 @@ let run ~project ~gameplan_path ~forge ~github_token ~backend ~model
     ~max_concurrency ~max_ci_failures ~automerge_timeout ~worktree_backend
     ~worktree_executable ~headless ~headless_transcript ~no_lock ~auto_merge
     ~clone_scheme ~pr_ops ~feature_branch ~publish_gameplan =
+  let lifecycle_or_exit = function
+    | Ok value -> value
+    | Error error ->
+        Printf.eprintf "onton: %s\n%!" (Project_lifecycle.error_message error);
+        Stdlib.exit 75
+  in
+  let registration =
+    lifecycle_or_exit (Project_lifecycle.acquire_registration ())
+  in
+  let live_use = ref None and exclusive = ref None and claimed = ref None in
+  Stdlib.Fun.protect ~finally:(fun () ->
+      Base.Option.iter !exclusive ~f:Project_lock.release;
+      Base.Option.iter !live_use ~f:Project_lifecycle.release_use;
+      Project_lifecycle.release_registration registration)
+  @@ fun () ->
+  let claim_project project_name =
+    let slug = Project_store.slugify project_name in
+    match !claimed with
+    | Some (prior, canonical) when String.equal prior slug -> canonical
+    | Some _ ->
+        Printf.eprintf
+          "onton: the gameplan's project changed during startup; retry with a \
+           stable source.\n\
+           %!";
+        Stdlib.exit 1
+    | None ->
+        live_use :=
+          Some
+            (lifecycle_or_exit
+               (Project_lifecycle.acquire_writer registration ~project_name));
+        (if not no_lock then
+           match
+             Project_lock.acquire
+               ~project_dir:(Project_store.project_dir project_name)
+               ~on_stale:(fun stale_pid ->
+                 if stale_pid > 0 then
+                   Printf.eprintf "onton: reclaiming stale lock from pid %d\n%!"
+                     stale_pid)
+           with
+           | Ok lock -> exclusive := Some lock
+           | Error error ->
+               Printf.eprintf
+                 "onton: %s\n\
+                 \       pass --no-lock (or set ONTON_NO_LOCK=1) to bypass.\n\
+                  %!"
+                 (Format.asprintf "%a" Project_lock.pp_error error);
+               Stdlib.exit 75);
+        let canonical =
+          if Project_store.project_exists project_name then (
+            match Project_store.load_config ~project_name with
+            | Ok stored -> stored.Project_store.project_name
+            | Error reason ->
+                Printf.eprintf "Error: %s\n%!" reason;
+                Stdlib.exit 1)
+          else project_name
+        in
+        claimed := Some (slug, canonical);
+        canonical
+  in
   let prior_project =
     match (project, gameplan_path) with
     | Some p, _ -> Some p
@@ -1649,6 +1657,7 @@ let run ~project ~gameplan_path ~forge ~github_token ~backend ~model
     | None, None -> None
   in
   let prior =
+    let prior_project = Option.map claim_project prior_project in
     Option.bind prior_project (fun p ->
         match Project_store.load_config ~project_name:p with
         | Ok c -> Some c
@@ -1701,10 +1710,10 @@ let run ~project ~gameplan_path ~forge ~github_token ~backend ~model
               Stdlib.exit 1))
   | Some _ | None -> ());
   match
-    resolve_config ~project ~gameplan_path ~forge ~github_token ~backend ~model
-      ~main_branch ~poll_interval ~repo_root ~max_concurrency ~max_ci_failures
-      ~automerge_timeout ~worktree_backend ~worktree_executable ~headless
-      ~clone_scheme ~publish_gameplan
+    resolve_config ~claim_project ~project ~gameplan_path ~forge ~github_token
+      ~backend ~model ~main_branch ~poll_interval ~repo_root ~max_concurrency
+      ~max_ci_failures ~automerge_timeout ~worktree_backend ~worktree_executable
+      ~headless ~clone_scheme ~publish_gameplan
   with
   | Error errs ->
       Base.List.iter errs ~f:(fun e -> Printf.eprintf "Error: %s\n" e);
@@ -1762,8 +1771,9 @@ let run ~project ~gameplan_path ~forge ~github_token ~backend ~model
         ~project_name:
           (Option.value config.project ~default:gameplan.project_name)
         mode;
-      run_with_config ~no_lock ~auto_merge ~pr_ops ~headless_transcript config
-        gameplan existing_snapshot
+      Project_lifecycle.release_registration registration;
+      run_with_config ~auto_merge ~pr_ops ~headless_transcript config gameplan
+        existing_snapshot
 
 (** {1 CLI via Cmdliner} *)
 
@@ -2018,8 +2028,9 @@ let no_lock_arg =
     value & flag
     & info [ "no-lock" ]
         ~doc:
-          "Bypass the per-project advisory lock. Only use when a stale lock \
-           cannot be reclaimed automatically."
+          "Bypass the per-project PID-file supervisor lock. The exclusive \
+           process-lifetime mutation lease, startup registration and \
+           protection against pruning remain active."
         ~env:(Cmd.Env.info "ONTON_NO_LOCK"))
 
 let prune_arg =

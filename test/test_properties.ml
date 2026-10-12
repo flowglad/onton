@@ -731,7 +731,7 @@ let () =
         with _ -> false)
   in
   (* Property: session results either complete (failure) or defer (success).
-     Session_ok, Session_push_failed, and Session_no_commits all represent a
+     Session_ok and Session_no_commits all represent a
      healthy LLM session; completion is deferred to apply_respond_outcome.
      All other failure results complete the agent immediately. *)
   let prop_failure_results_complete =
@@ -741,15 +741,13 @@ let () =
         let orch = Orchestrator.apply_session_result orch pid result in
         let a = Orchestrator.agent orch pid in
         match result with
-        | Orchestrator.Session_ok | Orchestrator.Session_push_failed _
-        | Orchestrator.Session_no_commits ->
+        | Orchestrator.Session_ok | Orchestrator.Session_no_commits ->
             (* LLM session succeeded — completion deferred to
                apply_respond_outcome, so agent stays busy here. *)
             a.Patch_agent.busy
         | Orchestrator.Session_process_error _ | Orchestrator.Session_no_resume
         | Orchestrator.Session_timed_out _ | Orchestrator.Session_failed _
         | Orchestrator.Session_wontdo _ | Orchestrator.Session_give_up
-        | Orchestrator.Session_worktree_missing
         | Orchestrator.Session_context_exhausted ->
             not a.Patch_agent.busy)
   in
@@ -1006,11 +1004,7 @@ let () =
     ];
   Stdlib.print_endline "llm_session_id: all properties passed (A1-A9)"
 
-(* Session_push_failed semantics — distinguishes "LLM ran fine but commits
-   didn't ship" from a genuine LLM failure. Pins down the three behaviors
-   that justify the variant's existence, plus the pure
-   combine_session_and_push mapping the runner uses to fold push outcomes
-   into session_result. *)
+(* Session and publication outcomes have independent owners and budgets. *)
 let () =
   let open QCheck2 in
   let main = Types.Branch.of_string "main" in
@@ -1042,325 +1036,119 @@ let () =
     let orch, _, _ = tick orch ~patches in
     (orch, pid)
   in
-  let prop_psf1_clears_session_fallback =
-    Test.make ~name:"PSF-1: Session_push_failed clears session_fallback"
-      (Gen.return ()) (fun () ->
-        let orch, pid = mk_busy_orch () in
-        (* Drive the agent into Tried_fresh via an explicit fresh failure,
-           then assert Session_push_failed resets it back to
-           Fresh_available. *)
-        let orch = Orchestrator.set_tried_fresh orch pid in
-        let orch =
-          Orchestrator.apply_session_result orch pid (Session_push_failed None)
-        in
-        let a = Orchestrator.agent orch pid in
-        Patch_agent.equal_session_fallback a.Patch_agent.session_fallback
-          Patch_agent.Fresh_available)
+  let module B = Branch_reconcile in
+  let module F = Onton_core_test_support.Publication_fixture in
+  let publication orch pid =
+    let state t = (Orchestrator.agent t pid).Patch_agent.branch_reconcile in
+    let step t event = fst (Orchestrator.reconcile_branch t pid event) in
+    ( F.publishing ~candidate:(F.sha "session-work") ~state ~step orch,
+      state,
+      step )
   in
-  let prop_psf2_leaves_start_attempts_untouched =
+  let same_budgets (before : Patch_agent.t) (after : Patch_agent.t) =
+    Patch_agent.equal_session_fallback before.session_fallback
+      after.session_fallback
+    && before.start_attempts_without_pr = after.start_attempts_without_pr
+    && before.ci_failure_count = after.ci_failure_count
+    && before.context_exhaustion_count = after.context_exhaustion_count
+    && before.no_commits_push_count = after.no_commits_push_count
+    && Option.equal String.equal before.llm_session_id after.llm_session_id
+  in
+  let prop_publication_budget_isolation =
     Test.make
-      ~name:"PSF-2: Session_push_failed leaves start_attempts_without_pr"
-      (Gen.int_range 0 3) (fun n ->
-        let orch, pid = mk_busy_orch () in
-        let orch =
-          List.fold (List.range 0 n) ~init:orch ~f:(fun o _ ->
-              Orchestrator.increment_start_attempts_without_pr o pid)
-        in
-        let before =
-          (Orchestrator.agent orch pid).Patch_agent.start_attempts_without_pr
-        in
-        let orch =
-          Orchestrator.apply_session_result orch pid (Session_push_failed None)
-        in
-        let after =
-          (Orchestrator.agent orch pid).Patch_agent.start_attempts_without_pr
-        in
-        Int.equal before after)
+      ~name:"publication failure preserves implementation budgets and candidate"
+      ~count:500
+      Gen.(triple (int_range 0 4) bool string)
+      (fun (failures, permanent, reason) ->
+        try
+          let orch, pid = mk_busy_orch () in
+          let orch =
+            List.fold (List.range 0 failures) ~init:orch ~f:(fun t _ ->
+                Orchestrator.increment_start_attempts_without_pr t pid
+                |> fun t -> Orchestrator.increment_ci_failure_count t pid)
+          in
+          let orch = Orchestrator.set_tried_fresh orch pid in
+          let orch =
+            Orchestrator.set_llm_session_id orch pid (Some "retained-session")
+          in
+          let orch, state, step = publication orch pid in
+          let before = Orchestrator.agent orch pid in
+          let identity = B.publication_observation_target (state orch) in
+          let result =
+            if permanent then B.Needs_diagnosis reason
+            else B.Retryable { reason; retry_after = None }
+          in
+          let event = F.completion ~state orch result in
+          let failed = step orch event in
+          let duplicate = step failed event in
+          same_budgets before (Orchestrator.agent failed pid)
+          && B.equal (state failed) (state duplicate)
+          && Option.equal B.equal_publication_identity identity
+               (B.publication_observation_target (state failed))
+          && List.is_empty (B.publications (state failed))
+        with _ -> false)
   in
-  let prop_psf3_leaves_ci_failure_count_untouched =
-    Test.make ~name:"PSF-3: Session_push_failed leaves ci_failure_count"
-      (Gen.int_range 0 2) (fun n ->
-        let orch, pid = mk_busy_orch () in
-        let orch =
-          List.fold (List.range 0 n) ~init:orch ~f:(fun o _ ->
-              Orchestrator.increment_ci_failure_count o pid)
-        in
-        let before =
-          (Orchestrator.agent orch pid).Patch_agent.ci_failure_count
-        in
-        let orch =
-          Orchestrator.apply_session_result orch pid (Session_push_failed None)
-        in
-        let after =
-          (Orchestrator.agent orch pid).Patch_agent.ci_failure_count
-        in
-        Int.equal before after)
-  in
-  (* PSF-4..PSF-7 cover the new [push_failure_count] counter added by P0-B. The
-     family mirrors the PNC-* shape for [no_commits_push_count]: increment on
-     apply, threshold flips needs_intervention, reset on Session_ok with a
-     successful push, and a permanent rejection short-circuits to [Given_up]
-     without waiting for the counter. *)
-  let prop_psf4_increments_counter =
-    Test.make
-      ~name:"PSF-4: apply Session_push_failed bumps push_failure_count by 1"
-      (Gen.return ()) (fun () ->
-        let orch, pid = mk_busy_orch () in
-        let before =
-          (Orchestrator.agent orch pid).Patch_agent.push_failure_count
-        in
-        let orch =
-          Orchestrator.apply_session_result orch pid (Session_push_failed None)
-        in
-        let after =
-          (Orchestrator.agent orch pid).Patch_agent.push_failure_count
-        in
-        Int.equal before 0 && Int.equal after 1)
-  in
-  let prop_psf5_session_ok_resets_counter =
+  let prop_publication_retry_has_no_session_cap =
     Test.make
       ~name:
-        "PSF-5: apply Session_ok resets push_failure_count after Push_ok path"
-      (Gen.int_range 0 5) (fun n ->
-        let orch, pid = mk_busy_orch () in
-        let orch =
-          List.fold (List.range 0 n) ~init:orch ~f:(fun o _ ->
-              Orchestrator.apply_session_result o pid (Session_push_failed None))
-        in
-        let orch = Orchestrator.apply_session_result orch pid Session_ok in
-        Int.equal (Orchestrator.agent orch pid).Patch_agent.push_failure_count 0)
+        "publication infrastructure retries reach diagnosis without spending \
+         session budget"
+      ~count:300
+      Gen.(int_range 3 20)
+      (fun retries ->
+        try
+          let orch, pid = mk_busy_orch () in
+          let orch, state, step = publication orch pid in
+          let before = Orchestrator.agent orch pid in
+          let identity = B.publication_observation_target (state orch) in
+          let failed =
+            List.fold (List.range 0 retries) ~init:orch ~f:(fun t _ ->
+                if F.is_diagnosis (state t) then t
+                else
+                  let t =
+                    F.reply ~state ~step t
+                      (B.Retryable
+                         { reason = "transport offline"; retry_after = None })
+                  in
+                  match B.phase (state t) with
+                  | Some (B.Waiting { until; _ }) -> step t (B.Tick until)
+                  | Some (B.Repairing _) when F.is_diagnosis (state t) -> t
+                  | Some
+                      ( Preparing | Integrating | Repairing _ | Publishing
+                      | Confirming | Recovering | Settled | Intervention _ )
+                  | None ->
+                      failwith "retry failed to retain owner backoff")
+          in
+          let after = Orchestrator.agent failed pid in
+          same_budgets before after
+          && (not (Patch_agent.needs_intervention after))
+          && B.is_pending (state failed)
+          && F.is_diagnosis (state failed)
+          && Option.equal B.equal_publication_identity identity
+               (B.publication_observation_target (state failed))
+        with _ -> false)
   in
-  let prop_psf6_threshold_flips_intervention =
+  let prop_session_success_keeps_owner_intervention =
     Test.make
-      ~name:
-        "PSF-6: three consecutive Session_push_failed flip needs_intervention"
-      (Gen.return ()) (fun () ->
-        let orch, pid = mk_busy_orch () in
-        let bump o =
-          Orchestrator.apply_session_result o pid (Session_push_failed None)
-        in
-        let o1 = bump orch in
-        let o2 = bump o1 in
-        let o3 = bump o2 in
-        let needs o =
-          Patch_agent.needs_intervention (Orchestrator.agent o pid)
-        in
-        (* After the first two, no intervention; after the third, intervention
-           fires via [push_failure_count >= 3]. *)
-        (not (needs o1)) && (not (needs o2)) && needs o3)
+      ~name:"successful implementation cannot clear publication intervention"
+      ~count:200 Gen.string (fun suffix ->
+        try
+          let orch, pid = mk_busy_orch () in
+          let orch, state, step = publication orch pid in
+          let reason = "permission_denied:" ^ suffix in
+          let orch = F.reply ~state ~step orch (B.Needs_diagnosis reason) in
+          let orch = F.exhaust_diagnosis ~state ~step orch in
+          let failed = state orch in
+          let orch =
+            Orchestrator.apply_session_result orch pid Orchestrator.Session_ok
+          in
+          B.equal failed (state orch)
+          && Option.equal String.equal
+               (Patch_agent.intervention_reason (Orchestrator.agent orch pid))
+               (Some reason)
+        with _ -> false)
   in
-  let prop_psf7_permanent_reason_escalates_immediately =
-    Test.make
-      ~name:
-        "PSF-7: Session_push_failed (Some permanent) flips needs_intervention \
-         on the first event"
-      (Gen.oneof
-         [
-           Gen.return Push_reject_classify.Workflow_scope_missing;
-           Gen.return Push_reject_classify.Branch_protection;
-           Gen.return Push_reject_classify.Push_pattern_block;
-           Gen.return (Push_reject_classify.Hook_failure "x");
-         ])
-      (fun reason ->
-        let orch, pid = mk_busy_orch () in
-        let orch =
-          Orchestrator.apply_session_result orch pid
-            (Session_push_failed (Some reason))
-        in
-        let a = Orchestrator.agent orch pid in
-        Patch_agent.needs_intervention a
-        && Patch_agent.equal_session_fallback a.Patch_agent.session_fallback
-             Patch_agent.Given_up
-        && Int.equal a.Patch_agent.push_failure_count 0)
-  in
-  let prop_psf8_transient_reason_does_not_escalate =
-    Test.make
-      ~name:
-        "PSF-8: Session_push_failed with Lease_violation / Merge_queue_locked \
-         / None / Unknown does NOT immediately escalate to Given_up"
-      (Gen.oneof
-         [
-           Gen.return None;
-           Gen.return (Some Push_reject_classify.Lease_violation);
-           Gen.return (Some Push_reject_classify.Merge_queue_locked);
-           Gen.return (Some (Push_reject_classify.Unknown ""));
-         ])
-      (fun reason ->
-        let orch, pid = mk_busy_orch () in
-        let orch =
-          Orchestrator.apply_session_result orch pid
-            (Session_push_failed reason)
-        in
-        let a = Orchestrator.agent orch pid in
-        not
-          (Patch_agent.equal_session_fallback a.Patch_agent.session_fallback
-             Patch_agent.Given_up))
-  in
-  let prop_cp1_ok_pushok =
-    Test.make ~name:"CP-1: Session_ok + Push_ok = Session_ok" (Gen.return ())
-      (fun () ->
-        Orchestrator.equal_session_result
-          (Orchestrator.combine_session_and_push
-             ~delivery_mode:Patch_decision.Respond ~branch_changed:true
-             ~session:Session_ok ~push:Worktree.Push_ok)
-          Session_ok)
-  in
-  let prop_cp2_ok_uptodate =
-    Test.make ~name:"CP-2: Session_ok + Push_up_to_date = Session_ok"
-      (Gen.return ()) (fun () ->
-        Orchestrator.equal_session_result
-          (Orchestrator.combine_session_and_push
-             ~delivery_mode:Patch_decision.Respond ~branch_changed:true
-             ~session:Session_ok ~push:Worktree.Push_up_to_date)
-          Session_ok)
-  in
-  let prop_cp2b_ok_uptodate_unchanged_branch =
-    Test.make
-      ~name:
-        "CP-2b: Session_ok + Push_up_to_date + unchanged branch = \
-         Session_no_commits" (Gen.return ()) (fun () ->
-        Orchestrator.equal_session_result
-          (Orchestrator.combine_session_and_push
-             ~delivery_mode:Patch_decision.Respond ~branch_changed:false
-             ~session:Session_ok ~push:Worktree.Push_up_to_date)
-          Session_no_commits)
-  in
-  let prop_cp2c_ok_pushok_unchanged_branch =
-    Test.make
-      ~name:
-        "CP-2c: Session_ok + Push_ok + unchanged branch = Session_no_commits"
-      (Gen.return ()) (fun () ->
-        Orchestrator.equal_session_result
-          (Orchestrator.combine_session_and_push
-             ~delivery_mode:Patch_decision.Respond ~branch_changed:false
-             ~session:Session_ok ~push:Worktree.Push_ok)
-          Session_no_commits)
-  in
-  let prop_cp_start_published =
-    Test.make ~name:"Start publishes existing commits after a failed session"
-      Gen.bool (fun branch_changed ->
-        let orch, pid = mk_busy_orch () in
-        let failed =
-          Orchestrator.Session_failed
-            { is_fresh = false; detail = Some "timeout" }
-        in
-        let timeout =
-          Orchestrator.combine_session_and_push
-            ~delivery_mode:Patch_decision.Start ~branch_changed:true
-            ~session:failed ~push:Worktree.Push_ok
-        in
-        let orch = Orchestrator.apply_session_result orch pid timeout in
-        let completed =
-          Orchestrator.combine_session_and_push
-            ~delivery_mode:Patch_decision.Start ~branch_changed
-            ~session:Session_ok ~push:Worktree.Push_up_to_date
-        in
-        let orch = Orchestrator.apply_session_result orch pid completed in
-        Orchestrator.equal_session_result timeout failed
-        && Orchestrator.equal_session_result completed Session_ok
-        && (Orchestrator.agent orch pid).Patch_agent.no_commits_push_count = 0)
-  in
-  let prop_cp_start_empty =
-    Test.make
-      ~name:"Start cannot publish a branch with no commits ahead of base"
-      Gen.bool (fun branch_changed ->
-        Orchestrator.equal_session_result
-          (Orchestrator.combine_session_and_push
-             ~delivery_mode:Patch_decision.Start ~branch_changed
-             ~session:Session_ok ~push:Worktree.Push_no_commits)
-          Session_no_commits)
-  in
-  let prop_cp3_ok_rejected =
-    Test.make
-      ~name:
-        "CP-3: Session_ok + Push_rejected = Session_push_failed (Some reason)"
-      (Gen.return ()) (fun () ->
-        Orchestrator.equal_session_result
-          (Orchestrator.combine_session_and_push
-             ~delivery_mode:Patch_decision.Respond ~branch_changed:true
-             ~session:Session_ok
-             ~push:(Worktree.Push_rejected Push_reject_classify.Lease_violation))
-          (Session_push_failed (Some Push_reject_classify.Lease_violation)))
-  in
-  let prop_cp4_ok_error =
-    Test.make ~name:"CP-4: Session_ok + Push_error = Session_push_failed None"
-      Gen.string_small (fun msg ->
-        Orchestrator.equal_session_result
-          (Orchestrator.combine_session_and_push
-             ~delivery_mode:Patch_decision.Respond ~branch_changed:true
-             ~session:Session_ok ~push:(Worktree.Push_error msg))
-          (Session_push_failed None))
-  in
-  let gen_non_ok_session : Orchestrator.session_result Gen.t =
-    Gen.oneof
-      [
-        Gen.map
-          (fun b ->
-            Orchestrator.Session_process_error { is_fresh = b; detail = None })
-          Gen.bool;
-        Gen.return Orchestrator.Session_no_resume;
-        Gen.map
-          (fun b -> Orchestrator.Session_failed { is_fresh = b; detail = None })
-          Gen.bool;
-        Gen.return Orchestrator.Session_give_up;
-        Gen.return Orchestrator.Session_worktree_missing;
-        Gen.return (Orchestrator.Session_push_failed None);
-        Gen.return Orchestrator.Session_no_commits;
-      ]
-  in
-  let gen_push : Worktree.push_result Gen.t =
-    Gen.oneof
-      [
-        Gen.return Worktree.Push_ok;
-        Gen.return Worktree.Push_up_to_date;
-        Gen.return Worktree.Push_no_commits;
-        Gen.return (Worktree.Push_rejected Push_reject_classify.Lease_violation);
-        Gen.map (fun s -> Worktree.Push_error s) Gen.string_small;
-      ]
-  in
-  let gen_any_session : Orchestrator.session_result Gen.t =
-    Gen.oneof [ Gen.return Orchestrator.Session_ok; gen_non_ok_session ]
-  in
-  let prop_cp5_failure_dominates =
-    Test.make
-      ~name:
-        "CP-5: pre-existing failure dominates any push outcome \
-         (Push_worktree_missing excluded — handled by CP-7)" ~count:300
-      (Gen.pair gen_non_ok_session gen_push) (fun (session, push) ->
-        Orchestrator.equal_session_result
-          (Orchestrator.combine_session_and_push
-             ~delivery_mode:Patch_decision.Respond ~branch_changed:false
-             ~session ~push)
-          session)
-  in
-  let prop_cp6_ok_no_commits =
-    Test.make ~name:"CP-6: Session_ok + Push_no_commits = Session_no_commits"
-      (Gen.return ()) (fun () ->
-        Orchestrator.equal_session_result
-          (Orchestrator.combine_session_and_push
-             ~delivery_mode:Patch_decision.Respond ~branch_changed:true
-             ~session:Session_ok ~push:Worktree.Push_no_commits)
-          Session_no_commits)
-  in
-  (* Push_worktree_missing means the worktree directory was deleted between
-     session start and push; the local commits are gone. Whatever the session
-     reported, the only correct next step is to clear inflight state and let
-     the next session rebuild the worktree via [ensure_worktree] — that
-     mapping is [Session_worktree_missing], which goes through the
-     pre-session-failure path rather than the retry-push path that assumes
-     the directory still exists. *)
-  let prop_cp7_worktree_missing_dominates =
-    Test.make ~count:300
-      ~name:
-        "CP-7: any session + Push_worktree_missing = Session_worktree_missing"
-      gen_any_session (fun session ->
-        Orchestrator.equal_session_result
-          (Orchestrator.combine_session_and_push
-             ~delivery_mode:Patch_decision.Respond ~branch_changed:false
-             ~session ~push:Worktree.Push_worktree_missing)
-          Session_worktree_missing)
-  in
-  (* Session_no_commits property tests (PNC-N) mirror PSF-N: clear fallback,
+  (* Session_no_commits property tests (PNC-N): clear fallback,
      increment counter, reset on Session_ok, trigger needs_intervention at
      the threshold, and reset_intervention_state clears the counter. PNC-2
      through PNC-5 test the pure [Patch_agent] functions directly (no
@@ -1647,8 +1435,7 @@ let () =
             ~stderr:""
         with
         | Worktree.Push_rejected _ -> true
-        | Worktree.Push_ok | Worktree.Push_up_to_date | Worktree.Push_no_commits
-        | Worktree.Push_worktree_missing | Worktree.Push_error _ ->
+        | Worktree.Push_ok | Worktree.Push_up_to_date | Worktree.Push_error _ ->
             false)
   in
   let prop_classify_nonzero_no_porcelain_equal_error =
@@ -1660,46 +1447,16 @@ let () =
       (fun (code, stderr) ->
         match Worktree.classify_push_result ~code ~stdout:"" ~stderr with
         | Worktree.Push_error _ -> true
-        | Worktree.Push_ok | Worktree.Push_up_to_date | Worktree.Push_no_commits
-        | Worktree.Push_rejected _ | Worktree.Push_worktree_missing ->
-            false)
-  in
-  let prop_classify_never_returns_no_commits =
-    Test.make
-      ~name:
-        "PG-12: classify_push_result never returns Push_no_commits (that \
-         variant is only produced by the gate)"
-      ~count:500
-      (Gen.triple (Gen.int_range 0 255) Gen.string_small Gen.string_small)
-      (fun (code, stdout, stderr) ->
-        match Worktree.classify_push_result ~code ~stdout ~stderr with
-        | Worktree.Push_no_commits | Worktree.Push_worktree_missing -> false
         | Worktree.Push_ok | Worktree.Push_up_to_date | Worktree.Push_rejected _
-        | Worktree.Push_error _ ->
-            true)
+          ->
+            false)
   in
   List.iter
     ~f:(fun t -> QCheck2.Test.check_exn t)
     [
-      prop_psf1_clears_session_fallback;
-      prop_psf2_leaves_start_attempts_untouched;
-      prop_psf3_leaves_ci_failure_count_untouched;
-      prop_psf4_increments_counter;
-      prop_psf5_session_ok_resets_counter;
-      prop_psf6_threshold_flips_intervention;
-      prop_psf7_permanent_reason_escalates_immediately;
-      prop_psf8_transient_reason_does_not_escalate;
-      prop_cp1_ok_pushok;
-      prop_cp2_ok_uptodate;
-      prop_cp2b_ok_uptodate_unchanged_branch;
-      prop_cp2c_ok_pushok_unchanged_branch;
-      prop_cp_start_published;
-      prop_cp_start_empty;
-      prop_cp3_ok_rejected;
-      prop_cp4_ok_error;
-      prop_cp5_failure_dominates;
-      prop_cp6_ok_no_commits;
-      prop_cp7_worktree_missing_dominates;
+      prop_publication_budget_isolation;
+      prop_publication_retry_has_no_session_cap;
+      prop_session_success_keeps_owner_intervention;
       prop_pnc1_clears_session_fallback;
       prop_pnc2_increments_counter;
       prop_pnc3_intervention_threshold;
@@ -1725,10 +1482,8 @@ let () =
       prop_classify_ok_forced_equal_push_ok;
       prop_classify_nonzero_bang_equal_rejected;
       prop_classify_nonzero_no_porcelain_equal_error;
-      prop_classify_never_returns_no_commits;
     ];
   Stdlib.print_endline
-    "Session_push_failed + combine_session_and_push: all properties passed \
-     (PSF-1..8, CP-1..6, PNC-1..8, PG-1..12)"
+    "Session outcomes and owned publication properties passed"
 
 let () = Stdlib.print_endline "all property tests passed"

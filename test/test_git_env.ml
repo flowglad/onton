@@ -102,8 +102,16 @@ let test_clean_env_scrubs_git_and_installs_auth () =
   let inherited_config =
     List.map
       (fun name -> (name, Sys.getenv_opt name))
-      [ "GIT_CONFIG_COUNT"; "GIT_CONFIG_KEY_0"; "GIT_CONFIG_VALUE_0" ]
+      [
+        "GIT_CONFIG_COUNT";
+        "GIT_CONFIG_KEY_0";
+        "GIT_CONFIG_VALUE_0";
+        "GIT_NO_REPLACE_OBJECTS";
+        "GIT_GRAFT_FILE";
+      ]
   in
+  Unix.putenv "GIT_NO_REPLACE_OBJECTS" "0";
+  Unix.putenv "GIT_GRAFT_FILE" "/inherited-grafts";
   Unix.putenv "GIT_CONFIG_COUNT" "1";
   Unix.putenv "GIT_CONFIG_KEY_0" "core.hooksPath";
   Unix.putenv "GIT_CONFIG_VALUE_0" "/inherited-hooks";
@@ -131,6 +139,9 @@ let test_clean_env_scrubs_git_and_installs_auth () =
         (value "GIT_CONFIG_COUNT" github_env = Some "1"
         && value "GIT_CONFIG_KEY_0" github_env = Some "core.hooksPath"
         && value "GIT_CONFIG_VALUE_0" github_env = Some "/dev/null");
+      assert_true "Git observes actual objects and ancestry"
+        (value "GIT_NO_REPLACE_OBJECTS" github_env = Some "1"
+        && value "GIT_GRAFT_FILE" github_env = Some "");
       assert_true "stale GH_TOKEN scrubbed"
         (not (List.exists (binding "GH_TOKEN") github_env));
       assert_true "terminal prompts disabled"

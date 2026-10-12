@@ -54,7 +54,8 @@ let prepare_with_prs orch patches =
       let a = Orchestrator.agent o p.Patch.id in
       if a.Patch_agent.busy then
         let o = Orchestrator.set_pr_number o p.Patch.id (Pr_number.of_int 1) in
-        Orchestrator.complete o p.Patch.id
+        Onton_test_support.Reconciliation_fixture.rebase ~noop:true o p.Patch.id
+          (Option.value a.Patch_agent.base_branch ~default:main)
       else o)
 
 (* Spec spelling-out of the gate a child's Start now waits on for its open-PR
@@ -66,7 +67,7 @@ let prepare_with_prs orch patches =
 let open_dep_review_ready orch d =
   let a = Orchestrator.agent orch d in
   a.Patch_agent.pr_body_delivered && a.Patch_agent.checks_passing
-  && not a.Patch_agent.has_conflict
+  && not (Patch_agent.has_conflict a)
 
 (* ========== Property 1: only eligible agents produce spawns ========== *)
 

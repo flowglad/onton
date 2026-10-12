@@ -31,22 +31,22 @@ let has_cancellation = Process_tree.has_cancellation
 let is_transient_spawn_failure = Process_tree.is_transient_spawn_failure
 let retry_transient_spawn = Process_tree.retry_transient_spawn
 
-(* [Eio.Process.run] wrapper that retries transient spawn failures. Named
-   parameter [mgr] (not [process_mgr]) so a textual rewrite of the call sites
-   below doesn't recurse into this definition. *)
-let process_run_retry mgr ?env ?stdout ?stderr args =
-  retry_transient_spawn (fun () ->
-      Eio.Process.run mgr ?env ?stdout ?stderr args)
+(* Legacy read helpers retain their failure mapping, but delegate process
+   ownership, cancellation and output capture to the shared runner. *)
+let run_command process_mgr ~env ?stdout ?stderr args =
+  let code, _out, err =
+    Process_tree.run ~process_mgr ~env ?stdout ?stderr args
+  in
+  if code <> 0 then failwith (Printf.sprintf "Command exited %d: %s" code err)
 
 let clean_git_env = Stdlib.Lazy.from_fun Git_env.clean_env
 
 let ref_exists ~process_mgr ~repo_root ref_path =
   let buf = Buffer.create 16 in
   match
-    process_run_retry process_mgr
+    run_command process_mgr
       ~env:(Stdlib.Lazy.force clean_git_env)
-      ~stdout:(Eio.Flow.buffer_sink buf)
-      ~stderr:(Eio.Flow.buffer_sink (Buffer.create 16))
+      ~stdout:buf ~stderr:(Buffer.create 16)
       [ "git"; "-C"; repo_root; "rev-parse"; "--verify"; ref_path ]
   with
   | () -> true
@@ -60,10 +60,9 @@ let resolve_main_root ~process_mgr ~repo_root =
   let buf = Buffer.create 128 in
   let stderr_buf = Buffer.create 64 in
   match
-    process_run_retry process_mgr
+    run_command process_mgr
       ~env:(Stdlib.Lazy.force clean_git_env)
-      ~stdout:(Eio.Flow.buffer_sink buf)
-      ~stderr:(Eio.Flow.buffer_sink stderr_buf)
+      ~stdout:buf ~stderr:stderr_buf
       [
         "git";
         "-C";
@@ -86,10 +85,9 @@ let is_checked_out_in_repo_root ~process_mgr ~repo_root branch =
   let buf = Buffer.create 128 in
   let stderr_buf = Buffer.create 64 in
   match
-    process_run_retry process_mgr
+    run_command process_mgr
       ~env:(Stdlib.Lazy.force clean_git_env)
-      ~stdout:(Eio.Flow.buffer_sink buf)
-      ~stderr:(Eio.Flow.buffer_sink stderr_buf)
+      ~stdout:buf ~stderr:stderr_buf
       [ "git"; "-C"; main_root; "rev-parse"; "--abbrev-ref"; "HEAD" ]
   with
   | () ->
@@ -103,50 +101,34 @@ let is_checked_out_in_repo_root ~process_mgr ~repo_root branch =
    [compute_ancestry], so the worktree-creation planner inputs can be gathered
    before the type re-exports and the heavier rebase/push functions below. *)
 let run_git_exit_code ~process_mgr args =
-  let stdout_buf = Buffer.create 256 in
-  let stderr_buf = Buffer.create 64 in
-  let env = Stdlib.Lazy.force clean_git_env in
-  (* [Eio.Process.await] reports the exit status but does NOT wait for the
-     internal fibers that copy the child's stdout/stderr pipes into these
-     buffers (only [Eio.Process.run] documents that it does). Reading
-     [Buffer.contents] inside the switch — right after [await] — therefore
-     races the copy fibers: under scheduling load the buffer can still be empty
-     or partial when read. That manifested as a flaky [rev-parse --abbrev-ref
-     HEAD] returning "" → [worktree_head_branch = None] → a spurious
-     branch-switched push refusal. The switch only releases (and so joins the
-     copy fibers) when its body returns, so read the buffers *after*
-     [Eio.Switch.run] completes. *)
-  let code =
-    Eio.Switch.run @@ fun sw ->
-    let child =
-      retry_transient_spawn (fun () ->
-          Eio.Process.spawn ~sw process_mgr ~env
-            ~stdin:(Eio.Flow.string_source "")
-            ~stdout:(Eio.Flow.buffer_sink stdout_buf)
-            ~stderr:(Eio.Flow.buffer_sink stderr_buf)
-            args)
-    in
-    match Eio.Process.await child with `Exited c -> c | `Signaled s -> 128 + s
-  in
-  (* Read the buffers only here, after [Eio.Switch.run] has returned: that join
-     point is what guarantees the copy fibers have finished. Bind them outside
-     the switch body explicitly so this stays obvious. *)
-  let stdout = Buffer.contents stdout_buf in
-  let stderr = Buffer.contents stderr_buf in
-  (code, stdout, stderr)
+  Process_tree.run ~process_mgr ~env:(Stdlib.Lazy.force clean_git_env) args
 
-(* Read a ref's SHA from the main repo (NOT a worktree). Returns [None] if the
-   ref does not exist or git fails. Used by [Worktree.create] to feed inputs to
-   [Start_point_plan.plan]. *)
+(* Absence is a successful ref observation. Process/object failures remain
+   errors so provisioning cannot turn an unavailable ref into a new branch. *)
 let read_repo_ref_sha ~process_mgr ~repo_root ~ref_name =
-  let code, stdout, _ =
-    run_git_exit_code ~process_mgr
-      [ "git"; "-C"; repo_root; "rev-parse"; "--verify"; ref_name ]
+  let git args =
+    run_git_exit_code ~process_mgr ([ "git"; "-C"; repo_root ] @ args)
   in
-  if code = 0 then
-    let s = String.strip stdout in
-    if String.is_empty s then None else Some s
-  else None
+  let symbolic, _, stderr = git [ "symbolic-ref"; "-q"; ref_name ] in
+  if symbolic = 0 then Error "symbolic branch ref cannot authorize provisioning"
+  else if symbolic <> 1 then Error ("ref identity probe failed: " ^ stderr)
+  else
+    let code, _, stderr = git [ "show-ref"; "--verify"; "--quiet"; ref_name ] in
+    match code with
+    | 1 -> Ok None
+    | 0 -> (
+        let code, stdout, stderr = git [ "rev-parse"; "--verify"; ref_name ] in
+        if code <> 0 then Error ("ref revision probe failed: " ^ stderr)
+        else
+          match Branch_reconcile.Commit.make (String.strip stdout) with
+          | None -> Error "ref revision probe returned an invalid revision"
+          | Some revision ->
+              let sha = Branch_reconcile.Commit.to_string revision in
+              let code, kind, stderr = git [ "cat-file"; "-t"; sha ] in
+              if code = 0 && String.equal (String.strip kind) "commit" then
+                Ok (Some sha)
+              else Error ("ref is not a readable commit: " ^ stderr))
+    | _ -> Error ("ref existence probe failed: " ^ stderr)
 
 (* Compute the ancestor relationship between [local] and [remote] using two
    [git merge-base --is-ancestor] probes. Returns [Unknown] if either probe
@@ -167,26 +149,6 @@ let compute_repo_ancestry ~process_mgr ~repo_root ~local ~remote :
   | Some false, Some true -> Start_point_plan.Local_ahead
   | Some false, Some false -> Start_point_plan.Diverged
   | _ -> Start_point_plan.Unknown
-
-let local_changes_represented_remotely ~process_mgr ~repo_root ~local ~remote =
-  let code, stdout, _ =
-    run_git_exit_code ~process_mgr
-      [ "git"; "-C"; repo_root; "cherry"; remote; local ]
-  in
-  if code <> 0 then false
-  else
-    let changes =
-      String.split_lines stdout
-      |> List.filter ~f:(fun line -> not (String.is_empty (String.strip line)))
-    in
-    (not (List.is_empty changes))
-    && List.for_all changes ~f:(fun line -> Char.equal line.[0] '-')
-    &&
-    let tree_diff_code, _, _ =
-      run_git_exit_code ~process_mgr
-        [ "git"; "-C"; repo_root; "diff"; "--quiet"; local; remote; "--" ]
-    in
-    tree_diff_code = 0
 
 (* Fetch a single branch from origin into the corresponding remote-tracking
    ref. Returns a typed [fetch_branch_result] so callers can distinguish
@@ -227,10 +189,9 @@ let check_case_insensitive_ref_collision ~process_mgr ~repo_root branch_str =
   let buf = Buffer.create 512 in
   let existing_branches =
     match
-      process_run_retry process_mgr
+      run_command process_mgr
         ~env:(Stdlib.Lazy.force clean_git_env)
-        ~stdout:(Eio.Flow.buffer_sink buf)
-        ~stderr:(Eio.Flow.buffer_sink (Buffer.create 16))
+        ~stdout:buf ~stderr:(Buffer.create 16)
         [
           "git";
           "-C";
@@ -265,13 +226,10 @@ type create_io = {
       (** True only for a validated, ready checkout of the requested branch. *)
   check_ref_collision : branch_str:string -> unit;
       (** Case-insensitive ref-collision guard; raises to abort creation. *)
-  read_ref : ref_name:string -> string option;
-      (** Resolve a ref to its SHA, or [None] when the ref is absent. *)
+  read_ref : ref_name:string -> (string option, string) Result.t;
+      (** Resolve a commit ref; only verified absence returns [Ok None]. *)
   ancestry : local:string -> remote:string -> Start_point_plan.ancestry;
       (** Two-way ancestry between an existing local and remote SHA. *)
-  local_changes_represented_remotely : local:string -> remote:string -> bool;
-      (** Whether every local-only patch is represented remotely and the
-          resulting trees match. *)
   execute_action :
     path:string ->
     branch_str:string ->
@@ -299,30 +257,22 @@ let create_with_io ~io ~project_name ~patch_id ~branch ~base_ref :
     Result.Ok { patch_id; branch; path; newly_created = false }
   else (
     io.check_ref_collision ~branch_str;
-    let local_ref = io.read_ref ~ref_name:("refs/heads/" ^ branch_str) in
-    let remote_ref =
-      io.read_ref ~ref_name:("refs/remotes/origin/" ^ branch_str)
+    let read_ref ~ref_name =
+      match io.read_ref ~ref_name with
+      | Ok revision -> revision
+      | Error reason -> failwith ("Worktree ref observation failed: " ^ reason)
     in
+    let local_ref = read_ref ~ref_name:("refs/heads/" ^ branch_str) in
+    let remote_ref = read_ref ~ref_name:("refs/remotes/origin/" ^ branch_str) in
     let ancestry =
       match (local_ref, remote_ref) with
       | Some l, Some r -> io.ancestry ~local:l ~remote:r
       | _ -> Start_point_plan.Unknown
     in
-    let local_changes_represented_remotely =
-      match (local_ref, remote_ref, ancestry) with
-      | Some local, Some remote, (Diverged | Unknown) ->
-          io.local_changes_represented_remotely ~local ~remote
-      | ( None,
-          (None | Some _),
-          (Local_ahead | Remote_ahead | Equal | Diverged | Unknown) )
-      | Some _, None, (Local_ahead | Remote_ahead | Equal | Diverged | Unknown)
-      | Some _, Some _, (Local_ahead | Remote_ahead | Equal) ->
-          false
-    in
     let decision =
       Start_point_plan.plan ~local_ref ~remote_ref ~ancestry
-        ~base_branch:base_ref ~local_changes_represented_remotely
-        ~branch_checked_out_in_main_root:false ~existing_worktree_path:None
+        ~base_branch:base_ref ~branch_checked_out_in_main_root:false
+        ~existing_worktree_path:None
     in
     match decision with
     | Refuse refusal -> Result.Error refusal
@@ -337,10 +287,9 @@ let detect_branch ~process_mgr ~path =
   let path = normalize_path path in
   let stderr_buf = Buffer.create 64 in
   (match
-     process_run_retry process_mgr
+     run_command process_mgr
        ~env:(Stdlib.Lazy.force clean_git_env)
-       ~stdout:(Eio.Flow.buffer_sink buf)
-       ~stderr:(Eio.Flow.buffer_sink stderr_buf)
+       ~stdout:buf ~stderr:stderr_buf
        [ "git"; "-C"; path; "rev-parse"; "--abbrev-ref"; "HEAD" ]
    with
   | () -> ()
@@ -360,139 +309,6 @@ let detect_branch ~process_mgr ~path =
 
 let parse_porcelain ~repo_root raw =
   Worktree_parser.parse_porcelain ~cwd:(Stdlib.Sys.getcwd ()) ~repo_root raw
-
-(* Type re-exports — pure definitions live in Worktree_parser. The manifest
-   equations equate Worktree.X with Worktree_parser.X across the library
-   boundary so callers that pattern-match on Worktree.Push_ok etc. compile
-   unchanged. *)
-
-type unique_commit = Worktree_parser.unique_commit = {
-  sha : string;
-  subject : string;
-}
-[@@deriving show, eq, sexp_of, compare]
-
-type rebase_strategy = Worktree_parser.rebase_strategy = Onto | Plain
-[@@deriving show, eq, sexp_of, compare]
-
-type conflict_info = Worktree_parser.conflict_info = {
-  target : string;
-  old_base : string;
-  unique_commits : unique_commit list;
-  strategy : rebase_strategy;
-  orig_head : string;
-}
-[@@deriving show, eq, sexp_of, compare]
-
-type rebase_result = Worktree_parser.rebase_result =
-  | Ok
-  | Noop
-  | Conflict of conflict_info
-  | Merge_conflict of string
-  | Uncommitted_changes of string
-  | Error of string
-[@@deriving show, eq, sexp_of, compare]
-
-(* [run_git_exit_code] is defined earlier in the file, just after [run_git],
-   so the start-point planner helpers above ([read_repo_ref_sha],
-   [compute_repo_ancestry], [fetch_origin_branch]) can call it. *)
-
-(** Pure: does [subject] match the conventional "[<project>] Patch <N>:"
-    commit-subject format for some [N] in [ancestor_ids]? The patch-id segment
-    is terminated by the first character that satisfies [Char.is_whitespace] or
-    equals [':'] (or end of string), so any [Patch_id.to_string] value that
-    doesn't itself contain such a character round-trips correctly. Empty
-    [project_name] or [ancestor_ids] always returns false: callers must supply
-    the real project name for this match to be meaningful. *)
-let is_ancestor_patch_subject = Worktree_parser.is_ancestor_patch_subject
-
-(** Pure: parse [git log --format=%H %s] output into [unique_commit] records,
-    dropping entries whose subject matches an ancestor patch. Preserves git's
-    newest-first emission order. Returns both the list and the oldest SHA (the
-    [~1] of which becomes the rebase's [--onto] anchor). The list and the SHA
-    are produced together so callers cannot accidentally request one without the
-    other and lose the recovery info needed by the conflict prompt. *)
-let classify_unique_commits = Worktree_parser.classify_unique_commits
-
-(** Pure: parse [git log --format=%H %s] output and return the oldest SHA whose
-    subject is not [is_ancestor_patch_subject]. Back-compat wrapper around
-    [classify_unique_commits] — preserved so existing call sites that need only
-    the SHA do not need to handle the per-commit list. *)
-let oldest_non_ancestor_commit = Worktree_parser.oldest_non_ancestor_commit
-
-(** Pure: assemble a [conflict_info] from the contents of
-    [.git/rebase-merge/onto], [.git/rebase-merge/upstream], and
-    [.git/rebase-merge/orig-head] together with the
-    [git log --format=%H %s <upstream>..<orig-head>] output. Used by the
-    rebase-already-in-progress recovery path so the patch-agent prompt can
-    surface the same recovery command as the fresh-rebase path. Returns [None]
-    only when [onto] or [upstream] is blank — those are required to render the
-    recovery command. An empty / all-filtered log degrades to an empty
-    [unique_commits] list, NOT to [None]: the recovery command is fully
-    determined by [target] and [old_base], so a restarted orchestrator should
-    still surface it (the prompt renderer omits the commits header when the list
-    is empty).
-
-    [onto_contents] is the rebase destination SHA (first positional arg of
-    [git rebase --onto X Y]); [upstream_contents] is the old-base SHA (second
-    positional arg, the limit on what gets replayed). The recovery command needs
-    the upstream as [old_base], not [onto]. *)
-let parse_rebase_merge_state = Worktree_parser.parse_rebase_merge_state
-
-type onto_anchor = Worktree_parser.onto_anchor =
-  | Anchor of string
-  | No_anchor of string
-[@@deriving show, eq, sexp_of, compare]
-
-let classify_onto_anchor = Worktree_parser.classify_onto_anchor
-
-(** Find the old base commit for [--onto] rebase by identifying which commits on
-    our branch are unique (not in target). Uses patch-id matching via
-    [git log --cherry-pick], and additionally strips commits whose subject
-    matches [[<project>] Patch N:] for any transitive ancestor N. The subject
-    fallback handles squash-merged ancestors whose patch-ids no longer match
-    (squash collapses multiple commits into one with a fresh patch-id). Returns
-    the parent of the oldest commit that survives both filters. *)
-let find_old_base ~process_mgr ~path ~target ~project_name ~ancestor_ids =
-  let code, stdout, stderr =
-    run_git_exit_code ~process_mgr
-      [
-        "git";
-        "-C";
-        path;
-        "log";
-        "--cherry-pick";
-        "--right-only";
-        "--no-merges";
-        (* Defeat log.showSignature=true in the user's gitconfig — otherwise
-           [gpg: Signature made ...] lines would appear in the output and be
-           misinterpreted by [classify_unique_commits] as SHAs. *)
-        "--no-show-signature";
-        "--format=%H %s";
-        Printf.sprintf "%s...HEAD" target;
-      ]
-  in
-  if code <> 0 then
-    Result.Error
-      (Printf.sprintf "log cherry-pick failed (exit %d): %s" code
-         (String.strip stderr))
-  else
-    match classify_unique_commits ~project_name ~ancestor_ids stdout with
-    | Result.Error msg -> Result.Error msg
-    | Result.Ok (commits, oldest_sha) -> (
-        let code, stdout, stderr =
-          run_git_exit_code ~process_mgr
-            [ "git"; "-C"; path; "rev-parse"; Printf.sprintf "%s~1" oldest_sha ]
-        in
-        (* An empty anchor (oldest is a root commit, or the running git resolves
-           [<root>~1] to "" with exit 0) must NOT reach [git rebase --onto] — it
-           aborts there with "invalid upstream ''". Route both the failed and
-           blank cases to [Error] so [rebase_onto] takes the plain/upstream
-           fallback. See [Worktree_parser.classify_onto_anchor]. *)
-        match Worktree_parser.classify_onto_anchor ~code ~stdout with
-        | Worktree_parser.Anchor old_base -> Result.Ok (old_base, commits)
-        | Worktree_parser.No_anchor reason ->
-            Result.Error (Printf.sprintf "%s: %s" reason (String.strip stderr)))
 
 let classify_fetch_result = Worktree_parser.classify_fetch_result
 
@@ -567,12 +383,8 @@ let conflict_diff ~process_mgr ~path =
     (* Truncate to avoid blowing up the prompt *)
     if String.length s > 4000 then String.prefix s 4000 ^ "\n[truncated]" else s
 
-(** Effectful: read the resolved SHA of [ref] from the worktree at [path]. Used
-    by the runner fiber to record [branch_rebased_onto_sha] after a successful
-    rebase, so the next rebase can pass it as [prev_base_sha] and trim commits
-    absorbed into a squash-merge on origin. Returns [None] on any error (missing
-    ref, git not runnable, etc.) — callers treat that as "no information" and
-    fall back to the legacy plain-rebase path. *)
+(** Read a ref from the checkout. Missing refs or failed observations return
+    [None]; owner commands independently verify their mutation preconditions. *)
 let read_branch_sha ~process_mgr ~path ~ref_name =
   let code, stdout, _ =
     run_git_exit_code ~process_mgr
@@ -590,134 +402,10 @@ let is_ancestor ~process_mgr ~path ~ancestor ~descendant =
   in
   code = 0
 
-let git_dir_opt ~process_mgr ~path =
-  let code, stdout, _ =
-    run_git_exit_code ~process_mgr
-      [ "git"; "-C"; path; "rev-parse"; "--git-dir" ]
-  in
-  if code <> 0 then None
-  else
-    let git_dir = String.strip stdout in
-    let git_dir =
-      if Stdlib.Filename.is_relative git_dir then
-        Stdlib.Filename.concat path git_dir
-      else git_dir
-    in
-    Some git_dir
-
-let rebase_in_progress_raw ~process_mgr ~path =
-  match git_dir_opt ~process_mgr ~path with
-  | None -> false
-  | Some git_dir ->
-      Stdlib.Sys.file_exists (Stdlib.Filename.concat git_dir "rebase-merge")
-      || Stdlib.Sys.file_exists (Stdlib.Filename.concat git_dir "rebase-apply")
-
-let classify_rebase_exit_1 ~process_mgr ~path ~stderr conflict =
-  if rebase_in_progress_raw ~process_mgr ~path then Conflict conflict
-  else
-    Error
-      (Printf.sprintf "rebase exited 1 without leaving a rebase in progress: %s"
-         (String.strip stderr))
-
-let rebase_onto ~upstream ~process_mgr ~path ~target ~project_name ~ancestor_ids
-    () =
-  let target = Types.Branch.to_string target in
-  let ancestor_code, _, ancestor_stderr =
-    run_git_exit_code ~process_mgr
-      [ "git"; "-C"; path; "merge-base"; "--is-ancestor"; target; "HEAD" ]
-  in
-  if ancestor_code = 0 then Noop
-  else if ancestor_code <> 1 then
-    Error
-      (Printf.sprintf
-         "merge-base --is-ancestor failed for target %s (exit %d): %s" target
-         ancestor_code
-         (String.strip ancestor_stderr))
-  else
-    let status_code, status_stdout, status_stderr =
-      run_git_exit_code ~process_mgr
-        [ "git"; "-C"; path; "status"; "--porcelain=v1" ]
-    in
-    match
-      Worktree_parser.classify_rebase_worktree_status ~code:status_code
-        ~stdout:status_stdout ~stderr:status_stderr
-    with
-    | Some result -> result
-    | None -> (
-        (* Capture the pre-rebase HEAD before either find_old_base's [git rev-parse]
-       calls or the rebase itself can move it. Best-effort: an empty string is
-       a valid value for [conflict_info.orig_head] (the prompt skips emergency
-       recovery when empty). *)
-        let orig_head =
-          let code, stdout, _ =
-            run_git_exit_code ~process_mgr
-              [ "git"; "-C"; path; "rev-parse"; "HEAD" ]
-          in
-          if code = 0 then String.strip stdout else ""
-        in
-        match
-          find_old_base ~process_mgr ~path ~target ~project_name ~ancestor_ids
-        with
-        | Result.Error msg ->
-            (* The cherry-pick / patch-id detection in [find_old_base] failed,
-           so use the caller-supplied [upstream] (computed by the executor
-           via [Rebase_decision.plan] from the agent's anchor history). If
-           [upstream] equals [target], no usable anchor exists and we fall
-           back to the 2-arg form; otherwise [git rebase --onto target
-           upstream HEAD] replays exactly the patch's own commits past
-           [upstream]. *)
-            let rebase_args =
-              if String.equal upstream target then
-                [ "git"; "-C"; path; "rebase"; target ]
-              else [ "git"; "-C"; path; "rebase"; "--onto"; target; upstream ]
-            in
-            let rebase_code, _, rebase_stderr =
-              run_git_exit_code ~process_mgr rebase_args
-            in
-            if rebase_code = 0 then Ok
-            else if rebase_code <> 1 then
-              Error
-                (Printf.sprintf "rebase failed (fallback, %s) (exit %d): %s" msg
-                   rebase_code
-                   (String.strip rebase_stderr))
-            else
-              (* Leave rebase in progress for agent to resolve. No commit list is
-             available because [classify_unique_commits] failed; the prompt
-             renders a Plain-strategy recovery section recommending plain
-             [git rebase <target>] instead of [--onto]. *)
-              classify_rebase_exit_1 ~process_mgr ~path ~stderr:rebase_stderr
-                {
-                  target;
-                  old_base =
-                    (if String.equal upstream target then "" else upstream);
-                  unique_commits = [];
-                  strategy = Plain;
-                  orig_head;
-                }
-        | Result.Ok (old_base, unique_commits) ->
-            let rebase_code, _, rebase_stderr =
-              run_git_exit_code ~process_mgr
-                [ "git"; "-C"; path; "rebase"; "--onto"; target; old_base ]
-            in
-            if rebase_code = 0 then Ok
-            else if rebase_code <> 1 then
-              Error
-                (Printf.sprintf "rebase --onto failed (exit %d): %s" rebase_code
-                   (String.strip rebase_stderr))
-            else
-              (* Leave rebase in progress for agent to resolve, with the recovery
-             info threaded through so the prompt can render the exact --onto
-             command the supervisor used. *)
-              classify_rebase_exit_1 ~process_mgr ~path ~stderr:rebase_stderr
-                { target; old_base; unique_commits; strategy = Onto; orig_head }
-        )
-
 type push_result = Worktree_parser.push_result =
   | Push_ok
   | Push_up_to_date
-  | Push_no_commits
   | Push_rejected of Push_reject_classify.rejection
-  | Push_worktree_missing
   | Push_error of string
 [@@deriving show, eq, sexp_of, compare]
 
@@ -729,758 +417,10 @@ type push_gate = Worktree_parser.push_gate = Proceed | Skip_no_commits
 
 let push_gate_from_count = Worktree_parser.push_gate_from_count
 let classify_push_result = Worktree_parser.classify_push_result
-
-(* [commits_ahead_of_base] previously ran [git rev-list --count base..HEAD]
-   in the worktree; that's the function that produced PR #315's HEAD-vs-branch
-   gate mismatch. [gather_push_plan_inputs] below now measures ahead-of-base
-   on the named branch (refs/heads/<branch>), not HEAD, so an agent that
-   [git switch]ed mid-session cannot trip the gate with commits the push
-   command would never upload. *)
-
-(* Gather the inputs [Push_plan.plan] needs. Returns a tuple so the caller
-   can pattern-match the planner output without re-reading git twice. *)
-let gather_push_plan_inputs ~on_phase ~process_mgr ~path ~branch_str ~base_str =
-  let worktree_path_exists = Stdlib.Sys.file_exists path in
-  let worktree_head_branch =
-    if not worktree_path_exists then None
-    else
-      let code, stdout, _ =
-        run_git_exit_code ~process_mgr
-          [ "git"; "-C"; path; "rev-parse"; "--abbrev-ref"; "HEAD" ]
-      in
-      if code = 0 then
-        let s = String.strip stdout in
-        if String.is_empty s || String.equal s "HEAD" then None else Some s
-      else None
-  in
-  let read_sha ref_name =
-    if not worktree_path_exists then None
-    else
-      let code, stdout, _ =
-        run_git_exit_code ~process_mgr
-          [ "git"; "-C"; path; "rev-parse"; "--verify"; ref_name ]
-      in
-      if code = 0 then
-        let s = String.strip stdout in
-        if String.is_empty s then None else Some s
-      else None
-  in
-  let branch_ref_sha =
-    match read_sha ("refs/heads/" ^ branch_str) with
-    | Some _ as sha -> sha
-    | None -> (
-        match worktree_head_branch with
-        | Some head when String.equal head branch_str -> read_sha branch_str
-        | Some _ | None -> None)
-  in
-  let remote_observation =
-    match read_sha ("refs/remotes/origin/" ^ branch_str) with
-    | Some sha -> Result.Ok (Some sha)
-    | None when not worktree_path_exists -> Result.Ok None
-    | None -> (
-        let remote_ref = "refs/heads/" ^ branch_str in
-        on_phase "remote observation (git ls-remote)";
-        let code, stdout, stderr =
-          run_git_exit_code ~process_mgr
-            [
-              "git";
-              "-C";
-              path;
-              "ls-remote";
-              "--exit-code";
-              "--refs";
-              "origin";
-              remote_ref;
-            ]
-        in
-        if code = 2 then Result.Ok None
-        else if code <> 0 then
-          Result.Error ("Cannot observe remote branch: " ^ String.strip stderr)
-        else
-          match
-            Worktree_parser.parse_ls_remote_sha ~ref_name:remote_ref stdout
-          with
-          | None -> Result.Error "Cannot decode observed remote branch SHA"
-          | Some sha ->
-              (* Fetch only this observation's objects, leaving shared tracking
-                 refs and FETCH_HEAD alone. A later remote write still fails the
-                 captured lease; a fetch failure grants no publication authority. *)
-              on_phase "remote object fetch (git fetch)";
-              let code, _, stderr =
-                run_git_exit_code ~process_mgr
-                  [
-                    "git";
-                    "-C";
-                    path;
-                    "fetch";
-                    "--no-write-fetch-head";
-                    "--refmap=";
-                    "--no-tags";
-                    "--no-prune";
-                    "origin";
-                    sha;
-                  ]
-              in
-              if code = 0 then Result.Ok (Some sha)
-              else
-                Result.Error
-                  ("Cannot fetch observed remote commit: " ^ String.strip stderr)
-        )
-  in
-  Result.map remote_observation ~f:(fun remote_tracking_sha ->
-      on_phase "publication planning";
-      let ancestry : Push_plan.ancestry =
-        if not worktree_path_exists then Push_plan.Unknown
-        else
-          match (branch_ref_sha, remote_tracking_sha) with
-          | _, None -> Push_plan.No_remote_yet
-          | None, Some _ -> Push_plan.Unknown
-          | Some local, Some remote -> (
-              let code, _, _ =
-                run_git_exit_code ~process_mgr
-                  [
-                    "git";
-                    "-C";
-                    path;
-                    "merge-base";
-                    "--is-ancestor";
-                    remote;
-                    local;
-                  ]
-              in
-              (* exit 0 = remote is ancestor of local (local includes remote);
-             exit 1 only means remote is not an ancestor of local. Probe the
-             inverse to distinguish local-behind from true divergence. *)
-              match code with
-              | 0 -> Push_plan.Local_includes_remote
-              | 1 -> (
-                  let inverse_code, _, _ =
-                    run_git_exit_code ~process_mgr
-                      [
-                        "git";
-                        "-C";
-                        path;
-                        "merge-base";
-                        "--is-ancestor";
-                        local;
-                        remote;
-                      ]
-                  in
-                  match inverse_code with
-                  | 0 -> Push_plan.Local_missing_remote
-                  | 1 -> Push_plan.Local_diverged_from_remote
-                  | _ -> Push_plan.Unknown)
-              | _ -> Push_plan.Unknown)
-      in
-      (* Only the captured current history can authorize a rewrite. Every remote
-     commit must be reachable or patch-equivalent to a commit on that history;
-     stale reflog tips are never evidence of incorporation. Keep merges in the
-     result so unmatched merge resolutions fail closed as well. *)
-      let remote_changes_included =
-        match (branch_ref_sha, remote_tracking_sha, ancestry) with
-        | Some _, Some _, Push_plan.Local_includes_remote -> true
-        | Some local, Some remote, Push_plan.Local_diverged_from_remote ->
-            let code, stdout, _ =
-              run_git_exit_code ~process_mgr
-                [
-                  "git";
-                  "-C";
-                  path;
-                  "rev-list";
-                  "--cherry-pick";
-                  "--right-only";
-                  "--count";
-                  local ^ "..." ^ remote;
-                  "--";
-                ]
-            in
-            Option.equal Int.equal
-              (Worktree_parser.parse_commit_count ~code ~stdout)
-              (Some 0)
-        | ( _,
-            _,
-            ( Push_plan.Local_missing_remote | Push_plan.No_remote_yet
-            | Push_plan.Unknown ) )
-        | ( None,
-            _,
-            ( Push_plan.Local_includes_remote
-            | Push_plan.Local_diverged_from_remote ) )
-        | ( _,
-            None,
-            ( Push_plan.Local_includes_remote
-            | Push_plan.Local_diverged_from_remote ) ) ->
-            false
-      in
-      let commits_ahead_of_base =
-        if not worktree_path_exists then None
-        else
-          (* Measure ahead-of-base on the captured commit, not worktree HEAD —
-         so a concurrent checkout or branch update cannot authorize a different
-         commit from the one this publication will upload. *)
-          let code, stdout, _ =
-            run_git_exit_code ~process_mgr
-              [
-                "git";
-                "-C";
-                path;
-                "rev-list";
-                "--count";
-                base_str ^ ".."
-                ^ Option.value branch_ref_sha
-                    ~default:("refs/heads/" ^ branch_str);
-              ]
-          in
-          Worktree_parser.parse_commit_count ~code ~stdout
-      in
-      ( worktree_path_exists,
-        worktree_head_branch,
-        branch_ref_sha,
-        remote_tracking_sha,
-        ancestry,
-        remote_changes_included,
-        commits_ahead_of_base ))
-
-let read_file_opt path =
-  try
-    let ic = Stdlib.open_in path in
-    Stdlib.Fun.protect
-      ~finally:(fun () -> Stdlib.close_in_noerr ic)
-      (fun () ->
-        let len = Stdlib.in_channel_length ic in
-        let buf = Bytes.create len in
-        Stdlib.really_input ic buf 0 len;
-        Some (Bytes.to_string buf))
-  with _ -> None
-
-let force_push_with_lease_unbounded ~on_phase ~preserve_history ~process_mgr
-    ~path ~branch ~base =
-  let branch_str = Types.Branch.to_string branch in
-  let base_str = Types.Branch.to_string base in
-  match
-    gather_push_plan_inputs ~on_phase ~process_mgr ~path ~branch_str ~base_str
-  with
-  | Error detail -> Push_error detail
-  | Ok
-      ( worktree_path_exists,
-        worktree_head_branch,
-        branch_ref_sha,
-        remote_tracking_sha,
-        ancestry,
-        remote_changes_included,
-        commits_ahead_of_base ) ->
-      let plan rewrite_authority =
-        Push_plan.plan ~preserve_history ~expected_branch:branch_str
-          ~worktree_path_exists ~worktree_head_branch ~branch_ref_sha
-          ~remote_tracking_sha ~ancestry ~remote_changes_included
-          ~rewrite_authority ~commits_ahead_of_base
-      in
-      let preliminary = plan None in
-      let decision =
-        match preliminary with
-        | Refuse (Push_plan.Remote_not_integrated _) ->
-            let rewrite_authority =
-              match (branch_ref_sha, remote_tracking_sha, ancestry) with
-              | ( Some local_sha,
-                  Some remote_sha,
-                  Push_plan.Local_diverged_from_remote )
-                when (not preserve_history)
-                     && (not remote_changes_included)
-                     && not (rebase_in_progress_raw ~process_mgr ~path) ->
-                  Git_publication_evidence.rewrite_authority
-                    ~git:(fun args ->
-                      run_git_exit_code ~process_mgr
-                        ("git" :: "-C" :: path :: args))
-                    ~branch:branch_str ~local_sha ~remote_sha
-                  |> Result.ok |> Option.join
-              | ( _,
-                  _,
-                  ( Push_plan.Local_includes_remote
-                  | Push_plan.Local_missing_remote | Push_plan.No_remote_yet
-                  | Push_plan.Unknown ) )
-              | None, _, Push_plan.Local_diverged_from_remote
-              | _, None, Push_plan.Local_diverged_from_remote
-              | Some _, Some _, Push_plan.Local_diverged_from_remote ->
-                  None
-            in
-            plan rewrite_authority
-        | Push _
-        | Refuse
-            ( Push_plan.Worktree_missing | Push_plan.No_commits_ahead_of_base
-            | Push_plan.Branch_ref_missing _ | Push_plan.Branch_switched _
-            | Push_plan.Local_missing_remote_commits _
-            | Push_plan.History_would_be_rewritten _ ) ->
-            preliminary
-      in
-      let outcome =
-        match decision with
-        | Refuse Push_plan.Worktree_missing -> Push_worktree_missing
-        | Refuse Push_plan.No_commits_ahead_of_base -> Push_no_commits
-        | Refuse
-            (( Push_plan.Branch_ref_missing _ | Push_plan.Branch_switched _
-             | Push_plan.Local_missing_remote_commits _
-             | Push_plan.Remote_not_integrated _
-             | Push_plan.History_would_be_rewritten _ ) as r) -> (
-            match Push_plan.to_push_reject_classify_rejection r with
-            | Some rej -> Push_rejected rej
-            | None ->
-                (* These refusals all map to Some _ per
-             [to_push_reject_classify_rejection]; fall back conservatively. *)
-                Push_error (Push_plan.short_label (Push_plan.Refuse r)))
-        | Push action -> (
-            let args =
-              match action with
-              | Push_plan.Force_push_with_lease { local_sha; remote_sha } ->
-                  [
-                    "git";
-                    "-C";
-                    path;
-                    "push";
-                    "--porcelain";
-                    "--force-with-lease=refs/heads/" ^ branch_str ^ ":"
-                    ^ remote_sha;
-                    "origin";
-                    local_sha ^ ":refs/heads/" ^ branch_str;
-                  ]
-              | Push_plan.Initial_push { local_sha } ->
-                  [
-                    "git";
-                    "-C";
-                    path;
-                    "push";
-                    "--porcelain";
-                    "--force-with-lease=refs/heads/" ^ branch_str ^ ":";
-                    "origin";
-                    local_sha ^ ":refs/heads/" ^ branch_str;
-                  ]
-            in
-            on_phase "git push";
-            let code, stdout, stderr = run_git_exit_code ~process_mgr args in
-            let result = classify_push_result ~code ~stdout ~stderr in
-            match action with
-            | Push_plan.Initial_push _
-              when equal_push_result result Push_ok
-                   || equal_push_result result Push_up_to_date ->
-                (* -u cannot identify a local branch from an immutable SHA refspec.
-             Set the named branch's upstream only after successful publication. *)
-                on_phase "upstream configuration (git branch)";
-                let code, _, stderr =
-                  run_git_exit_code ~process_mgr
-                    [
-                      "git";
-                      "-C";
-                      path;
-                      "branch";
-                      "--set-upstream-to=origin/" ^ branch_str;
-                      branch_str;
-                    ]
-                in
-                if code = 0 then result
-                else
-                  Push_error
-                    ("Published branch but failed to set upstream: " ^ stderr)
-            | Push_plan.Initial_push _ | Push_plan.Force_push_with_lease _ ->
-                result)
-      in
-      if
-        equal_push_result outcome
-          (Push_rejected Push_reject_classify.Lease_violation)
-      then
-        match branch_ref_sha with
-        | Some local_sha ->
-            (* A conflict-resolution agent may have already published this exact
-             commit. Its push does not necessarily refresh origin/<branch>, so
-             our captured lease can reject an otherwise completed publication.
-             Confirm every push destination before treating that as a success. *)
-            let remote_ref = "refs/heads/" ^ branch_str in
-            on_phase "push destination resolution (git remote get-url)";
-            let code, stdout, stderr =
-              run_git_exit_code ~process_mgr
-                [
-                  "git";
-                  "-C";
-                  path;
-                  "remote";
-                  "get-url";
-                  "--push";
-                  "--all";
-                  "origin";
-                ]
-            in
-            let push_urls = String.split_lines stdout in
-            if code <> 0 || List.is_empty push_urls then (
-              Eio.traceln
-                "Cannot confirm rejected push: push destination resolution \
-                 failed (exit %d): %s"
-                code (String.strip stderr);
-              outcome)
-            else
-              let confirmed =
-                List.for_all push_urls ~f:(fun push_url ->
-                    on_phase "remote confirmation (git ls-remote push URL)";
-                    let code, stdout, stderr =
-                      run_git_exit_code ~process_mgr
-                        [
-                          "git";
-                          "-C";
-                          path;
-                          "ls-remote";
-                          "--exit-code";
-                          "--refs";
-                          push_url;
-                          remote_ref;
-                        ]
-                    in
-                    if code <> 0 then (
-                      Eio.traceln
-                        "Cannot confirm rejected push: push destination probe \
-                         failed (exit %d): %s"
-                        code (String.strip stderr);
-                      false)
-                    else
-                      match
-                        Worktree_parser.parse_ls_remote_sha ~ref_name:remote_ref
-                          stdout
-                      with
-                      | None ->
-                          Eio.traceln
-                            "Cannot confirm rejected push: malformed \
-                             destination response";
-                          false
-                      | Some sha when String.equal sha local_sha -> true
-                      | Some _ ->
-                          Eio.traceln
-                            "Rejected push confirmed: destination tip differs \
-                             from local commit";
-                          false)
-              in
-              if confirmed then Push_up_to_date else outcome
-        | None -> outcome
-      else outcome
-
-let default_push_timeout_seconds = 120.0
-
-let force_push_with_lease ?(preserve_history = false)
-    ?(timeout_seconds = default_push_timeout_seconds) ~clock ~process_mgr ~path
-    ~branch ~base () =
-  (* Keep a single deadline for the whole operation, including remote IO before
-     the push. Cancellation reports the operation actually awaiting completion. *)
-  let phase = ref "publication planning" in
-  let on_phase current = phase := current in
-  match
-    Eio.Time.with_timeout clock timeout_seconds (fun () ->
-        Ok
-          (force_push_with_lease_unbounded ~on_phase ~preserve_history
-             ~process_mgr ~path ~branch ~base))
-  with
-  | Ok result -> result
-  | Error `Timeout ->
-      Push_error
-        (Printf.sprintf "Publication timed out after %.0fs during %s"
-           timeout_seconds !phase)
-
-let rebase_in_progress ~process_mgr ~path =
-  rebase_in_progress_raw ~process_mgr ~path
-
-(** Effectful: reconstruct [conflict_info] when a rebase is already in progress
-    in the worktree (the orchestrator restarts mid-rebase, or a previous run
-    left state behind). Reads [.git/rebase-merge/{onto,upstream,orig-head}] to
-    recover the [--onto] destination, the upstream (old_base) limit, and the
-    pre-rebase HEAD, runs [git log --format=%H %s upstream..orig-head] to
-    enumerate the commits the rebase intends to replay, then delegates to the
-    pure [parse_rebase_merge_state]. Returns [None] best-effort: any read or git
-    failure degrades to a no-recovery-section prompt rather than blocking
-    delivery. Only handles [.git/rebase-merge] (the merge-style rebase used by
-    [rebase_onto]); a [.git/rebase-apply] state returns [None]. *)
-let read_in_progress_conflict_info ~process_mgr ~path ~target ~project_name
-    ~ancestor_ids =
-  let target = Types.Branch.to_string target in
-  let code, stdout, _ =
-    run_git_exit_code ~process_mgr
-      [ "git"; "-C"; path; "rev-parse"; "--git-dir" ]
-  in
-  if code <> 0 then None
-  else
-    let git_dir = String.strip stdout in
-    let git_dir =
-      if Stdlib.Filename.is_relative git_dir then
-        Stdlib.Filename.concat path git_dir
-      else git_dir
-    in
-    let onto_path = Stdlib.Filename.concat git_dir "rebase-merge/onto" in
-    let upstream_path =
-      Stdlib.Filename.concat git_dir "rebase-merge/upstream"
-    in
-    let orig_head_path =
-      Stdlib.Filename.concat git_dir "rebase-merge/orig-head"
-    in
-    match (read_file_opt onto_path, read_file_opt upstream_path) with
-    | Some onto_contents, Some upstream_contents ->
-        let onto = String.strip onto_contents in
-        let upstream = String.strip upstream_contents in
-        if String.is_empty onto || String.is_empty upstream then None
-        else
-          (* orig-head is best-effort: a missing or empty file degrades to
-             "" (the prompt skips the [git reset --hard] block) instead of
-             dropping the whole recovery section. The fresh-rebase path
-             already treats orig_head this way when [git rev-parse HEAD]
-             fails; mirror that here so a restarted orchestrator gives the
-             same guidance. *)
-          let orig_head_contents =
-            Option.value (read_file_opt orig_head_path) ~default:""
-          in
-          let orig_head = String.strip orig_head_contents in
-          (* Use upstream..orig-head, not onto..orig-head: the unique-commit
-             range is bounded by the upstream (the rebase's "since" anchor),
-             not by the destination. When orig-head is empty (best-effort
-             miss), fall back to HEAD so [git log] still yields the rebase's
-             intended replay set. *)
-          let log_endpoint =
-            if String.is_empty orig_head then "HEAD" else orig_head
-          in
-          let log_code, log_stdout, _ =
-            run_git_exit_code ~process_mgr
-              [
-                "git";
-                "-C";
-                path;
-                "log";
-                "--no-merges";
-                "--no-show-signature";
-                "--format=%H %s";
-                Printf.sprintf "%s..%s" upstream log_endpoint;
-              ]
-          in
-          if log_code <> 0 then None
-          else
-            parse_rebase_merge_state ~onto_contents ~upstream_contents
-              ~orig_head_contents ~log_format_h_s:log_stdout ~project_name
-              ~ancestor_ids ~target
-    | _ -> None
-
 let path t = t.path
 let patch_id t = t.patch_id
 let branch t = t.branch
 let newly_created t = t.newly_created
-
-type integration_result =
-  | Integrated of string
-  | Integration_conflict of string
-  | Integration_error of string
-
-(* Caller owns the root-write lock. No checked-out branch is reset or rewritten. *)
-let integrate ~process_mgr ~clock ~repo_root ~root_path ~root_branch
-    ~descendant_branch ~head_sha =
-  let git path args =
-    Process_tree.run ~process_mgr ~clock
-      ~env:(Stdlib.Lazy.force clean_git_env)
-      ([ "git"; "-C"; path ] @ args)
-  in
-  let checked path args =
-    match git path args with
-    | 0, out, _ -> Result.Ok (String.strip out)
-    | _, _, err -> Result.Error err
-  in
-  let fail msg = Integration_error msg in
-  let root = Types.Branch.to_string root_branch in
-  let child = Types.Branch.to_string descendant_branch in
-  let remote_root = "refs/remotes/origin/" ^ root in
-  let remote_child = "refs/remotes/origin/" ^ child in
-  let run () =
-    match
-      checked repo_root
-        [
-          "fetch";
-          "origin";
-          root ^ ":" ^ remote_root;
-          child ^ ":" ^ remote_child;
-        ]
-    with
-    | Result.Error e -> fail e
-    | Result.Ok _ -> (
-        match
-          ( checked repo_root [ "rev-parse"; "--verify"; remote_child ],
-            checked repo_root [ "rev-parse"; "--verify"; remote_root ] )
-        with
-        | Result.Ok observed, Result.Ok tip when String.equal observed head_sha
-          -> (
-            let sync sha =
-              match
-                ( checked root_path [ "status"; "--porcelain" ],
-                  checked root_path [ "symbolic-ref"; "--short"; "HEAD" ],
-                  checked root_path [ "rev-parse"; "HEAD" ] )
-              with
-              | Result.Ok "", Result.Ok branch, Result.Ok local
-                when String.equal branch root -> (
-                  if
-                    not
-                      (is_ancestor ~process_mgr ~path:repo_root ~ancestor:local
-                         ~descendant:sha)
-                  then
-                    fail
-                      "Root checkout diverged; refusing to discard local \
-                       commits"
-                  else
-                    match checked root_path [ "merge"; "--ff-only"; sha ] with
-                    | Result.Ok _ -> Integrated sha
-                    | Result.Error e -> fail e)
-              | Result.Ok _, Result.Ok _, Result.Ok _ ->
-                  fail "Root checkout is dirty or on an unexpected branch"
-              | Result.Error e, _, _
-              | _, Result.Error e, _
-              | _, _, Result.Error e ->
-                  fail e
-            in
-            if
-              is_ancestor ~process_mgr ~path:repo_root ~ancestor:head_sha
-                ~descendant:tip
-            then sync tip
-            else
-              (* Check the managed checkout before publishing, including crash recovery. *)
-              match
-                ( checked root_path [ "status"; "--porcelain" ],
-                  checked root_path [ "symbolic-ref"; "--short"; "HEAD" ],
-                  checked root_path [ "rev-parse"; "HEAD" ] )
-              with
-              | Result.Ok "", Result.Ok branch, Result.Ok local
-                when String.equal branch root
-                     && is_ancestor ~process_mgr ~path:repo_root ~ancestor:local
-                          ~descendant:tip ->
-                  let tmp = Stdlib.Filename.temp_file "onton-integration-" "" in
-                  Unix.unlink tmp;
-                  Stdlib.Fun.protect
-                    ~finally:(fun () ->
-                      Eio.Cancel.protect (fun () ->
-                          (* The add subprocess tree has been reaped before this
-                             finalizer runs. A cancelled checkout may leave
-                             Git's initialization lock; this private temporary
-                             worktree is safe to remove even when locked. *)
-                          let _ =
-                            git repo_root
-                              [
-                                "worktree"; "remove"; "--force"; "--force"; tmp;
-                              ]
-                          in
-                          ()))
-                    (fun () ->
-                      match
-                        checked repo_root
-                          [ "worktree"; "add"; "--detach"; tmp; tip ]
-                      with
-                      | Result.Error e -> fail e
-                      | Result.Ok _ -> (
-                          match
-                            git tmp
-                              [ "merge"; "--no-ff"; "--no-edit"; head_sha ]
-                          with
-                          | 0, _, _ -> (
-                              match checked tmp [ "rev-parse"; "HEAD" ] with
-                              | Result.Error e -> fail e
-                              | Result.Ok sha -> (
-                                  match
-                                    checked tmp
-                                      [
-                                        "push";
-                                        "origin";
-                                        "HEAD:refs/heads/" ^ root;
-                                      ]
-                                  with
-                                  | Result.Error e -> fail e
-                                  | Result.Ok _ -> sync sha))
-                          | _, _, e -> (
-                              match
-                                checked tmp
-                                  [ "diff"; "--name-only"; "--diff-filter=U" ]
-                              with
-                              | Result.Ok files when not (String.is_empty files)
-                                ->
-                                  Integration_conflict files
-                              | Result.Ok _ | Result.Error _ -> fail e)))
-              | Result.Ok _, Result.Ok _, Result.Ok _ ->
-                  fail "Root checkout is dirty, switched, or diverged"
-              | Result.Error e, _, _
-              | _, Result.Error e, _
-              | _, _, Result.Error e ->
-                  fail e)
-        | Result.Ok _, Result.Ok _ ->
-            fail "Descendant head changed since its checks were observed"
-        | Result.Error e, _ | _, Result.Error e -> fail e)
-  in
-  match Eio.Time.with_timeout clock 120. (fun () -> Result.Ok (run ())) with
-  | Result.Ok r -> r
-  | Result.Error `Timeout -> fail "Git integration timed out"
-
-let merge_preserving ~process_mgr ~path ~target : rebase_result =
-  let pending = read_branch_sha ~process_mgr ~path ~ref_name:"MERGE_HEAD" in
-  match pending with
-  (* A retry may find partially staged repair work. Keep its original merge
-     target and hand the pending merge back to the agent without aborting it. *)
-  | Some sha -> Merge_conflict sha
-  | None -> (
-      match has_uncommitted_changes ~process_mgr ~path with
-      | Result.Error e -> (Error e : rebase_result)
-      | Result.Ok true -> Uncommitted_changes "Root checkout has local changes"
-      | Result.Ok false -> (
-          let head = read_branch_sha ~process_mgr ~path ~ref_name:"HEAD" in
-          let code, stdout, stderr =
-            run_git_exit_code ~process_mgr
-              [
-                "git";
-                "-C";
-                path;
-                "merge";
-                "--no-ff";
-                "--no-edit";
-                Types.Branch.to_string target;
-              ]
-          in
-          if code = 0 then
-            if
-              Option.equal String.equal head
-                (read_branch_sha ~process_mgr ~path ~ref_name:"HEAD")
-            then Noop
-            else Ok
-          else
-            let merge_head =
-              read_branch_sha ~process_mgr ~path ~ref_name:"MERGE_HEAD"
-            in
-            let diff_code, unmerged_paths, diff_stderr =
-              run_git_exit_code ~process_mgr
-                [ "git"; "-C"; path; "diff"; "--name-only"; "--diff-filter=U" ]
-            in
-            match
-              Worktree_parser.classify_merge_failure ~code ~stdout ~stderr
-                ~merge_head
-                ~unmerged_paths:(if diff_code = 0 then unmerged_paths else "")
-            with
-            | `Conflict sha -> Merge_conflict sha
-            | `Error message ->
-                (* A failed index probe cannot establish that aborting is safe.
-                   Preserve the pending merge for the next retry's entry check. *)
-                if diff_code <> 0 then
-                  let preserved_merge =
-                    match merge_head with
-                    | None -> ""
-                    | Some sha ->
-                        Printf.sprintf
-                          "\n\
-                           Pending root merge preserved (MERGE_HEAD %s); the \
-                           next retry will route to merge repair."
-                          sha
-                  in
-                  Error
-                    (Printf.sprintf
-                       "%s\nUnmerged-index probe failed (exit %d): %s%s" message
-                       diff_code (String.strip diff_stderr) preserved_merge)
-                else if Option.is_none merge_head then Error message
-                else
-                  let abort_code, _, abort_err =
-                    run_git_exit_code ~process_mgr
-                      [ "git"; "-C"; path; "merge"; "--abort" ]
-                  in
-                  if abort_code = 0 then Error message
-                  else
-                    Error (message ^ "\nRoot merge abort failed: " ^ abort_err))
-      )
 
 let commit_gameplan ~clock ~process_mgr ~path ~publication ~message :
     (unit, string) Result.t =
@@ -1601,6 +541,9 @@ module type S = sig
   val find_for_branch : Types.Branch.t -> string option
   val prune_stale_for_branch : Types.Branch.t -> unit
 
+  val inspect_existing :
+    path:string -> branch:Types.Branch.t -> (bool, string) Result.t
+
   val ensure_ready :
     path:string -> branch:Types.Branch.t -> (bool, string) Result.t
 
@@ -1619,37 +562,11 @@ module type S = sig
   val has_uncommitted_changes : path:string -> (bool, string) Result.t
   val conflict_diff : path:string -> string
 
-  val rebase_onto :
-    path:string ->
-    target:Types.Branch.t ->
-    upstream:string ->
-    project_name:string ->
-    ancestor_ids:Types.Patch_id.t list ->
-    unit ->
-    rebase_result
-
   val read_branch_sha : path:string -> ref_name:string -> string option
   (** Resolve [ref_name] to a SHA in the worktree at [path]. [None] on any error
       (missing ref, git failure). *)
 
   val is_ancestor : path:string -> ancestor:string -> descendant:string -> bool
-
-  val read_in_progress_conflict_info :
-    path:string ->
-    target:Types.Branch.t ->
-    project_name:string ->
-    ancestor_ids:Types.Patch_id.t list ->
-    conflict_info option
-
-  val force_push_with_lease :
-    path:string -> branch:Types.Branch.t -> base:Types.Branch.t -> push_result
-
-  val integrate :
-    root_path:string ->
-    root_branch:Types.Branch.t ->
-    descendant_branch:Types.Branch.t ->
-    head_sha:string ->
-    integration_result
 
   val commit_gameplan :
     path:string ->
@@ -1670,14 +587,11 @@ module type S = sig
     operation:Branch_reconcile.operation ->
     Branch_reconcile.command ->
     Branch_reconcile.result
-
-  val rebase_in_progress : path:string -> bool
 end
 
 type client = (module S)
 
-let make_with_protection ~protected_branch ~fs ~config ~clock ~process_mgr
-    ~repo_root =
+let make ~fs ~config ~clock ~process_mgr ~repo_root =
   let module B =
     (val Worktree_backend.make ~fs ~clock ~process_mgr ~repo_root ~config
            ~timeout_seconds:120.)
@@ -1712,10 +626,6 @@ let make_with_protection ~protected_branch ~fs ~config ~clock ~process_mgr
           ancestry =
             (fun ~local ~remote ->
               compute_repo_ancestry ~process_mgr ~repo_root ~local ~remote);
-          local_changes_represented_remotely =
-            (fun ~local ~remote ->
-              local_changes_represented_remotely ~process_mgr ~repo_root ~local
-                ~remote);
           execute_action =
             (fun ~path ~branch_str:_ ~expected_local action ->
               let action, expected_head =
@@ -1790,6 +700,10 @@ let make_with_protection ~protected_branch ~fs ~config ~clock ~process_mgr
           if Types.Branch.equal branch b then Some path else None)
 
     let prune_stale_for_branch branch = B.prune_stale_for_branch branch
+
+    let inspect_existing ~path ~branch =
+      Result.map (B.inspect_existing ~path ~branch) ~f:Option.is_some
+
     let ensure_ready = ready
 
     let run_hook ~clock ~script ~cwd ~env () =
@@ -1808,37 +722,11 @@ let make_with_protection ~protected_branch ~fs ~config ~clock ~process_mgr
 
     let conflict_diff ~path = conflict_diff ~process_mgr ~path
 
-    let rebase_onto ~path ~target ~upstream ~project_name ~ancestor_ids () =
-      if
-        Option.value_map protected_branch ~default:false ~f:(fun b ->
-            Types.Branch.equal b (detect_branch ~path))
-      then merge_preserving ~process_mgr ~path ~target
-      else
-        rebase_onto ~upstream ~process_mgr ~path ~target ~project_name
-          ~ancestor_ids ()
-
     let read_branch_sha ~path ~ref_name =
       read_branch_sha ~process_mgr ~path ~ref_name
 
     let is_ancestor ~path ~ancestor ~descendant =
       is_ancestor ~process_mgr ~path ~ancestor ~descendant
-
-    let read_in_progress_conflict_info ~path ~target ~project_name ~ancestor_ids
-        =
-      read_in_progress_conflict_info ~process_mgr ~path ~target ~project_name
-        ~ancestor_ids
-
-    let force_push_with_lease ~path ~branch ~base =
-      let preserve_history =
-        Option.value_map protected_branch ~default:false
-          ~f:(Types.Branch.equal branch)
-      in
-      force_push_with_lease ~preserve_history ~clock ~process_mgr ~path ~branch
-        ~base ()
-
-    let integrate ~root_path ~root_branch ~descendant_branch ~head_sha =
-      integrate ~process_mgr ~clock ~repo_root ~root_path ~root_branch
-        ~descendant_branch ~head_sha
 
     let commit_gameplan ~path ~publication ~message =
       commit_gameplan ~clock ~process_mgr ~path ~publication ~message
@@ -1861,10 +749,4 @@ let make_with_protection ~protected_branch ~fs ~config ~clock ~process_mgr
       Branch_reconcile_executor.execute ~io ~prefix
         ~branch:(Types.Branch.to_string branch)
         ~operation command
-
-    let rebase_in_progress ~path = rebase_in_progress ~process_mgr ~path
   end : S)
-
-let make ~fs ~config ~clock ~process_mgr ~repo_root =
-  make_with_protection ~protected_branch:None ~fs ~config ~clock ~process_mgr
-    ~repo_root

@@ -51,22 +51,22 @@ let make_agent ~patch_id ~branch ~has_conflict ~ci_failure_count ~current_op
   Patch_agent.restore ~patch_id ~branch
     ~pr_status:(Patch_pr_status.Present (Pr_number.of_int 42))
     ~has_session:busy ~busy ~merged ~queue ~satisfies:false ~changed:false
-    ~has_conflict ~base_branch:(Some main) ~notified_base_branch:(Some main)
-    ~ci_failure_count ~session_fallback:Patch_agent.Fresh_available
-    ~human_messages:[] ~inflight_human_messages:[] ~ci_checks:[]
-    ~merge_ready:false ~mergeability_unknown:false ~merge_queue_required:false
+    ~base_branch:(Some main) ~notified_base_branch:(Some main) ~ci_failure_count
+    ~session_fallback:Patch_agent.Fresh_available ~human_messages:[]
+    ~inflight_human_messages:[] ~ci_checks:[] ~merge_ready:false
+    ~mergeability_unknown:false ~merge_queue_required:false
     ~merge_queue_entry:None ~native_stack ~is_draft ~pr_body_delivered:true
     ~pr_body_artifact_miss_count:0 ~start_attempts_without_pr:0
-    ~conflict_noop_count:0 ~no_commits_push_count:0 ~context_exhaustion_count:0
-    ~push_failure_count:0 ~rebase_failure_count:0 ~branch_rebased_onto:None
-    ~branch_rebased_onto_sha:None ~merge_commit_sha:None
-    ~base_contains_merged_siblings:true
-    ~anchor_history:Onton_core.Anchor_history.empty ~checks_passing ~current_op
+    ~no_commits_push_count:0 ~context_exhaustion_count:0 ~merge_commit_sha:None
+    ~base_contains_merged_siblings:true ~checks_passing ~current_op
     ~current_op_state:(if busy then Patch_agent.Running else Patch_agent.Queued)
     ~current_message_id:None ~generation:0 ~worktree_path ~branch_blocked
     ~llm_session_id:None ~automerge_enabled:false ~automerge_deadline:None
     ~automerge_inflight:false ~automerge_failure_count:0
     ~delivered_ci_run_ids:[] ()
+  |> fun agent ->
+  if has_conflict then Onton_core_test_support.Conflict_fixture.agent agent
+  else agent
 
 let make_poll_observation ~branch_in_root ~worktree_path ~native_stack
     ~base_branch poll_result =
@@ -186,7 +186,8 @@ let print_case =
      checks_passing=%b is_draft=%b queue=[%s]} obs={native_stack=%b \
      base_branch=%s branch_in_root=%b worktree_path=%s}"
     (Patch_id.to_string patch.Patch.id)
-    (Patch_id.to_string pid) agent.Patch_agent.merged agent.has_conflict
+    (Patch_id.to_string pid) agent.Patch_agent.merged
+    (Patch_agent.has_conflict agent)
     agent.ci_failure_count agent.checks_passing agent.is_draft
     agent.native_stack agent.branch_blocked
     (String.concat ~sep:"," (List.map agent.queue ~f:Operation_kind.to_label))
@@ -215,7 +216,7 @@ let () =
       (fun (_patch, pid, orch, agent, observation, poll) ->
         try
           if
-            (not agent.Patch_agent.has_conflict)
+            (not (Patch_agent.has_conflict agent))
             && not (Poller.has_conflict poll)
           then
             let _orch, logs, _blocked =
@@ -237,7 +238,7 @@ let () =
       ~count:300 ~print:print_case gen_poll_log_case
       (fun (_patch, pid, orch, agent, observation, poll) ->
         try
-          if agent.Patch_agent.has_conflict && Poller.has_conflict poll then
+          if Patch_agent.has_conflict agent && Poller.has_conflict poll then
             let _orch, logs, _blocked =
               Patch_controller.apply_poll_result orch pid observation
             in

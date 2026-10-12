@@ -14,9 +14,6 @@ open Onton_core.Types
     parameters on [ensure_worktree], this file will not compile. *)
 
 module Fake_worktree : Worktree.S = struct
-  let integrate ~root_path:_ ~root_branch:_ ~descendant_branch:_ ~head_sha:_ =
-    Worktree.Integration_error "unsupported fake"
-
   let resolve_main_root () = assert false
   let is_checked_out_in_repo_root _ = assert false
   let remote_branch_exists _ = assert false
@@ -27,6 +24,7 @@ module Fake_worktree : Worktree.S = struct
   let find_for_branch _ = assert false
   let prune_stale_for_branch _ = assert false
   let ensure_ready ~path:_ ~branch:_ = assert false
+  let inspect_existing = ensure_ready
   let run_hook ~clock:_ ~script:_ ~cwd:_ ~env:_ () = assert false
   let fetch_origin ~fetch_lock:_ ~path:_ = assert false
 
@@ -37,26 +35,14 @@ module Fake_worktree : Worktree.S = struct
   let git_status ~path:_ = assert false
   let has_uncommitted_changes ~path:_ = assert false
   let conflict_diff ~path:_ = assert false
-
-  let rebase_onto ~path:_ ~target:_ ~upstream:_ ~project_name:_ ~ancestor_ids:_
-      () =
-    assert false
-
   let read_branch_sha ~path:_ ~ref_name:_ = None
   let is_ancestor ~path:_ ~ancestor:_ ~descendant:_ = false
-
-  let read_in_progress_conflict_info ~path:_ ~target:_ ~project_name:_
-      ~ancestor_ids:_ =
-    assert false
-
-  let force_push_with_lease ~path:_ ~branch:_ ~base:_ = assert false
   let commit_gameplan ~path:_ ~publication:_ ~message:_ = assert false
   let materialization ~path:_ ~project_name:_ ~branch:_ = Ok None
 
   let reconcile ~path:_ ~project_name:_ ~branch:_ ~operation:_ _ =
-    Branch_reconcile.Permanent "unexpected reconciliation in fake worktree"
-
-  let rebase_in_progress ~path:_ = assert false
+    Branch_reconcile.Needs_diagnosis
+      "unexpected reconciliation in fake worktree"
 end
 
 module Fake_env : Worktree_setup.ENV = struct

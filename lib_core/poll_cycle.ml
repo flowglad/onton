@@ -152,3 +152,17 @@ let%test "classify ignores other patches in the list" =
     }
   in
   equal_classification (classify input) (classify input)
+
+let same_context ~(requested : Patch_agent.t) ~(current : Patch_agent.t) =
+  Patch_id.equal requested.patch_id current.patch_id
+  && Branch.equal requested.branch current.branch
+  && Int.equal requested.generation current.generation
+  && Option.equal Pr_number.equal
+       (Patch_agent.pr_number requested)
+       (Patch_agent.pr_number current)
+  && Option.equal Branch.equal requested.base_branch current.base_branch
+  && Option.equal String.equal requested.head_oid current.head_oid
+  && Option.equal String.equal
+       (Patch_agent.expected_remote_head_oid requested)
+       (Patch_agent.expected_remote_head_oid current)
+  && Branch_reconcile.equal requested.branch_reconcile current.branch_reconcile

@@ -31,8 +31,7 @@ let remotes = "refs/remotes/origin/feat"
    relationship returned for any (local, remote) pair. The returned trackers
    record what the wiring actually did: which action it executed, and whether it
    consulted the ancestry probe / the collision guard. *)
-let make_io ?(exists = false) ?(refs = []) ?(ancestry = SP.Unknown)
-    ?(local_changes_represented_remotely = false) () =
+let make_io ?(exists = false) ?(refs = []) ?(ancestry = SP.Unknown) () =
   let executed = ref None in
   let ancestry_called = ref false in
   let collision_called = ref false in
@@ -41,13 +40,12 @@ let make_io ?(exists = false) ?(refs = []) ?(ancestry = SP.Unknown)
       Worktree.worktree_exists = (fun ~path:_ -> exists);
       check_ref_collision = (fun ~branch_str:_ -> collision_called := true);
       read_ref =
-        (fun ~ref_name -> List.Assoc.find refs ref_name ~equal:String.equal);
+        (fun ~ref_name ->
+          Ok (List.Assoc.find refs ref_name ~equal:String.equal));
       ancestry =
         (fun ~local:_ ~remote:_ ->
           ancestry_called := true;
           ancestry);
-      local_changes_represented_remotely =
-        (fun ~local:_ ~remote:_ -> local_changes_represented_remotely);
       execute_action =
         (fun ~path:_ ~branch_str:_ ~expected_local:_ action ->
           executed := Some action;
@@ -71,8 +69,7 @@ let reset = SP.Reset_and_use_remote_tracking { remote_sha }
 (* Exhaustive (no wildcard) classifier for the refusal arm that fired. *)
 let refusal_tag (r : SP.refusal) =
   match r with
-  | SP.Local_diverged_from_remote _ -> "diverged"
-  | SP.Local_has_unpushed_commits _ -> "local_ahead"
+  | SP.Ancestry_unavailable _ -> "ancestry_unavailable"
   | SP.Branch_checked_out_in_main_root -> "main_checkout"
   | SP.Worktree_already_registered _ -> "wt_registered"
 
@@ -134,39 +131,39 @@ let test_brand_new () =
     && executed_is executed
          (SP.Create_new_branch_from_base { base_branch = "origin/main" }))
 
-(* Diverged: both refs present, each with unique commits. Refuse rather than
-   risk clobbering local work; no action is executed. *)
-let test_diverged_refuses () =
+let test_preserve_local ancestry =
   let io, executed, _, _ =
-    make_io
-      ~refs:[ (heads, local_sha); (remotes, remote_sha) ]
-      ~ancestry:SP.Diverged ()
+    make_io ~refs:[ (heads, local_sha); (remotes, remote_sha) ] ~ancestry ()
   in
   let res = run io in
-  check "diverged_refuses: no action executed" (Option.is_none !executed);
-  check "diverged_refuses" (String.equal (error_tag res) "diverged")
+  check "unique local history is adopted unchanged"
+    (is_ok res
+    && executed_is executed (SP.Use_local_branch_unchanged { local_sha }))
 
-let test_patch_equivalent_divergence_resets () =
+let test_unknown_ancestry_defers () =
   let io, executed, _, _ =
     make_io
       ~refs:[ (heads, local_sha); (remotes, remote_sha) ]
-      ~ancestry:SP.Diverged ~local_changes_represented_remotely:true ()
+      ~ancestry:SP.Unknown ()
   in
   let res = run io in
-  check "patch_equivalent_divergence_resets"
-    (is_ok res && executed_is executed reset)
+  check "failed ancestry cannot materialize" (Option.is_none !executed);
+  check "failed ancestry is retryable"
+    (String.equal (error_tag res) "ancestry_unavailable")
 
-(* Local strictly ahead: refuse (onton is normally the sole writer; unpushed
-   local commits are suspicious). No action is executed. *)
-let test_local_ahead_refuses () =
-  let io, executed, _, _ =
-    make_io
-      ~refs:[ (heads, local_sha); (remotes, remote_sha) ]
-      ~ancestry:SP.Local_ahead ()
+let test_ref_probe_error () =
+  let io, executed, ancestry_called, _ = make_io () in
+  let io =
+    {
+      io with
+      Worktree.read_ref = (fun ~ref_name:_ -> Error "probe unavailable");
+    }
   in
-  let res = run io in
-  check "local_ahead_refuses: no action executed" (Option.is_none !executed);
-  check "local_ahead_refuses" (String.equal (error_tag res) "local_ahead")
+  let failed =
+    match run io with Ok _ | Error _ -> false | exception Failure _ -> true
+  in
+  check "ref probe errors cannot become absent branches"
+    (failed && Option.is_none !executed && not !ancestry_called)
 
 (* Short-circuit: when the worktree path already exists, [create] trusts it and
    performs NO git work — no collision check, no ref reads, no ancestry, no
@@ -204,9 +201,10 @@ let () =
   test_remote_only ();
   test_local_only ();
   test_brand_new ();
-  test_diverged_refuses ();
-  test_patch_equivalent_divergence_resets ();
-  test_local_ahead_refuses ();
+  test_preserve_local SP.Diverged;
+  test_preserve_local SP.Local_ahead;
+  test_unknown_ancestry_defers ();
+  test_ref_probe_error ();
   test_short_circuit ();
   test_collision_check_runs ();
   Stdlib.print_endline "All create_with_io wiring cases passed."

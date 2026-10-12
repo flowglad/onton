@@ -87,12 +87,12 @@ let detect_rebases graph views ~newly_merged =
       | _ -> None)
 
 (** Detect agents whose local branch is rebased onto something other than
-    [base_branch]. [branch_rebased_onto] is updated by Start (to the initial
-    base) and by successful Rebase (to the rebase target). If [base_branch] has
-    since moved — typically because a dep branch was merged and deleted on
-    GitHub, causing GitHub to auto-retarget the PR to [main], and the poller
-    then refreshed [base_branch] to match — the local branch still carries the
-    old dep's commits in its history and needs a rebase even though
+    [base_branch]. [branch_rebased_onto] comes from owner integration receipts.
+    A published branch without such evidence also requires reconciliation. If
+    [base_branch] has since moved — typically because a dep branch was merged
+    and deleted on GitHub, causing GitHub to auto-retarget the PR to [main], and
+    the poller then refreshed [base_branch] to match — the local branch still
+    carries the old dep's commits in its history and needs a rebase even though
     [base_branch] already equals the structurally-correct base.
 
     This is the case [detect_stale_bases] misses: there, the structural check
@@ -110,7 +110,8 @@ let detect_notified_base_drift views =
         | Some rebased_onto when not (Branch.equal rebased_onto v.base_branch)
           ->
             Some (Enqueue_rebase v.id)
-        | Some _ | None -> None
+        | None -> Some (Enqueue_rebase v.id)
+        | Some _ -> None
       else None)
 
 (** Detect agents whose base_branch still points at a merged dependency's
@@ -163,9 +164,9 @@ let detect_stale_bases_with_mode ~mode graph views ~has_merged ~branch_of ~main
     deepest stale layer whose own base already contains the squashes. Healing it
     moves the frontier up one layer per tick until [B] absorbs the content and
     the containment flag flips true. (A completed rebase additionally cascades
-    demand to its stacked children eagerly — [Orchestrator.apply_rebase_result]
-    — so in practice the wave often runs ahead of this detector's tick-by-tick
-    re-derivation.)
+    demand to its stacked children eagerly when the owner confirms its
+    integration receipt, so in practice the wave often runs ahead of this
+    detector's tick-by-tick re-derivation.)
 
     [P] is considered whether or not it has a PR. An *unstarted* [P] (no PR yet)
     is the case that needs this detector most: its pending [Start (P, base = B)]

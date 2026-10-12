@@ -34,9 +34,7 @@ let run_unlocked ~runtime ~persist ~patch_id ~now ~execute event =
         in
         match Branch_reconcile.phase state with
         | Some (Branch_reconcile.Intervention reason) -> Intervention reason
-        | Some (Branch_reconcile.Waiting _ | Branch_reconcile.Awaiting_session)
-          ->
-            Waiting
+        | Some (Branch_reconcile.Waiting _) -> Waiting
         | Some (Branch_reconcile.Repairing _) -> (
             match Branch_reconcile.operation state with
             | Some _ -> Waiting
@@ -64,7 +62,7 @@ let run_unlocked ~runtime ~persist ~patch_id ~now ~execute event =
                   .Patch_agent.branch_reconcile)
         in
         match operation with
-        | None -> Intervention "checkpointed_operation_missing"
+        | None -> Checkpoint_failed "checkpointed_operation_missing"
         | Some operation -> (
             (* Cancellation leaves the pre-command checkpoint intact. Restart
                 must inspect it; neither a timeout nor a lost acknowledgement
@@ -137,10 +135,18 @@ let run_repair ~runtime ~persist ~patch_id ~with_capacity ~now ~execute ~perform
                               token
                           with
                           | None -> Idle
-                          | Some turn ->
-                              let event = perform ~agent ~turn in
-                              run_owned ~owner ~persist ~now
-                                ~execute:(execute ~agent) event)
+                          | Some turn -> (
+                              (* Reserve while queued, but durably fence scope
+                                 extension only immediately before execution. *)
+                              match
+                                checkpoint ~runtime ~persist ~patch_id
+                                  (Branch_reconcile.Repair_dispatched token)
+                              with
+                              | Error message -> Checkpoint_failed message
+                              | Ok _ ->
+                                  let event = perform ~agent ~turn in
+                                  run_owned ~owner ~persist ~now
+                                    ~execute:(execute ~agent) event))
                       | (Idle | Waiting | Intervention _ | Checkpoint_failed _)
                         as outcome ->
                           outcome)))))

@@ -40,16 +40,13 @@ open Onton_core.Types
       dependent's base stale.
     - Models rebase completion via [Rebase_complete i], which applies a
       successful rebase onto the patch's current structural base
-      ([Graph.initial_base]); [apply_rebase_result] records
-      [branch_rebased_onto = that base]. This is the operation that closes the
-      freshness gap.
-    - Models a conflicted rebase via [Rebase_conflict i] ([apply_rebase_result]
-      with [Worktree.Conflict]: sets [has_conflict], enqueues [Merge_conflict],
-      completes the Rebase op) and its resolution via [Resolve_conflict i]
-      (fires the [Merge_conflict] respond, then [apply_conflict_rebase_result]
-      with [Worktree.Ok]). The window between the two is where PR #3811 was cut
-      stale: the Rebase op is gone from the queue, so without the [has_conflict]
-      gate input nothing held the gate closed.
+      ([Graph.initial_base]); the owner's integration receipt records that base,
+      and publication confirms the candidate before the gate reopens.
+    - Models conflicted integration via [Rebase_conflict i], retaining the
+      owner's repair phase after releasing the worker. [Resolve_conflict i]
+      drives inspection, a claimed repair turn, continuation and publication.
+      The PR #3811 witness requires the gate to stay closed while that durable
+      repair is outstanding, even though the worker is idle.
     - Models the controller's Start-firing loop indirectly: only
       eligibility-passing Starts reach [runnable_messages]; the test asserts
       freshness directly from the model. *)
@@ -84,8 +81,8 @@ let initial_base_of orch patches pid =
 
 (** Bootstrap mirroring the patch-controller boot sequence: each patch starts
     with base = its structural base (its dep's branch, or main for the root),
-    receives a PR number, and completes. [Patch_agent.start] records
-    [branch_rebased_onto = base], so every base is structurally fresh at boot.
+    receives a PR number, and completes owner reconciliation with a no-op
+    observation. Every base therefore has recorded integration evidence at boot.
 *)
 let bootstrap patches =
   let orch = Orchestrator.create ~patches ~main_branch:main in
@@ -95,7 +92,7 @@ let bootstrap patches =
         let base = initial_base_of o patches pid in
         let o = Orchestrator.fire o (Orchestrator.Start (pid, base)) in
         let o = Orchestrator.set_pr_number o pid (Pr_number.of_int (i + 1)) in
-        Orchestrator.complete o pid)
+        Onton_test_support.Reconciliation_fixture.rebase ~noop:true o pid base)
   in
   { orch; patches }
 
@@ -113,13 +110,10 @@ type command =
           records [branch_rebased_onto = that base]. Closes the freshness gap.
       *)
   | Rebase_conflict of int
-      (** Apply a *conflicted* rebase onto patch idx's current structural base:
-          the Rebase op completes, [has_conflict] is set, and a [Merge_conflict]
-          respond is enqueued. The patch's tip is now pending a rewrite — its
-          dependents' Starts must keep deferring until [Resolve_conflict]. *)
+      (** Capture a conflicted integration in the owner, then release the
+          worker. Dependent Starts stay deferred until [Resolve_conflict]. *)
   | Resolve_conflict of int
-      (** Fire the queued [Merge_conflict] respond and resolve it successfully
-          ([apply_conflict_rebase_result] with [Worktree.Ok]): records
+      (** Complete the owned repair and confirm publication: records
           [branch_rebased_onto = structural base], clears [has_conflict], and
           completes — reopening the gate for dependents. *)
   | Enqueue_start of int
@@ -157,22 +151,19 @@ let apply_command m cmd =
         if
           (not (Patch_agent.has_pr agent))
           || agent.Patch_agent.merged || agent.Patch_agent.busy
+          || Onton_core.Branch_reconcile.is_pending
+               agent.Patch_agent.branch_reconcile
           || not rebase_in_queue
         then m
         else
-          (* Drives the agent state-machine directly (fire → apply result)
-             rather than the message lifecycle; safe for the SBI property, which
-             only reads base freshness from agent fields — [merged],
-             [branch_rebased_onto], and (via [start_eligibility]'s busy-rebase
-             check) [busy]/[current_op]/[queue]. The rebase target is the
-             patch's current structural base, which [apply_rebase_result] then
-             records as [branch_rebased_onto]. *)
+          (* The scheduling action starts here; owner commands capture, integrate
+             and confirm the target before completion records base freshness. *)
           let target = initial_base_of m.orch m.patches pid in
           let orch =
             Orchestrator.fire m.orch (Orchestrator.Rebase (pid, target))
           in
-          let orch, _effects =
-            Orchestrator.apply_rebase_result orch pid Worktree.Ok target
+          let orch =
+            Onton_test_support.Reconciliation_fixture.rebase orch pid target
           in
           { m with orch }
   | Rebase_conflict i ->
@@ -187,34 +178,19 @@ let apply_command m cmd =
         if
           (not (Patch_agent.has_pr agent))
           || agent.Patch_agent.merged || agent.Patch_agent.busy
+          || Onton_core.Branch_reconcile.is_pending
+               agent.Patch_agent.branch_reconcile
           || not rebase_in_queue
         then m
         else
-          (* Same firing preconditions as [Rebase_complete], but the rebase
-             hits conflicts: [apply_rebase_result] completes the Rebase op,
-             sets [has_conflict], and enqueues the [Merge_conflict] respond
-             that will finish the pipeline. [branch_rebased_onto] is NOT
-             updated — though in the same-name freshen case (target = current
-             anchor) it already equals the structural base, which is exactly
-             why [has_conflict] must gate independently of structural
-             freshness. *)
+          (* Release the scheduling worker with a durable repair still pending.
+             No successful integration receipt may replace the prior base. *)
           let target = initial_base_of m.orch m.patches pid in
-          let conflict =
-            Worktree.Conflict
-              {
-                Worktree.target = Branch.to_string target;
-                old_base = "sbi-old-base";
-                unique_commits =
-                  [ { Worktree.sha = "sbi-sha"; subject = "sbi commit" } ];
-                strategy = Worktree.Onto;
-                orig_head = "sbi-orig-head";
-              }
-          in
           let orch =
             Orchestrator.fire m.orch (Orchestrator.Rebase (pid, target))
           in
-          let orch, _effects =
-            Orchestrator.apply_rebase_result orch pid conflict target
+          let orch =
+            Onton_test_support.Reconciliation_fixture.conflict orch pid target
           in
           { m with orch }
   | Resolve_conflict i ->
@@ -222,37 +198,23 @@ let apply_command m cmd =
       else
         let pid = pid_of_idx m.patches i in
         let agent = Orchestrator.agent m.orch pid in
-        (* Mirror the production planner: a respond only fires when it is the
-           highest-priority queued op ([Patch_agent.respond] raises
-           otherwise). The rewrite cascade can legitimately queue a [Rebase]
-           (priority 0) onto a conflicted patch — e.g. its base completed a
-           rebase — and production then runs that rebase first; this command
-           is infeasible until the queue's head is [Merge_conflict] again. *)
-        let merge_conflict_is_next =
-          Option.equal Operation_kind.equal
-            (Patch_agent.highest_priority agent)
-            (Some Operation_kind.Merge_conflict)
+        let repair_pending =
+          match Branch_reconcile.phase agent.Patch_agent.branch_reconcile with
+          | Some (Branch_reconcile.Repairing _) -> true
+          | None
+          | Some
+              ( Preparing | Integrating | Publishing | Confirming | Waiting _
+              | Recovering | Settled | Intervention _ ) ->
+              false
         in
         if
-          (not agent.Patch_agent.has_conflict)
-          || agent.Patch_agent.merged || agent.Patch_agent.busy
-          || not merge_conflict_is_next
+          agent.Patch_agent.merged || agent.Patch_agent.busy
+          || not repair_pending
         then m
         else
-          (* Fire the queued [Merge_conflict] respond and resolve it cleanly:
-             the resolution rebase lands on the structural base, records
-             [branch_rebased_onto], clears [has_conflict], and completes —
-             the force-push that rewrites the tip happens before the clear in
-             the real pipeline, so a Start allowed after this point cuts the
-             rewritten branch. *)
-          let target = initial_base_of m.orch m.patches pid in
           let orch =
-            Orchestrator.fire m.orch
-              (Orchestrator.Respond (pid, Operation_kind.Merge_conflict))
-          in
-          let orch, _decision, _effects =
-            Orchestrator.apply_conflict_rebase_result orch pid Worktree.Ok
-              target
+            Onton_test_support.Reconciliation_fixture.resolve_conflict m.orch
+              pid
           in
           { m with orch }
   | Enqueue_start i ->
@@ -304,7 +266,10 @@ let base_is_fresh m base =
     | None -> false
     | Some (bpid, a) -> (
         if a.Patch_agent.merged then true
-        else if a.Patch_agent.has_conflict then
+        else if
+          Patch_agent.has_conflict a
+          || Branch_reconcile.is_pending a.branch_reconcile
+        then
           (* A conflicted base is never fresh: its tip is pending a rewrite by
              the conflict-resolution force-push (the PR #3811 window). This
              holds even when the branch reads structurally fresh — a same-name
@@ -324,7 +289,7 @@ let base_is_fresh m base =
               ~has_merged:(fun dep ->
                 (Orchestrator.agent m.orch dep).Patch_agent.merged)
           in
-          match (open_deps, a.Patch_agent.branch_rebased_onto) with
+          match (open_deps, Patch_agent.branch_rebased_onto a) with
           | [], Some b -> Branch.equal b main
           | [ d ], Some b -> Branch.equal b (branch_of_patches m.patches d)
           | _ -> false)
@@ -371,7 +336,7 @@ let sbi_defer_implies_progress m =
               (Start_eligibility.Base_resolving_conflict _) -> (
               (* Progress: the conflict pipeline must be active — the base
                  patch has the [Merge_conflict] respond queued (enqueued
-                 alongside [has_conflict] by [apply_rebase_result]) or is busy
+                 for the forge conflict) or is busy
                  running it. A conflicted base with neither would be stuck. *)
               let bpid_opt =
                 Map.to_alist (Orchestrator.agents_map m.orch)
@@ -421,18 +386,17 @@ let sbi_defer_implies_progress m =
     keep deferring. Assert the postcondition directly: immediately after a
     [Rebase_complete i] that actually applied, agent [i] carries no queued
     [Rebase]. [Patch_agent.complete] after a successful rebase enforces this;
-    locking it in catches a regression in
-    [fire]/[apply_rebase_result]/[complete] rather than hiding it behind a
-    vacuous liveness pass.
+    locking it in catches a regression in scheduling, owner integration and
+    completion rather than hiding them behind a vacuous liveness pass.
 
     Deliberately scoped to the rebased agent, not to every idle
-    structurally-fresh agent: a completed rebase {e rewrites} its branch, and
-    [Orchestrator.apply_rebase_result] eagerly enqueues a [Rebase] for stacked
-    children sitting on the rewritten branch — children that read structurally
-    fresh by name ([branch_rebased_onto] still names the base) while their
-    history is dead. A queued [Rebase] on such an agent is the rewrite cascade
-    working as designed, not a latch: it does not latch because this very
-    postcondition re-asserts draining when that child's own rebase completes. *)
+    structurally-fresh agent: a completed rebase {e rewrites} its branch, and A
+    new owner rewrite receipt eagerly enqueues a [Rebase] for stacked children
+    sitting on the rewritten branch — children that read structurally fresh by
+    name ([branch_rebased_onto] still names the base) while their history is
+    dead. A queued [Rebase] on such an agent is the rewrite cascade working as
+    designed, not a latch: it does not latch because this very postcondition
+    re-asserts draining when that child's own rebase completes. *)
 let sbi_completed_rebase_drains_queue m pid =
   let a = Orchestrator.agent m.orch pid in
   not
@@ -451,6 +415,7 @@ let rebase_complete_applies m i =
   Patch_agent.has_pr agent
   && (not agent.Patch_agent.merged)
   && (not agent.Patch_agent.busy)
+  && (not (Branch_reconcile.is_pending agent.Patch_agent.branch_reconcile))
   && List.mem agent.Patch_agent.queue Operation_kind.Rebase
        ~equal:Operation_kind.equal
   && List.length
@@ -481,6 +446,8 @@ let gen_command_seq ~n_patches =
 
 (* -- Properties -- *)
 
+let checked f input = try f input with _ -> false
+
 let prop_sbi_holds =
   QCheck2.Test.make ~count:300
     ~name:
@@ -490,14 +457,14 @@ let prop_sbi_holds =
       let* n_patches = int_range 2 4 in
       let* cmds = gen_command_seq ~n_patches in
       return (n_patches, cmds))
-    (fun (n_patches, cmds) ->
-      let m = bootstrap (mk_patches n_patches) in
-      let _final, ok =
-        List.fold cmds ~init:(m, true) ~f:(fun (m, ok) cmd ->
-            let m = apply_command m cmd in
-            (m, ok && sbi_materializing_starts_are_fresh m))
-      in
-      ok)
+    (checked (fun (n_patches, cmds) ->
+         let m = bootstrap (mk_patches n_patches) in
+         let _final, ok =
+           List.fold cmds ~init:(m, true) ~f:(fun (m, ok) cmd ->
+               let m = apply_command m cmd in
+               (m, ok && sbi_materializing_starts_are_fresh m))
+         in
+         ok))
 
 let prop_defer_implies_progress =
   QCheck2.Test.make ~count:300
@@ -508,14 +475,14 @@ let prop_defer_implies_progress =
       let* n_patches = int_range 2 4 in
       let* cmds = gen_command_seq ~n_patches in
       return (n_patches, cmds))
-    (fun (n_patches, cmds) ->
-      let m = bootstrap (mk_patches n_patches) in
-      let _final, ok =
-        List.fold cmds ~init:(m, true) ~f:(fun (m, ok) cmd ->
-            let m = apply_command m cmd in
-            (m, ok && sbi_defer_implies_progress m))
-      in
-      ok)
+    (checked (fun (n_patches, cmds) ->
+         let m = bootstrap (mk_patches n_patches) in
+         let _final, ok =
+           List.fold cmds ~init:(m, true) ~f:(fun (m, ok) cmd ->
+               let m = apply_command m cmd in
+               (m, ok && sbi_defer_implies_progress m))
+         in
+         ok))
 
 let prop_completed_rebase_drains_queue =
   QCheck2.Test.make ~count:300
@@ -526,40 +493,41 @@ let prop_completed_rebase_drains_queue =
       let* n_patches = int_range 2 4 in
       let* cmds = gen_command_seq ~n_patches in
       return (n_patches, cmds))
-    (fun (n_patches, cmds) ->
-      let m = bootstrap (mk_patches n_patches) in
-      let _final, ok =
-        List.fold cmds ~init:(m, true) ~f:(fun (m, ok) cmd ->
-            (* Capture feasibility on the pre-command state: the command's own
+    (checked (fun (n_patches, cmds) ->
+         let m = bootstrap (mk_patches n_patches) in
+         let _final, ok =
+           List.fold cmds ~init:(m, true) ~f:(fun (m, ok) cmd ->
+               (* Capture feasibility on the pre-command state: the command's own
                application consumes the queued Rebase we are asserting about. *)
-            let applied =
-              match cmd with
-              | Rebase_complete i | Rebase_conflict i ->
-                  (* A conflicted rebase also completes as an op
-                     ([apply_rebase_result Conflict] drains [Rebase] and
-                     enqueues [Merge_conflict]) — the drain postcondition
+               let applied =
+                 match cmd with
+                 | Rebase_complete i | Rebase_conflict i ->
+                     (* A conflicted rebase also completes as an op
+                     (the owner retains repair while [complete] drains the
+                     scheduling action) — the drain postcondition
                      holds for it too. *)
-                  rebase_complete_applies m i
-              | Main_advanced | Pr_merged _ | Resolve_conflict _
-              | Enqueue_start _ ->
-                  false
-            in
-            let m = apply_command m cmd in
-            let ok =
-              ok
-              &&
-              match (cmd, applied) with
-              | (Rebase_complete i | Rebase_conflict i), true ->
-                  sbi_completed_rebase_drains_queue m (pid_of_idx m.patches i)
-              | (Rebase_complete _ | Rebase_conflict _), false
-              | ( ( Main_advanced | Pr_merged _ | Resolve_conflict _
-                  | Enqueue_start _ ),
-                  _ ) ->
-                  true
-            in
-            (m, ok))
-      in
-      ok)
+                     rebase_complete_applies m i
+                 | Main_advanced | Pr_merged _ | Resolve_conflict _
+                 | Enqueue_start _ ->
+                     false
+               in
+               let m = apply_command m cmd in
+               let ok =
+                 ok
+                 &&
+                 match (cmd, applied) with
+                 | (Rebase_complete i | Rebase_conflict i), true ->
+                     sbi_completed_rebase_drains_queue m
+                       (pid_of_idx m.patches i)
+                 | (Rebase_complete _ | Rebase_conflict _), false
+                 | ( ( Main_advanced | Pr_merged _ | Resolve_conflict _
+                     | Enqueue_start _ ),
+                     _ ) ->
+                     true
+               in
+               (m, ok))
+         in
+         ok))
 
 (** PI-SBI-1 (witness): the exact event-stream-pages scenario, now driven by a
     dependency merge rather than a main advance.
@@ -572,68 +540,70 @@ let prop_event_stream_pages_witness =
   QCheck2.Test.make ~count:1
     ~name:
       "PI-SBI-1: event-stream-pages witness — Start(c, base=b) deferred while \
-       b unrebased after a merges" (Gen.return ()) (fun () ->
-      let patches = mk_patches 3 in
-      let m = bootstrap patches in
-      let pid_b = pid_of_idx patches 1 in
-      let branch_b = (Orchestrator.agent m.orch pid_b).Patch_agent.branch in
-      (* Initially: bootstrap fired Start(c, base=b) with b's
+       b unrebased after a merges"
+    (Gen.return ())
+    (checked (fun () ->
+         let patches = mk_patches 3 in
+         let m = bootstrap patches in
+         let pid_b = pid_of_idx patches 1 in
+         let branch_b = (Orchestrator.agent m.orch pid_b).Patch_agent.branch in
+         (* Initially: bootstrap fired Start(c, base=b) with b's
          branch_rebased_onto = its structural base. Eligibility = Allow. *)
-      let allow0 =
-        Orchestrator.start_eligibility m.orch
-          ~base_contains_merged_siblings:true branch_b
-      in
-      let initial_allow =
-        match allow0 with
-        | Start_eligibility.Allow -> true
-        | Start_eligibility.Defer _ -> false
-      in
-      (* a merges. mark_merged eagerly enqueues Rebase on b and b's structural
+         let allow0 =
+           Orchestrator.start_eligibility m.orch
+             ~base_contains_merged_siblings:true branch_b
+         in
+         let initial_allow =
+           match allow0 with
+           | Start_eligibility.Allow -> true
+           | Start_eligibility.Defer _ -> false
+         in
+         (* a merges. mark_merged eagerly enqueues Rebase on b and b's structural
          base flips to main, but b's branch_rebased_onto still points at a's
          branch. *)
-      let m = apply_command m (Pr_merged 0) in
-      let eligibility_after_merge =
-        Orchestrator.start_eligibility m.orch
-          ~base_contains_merged_siblings:true branch_b
-      in
-      (* The gate must defer Start(c, base=b): either [Base_not_fresh_for_cut]
+         let m = apply_command m (Pr_merged 0) in
+         let eligibility_after_merge =
+           Orchestrator.start_eligibility m.orch
+             ~base_contains_merged_siblings:true branch_b
+         in
+         (* The gate must defer Start(c, base=b): either [Base_not_fresh_for_cut]
          (branch still on a's branch, not main) or [Base_patch_busy_with_rebase]
          (mark_merged's eager enqueue already put Rebase highest in b's queue).
          Both are correct — the assertion is that some Defer fires. *)
-      let deferred =
-        match eligibility_after_merge with
-        | Start_eligibility.Defer
-            ( Start_eligibility.Base_not_fresh_for_cut _
-            | Start_eligibility.Base_patch_busy_with_rebase _ ) ->
-            true
-        (* Unreachable here: this scenario passes [~base_contains_merged_siblings]
+         let deferred =
+           match eligibility_after_merge with
+           | Start_eligibility.Defer
+               ( Start_eligibility.Base_not_fresh_for_cut _
+               | Start_eligibility.Base_patch_busy_with_rebase _ ) ->
+               true
+           (* Unreachable here: this scenario passes [~base_contains_merged_siblings]
            via the structural path, not the sibling gate, and no rebase has
            conflicted. *)
-        | Start_eligibility.Defer
-            ( Start_eligibility.Base_missing_merged_sibling _
-            | Start_eligibility.Base_resolving_conflict _ ) ->
-            false
-        | Start_eligibility.Allow -> false
-      in
-      (* And b's queue contains Rebase, from the eager enqueue. *)
-      let b_rebase_queued =
-        let a = Orchestrator.agent m.orch pid_b in
-        List.mem a.Patch_agent.queue Operation_kind.Rebase
-          ~equal:Operation_kind.equal
-      in
-      (* Now simulate b rebasing onto its structural base (main): eligibility
+           | Start_eligibility.Defer
+               ( Start_eligibility.Base_missing_merged_sibling _
+               | Start_eligibility.Base_resolving_conflict _ ) ->
+               false
+           | Start_eligibility.Allow -> false
+         in
+         (* And b's queue contains Rebase, from the eager enqueue. *)
+         let b_rebase_queued =
+           let a = Orchestrator.agent m.orch pid_b in
+           List.mem a.Patch_agent.queue Operation_kind.Rebase
+             ~equal:Operation_kind.equal
+         in
+         (* Now simulate b rebasing onto its structural base (main): eligibility
          returns to Allow. *)
-      let m = apply_command m (Rebase_complete 1) in
-      let eligibility_after_rebase =
-        Orchestrator.start_eligibility m.orch
-          ~base_contains_merged_siblings:true branch_b
-      in
-      let unblocked =
-        match eligibility_after_rebase with
-        | Start_eligibility.Allow -> true
-        | Start_eligibility.Defer _ -> false
-      in
-      initial_allow && deferred && b_rebase_queued && unblocked)
+         let m = apply_command m (Rebase_complete 1) in
+         let eligibility_after_rebase =
+           Orchestrator.start_eligibility m.orch
+             ~base_contains_merged_siblings:true branch_b
+         in
+         let unblocked =
+           match eligibility_after_rebase with
+           | Start_eligibility.Allow -> true
+           | Start_eligibility.Defer _ -> false
+         in
+         initial_allow && deferred && b_rebase_queued && unblocked))
 
 (** PI-SBI-2 (witness): an unrelated advance of main never defers a Start. A
     base sitting directly on main (the root patch) stays eligible for cutting
@@ -643,36 +613,38 @@ let prop_unrelated_main_advance_does_not_defer =
   QCheck2.Test.make ~count:1
     ~name:
       "PI-SBI-2: unrelated main advance does not defer a Start off a \
-       main-based base" (Gen.return ()) (fun () ->
-      let patches = mk_patches 2 in
-      let m = bootstrap patches in
-      let pid_root = pid_of_idx patches 0 in
-      let branch_root =
-        (Orchestrator.agent m.orch pid_root).Patch_agent.branch
-      in
-      let allow_before =
-        match
-          Orchestrator.start_eligibility m.orch
-            ~base_contains_merged_siblings:true branch_root
-        with
-        | Start_eligibility.Allow -> true
-        | Start_eligibility.Defer _ -> false
-      in
-      (* main advances repeatedly with nothing of the root's merging. *)
-      let m =
-        List.fold
-          [ Main_advanced; Main_advanced; Main_advanced ]
-          ~init:m ~f:apply_command
-      in
-      let allow_after =
-        match
-          Orchestrator.start_eligibility m.orch
-            ~base_contains_merged_siblings:true branch_root
-        with
-        | Start_eligibility.Allow -> true
-        | Start_eligibility.Defer _ -> false
-      in
-      allow_before && allow_after)
+       main-based base"
+    (Gen.return ())
+    (checked (fun () ->
+         let patches = mk_patches 2 in
+         let m = bootstrap patches in
+         let pid_root = pid_of_idx patches 0 in
+         let branch_root =
+           (Orchestrator.agent m.orch pid_root).Patch_agent.branch
+         in
+         let allow_before =
+           match
+             Orchestrator.start_eligibility m.orch
+               ~base_contains_merged_siblings:true branch_root
+           with
+           | Start_eligibility.Allow -> true
+           | Start_eligibility.Defer _ -> false
+         in
+         (* main advances repeatedly with nothing of the root's merging. *)
+         let m =
+           List.fold
+             [ Main_advanced; Main_advanced; Main_advanced ]
+             ~init:m ~f:apply_command
+         in
+         let allow_after =
+           match
+             Orchestrator.start_eligibility m.orch
+               ~base_contains_merged_siblings:true branch_root
+           with
+           | Start_eligibility.Allow -> true
+           | Start_eligibility.Defer _ -> false
+         in
+         allow_before && allow_after))
 
 (** PI-SBI-3 (witness): the connector-adapter-shape-unification patch-5 / PR
     #3811 scenario — a same-name freshen rebase of the base conflicts, and the
@@ -684,80 +656,93 @@ let prop_unrelated_main_advance_does_not_defer =
     production: b was cut from a stale local main missing a's squash commit, so
     the reconciler enqueued another Rebase b → main — same target name, so
     [branch_rebased_onto] never changes). Gate defers on busy-with-rebase. 3.
-    The rebase CONFLICTS. The Rebase op completes; the continuation is a queued
-    [Merge_conflict]. Before the [has_conflict] gate input, every arm read fresh
-    here and Start(c, base=b) fired — cutting c from b's doomed pre-rebase tip
-    (PR #3811 was created from that cut, born stale). The gate must now defer on
-    [Base_resolving_conflict]. 4. The conflict resolution lands and force-pushes
-    b's rewritten tip: eligibility returns to Allow, and a cut now takes the new
-    tip. *)
+    The rebase conflicts, and the scheduling worker releases its slot while the
+    owner retains repair authority. The busy-rebase gate must remain closed
+    despite the idle worker and unchanged base name. 4. Claimed repair,
+    continuation and publication finish; a Start can now cut the rewritten tip.
+*)
 let prop_conflicted_freshen_rebase_witness =
   QCheck2.Test.make ~count:1
     ~name:
       "PI-SBI-3: PR #3811 witness — Start(c, base=b) deferred while b's \
        same-name freshen rebase is mid-conflict, Allow after resolution"
-    (Gen.return ()) (fun () ->
-      let patches = mk_patches 3 in
-      let m = bootstrap patches in
-      let pid_b = pid_of_idx patches 1 in
-      let branch_b = (Orchestrator.agent m.orch pid_b).Patch_agent.branch in
-      let eligibility m =
-        Orchestrator.start_eligibility m.orch
-          ~base_contains_merged_siblings:true branch_b
-      in
-      (* a merges; b absorbs it cleanly. b now sits on main by name. *)
-      let m = apply_command m (Pr_merged 0) in
-      let m = apply_command m (Rebase_complete 1) in
-      let allow_when_settled =
-        match eligibility m with
-        | Start_eligibility.Allow -> true
-        | Start_eligibility.Defer _ -> false
-      in
-      (* Freshen demand: another Rebase b → main (same-name target). *)
-      let m =
-        {
-          m with
-          orch = Orchestrator.enqueue m.orch pid_b Operation_kind.Rebase;
-        }
-      in
-      let defer_busy =
-        match eligibility m with
-        | Start_eligibility.Defer
-            (Start_eligibility.Base_patch_busy_with_rebase _) ->
-            true
-        | Start_eligibility.Allow
-        | Start_eligibility.Defer
-            ( Start_eligibility.Base_resolving_conflict _
-            | Start_eligibility.Base_not_fresh_for_cut _
-            | Start_eligibility.Base_missing_merged_sibling _ ) ->
-            false
-      in
-      (* The freshen rebase conflicts: the Rebase op is gone from the queue,
+    (Gen.return ())
+    (checked (fun () ->
+         let patches = mk_patches 3 in
+         let m = bootstrap patches in
+         let pid_b = pid_of_idx patches 1 in
+         let branch_b = (Orchestrator.agent m.orch pid_b).Patch_agent.branch in
+         let eligibility m =
+           Orchestrator.start_eligibility m.orch
+             ~base_contains_merged_siblings:true branch_b
+         in
+         (* a merges; b absorbs it cleanly. b now sits on main by name. *)
+         let m = apply_command m (Pr_merged 0) in
+         let m = apply_command m (Rebase_complete 1) in
+         let allow_when_settled =
+           match eligibility m with
+           | Start_eligibility.Allow -> true
+           | Start_eligibility.Defer _ -> false
+         in
+         (* Freshen demand: another Rebase b → main (same-name target). *)
+         let m =
+           {
+             m with
+             orch = Orchestrator.enqueue m.orch pid_b Operation_kind.Rebase;
+           }
+         in
+         let defer_busy =
+           match eligibility m with
+           | Start_eligibility.Defer
+               (Start_eligibility.Base_patch_busy_with_rebase _) ->
+               true
+           | Start_eligibility.Allow
+           | Start_eligibility.Defer
+               ( Start_eligibility.Base_resolving_conflict _
+               | Start_eligibility.Base_not_fresh_for_cut _
+               | Start_eligibility.Base_missing_merged_sibling _ ) ->
+               false
+         in
+         (* The freshen rebase conflicts: the Rebase op is gone from the queue,
          [branch_rebased_onto] still reads main (structurally fresh), and the
          launching patch has no merged siblings — the exact configuration that
-         let PR #3811 through. Only [has_conflict] can hold the gate. *)
-      let m = apply_command m (Rebase_conflict 1) in
-      let defer_conflicted =
-        match eligibility m with
-        | Start_eligibility.Defer (Start_eligibility.Base_resolving_conflict _)
-          ->
-            true
-        | Start_eligibility.Allow
-        | Start_eligibility.Defer
-            ( Start_eligibility.Base_patch_busy_with_rebase _
-            | Start_eligibility.Base_not_fresh_for_cut _
-            | Start_eligibility.Base_missing_merged_sibling _ ) ->
-            false
-      in
-      (* Resolution lands; the gate reopens onto the rewritten tip. *)
-      let m = apply_command m (Resolve_conflict 1) in
-      let allow_after_resolution =
-        match eligibility m with
-        | Start_eligibility.Allow -> true
-        | Start_eligibility.Defer _ -> false
-      in
-      allow_when_settled && defer_busy && defer_conflicted
-      && allow_after_resolution)
+         let PR #3811 through. The unsettled owner must hold the gate. *)
+         let m = apply_command m (Rebase_conflict 1) in
+         let base_agent = Orchestrator.agent m.orch pid_b in
+         let repair_retained =
+           match
+             Branch_reconcile.phase base_agent.Patch_agent.branch_reconcile
+           with
+           | Some (Branch_reconcile.Repairing repair) -> repair.conflicts = 1
+           | None
+           | Some
+               ( Preparing | Integrating | Publishing | Confirming | Waiting _
+               | Recovering | Settled | Intervention _ ) ->
+               false
+         in
+         let defer_conflicted =
+           (not base_agent.Patch_agent.busy)
+           && repair_retained
+           &&
+           match eligibility m with
+           | Start_eligibility.Defer
+               (Start_eligibility.Base_patch_busy_with_rebase _) ->
+               true
+           | Start_eligibility.Allow
+           | Start_eligibility.Defer
+               ( Base_resolving_conflict _ | Base_not_fresh_for_cut _
+               | Base_missing_merged_sibling _ ) ->
+               false
+         in
+         (* Resolution lands; the gate reopens onto the rewritten tip. *)
+         let m = apply_command m (Resolve_conflict 1) in
+         let allow_after_resolution =
+           match eligibility m with
+           | Start_eligibility.Allow -> true
+           | Start_eligibility.Defer _ -> false
+         in
+         allow_when_settled && defer_busy && defer_conflicted
+         && allow_after_resolution))
 
 let () =
   let runner = QCheck_base_runner.run_tests_main in

@@ -27,11 +27,139 @@ let assert_not_contains ~label ~needle haystack =
       (Printf.sprintf "%s: expected output NOT to contain %S, got:\n%s" label
          needle haystack)
 
+let hook_tree env mode =
+  let ending =
+    match mode with 0 -> "exit 0\n" | 1 -> "exit 7\n" | _ -> "wait\n"
+  in
+  let dir, script =
+    make_script
+      ({|#!/bin/sh
+echo $$ > root-pid
+/bin/sh -c 'trap "" TERM INT HUP; echo $$ > child-pid; exec sleep 30' >/dev/null 2>&1 &
+while [ ! -s child-pid ]; do sleep 0.01; done
+echo ready-out
+echo ready-err >&2
+|}
+     ^ ending)
+  in
+  let root_pid = Stdlib.Filename.concat dir "root-pid" in
+  let child_pid = Stdlib.Filename.concat dir "child-pid" in
+  let read_pid path =
+    Stdlib.In_channel.with_open_bin path Stdlib.In_channel.input_all
+    |> String.strip |> Int.of_string
+  in
+  let clock = Eio.Stdenv.clock env in
+  let run timeout =
+    User_config.run_hook
+      ~process_mgr:(Eio.Stdenv.process_mgr env)
+      ~clock ~script
+      ~cwd:Eio.Path.(Eio.Stdenv.fs env / dir)
+      ~env:[] ~timeout ()
+  in
+  Stdlib.Fun.protect
+    ~finally:(fun () ->
+      List.iter [ child_pid; root_pid ] ~f:(fun path ->
+          if Stdlib.Sys.file_exists path then
+            try Unix.kill (read_pid path) Stdlib.Sys.sigkill
+            with Unix.Unix_error (Unix.ESRCH, _, _) -> ()))
+    (fun () ->
+      (if mode = 3 then (
+         let cancelled = ref false in
+         Eio.Time.with_timeout_exn clock 10. (fun () ->
+             Eio.Fiber.first
+               (fun () ->
+                 try
+                   ignore (run 20.);
+                   failwith "hook returned before cancellation"
+                 with exn when Process_tree.has_cancellation exn ->
+                   cancelled := true;
+                   raise exn)
+               (fun () ->
+                 while
+                   not
+                     (Stdlib.Sys.file_exists child_pid
+                     && (Unix.stat child_pid).Unix.st_size > 0)
+                 do
+                   Eio.Time.sleep clock 0.001
+                 done));
+         if not !cancelled then failwith "hook cancellation did not propagate")
+       else
+         match run (if mode = 2 then 2. else 10.) with
+         | Ok () when mode = 0 -> ()
+         | Ok () -> failwith "failed or timed-out hook reported success"
+         | Error message when mode = 0 -> failwith message
+         | Error message ->
+             assert_contains ~label:"tree-hook status"
+               ~needle:(if mode = 2 then "timed out" else "code 7")
+               message;
+             assert_contains ~label:"tree-hook stdout" ~needle:"ready-out"
+               message;
+             assert_contains ~label:"tree-hook stderr" ~needle:"ready-err"
+               message);
+      List.iter [ root_pid; child_pid ] ~f:(fun path ->
+          if not (Stdlib.Sys.file_exists path) then
+            failwith "hook did not use its requested working directory";
+          match Unix.kill (read_pid path) 0 with
+          | exception Unix.Unix_error (Unix.ESRCH, _, _) -> ()
+          | () ->
+              failwith
+                (Printf.sprintf "hook mode %d returned with a live descendant"
+                   mode)))
+
 let () =
   Eio_main.run @@ fun env ->
   let process_mgr = Eio.Stdenv.process_mgr env in
   let clock = Eio.Stdenv.clock env in
   let fs = Eio.Stdenv.fs env in
+  List.iter [ 0; 1; 2; 3 ] ~f:(hook_tree env);
+
+  (let previous = Stdlib.Sys.getenv "ONTON_SETSID_EXEC" in
+   let original_cwd = Stdlib.Sys.getcwd () in
+   let supervisor =
+     if Stdlib.Filename.is_relative previous then
+       Stdlib.Filename.concat original_cwd previous
+     else previous
+   in
+   let dir, script =
+     make_script "#!/bin/sh\nprintf correct-directory > proof\n"
+   in
+   let checkout = Stdlib.Filename.concat dir "checkout" in
+   Unix.mkdir checkout 0o700;
+   Unix.symlink supervisor (Stdlib.Filename.concat dir "supervisor");
+   Stdlib.Fun.protect
+     ~finally:(fun () ->
+       Unix.chdir original_cwd;
+       Unix.putenv "ONTON_SETSID_EXEC" previous)
+     (fun () ->
+       Unix.chdir dir;
+       Unix.putenv "ONTON_SETSID_EXEC" "./supervisor";
+       (match
+          User_config.run_hook ~process_mgr ~clock ~script
+            ~cwd:Eio.Path.(fs / checkout)
+            ~env:[] ()
+        with
+       | Ok () -> ()
+       | Error reason -> failwith reason);
+       if not (Stdlib.Sys.file_exists (Stdlib.Filename.concat checkout "proof"))
+       then failwith "relative supervisor changed the hook working directory"));
+
+  (let previous = Stdlib.Sys.getenv "ONTON_SETSID_EXEC" in
+   let dir, script = make_script "#!/bin/sh\ntouch executed\n" in
+   Stdlib.Fun.protect
+     ~finally:(fun () -> Unix.putenv "ONTON_SETSID_EXEC" previous)
+     (fun () ->
+       Unix.putenv "ONTON_SETSID_EXEC" (Stdlib.Filename.concat dir "missing");
+       (match
+          User_config.run_hook ~process_mgr ~clock ~script
+            ~cwd:Eio.Path.(fs / dir)
+            ~env:[] ()
+        with
+       | Ok () -> failwith "missing supervisor authorized a hook"
+       | Error reason ->
+           assert_contains ~label:"missing supervisor"
+             ~needle:"Process-tree supervisor unavailable" reason);
+       if Stdlib.Sys.file_exists (Stdlib.Filename.concat dir "executed") then
+         failwith "hook executed without process supervision"));
 
   (* ── Success: exit 0, stdout ignored by caller ────────────────────── *)
   (let dir, script = make_script "#!/bin/sh\necho hello\n" in
@@ -93,15 +221,7 @@ let () =
    | Ok () -> ()
    | Error msg -> failwith (Printf.sprintf "expected Ok, got Error: %s" msg));
 
-  (* ── Timeout: hook that runs longer than [~timeout] must be killed
-        with SIGKILL and return an Error whose message names the timeout.
-
-        NOTE: SIGKILL is only delivered to the [child] PID we spawned
-        (the outer [/bin/sh -c] that exec'd the hook). Grandchild processes
-        the hook itself forked are not killed by this signal — mitigating
-        that requires setpgid + killing the whole group, which is a
-        follow-up. For this test we exec [sleep] directly so no grandchild
-        is created. *)
+  (* Timeout diagnostics and bounded cleanup for a hook without descendants. *)
   (let dir, script = make_script "#!/bin/sh\nexec sleep 5\n" in
    let cwd = Eio.Path.(fs / dir) in
    let t0 = Unix.gettimeofday () in

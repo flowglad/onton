@@ -135,54 +135,67 @@ unattended supervisor session. There are two supported transports:
 
 ## Rebase anchor lifecycle
 
-A patch agent's rebase upstream is chosen by `lib_core/rebase_decision.ml`'s
-`plan` from the agent's `anchor_history` (newest-first list of
-`Anchor.t = { base; sha; observed_at_remote }`, cap 8, in `lib_core/`).
+`Branch_reconcile` owns live replay-boundary selection. Recorded integration
+receipts (newest first) precede the exact new-branch materialization boundary.
+An ancestry probe verifies reachability from the captured source; a failed probe
+retries rather than discarding evidence. Initial rewrite reconciliation without
+a reachable recorded boundary first attempts exact-tree reconstruction of that
+boundary in the current first-parent history, then a linear patch-equivalent prefix, then
+a dependency-subject prefix for explicitly scoped requests. Inferred boundaries remain best
+effort and cannot grant recorded-boundary publication authority. The selected
+boundary, source and target survive restart in the operation checkpoint.
 
-Anchors get recorded at three moments by `lib/runner_fiber_impl.ml`,
-mediated by `Worktree_plan` capture/record ops the executor interprets:
+Start provisions through `Worktree_setup.ensure_owned`; materialization provenance
+is checkpointed by the reconciliation owner before hooks or implementation work.
+Adopting a branch records its starting revision without proving a replay boundary.
+The legacy `Anchor`, `Anchor_history`, `Worktree_plan`, and anchor-event executor
+APIs are removed. Old snapshot anchor SHAs migrate into owner retention only;
+they cannot authorize replay or publication. Pruning reads the owner's revision
+inventory exclusively. The last integrated base is derived from owner receipts;
+Start and legacy base-name fields grant no integration evidence. Published
+branches with unknown base evidence request reconciliation. Conflict state is a
+view of the owner's local repair and current forge evidence.
 
-- **Start** — `Worktree_plan.for_start` runs after the worktree is created
-  and before the LLM session begins. It derives the initial anchor from the
-  checkpointed `Branch_reconcile` materialization receipt, using the exact
-  starting commit retained in private Git refs. A subsequent fetch cannot
-  replace that boundary with a newer remote tip. Adopting an existing branch
-  records its starting revision without claiming a proven replay boundary.
-  `Orchestrator.apply_anchor_events` maintains the legacy anchor view. Closes the
-  production-bug case where a patch branched off a dep and never rebased
-  before the dep squash-merged.
-- **Rebase (Ok / Noop)** — `Worktree_plan.for_rebase` captures
-  `origin/<new_base>` post-fetch and a `Record_anchor_on_success` op
-  emits the anchor event after the rebase succeeds. `Noop` refreshes the
-  anchor too — a noop proves local HEAD already contains the remote tip.
-- **Merge-conflict resolution (Ok / Noop)** — `for_merge_conflict` mirrors
-  the rebase plan; a successful conflict rebase also refreshes the
-  anchor.
+Publication is derived from owner receipts. Legacy `branch_published` snapshot
+claims queue verification-only owner work; they never authorize a push or a new
+implementation session. Verification uses read-only existing-checkout validation,
+not provisioning or cleanup. Pending commands and desired intent survive import.
 
-`Conflict` and `Error` rebase results preserve the prior anchor unchanged
-(via `Rebase_decision.anchor_after_result`); a failed attempt never
-corrupts what was recorded.
+The legacy `Worktree.rebase_onto` and conflict-state reconstruction APIs have
+been removed. Scheduled rebase, conflict, session publication and root integration
+paths use `Branch_reconcile_runner`. The unused `Rebase_decision` planner and
+anchor-result wrappers are removed. Legacy conflict-info reconstruction and
+reset/rebase prompt renderers are removed; repair prompts come from the captured
+owner turn. Do not restore a separate Git mutation path.
 
-At rebase time the executor calls `Rebase_decision.plan` with the agent's
-`anchor_history` and an `is_ancestor` oracle (`git merge-base
---is-ancestor` via `Worktree.S.is_ancestor`). The plan picks the newest
-anchor whose SHA is reachable from the patch's HEAD; if none is
-reachable it falls back to history, then to `Plain { No_anchor }` which
-runs the legacy 2-arg `git rebase <target>`. The cherry-pick / patch-id
-detection inside `Worktree.rebase_onto` (`find_old_base`) remains as
-defense-in-depth: it tries first; the planner's chosen `upstream` is
-used only on its fallback path.
+`Orchestrator.refresh_base_branch` preserves existing anchor evidence when the
+base retargets. Reconciliation verifies that evidence against the actual source
+rather than treating a branch-name change as proof of a new replay boundary.
 
-`Orchestrator.refresh_base_branch` deliberately does NOT invalidate the
-anchor when the base retargets — the planner handles staleness via its
-ancestor oracle at rebase time, and touching `branch_rebased_onto` here
-would hide the drift the detector exists to surface (see PI-16 in
-`test_interleaving_properties.ml`).
+Current owner coverage includes `test_branch_reconcile_properties.ml`, the
+independent `test_branch_reconcile_model.ml`, real Git/checkpoint acceptance in
+`test_branch_reconcile_git.ml`, and inference fixtures in
+`test_branch_replay_evidence.ml`. Owner replay-boundary histories are covered by
+`test_replay_boundary_properties` and `test_replay_boundary_state_machine`.
+Legacy retention migration is covered by owner, persistence and pruning properties
+and real Git reclamation tests.
 
-The pure decision is covered by `test/test_rebase_decision_properties.ml`
-(RD-PLAN-1..8, RD-AAR-1..5) plus `test/test_anchor.ml`. Realistic event
-sequences are covered by `test/test_rebase_state_machine.ml` (SM-1, SM-2
-= production bug, SM-3a/b, SM-4, SM-7, SM-8, SM-no-anchor).
+Forge polling checkpoints a batch of request tickets before network reads.
+`Forge_observation` owns ticket and evidence transitions; `Branch_reconcile`
+retains the history. These observation transitions must not bump patch-message
+generation or change Git command identity. Unknown or contradictory reports do
+not erase conflict evidence. `Patch_agent.has_conflict` projects unresolved local
+repair and unsatisfied forge evidence for the current revision pair. Successful
+session completion cannot clear it. Pending publications reject conflicting old
+heads unless direct Git evidence confirms the reversion. Legacy conflict flags
+invalidate readiness but grant no conflict or Git authority. Open-PR updates additionally require direct head/base confirmation: head uses the
+bound push destination, base uses origin's fetch destination. Unconfirmed pairs
+suspend new CI/conflict work and readiness without deleting owner repair evidence.
+Old checkpoints default to no base proof. PR-based readiness consumers require
+`Patch_agent.forge_revision_pair_confirmed`, so restored flags alone cannot grant
+merge/review/draft/dependency readiness. Missing PRs and changed head/base/PR
+identity invalidate that projection. The complete provider-timing matrix
+remains M3 work; request tickets are not ancestry or publication authority.
 
 ## Reference
 - Reference implementation (Elixir): `../orchestrate-gameplan/`

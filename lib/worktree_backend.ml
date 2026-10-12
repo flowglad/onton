@@ -15,6 +15,9 @@ let path (t : checkout) = t.path
 let owner t = t.owner
 
 module type S = sig
+  val inspect_existing :
+    path:string -> branch:Types.Branch.t -> (checkout option, string) Result.t
+
   val inspect :
     path:string -> branch:Types.Branch.t -> (checkout option, string) Result.t
 
@@ -69,31 +72,18 @@ let make ~fs ~clock ~process_mgr ~repo_root ~(config : config) ~timeout_seconds
   if not (Float.is_finite timeout_seconds && Float.(timeout_seconds > 0.)) then
     invalid_arg "worktree timeout must be finite and positive";
   let run ?(cwd = repo_root) args =
-    let stdout = Buffer.create 256 and stderr = Buffer.create 256 in
-    let result =
+    match
       Eio.Time.with_timeout clock timeout_seconds (fun () ->
-          Ok
-            (Eio.Switch.run (fun sw ->
-                 let cwd = Eio.Path.(fs / cwd) in
-                 let child =
-                   Eio.Process.spawn ~sw process_mgr ~cwd
-                     ~env:(Git_env.clean_env ())
-                     ~stdin:(Eio.Flow.string_source "")
-                     ~stdout:(Eio.Flow.buffer_sink stdout)
-                     ~stderr:(Eio.Flow.buffer_sink stderr)
-                     args
-                 in
-                 match Eio.Process.await child with
-                 | `Exited c -> c
-                 | `Signaled s -> 128 + s)))
-    in
-    match result with
+          let code, stdout, stderr =
+            Process_tree.run ~process_mgr ~clock
+              ~cwd:Eio.Path.(fs / cwd)
+              ~env:(Git_env.clean_env ()) args
+          in
+          Ok (code, String.strip stdout, String.strip stderr))
+    with
     | Error `Timeout ->
         failwith ("Worktree command timed out: " ^ String.concat ~sep:" " args)
-    | Ok code ->
-        ( code,
-          String.strip (Buffer.contents stdout),
-          String.strip (Buffer.contents stderr) )
+    | Ok capture -> capture
   in
   let checked ?cwd args =
     match run ?cwd args with
@@ -371,6 +361,30 @@ let make ~fs ~clock ~process_mgr ~repo_root ~(config : config) ~timeout_seconds
             Some { path; owner = c; repo_id = common; branch })))
   in
   let inspect = inspect_impl ~creation_finished:false in
+  let inspect_existing ~path ~branch =
+    protect_result (fun () ->
+        let c =
+          match read_owner_for_path ~path with
+          | None -> legacy_owner path
+          | Some (recorded, c, phase)
+            when String.equal recorded (Types.Branch.to_string branch)
+                 && equal_phase phase Ready ->
+              c
+          | Some _ ->
+              failwith "Checkout requires ownership or lifecycle recovery"
+        in
+        if not (Stdlib.Sys.file_exists path) then None
+        else (
+          if
+            Option.is_none (admin_for path)
+            || not
+                 (List.exists (git_list ()) ~f:(fun (e : registration) ->
+                      String.equal (canonical e.path) (canonical path)))
+          then failwith "Existing checkout is not registered in this repository";
+          validate ~path ~branch;
+          Some { path; owner = c; repo_id = common; branch }))
+  in
+
   let ref_sha branch =
     match
       run
@@ -659,6 +673,9 @@ let make ~fs ~clock ~process_mgr ~repo_root ~(config : config) ~timeout_seconds
 
   let mutex = Eio.Mutex.create () in
   (module struct
+    let inspect_existing ~path ~branch =
+      Eio.Mutex.use_ro mutex (fun () -> inspect_existing ~path ~branch)
+
     let inspect ~path ~branch =
       Eio.Mutex.use_ro mutex (fun () -> inspect ~path ~branch)
 

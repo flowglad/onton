@@ -11,7 +11,17 @@ type checkout
 val path : checkout -> string
 val owner : checkout -> Worktree_lifecycle.config
 
+val canonical : string -> string
+(** Resolve the existing filesystem prefix of a checkout path, including before
+    creation. Path aliases must identify the same durable checkout obligation.
+*)
+
 module type S = sig
+  val inspect_existing :
+    path:string -> branch:Types.Branch.t -> (checkout option, string) Result.t
+  (** Validate an already registered linked checkout without cleanup, metadata
+      writes, repair, or creation. Incomplete ownership requires recovery. *)
+
   val inspect :
     path:string -> branch:Types.Branch.t -> (checkout option, string) Result.t
   (** Repairs recoverable state, then validates root, repository and branch.
@@ -56,4 +66,6 @@ val make :
   timeout_seconds:float ->
   (module S)
 (** Preflights the configured executable. Commands use argv, a clean Git
-    environment, closed stdin, and a bounded lifetime. *)
+    environment, closed stdin, and a bounded lifetime. The shared process-tree
+    runner retains project command guards through descendant cleanup, including
+    interrupted provisioning and parent death. *)

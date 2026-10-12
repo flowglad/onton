@@ -15,15 +15,12 @@ let data_dir () =
             (Stdlib.Filename.concat (Stdlib.Sys.getenv "HOME") ".local/share")
             "onton")
 
-let slugify name =
-  String.concat_map name ~f:(fun c ->
-      if Char.is_alphanum c || Char.equal c '-' then String.of_char c
-      else if Char.equal c ' ' || Char.equal c '_' then "-"
-      else "")
-  |> String.lowercase
+let slugify = Project_identity.slug
 
 let project_dir project_name =
   Stdlib.Filename.concat (data_dir ()) (slugify project_name)
+
+let lifecycle_dir () = Stdlib.Filename.concat (data_dir ()) ".lifecycle"
 
 let snapshot_path project_name =
   Stdlib.Filename.concat (project_dir project_name) "snapshot.json"
@@ -257,16 +254,22 @@ let load_config ~project_name =
         (fun () -> Stdlib.In_channel.input_all ic)
     in
     let json = Yojson.Safe.from_string content in
-    Result.bind
-      (Gameplan_publication.parse_optional
-         (Json.field "gameplan_publication" json))
-      ~f:(fun _ ->
-        match json with
-        | `Assoc fields ->
-            Ok
-              (stored_config_of_yojson
-                 (`Assoc (drop_legacy_fields (migrate_backend_model fields))))
-        | _ -> Ok (stored_config_of_yojson json))
+    let parsed =
+      Result.bind
+        (Gameplan_publication.parse_optional
+           (Json.field "gameplan_publication" json))
+        ~f:(fun _ ->
+          match json with
+          | `Assoc fields ->
+              Ok
+                (stored_config_of_yojson
+                   (`Assoc (drop_legacy_fields (migrate_backend_model fields))))
+          | _ -> Ok (stored_config_of_yojson json))
+    in
+    Result.bind parsed ~f:(fun config ->
+        Result.map
+          (Project_identity.resolve ~requested:project_name
+             ~stored:(Some config.project_name)) ~f:(fun _ -> config))
   with exn -> Error (Stdlib.Printexc.to_string exn)
 
 let save_gameplan_source ~project_name ~source_path =

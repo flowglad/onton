@@ -42,7 +42,13 @@ let has_pr fields =
       | Some "absent" | Some _ | None -> false)
   | _ -> Option.is_some (int_member fields "pr_number")
 
-let has_change fields = has_pr fields || bool_member fields "branch_published"
+let has_change fields =
+  has_pr fields
+  || Option.exists (member fields "branch_reconcile") ~f:(fun json ->
+      match Branch_reconcile.decode json with
+      | Ok owner -> not (List.is_empty (Branch_reconcile.publications owner))
+      | Error _ -> false)
+  || bool_member fields "branch_published"
 
 let is_pr_missing fields =
   match member fields "pr_status" with
@@ -64,8 +70,12 @@ let needs_intervention fields =
     || nonempty_list_member fields "inflight_human_messages"
   in
   Patch_agent.needs_intervention_of_fields
+    ~branch_reconcile:
+      (Option.bind (member fields "branch_reconcile") ~f:(fun json ->
+           Result.ok (Branch_reconcile.decode json))
+      |> Option.value ~default:Branch_reconcile.empty)
     ~merged:(bool_member fields "merged")
-    ~has_pr:(has_change fields) ~is_pr_missing:(is_pr_missing fields)
+    ~has_pr:(has_pr fields) ~is_pr_missing:(is_pr_missing fields)
     ~session_given_up:(session_given_up fields)
     ~wontdo_reason:(string_member fields "wontdo_reason")
     ~human_pending
@@ -81,16 +91,10 @@ let needs_intervention fields =
          ~default:Patch_agent.default_max_ci_failures)
     ~start_attempts_without_pr:
       (Option.value (int_member fields "start_attempts_without_pr") ~default:0)
-    ~conflict_noop_count:
-      (Option.value (int_member fields "conflict_noop_count") ~default:0)
     ~no_commits_push_count:
       (Option.value (int_member fields "no_commits_push_count") ~default:0)
     ~context_exhaustion_count:
       (Option.value (int_member fields "context_exhaustion_count") ~default:0)
-    ~push_failure_count:
-      (Option.value (int_member fields "push_failure_count") ~default:0)
-    ~rebase_failure_count:
-      (Option.value (int_member fields "rebase_failure_count") ~default:0)
     ~pr_body_artifact_miss_count:
       (Option.value
          (int_member fields "pr_body_artifact_miss_count")

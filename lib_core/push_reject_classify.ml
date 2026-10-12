@@ -107,7 +107,13 @@ let classify ~stderr ~stdout =
     contains_ci output "stale info"
     || contains_ci output "fetch first"
     || contains_ci output "non-fast-forward"
+    || contains_ci output "cannot lock ref"
+       && ((contains_ci output "is at " && contains_ci output "but expected ")
+          || contains_ci output "reference already exists")
   then Lease_violation
+  else if
+    contains_ci output "cannot lock ref" && contains_ci output "File exists"
+  then Unknown (truncate_200 (String.strip output))
   else
     let remote_excerpt = pick_remote_line stderr in
     let porcelain_reason = pick_porcelain_reason stdout in

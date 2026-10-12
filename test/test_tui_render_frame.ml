@@ -522,7 +522,7 @@ let () =
                token = pending.B.token [@warning "-42"];
                at = 100.;
                result =
-                 (if permanent then B.Permanent "permission_denied"
+                 (if permanent then B.Needs_diagnosis "permission_denied"
                   else
                     B.Retryable
                       { reason = "transport_unavailable"; retry_after = None });
@@ -541,10 +541,117 @@ let () =
       in
       assert (
         line_contains lines
-          (if permanent then "Reconcile: intervention" else "Reconcile: waiting"));
+          (if permanent then "Reconcile: diagnosis" else "Reconcile: waiting"));
       assert (
         line_contains lines
           (if permanent then "permission_denied" else "transport_unavailable"));
       assert (line_contains lines "Operation: 1");
       assert (line_contains lines "Source SHA: unknown");
       assert (line_contains lines "Remote lease: unknown"))
+
+(* Publication failures must identify the captured work after checkpoint reload,
+   including whether replay evidence is recorded or only best effort. *)
+let[@warning "-42"] () =
+  let module B = Onton_core.Branch_reconcile in
+  let open B in
+  let sha c = Option.value_exn (Commit.make (String.make 40 c)) in
+  let source = sha 'a' and target = sha 'b' and candidate = sha 'c' in
+  let proof = sha 'd' in
+  let reply state result =
+    let command = Option.value_exn (pending state) in
+    fst (step state (Result { token = command.token; at = 100.; result }))
+  in
+  let proofs =
+    [
+      (Recorded proof, "recorded " ^ Commit.to_string proof);
+      (Inferred proof, "inferred " ^ Commit.to_string proof);
+      ( Patch_equivalent proof,
+        "patch-equivalent (best effort) " ^ Commit.to_string proof );
+      ( Subject_inferred proof,
+        "dependency subject (best effort) " ^ Commit.to_string proof );
+      ( Reconstructed { original = proof; upstream = target },
+        "tree reconstruction (best effort) " ^ Commit.to_string proof ^ " -> "
+        ^ Commit.to_string target );
+      (Plain, "plain (no proven boundary)");
+    ]
+  in
+  List.iter proofs ~f:(fun (boundary, expected_proof) ->
+      let initial =
+        fst
+          (step empty
+             (Request
+                {
+                  base = "main";
+                  policy = Preserve_ancestry;
+                  purpose = Reconcile_base;
+                }))
+      in
+      let captured =
+        reply initial
+          (Observed
+             {
+               destination = Remote_id.of_destination "diagnostic-origin";
+               head = source;
+               source;
+               target;
+               remote = Some source;
+               boundary;
+               topology = Equal;
+               clean = true;
+               sequencer = None;
+               conflicts = 0;
+               target_included = false;
+               base_contains_source = false;
+               completed_integration = false;
+             })
+      in
+      let publishing = reply (reply captured Pinned) (Integrated candidate) in
+      let publishing =
+        Onton_core_test_support.Publication_fixture.verify_scope
+          ~step:(fun state event -> fst (B.step state event))
+          ~state:Fn.id publishing
+      in
+      List.iter [ false; true ] ~f:(fun permanent ->
+          let failed =
+            reply publishing
+              (if permanent then Needs_diagnosis "permission_denied"
+               else
+                 Retryable
+                   { reason = "transport_unavailable"; retry_after = None })
+          in
+          let restored =
+            match decode (yojson_of_t failed) with
+            | Ok value -> value
+            | Error reason -> failwith reason
+          in
+          assert (equal restored failed);
+          let pv =
+            {
+              (make_view ~id:"1" ~title:"captured publication") with
+              Tui.reconciliation_details = diagnostics restored;
+            }
+          in
+          let lines =
+            plain_lines
+              (render ~width:180 ~height:100
+                 ~view_mode:(Tui.Detail_view pv.Tui.patch_id) [ pv ])
+          in
+          List.iter
+            [
+              "Operation: 1";
+              "Source SHA: " ^ Commit.to_string source;
+              "Target SHA: " ^ Commit.to_string target;
+              "Candidate: " ^ Commit.to_string candidate;
+              "Remote lease: " ^ Commit.to_string source;
+              "Replay proof: " ^ expected_proof;
+              ("Reconcile: " ^ if permanent then "diagnosis" else "waiting");
+              ("Reason: "
+              ^
+              if permanent then "permission_denied" else "transport_unavailable"
+              );
+            ]
+            ~f:(fun expected ->
+              if not (line_contains lines expected) then
+                failwith ("missing diagnostic: " ^ expected));
+          assert (
+            Bool.equal (line_contains lines "Retry at: 105") (not permanent))))
