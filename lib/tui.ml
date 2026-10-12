@@ -1482,18 +1482,19 @@ let views_of_orchestrator ~(orchestrator : Orchestrator.t)
       in
       { pv with recent_stream = List.take filtered 10; intervention_reason })
   |> fun views ->
+  (* Views come from the orchestrator's unique agent IDs. *)
+  let statuses_by_id =
+    Map.of_alist_exn
+      (module Patch_id)
+      (List.map views ~f:(fun (pv : patch_view) -> (pv.patch_id, pv.status)))
+  in
   List.map views ~f:(fun pv ->
       {
         pv with
         dep_ids =
           List.map pv.dep_ids ~f:(fun (dep_id, status) ->
               let status =
-                match
-                  List.find views ~f:(fun (dep : patch_view) ->
-                      Patch_id.equal dep.patch_id dep_id)
-                with
-                | Some dep -> dep.status
-                | None -> status
+                Option.value (Map.find statuses_by_id dep_id) ~default:status
               in
               (dep_id, status));
       })
