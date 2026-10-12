@@ -132,6 +132,14 @@ let () =
             equal_start_delivery (start_delivery a)
               (Start_with_human { messages })
           with _ -> false);
+      Test.make ~name:"only gameplan Start turns allow WONTDO" ~count:100
+        Gen.(pair (oneof_list [ Start; Respond ]) bool)
+        (fun (delivery_mode, is_gameplan_patch) ->
+          Bool.equal
+            (session_allows_wontdo ~delivery_mode ~is_gameplan_patch)
+            (match delivery_mode with
+            | Start -> is_gameplan_patch
+            | Respond -> false));
       Test.make ~name:"only Human Respond prompts omit patch instructions"
         ~count:500
         Gen.(

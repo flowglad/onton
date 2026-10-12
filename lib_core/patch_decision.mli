@@ -84,11 +84,16 @@ type start_delivery =
 type delivery_mode = Session_result.delivery_mode = Start | Respond
 [@@deriving show, eq, sexp_of, compare]
 
+val session_allows_wontdo :
+  delivery_mode:delivery_mode -> is_gameplan_patch:bool -> bool
+(** Only gameplan Start turns offer and accept pre-commit opt-out. Independent
+    of backend resume/fresh selection and human guidance carried by a Start. *)
+
 val session_prompt_requires_patch_instructions :
   delivery_mode:delivery_mode -> kind:Types.Operation_kind.t option -> bool
-(** Human follow-ups pass through without branch-mode or opt-out instructions.
-    Starts, including those carrying human guidance, and other Respond kinds
-    retain patch instructions. Independent of backend resume/fresh selection. *)
+(** Human follow-ups pass through without branch-mode instructions. Starts,
+    including those carrying human guidance, and other Respond kinds retain
+    patch instructions. Independent of backend resume/fresh selection. *)
 
 val start_delivery : Patch_agent.t -> start_delivery
 (** Classify a fired Start action's turn payload. A Start that consumed queued

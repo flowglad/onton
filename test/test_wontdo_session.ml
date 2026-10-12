@@ -113,7 +113,7 @@ module Fake_worktree : Worktree.S = struct
 end
 
 let run_case ?(adopted = false) ?(cancel = false) ?(push_failure = false)
-    ?(detect_pr = false) ?(advance_base = false)
+    ?(detect_pr = false) ?(advance_base = false) ?(ad_hoc = false)
     ?(delivery_mode = Onton_core.Patch_decision.Start) ?(kind = None)
     ?(branch_role = `Mainline) ?resume_session ?(prompt = "Implement the patch")
     env ~content ~commit ~expect_opt_out =
@@ -180,7 +180,7 @@ let run_case ?(adopted = false) ?(cancel = false) ?(push_failure = false)
             architecture_design = None;
             solution_summary = "";
             final_state_spec = "";
-            patches;
+            patches = (if ad_hoc then [] else patches);
             operational_considerations = "";
             required_changes = "";
             ordering_constraints = [];
@@ -206,10 +206,19 @@ let run_case ?(adopted = false) ?(cancel = false) ?(push_failure = false)
           in
           let orch = Orchestrator.set_execution_mode orch mode in
           let orch =
-            Orchestrator.send_human_message orch patch_id "Original guidance"
+            if ad_hoc then
+              Orchestrator.add_agent orch ~patch_id ~branch:patch.branch
+                ~base_branch:main ~pr_number:(Pr_number.of_int 123)
+            else orch
           in
           let orch =
-            Orchestrator.fire orch (Orchestrator.Start (patch_id, main))
+            if ad_hoc then orch
+            else
+              let orch =
+                Orchestrator.send_human_message orch patch_id
+                  "Original guidance"
+              in
+              Orchestrator.fire orch (Orchestrator.Start (patch_id, main))
           in
           let orch =
             match (delivery_mode, kind) with
@@ -416,9 +425,6 @@ let run_case ?(adopted = false) ?(cancel = false) ?(push_failure = false)
         assert (Poly.equal result.disposition `Ok))
       else (
         assert (String.is_prefix delivered_prompt ~prefix:prompt);
-        assert (String.is_substring delivered_prompt ~substring:path);
-        assert (
-          String.is_substring delivered_prompt ~substring:"without committing");
         match branch_role with
         | `Mainline -> ()
         | `Integration_root ->
@@ -429,6 +435,16 @@ let run_case ?(adopted = false) ?(cancel = false) ?(push_failure = false)
             assert (
               String.is_substring delivered_prompt
                 ~substring:"Feature branch construction:"));
+      let expect_wontdo_prompt =
+        (not ad_hoc)
+        && Onton_core.Patch_decision.equal_delivery_mode delivery_mode Start
+      in
+      assert (
+        Bool.equal expect_wontdo_prompt
+          (String.is_substring delivered_prompt ~substring:path));
+      assert (
+        Bool.equal expect_wontdo_prompt
+          (String.is_substring delivered_prompt ~substring:"without committing"));
       let snapshot = Runtime.read runtime Fn.id in
       let after = Orchestrator.agent snapshot.orchestrator patch_id in
       if detect_pr then (
@@ -688,6 +704,15 @@ let () =
         ~commit:false ~expect_opt_out:false;
       run_case env ~advance_base:true ~content:"Opt out after base advancement"
         ~commit:false ~expect_opt_out:true;
+      List.iter [ None; Some "existing-thread" ] ~f:(fun resume_session ->
+          run_case env ~ad_hoc:true ?resume_session
+            ~delivery_mode:Onton_core.Patch_decision.Respond ~kind:(Some Ci)
+            ~content:"Ad-hoc work should proceed" ~commit:false
+            ~expect_opt_out:false;
+          run_case env ?resume_session
+            ~delivery_mode:Onton_core.Patch_decision.Respond
+            ~content:"Follow-up work should proceed" ~commit:false
+            ~expect_opt_out:false);
       List.iter [ `Mainline; `Integration_root; `Feature_descendant ]
         ~f:(fun branch_role ->
           run_case env ~adopted:true ~branch_role ~content:"" ~commit:false
