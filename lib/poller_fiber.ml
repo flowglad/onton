@@ -243,7 +243,7 @@ module Make (Forge : Forge.S) (W : Worktree.S) (Env : Poller_env.S) = struct
         Stdlib.Hashtbl.t =
       Stdlib.Hashtbl.create 16
     in
-    let process_request ~remaining request =
+    let process_request ~batch request =
       (* None runs reconciliation when there are no PRs to poll. *)
       let requests = Option.to_list request in
       let outcomes =
@@ -708,9 +708,14 @@ module Make (Forge : Forge.S) (W : Worktree.S) (Env : Poller_env.S) = struct
                worker owns the single project-wide pass, in the same atomic
                update as its response. This includes error/rediscovery workers;
                none may strand the batch's reconciliation. *)
-            remaining := !remaining - 1;
+            let request_id =
+              Option.map request ~f:(fun (prepared : Forge_poll.prepared) ->
+                  prepared.ticket.request.id)
+            in
+            let next_batch, reconcile = Poll_batch.complete !batch request_id in
+            batch := next_batch;
             let orch, reconcile_logs =
-              if !remaining > 0 then (orch, [])
+              if not reconcile then (orch, [])
               else
                 (* Recompute the base-containment cache for every agent: does each
              patch's resolved base branch already contain the merge commit
@@ -1062,13 +1067,21 @@ module Make (Forge : Forge.S) (W : Worktree.S) (Env : Poller_env.S) = struct
               ("Forge request checkpoint failed: " ^ reason);
             []
       in
-      let remaining = ref (Int.max 1 (List.length requests)) in
-      (match requests with
-      | [] -> process_request ~remaining None
-      | _ ->
-          Eio.Fiber.List.iter ~max_fibers:16
-            (fun request -> process_request ~remaining (Some request))
-            requests);
+      let batch =
+        ref
+          (Poll_batch.create
+             (List.map requests ~f:(fun (request : Forge_poll.prepared) ->
+                  request.ticket.request.id)))
+      in
+      Stdlib.Fun.protect
+        ~finally:(fun () -> batch := Poll_batch.cancel !batch)
+        (fun () ->
+          match requests with
+          | [] -> process_request ~batch None
+          | _ ->
+              Eio.Fiber.List.iter ~max_fibers:16
+                (fun request -> process_request ~batch (Some request))
+                requests);
       Eio.Time.sleep clock poll_interval;
       loop ()
     in

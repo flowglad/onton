@@ -1120,3 +1120,8 @@
   (setenv ONTON_SETSID_EXEC
    %{bin:onton-setsid-exec}
    (run %{test}))))
+
+(test
+ (name test_poll_batch_properties)
+ (modules test_poll_batch_properties)
+ (libraries onton_core qcheck-core qcheck-core.runner))
