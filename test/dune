@@ -1103,3 +1103,9 @@
  (action (setenv ONTON_SETSID_EXEC %{bin:onton-setsid-exec} (run %{test})))
  (flags (:standard -w -40-42))
  (libraries onton onton_core onton_core_test_support eio_main unix))
+
+(rule
+ (alias runtest)
+ (deps test_supervisor_escape.py (package onton))
+ (action
+  (run python3 %{dep:test_supervisor_escape.py} %{bin:onton-setsid-exec})))

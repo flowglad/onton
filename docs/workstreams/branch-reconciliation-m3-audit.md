@@ -816,3 +816,39 @@ Conversation-continuity qualification passed: `opam exec -- dune build @all
 @fmt @check`, `opam exec -- dune runtest`, the source-policy check, and pinned
 archlint (`855690b`). The optional simgit backend integration remained skipped
 because `ONTON_TEST_SIMGIT` was unset; Git-backed suites ran successfully.
+
+## Detached descendants and independent poll completion
+
+Linux command supervision now enumerates the subreaper's direct children after
+leader exit, independently of their process groups or sessions. Every observed
+child forces another scan, including a child just reaped: its own descendants
+may have been adopted during cleanup. Live children are signaled while their
+PIDs remain pinned by parent ownership. The leader remains unreaped until all
+other children are gone, and checkout guards remain held throughout. macOS keeps
+its existing process-group/launchd cleanup; this change does not add Linux
+subreaper semantics to macOS.
+
+PR polling checkpoints the request batch before starting up to 16 workers. Each
+worker fetches, confirms, and atomically applies one PR observation together with
+reconciliation, without waiting for other workers' network operations. Head and
+base confirmation run concurrently within that worker. Durable request tickets,
+remote destination binding, terminal-operation ownership, and application-time
+context checks still govern acceptance. The next poll cycle still waits for the
+current workers; completed observations no longer wait for that barrier.
+
+`test_supervisor_escape.py` runs the production supervisor on Linux through eight
+scenarios: nested descendants using `setsid` or `setpgid`, crossed with success,
+failure, cancellation, and streaming cleanup. It asserts descendant removal at
+the checkout-guard release boundary. The same regression fails against
+`7caae013` because a detached descendant survives guard release; the corrected
+supervisor passes all eight scenarios in a Linux container. The poller runtime
+regression holds both
+confirmation probes open, observes another PR's result applied before releasing
+them, and rejects the delayed result after the requested PR identity changes.
+
+Qualification passed: `opam exec -- dune build @all @fmt @check`,
+`opam exec -- dune runtest`, the source-policy check, and pinned archlint
+(`855690b`). Linux-specific supervision was additionally compiled from the
+production sources and exercised in a Debian Linux container; the macOS Dune
+run skips that Linux-only fixture. Optional simgit integration remained skipped
+because `ONTON_TEST_SIMGIT` was unset.

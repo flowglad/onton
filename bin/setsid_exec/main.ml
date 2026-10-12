@@ -10,8 +10,8 @@
 external become_subreaper : unit -> unit = "caml_onton_become_subreaper"
 external leader_exited : int -> bool = "caml_onton_leader_exited"
 
-external group_has_descendants : int -> bool
-  = "caml_onton_group_has_descendants"
+external descendants_remaining : int -> bool -> bool
+  = "caml_onton_descendants_remaining"
 
 (* In supervised mode this single-threaded process owns the command's session.
    On Linux it also adopts orphaned descendants, so waiting for Git alone cannot
@@ -114,7 +114,7 @@ let supervise ?parent ~streaming ~guards argv =
       let descendant_ticks = ref (if streaming then 200 else 0) in
       let rec await_descendants () =
         if not (parent_alive ()) then stopping := true;
-        if have_group && group_has_descendants pid then (
+        if descendants_remaining pid (!stopping || !descendant_ticks = 0) then (
           (* Keep the unreaped leader as the group identity anchor. Repeated
              kills cover children forked during the preceding observation. *)
           if !stopping || !descendant_ticks = 0 then signal_group Sys.sigkill

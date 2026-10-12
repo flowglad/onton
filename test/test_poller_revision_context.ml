@@ -507,3 +507,173 @@ let () =
       List.iter (run env Github)
         [ Native_present; Native_absent 1; Native_absent 2 ]);
   print_endline "poller runtime revision identity and delayed context: OK"
+
+(* A blocked confirmation must neither serialize its sibling probe nor delay a
+   different PR's application. Change the blocked PR identity before releasing
+   it to also exercise the application-time context check. *)
+let concurrent_confirmations env =
+  Git.with_temp_repo (fun remote ->
+      Git.run_git ~cwd:remote [ "commit"; "--allow-empty"; "-qm"; "base" ];
+      let sha = Git.git_capture ~cwd:remote [ "rev-parse"; "HEAD" ] in
+      List.iter
+        (fun branch -> Git.run_git ~cwd:remote [ "branch"; branch ])
+        [ "slow"; "fast"; "slow-base"; "fast-base" ];
+      Git.with_temp_repo (fun dir ->
+          Git.run_git ~cwd:dir [ "remote"; "add"; "origin"; remote ];
+          let old_path = Sys.getenv "PATH" in
+          let old_data = Sys.getenv_opt "ONTON_DATA_DIR" in
+          let real_git =
+            let channel = Unix.open_process_in "command -v git" in
+            Fun.protect
+              ~finally:(fun () -> ignore (Unix.close_process_in channel))
+              (fun () -> input_line channel)
+          in
+          let path name = Filename.concat dir name in
+          let wrapper = path "git" in
+          Out_channel.with_open_bin wrapper (fun out ->
+              Printf.fprintf out
+                "#!/bin/sh\n\
+                 case \"$*\" in\n\
+                 *ls-remote*)\n\
+                \ for last do :; done\n\
+                \ case \"$last\" in\n\
+                \ refs/heads/slow|refs/heads/slow-base)\n\
+                \ touch %s/\"${last##*/}\".started\n\
+                \ while [ ! -e %s/release ]; do sleep 0.01; done\n\
+                \ ;;\n\
+                \ esac\n\
+                \ ;;\n\
+                 esac\n\
+                 exec %s \"$@\"\n"
+                (Filename.quote dir) (Filename.quote dir)
+                (Filename.quote real_git));
+          Unix.chmod wrapper 0o755;
+          Unix.putenv "PATH" (dir ^ ":" ^ old_path);
+          Unix.putenv "ONTON_DATA_DIR" (path "state");
+          Fun.protect
+            ~finally:(fun () ->
+              Unix.putenv "PATH" old_path;
+              Unix.putenv "ONTON_DATA_DIR" (Option.value old_data ~default:""))
+            (fun () ->
+              let make_patch name =
+                {
+                  patch with
+                  Patch.id = Patch_id.of_string name;
+                  branch = Branch.of_string name;
+                }
+              in
+              let gameplan =
+                {
+                  gameplan with
+                  Gameplan.patches = [ make_patch "slow"; make_patch "fast" ];
+                }
+              in
+              let runtime = Runtime.create ~gameplan ~main_branch:main () in
+              let slow = Patch_id.of_string "slow" in
+              let fast = Patch_id.of_string "fast" in
+              Runtime.update_orchestrator runtime (fun orch ->
+                  let orch =
+                    Orchestrator.set_pr_number orch slow (Pr_number.of_int 1)
+                  in
+                  Orchestrator.set_pr_number orch fast (Pr_number.of_int 2));
+              let current pid =
+                Runtime.read runtime (fun snap ->
+                    Orchestrator.agent snap.Runtime.orchestrator pid)
+              in
+              let never, _ = Eio.Promise.create () in
+              let module Real =
+                (val Github.make ~net:(Eio.Stdenv.net env)
+                       ~clock:(Eio.Stdenv.clock env) ~token:"" ~owner:"fixture"
+                       ~repo:"fixture" ~main_branch:main)
+              in
+              let module Forge = struct
+                include Real
+
+                let pr_state number =
+                  if Pr_number.to_int number = 3 then Eio.Promise.await never;
+                  let name =
+                    if Pr_number.to_int number = 1 then "slow" else "fast"
+                  in
+                  let body =
+                    Printf.sprintf
+                      {|{"data":{"repository":{"pullRequest":{"number":%d,"state":"OPEN","mergeable":"MERGEABLE","isDraft":true,"mergeStateStatus":"BLOCKED","headRefName":%S,"headRefOid":%S,"baseRefName":%S,"baseRefOid":%S,"headRepositoryOwner":{"login":"fixture"},"commits":{"nodes":[]},"reviewThreads":{"nodes":[]},"mergeCommit":null,"mergeQueueEntry":null,"stack":null}}}}|}
+                      (Pr_number.to_int number) name sha (name ^ "-base") sha
+                  in
+                  Github.parse_response ~owner:"fixture" body
+              end in
+              let module W =
+                (val Worktree.make ~fs:(Eio.Stdenv.fs env)
+                       ~config:Worktree_lifecycle.git
+                       ~clock:(Eio.Stdenv.clock env)
+                       ~process_mgr:(Eio.Stdenv.process_mgr env)
+                       ~repo_root:dir)
+              in
+              let module Env = struct
+                let runtime = runtime
+                let clock = Eio.Stdenv.clock env
+                let fs = Eio.Stdenv.fs env
+                let process_mgr = Eio.Stdenv.process_mgr env
+                let worktree_mutex = Eio.Mutex.create ()
+                let hook_mutex = Eio.Mutex.create ()
+                let fetch_mutex = Eio.Mutex.create ()
+                let user_config = { User_config.on_worktree_create = None }
+                let project_name = gameplan.Gameplan.project_name
+                let github_owner = "fixture"
+                let github_repo = "fixture"
+                let main_branch = main
+                let poll_interval = 0.001
+                let repo_root = dir
+                let register_pr_number ~patch_id:_ ~pr_number:_ = ()
+                let unregister_pr_number ~patch_id:_ = ()
+                let findings_registry = Findings_registry.create ()
+                let review_clients = []
+                let event_log = Event_log.create ~path:(path "events.jsonl")
+                let branch_of id = Branch.of_string (Patch_id.to_string id)
+              end in
+              let module Startup = struct
+                let discover_pr ~branch:_ = failwith "unexpected rediscovery"
+              end in
+              let module Poller = Poller_fiber.Make (Forge) (W) (Env) in
+              let until f =
+                while not (f ()) do
+                  Eio.Time.sleep Env.clock 0.005
+                done
+              in
+              Telemetry_dispatch.with_sink ~sink:(Event_log.sink Env.event_log)
+                (fun () ->
+                  Eio.Time.with_timeout_exn Env.clock 15. (fun () ->
+                      Eio.Fiber.first
+                        (fun () -> Poller.run (module Startup))
+                        (fun () ->
+                          until (fun () ->
+                              Sys.file_exists (path "slow.started")
+                              && Sys.file_exists (path "slow-base.started"));
+                          until (fun () ->
+                              (current fast).Patch_agent.head_oid = Some sha);
+                          check "blocked PR has not been applied"
+                            ((current slow).Patch_agent.head_oid = None);
+                          Runtime.update_orchestrator runtime (fun orch ->
+                              Orchestrator.set_pr_number orch slow
+                                (Pr_number.of_int 3));
+                          Out_channel.with_open_bin (path "release") (fun _ ->
+                              ());
+                          (* The next durable request proves the old tail finished. *)
+                          until (fun () ->
+                              match
+                                Forge_observation.pending_request
+                                  (Branch_reconcile.forge_observations
+                                     (current slow).Patch_agent.branch_reconcile)
+                              with
+                              | Some ticket ->
+                                  let[@warning "-42"] number =
+                                    ticket.Forge_observation.request
+                                      .Forge_observation.pr_number
+                                  in
+                                  Pr_number.to_int number = 3
+                              | None -> false);
+                          check "late confirmation rejects changed PR identity"
+                            ((current slow).Patch_agent.head_oid = None)))))))
+
+let () =
+  Eio_main.run concurrent_confirmations;
+  print_endline "poller concurrent confirmation and immediate application: OK"

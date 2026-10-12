@@ -9,7 +9,8 @@
 #include <unistd.h>
 #ifdef __linux__
 #include <sys/prctl.h>
-#include <dirent.h>
+#include <stdio.h>
+#include <signal.h>
 #elif defined(__APPLE__)
 #include <sys/sysctl.h>
 #else
@@ -42,6 +43,7 @@ CAMLprim value caml_onton_leader_exited(value leader) {
 
 /* Reap adopted descendants, never the leader. On macOS these are usually
    launchd's children: ECHILD means wait for launchd, not cleanup completed. */
+#ifdef __APPLE__
 static int member_remaining(pid_t member) {
   int status;
   pid_t result;
@@ -53,10 +55,13 @@ static int member_remaining(pid_t member) {
   return -1;
 }
 
-CAMLprim value caml_onton_group_has_descendants(value leader) {
+#endif
+
+CAMLprim value caml_onton_descendants_remaining(value leader, value terminate) {
   pid_t pgid = Int_val(leader);
   int remaining = 0, error = 0;
 #ifdef __APPLE__
+  (void)terminate;
   int mib[] = { CTL_KERN, KERN_PROC, KERN_PROC_PGRP, pgid };
   struct kinfo_proc *members = NULL;
   size_t bytes;
@@ -87,29 +92,33 @@ CAMLprim value caml_onton_group_has_descendants(value leader) {
     error = 0;
   }
 #else
-  DIR *directory = opendir("/proc");
-  if (directory == NULL) caml_failwith(strerror(errno));
-  for (;;) {
-    errno = 0;
-    struct dirent *entry = readdir(directory);
-    if (entry == NULL) { error = errno; break; }
-    char *end;
-    long number = strtol(entry->d_name, &end, 10);
-    if (*end != '\0' || number <= 0 || (pid_t)number != number) continue;
+  /* After the leader exits, every surviving tree has a child owned by this
+     subreaper at its root. Session/group changes do not change that ownership.
+     This is a single-threaded supervisor: a live child remains PID-pinned until
+     we reap it, so signaling after waitpid(WNOHANG) cannot target a reused PID.
+     Even a reaped child requires another pass: its children may have just been
+     adopted, including children created while this snapshot was read. */
+  char path[96];
+  snprintf(path, sizeof(path), "/proc/self/task/%ld/children", (long)getpid());
+  FILE *children = fopen(path, "r");
+  if (children == NULL) caml_failwith(strerror(errno));
+  long number;
+  int scanned;
+  while ((scanned = fscanf(children, "%ld", &number)) == 1) {
     pid_t member = (pid_t)number;
     if (member == pgid) continue;
-    pid_t group = getpgid(member);
-    if (group < 0) {
-      if (errno == ESRCH) continue;
-      error = errno;
-      break;
-    }
-    if (group != pgid) continue;
-    int present = member_remaining(member);
-    if (present < 0) { error = errno; break; }
-    remaining |= present;
+    remaining = 1;
+    int status;
+    pid_t result;
+    do {
+      result = waitpid(member, &status, WNOHANG);
+    } while (result < 0 && errno == EINTR);
+    if (result < 0) { error = errno; break; }
+    if (result == 0 && Bool_val(terminate) && kill(member, SIGKILL) < 0
+        && errno != ESRCH) { error = errno; break; }
   }
-  closedir(directory);
+  if (error == 0 && (ferror(children) || scanned != EOF)) error = EIO;
+  fclose(children);
 #endif
   if (error != 0) caml_failwith(strerror(error));
   return Val_bool(remaining);
