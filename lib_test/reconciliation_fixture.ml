@@ -76,13 +76,26 @@ let reply t pid result =
 let verify_scope t pid =
   P.verify_scope ~step:(fun t e -> step t pid e) ~state:(fun t -> state t pid) t
 
-let confirm t pid candidate =
+let[@warning "-42"] confirm t pid candidate =
+  let operation_id =
+    Option.value_map
+      (B.operation (state t pid))
+      ~default:(-1)
+      ~f:(fun op -> op.B.id)
+  in
   let t =
     reply t pid (B.Remote { sha = Some candidate; topology = B.Equal })
     |> fun t -> verify_scope t pid
   in
-  if not (Option.equal B.equal_phase (B.phase (state t pid)) (Some B.Settled))
-  then QCheck2.Test.fail_reportf "fixture reconciliation did not settle";
+  if
+    not
+      (List.exists
+         (B.publications (state t pid))
+         ~f:(fun (receipt : B.publication_receipt) ->
+           Int.equal receipt.B.operation_id operation_id
+           && B.Commit.equal receipt.B.published_revision candidate))
+  then
+    QCheck2.Test.fail_reportf "fixture captured reconciliation did not publish";
   let head = B.Commit.to_string candidate in
   let t = Orchestrator.set_head_oid t pid (Some head) in
   let t = Orchestrator.observe_publication_head t pid (Some head) in
@@ -133,11 +146,6 @@ let resolve_conflict t pid =
           | Some token ->
               let t = step t pid (B.Repair_started token) in
               let t = step t pid (B.Repair_completed { token; at = 100. }) in
-              let t =
-                reply t pid
-                  (R.repair_inspection ~source ~target ~boundary:op.B.boundary
-                     ~sequencer:"fixture-rebase" ~conflicts:0)
-              in
               let candidate = R.commit (100000 + op.B.id) in
               let t =
                 reply t pid (B.Integrated candidate) |> fun t ->

@@ -83,14 +83,14 @@ let scenario env selected boundary =
   in
   let selected_command =
     match selected with
-    | "merge-inspect" -> "inspect"
+    | "merge-inspect" | "capture-recovery" -> "inspect"
     | "merge-continue" -> "continue"
     | "replay-integrate" -> "integrate"
     | "replay-publish" -> "publish"
     | "replay-scope" -> "verify-scope"
     | name -> name
   in
-  let recovery = selected = "verify-recovery" in
+  let recovery = selected = "capture-recovery" in
   let remote_replay =
     List.mem selected
       [ "plan-remote"; "replay-scope"; "replay-integrate"; "replay-publish" ]
@@ -220,15 +220,23 @@ let scenario env selected boundary =
                    [
                      "merge"; "--allow-unrelated-histories"; "--no-edit"; target;
                    ])
+               else if merge then (
+                 let channel = open_out (Filename.concat dir "base") in
+                 output_string channel "local\nremote\n";
+                 close_out channel;
+                 Git.run_git ~cwd:dir [ "add"; "base" ];
+                 Git.run_git ~cwd:dir [ "commit"; "--no-edit" ])
                else
                  let channel = open_out (Filename.concat dir "base") in
                  output_string channel "local\nremote\n";
                  close_out channel;
-                 Git.run_git ~cwd:dir [ "add"; "base" ]);
-              check "content repair stages without committing"
-                (recovery
-                || Git.git_capture ~cwd:dir [ "rev-parse"; "HEAD" ]
-                   = B.Commit.to_string before);
+                 Git.run_git ~cwd:dir [ "add"; "base" ];
+                 Git.run_git ~cwd:dir
+                   [ "-c"; "core.editor=true"; "rebase"; "--continue" ]);
+              check "repair finishes integration before reporting completion"
+                (Git_observation.equal_sequencer
+                   (E.observe_checkout raw).Git_observation.sequencer
+                   Git_observation.None_active);
               let after =
                 sha (Git.git_capture ~cwd:dir [ "rev-parse"; "HEAD" ])
               in
@@ -236,8 +244,10 @@ let scenario env selected boundary =
                 ~before_head:(Some before) ~after_head:(Some after)
                 ~timed_out:false ~final_result:true ~detail:"staged resolution"
           in
-          let reached = ref false and refuse = ref false in
+          (* Initial recovery checks precede the agent turn. Acceptance must
+             not repeat those independent checks after its completion report. *)
           let prior_verifications = !verifications in
+          let reached = ref false and refuse = ref false in
           let failing_persist snapshot =
             if completion && not !reached then (
               reached := true;
@@ -271,7 +281,8 @@ let scenario env selected boundary =
              let outcome =
                run runtime failing_persist interrupted_execute event
              in
-             check "result checkpoint refusal is surfaced"
+             check
+               ("result checkpoint refusal is surfaced: " ^ selected)
                (boundary = Refuse_result
                && outcome
                   = R.Checkpoint_failed "injected result checkpoint failure")
@@ -295,6 +306,11 @@ let scenario env selected boundary =
              acknowledgement"
             (B.equal (owner runtime) (owner restored)
             = not (completion && boundary = After));
+          (* A refused completion write retains a pending turn, not an
+             accepted receipt. Re-deliver the completed backend result;
+             neither execute the agent nor infer success from Git state. *)
+          if completion && boundary <> After then
+            ignore (run restored persist execute event);
           check
             ("restart converges: " ^ selected)
             (run restored persist execute B.Recover = R.Idle);
@@ -315,9 +331,16 @@ let scenario env selected boundary =
                      [ "merge-base"; "--is-ancestor"; revision; "patch" ]
                   = 0))
               [ source; target ];
-            check "lost verification is independently repeated after restart"
-              (!verifications - prior_verifications
-              = if boundary = Before then 1 else 2))
+            check "accepted recovery skips independent verification"
+              (!verifications = prior_verifications);
+            check "accepted recovery keeps agent-reported evidence"
+              (List.exists
+                 (fun receipt ->
+                   match receipt.B.evidence with
+                   | B.Agent_reported _ -> true
+                   | B.Executed | B.Recovered_completion | B.Verified_history ->
+                       false)
+                 (B.integrations (owner restored))))
           else if remote_replay then (
             check "remote replay retains incoming work"
               (Git.git_capture ~cwd:remote [ "show"; "patch:incoming" ]
@@ -364,31 +387,41 @@ let scenario env selected boundary =
             && !pushes = if remote_replay then 2 else 1);
           check "remote replay never resets the managed checkout"
             (!checkouts = 0);
-          check "restart continues a staged repair exactly once"
-            (!continuations = if conflict then 1 else 0)))
+          check
+            "restart retains the completed repair without supervisor \
+             continuation"
+            (!continuations = 0)))
+
+let scenarios =
+  [
+    "observe";
+    "pin";
+    "integrate";
+    "publish";
+    "confirm";
+    "inspect";
+    "capture-recovery";
+    "plan-remote";
+    "replay-scope";
+    "verify-scope";
+    "repair-completion";
+    "merge-inspect";
+    "merge-completion";
+    "replay-integrate";
+    "replay-publish";
+  ]
 
 let () =
+  let requested = Array.to_list Sys.argv |> List.tl in
+  let selected = if requested = [] then scenarios else requested in
+  List.iter
+    (fun name ->
+      if not (List.mem name scenarios) then
+        failwith ("unknown scenario: " ^ name))
+    selected;
   Eio_main.run (fun env ->
       List.iter
         (fun selected ->
           List.iter (scenario env selected) [ Before; After; Refuse_result ])
-        [
-          "observe";
-          "pin";
-          "integrate";
-          "publish";
-          "confirm";
-          "inspect";
-          "continue";
-          "verify-recovery";
-          "plan-remote";
-          "replay-scope";
-          "verify-scope";
-          "repair-completion";
-          "merge-inspect";
-          "merge-continue";
-          "merge-completion";
-          "replay-integrate";
-          "replay-publish";
-        ]);
+        selected);
   print_endline "reconciliation command and result checkpoint boundaries: OK"

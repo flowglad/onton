@@ -666,6 +666,7 @@ let plan_action_for_patch t ~branch_map:_ patch_id =
     && (not agent.Patch_agent.merged)
     && (not agent.Patch_agent.busy)
     && (not agent.Patch_agent.branch_blocked)
+    && (not (Branch_reconcile.is_unsettled agent.branch_reconcile))
     && Option.value_map
          (Patch_agent.highest_priority agent)
          ~default:false

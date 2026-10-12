@@ -127,7 +127,8 @@ jobs:
 
       - name: Run tests
         # Single invocation — the runtest alias covers unit, expect, inline,
-        # and QCheck property tests, so a separate `--force` re-run would just
+        # and QCheck property tests. The exhaustive publication race suite runs
+        # only in the manual Git reconciliation acceptance workflow. A `--force` run would
         # repeat the entire suite. QCHECK_COUNT raises iteration depth for the
         # property tests; non-property tests ignore it.
         run: |

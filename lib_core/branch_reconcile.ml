@@ -202,7 +202,11 @@ type integration_capture = {
 }
 [@@deriving eq, compare, sexp_of, yojson]
 
-type integration_evidence = Executed | Recovered_completion | Verified_history
+type integration_evidence =
+  | Executed
+  | Recovered_completion
+  | Verified_history
+  | Agent_reported of token
 [@@deriving eq, compare, sexp_of, yojson]
 
 type integration_receipt = {
@@ -217,7 +221,14 @@ type publication_receipt = {
   operation_id : int;
   published_intent : intent;
   published_revision : Commit.t;
+  publication_evidence : integration_evidence; [@yojson.default Executed]
 }
+[@@deriving eq, compare, sexp_of, yojson]
+
+type candidate_origin =
+  | Deterministic
+  | Capture_agent_repair of token
+  | Accepted_agent_repair of { turn : token; revision : Commit.t }
 [@@deriving eq, compare, sexp_of, yojson]
 
 type operation = {
@@ -235,6 +246,7 @@ type operation = {
   boundary_candidates : boundary list;
   remote_replay : remote_replay option;
   candidate : Commit.t option;
+  candidate_origin : candidate_origin; [@yojson.default Deterministic]
   expected : Commit.t option;
   recovery_revisions : Commit.t list; [@yojson.default []]
   retained_revisions : Commit.t list; [@yojson.default []]
@@ -537,6 +549,7 @@ let required_revisions t =
         boundary_candidates;
         remote_replay;
         candidate;
+        candidate_origin = _;
         expected;
         recovery_revisions;
         retained_revisions;
@@ -604,8 +617,14 @@ let required_revisions t =
     @ List.concat_map (option active) ~f:operation
     @ List.concat_map (integrations @ remote_integrations) ~f:integration
     @ List.concat_map publications
-        ~f:(fun { operation_id = _; published_intent; published_revision } ->
-          published_revision :: intent published_intent)
+        ~f:(fun
+            {
+              operation_id = _;
+              published_intent;
+              published_revision;
+              publication_evidence = _;
+            }
+          -> published_revision :: intent published_intent)
     @ List.map (option observed_publication)
         ~f:(fun { operation_id = _; revision } -> revision))
 
@@ -1010,6 +1029,7 @@ let start t intent =
       boundary_candidates;
       remote_replay = None;
       candidate = None;
+      candidate_origin = Deterministic;
       expected = None;
       recovery_revisions = [];
       agent_dispatched = false;
@@ -1142,9 +1162,12 @@ let recover_with_agent ?(task = Reconstruct_history) t (op : operation) reason =
   | None, _, _ | _, None, _ -> issue t op Recovering Inspect
 
 let inspection op =
-  match op.repair with
-  | Some { mode = History_recovery _; _ } -> Verify_recovery
-  | Some { mode = Content_repair | Diagnosis _; _ } | None -> Inspect
+  match op.candidate_origin with
+  | Capture_agent_repair _ -> Inspect
+  | Deterministic | Accepted_agent_repair _ -> (
+      match op.repair with
+      | Some { mode = History_recovery _; _ } -> Verify_recovery
+      | Some { mode = Content_repair | Diagnosis _; _ } | None -> Inspect)
 
 let finite_time at = if Float.is_finite at then Float.max 0. at else 0.
 
@@ -1264,6 +1287,8 @@ let settle_unchecked t op =
               operation_id = op.id;
               published_intent = op.intent;
               published_revision = candidate;
+              publication_evidence =
+                Option.value op.candidate_evidence ~default:Executed;
             }
             :: t.publications
         | Some _ | None -> t.publications);
@@ -1285,28 +1310,15 @@ let settle_unchecked t op =
           let t, effects = start_publication_verification t base in
           (t, Completed op.id :: effects))
 
-let scope_confirmed (op : operation) candidate =
-  Replay_scope.valid_request op.approved_scope
-  && Option.equal Commit.equal op.scope_revision (Some candidate)
+let agent_candidate (op : operation) candidate =
+  match op.candidate_origin with
+  | Accepted_agent_repair { revision; _ } -> Commit.equal revision candidate
+  | Deterministic | Capture_agent_repair _ -> false
 
-let local_extension_contract (op : operation) =
-  match op.repair with
-  | Some { mode = History_recovery { task = Finish_local_work; _ }; _ } ->
-      Option.map op.source ~f:(fun source -> (source, op.approved_scope))
-  | Some { mode = History_recovery { task = Repair_publication; _ }; _ } ->
-      Option.bind op.candidate ~f:(fun candidate ->
-          if scope_confirmed op candidate then
-            Some (candidate, Replay_scope.Identity (Commit.to_string candidate))
-          else None)
-  | Some
-      {
-        mode =
-          ( History_recovery { task = Reconstruct_history; _ }
-          | Diagnosis _ | Content_repair );
-        _;
-      }
-  | None ->
-      None
+let scope_confirmed (op : operation) candidate =
+  agent_candidate op candidate
+  || Replay_scope.valid_request op.approved_scope
+     && Option.equal Commit.equal op.scope_revision (Some candidate)
 
 let settle t op =
   match op.candidate with
@@ -1397,7 +1409,7 @@ let repair ?(mode = Content_repair) t op head sequencer conflicts =
         Option.map previous ~f:(fun previous ->
             { previous with attempts_without_progress })
       in
-      stop_after_recovery t { op with repair } "recovery_preservation_unproven"
+      stop_after_recovery t { op with repair } "repair_attempts_exhausted"
   | P.Execute _ | P.Settled | P.Wait | P.Observe | P.Verify_agent _
   | P.Hold P.User_hold ->
       issue t op Recovering (inspection op)
@@ -1435,6 +1447,23 @@ let record_integration t op candidate evidence =
         { op with integration = None } )
 
 let capture_candidate ?(evidence = Executed) t op candidate =
+  let op =
+    match op.local_action with
+    | Prepare_remote_replay request when agent_candidate op candidate ->
+        {
+          op with
+          remote_integration =
+            Some
+              {
+                base_branch = None;
+                source_revision = request.incoming;
+                target_revision = request.preserved;
+                replay_boundary = op.boundary;
+                integration_policy = strategy_policy op;
+              };
+        }
+    | Prepare_remote_replay _ | Publish_source | Integrate_source _ -> op
+  in
   let t =
     match op.remote_integration with
     | Some _ when not (scope_confirmed op candidate) -> t
@@ -1478,6 +1507,11 @@ let capture_candidate ?(evidence = Executed) t op candidate =
     } )
 
 let publish ?evidence t op candidate =
+  let evidence =
+    if agent_candidate op candidate then
+      Option.first_some evidence op.candidate_evidence
+    else evidence
+  in
   let t, op = capture_candidate ?evidence t op candidate in
   if scope_confirmed op candidate then
     issue t op Publishing (Publish { candidate; expected = op.expected })
@@ -1518,6 +1552,7 @@ let integrate_remote t op preserved incoming =
             (incoming :: preserved :: required_revisions t);
         approved_scope = Replay_scope.Unproven;
         candidate = None;
+        candidate_origin = Deterministic;
         scope_revision = None;
         deferred_remote = None;
         candidate_evidence = None;
@@ -1601,10 +1636,8 @@ let observed ?(deterministic = true) t op (o : observation) =
       {
         op with
         approved_scope =
-          (if
-             deterministic && o.target_included
-             && Option.equal Commit.equal o.remote (Some source)
-           then Replay_scope.Identity (Commit.to_string source)
+          (if deterministic && o.target_included then
+             Replay_scope.Identity (Commit.to_string source)
            else
              scope_for_inputs ~source ~target ~boundary:o.boundary
                ~action:op.local_action);
@@ -1647,8 +1680,10 @@ let observed ?(deterministic = true) t op (o : observation) =
         execution = P.Available;
         preserve_work = P.Satisfied;
         finish_work =
-          (if integrating && (not o.clean) && Option.is_none o.sequencer then
-             P.required P.Agent_required
+          (if
+             integrating && (not o.target_included) && (not o.clean)
+             && Option.is_none o.sequencer
+           then P.required P.Agent_required
            else P.Satisfied);
         integrate = (if integrating then required else P.Satisfied);
         publish = (if publication_complete then P.Satisfied else required);
@@ -1665,10 +1700,7 @@ let observed ?(deterministic = true) t op (o : observation) =
           t op "deterministic_preconditions_unmet"
     | P.Execute _ ->
         let t, op =
-          if
-            integrating && o.target_included
-            && Option.equal Commit.equal o.remote (Some source)
-          then
+          if integrating && o.target_included then
             let t, op = record_integration t op source Recovered_completion in
             (t, { op with candidate = Some source })
           else (t, op)
@@ -1785,6 +1817,18 @@ let recovered_unchanged ~ready t op (o : observation) =
                       recover_with_agent t op "remote_replay_capture_missing")
               | Some _ -> recover_with_agent t op "dirty_remote_integration"
               | None -> recover_with_agent t op "remote_replay_capture_missing")
+          | None
+            when o.clean && o.target_included
+                 && Option.is_some op.remote_integration
+                 && Option.is_some op.remote_replay
+                 && Replay_scope.valid_request op.approved_scope
+                 && Option.for_all op.repair ~f:(fun repair ->
+                     Option.is_none repair.last_turn
+                     && (not repair.attempt_completed)
+                     && not repair.attempt_started) ->
+              (* A lost acknowledgement of our captured remote transformation
+                 still requires its deterministic scope certificate. *)
+              publish ~evidence:Recovered_completion t op o.source
           | None -> (
               match (op.source, op.target) with
               | Some source, Some target when Commit.equal source o.source -> (
@@ -1859,199 +1903,34 @@ let recovered ?(ready = false) t op (o : observation) =
               recover_with_agent t op "unexpected_agent_sequencer_change"
           | Some _ | None -> recovered_unchanged ~ready t op o))
 
-let recovery_verified t op (o : observation) local_extension source_preserved
-    remote_preserved =
+let recovery_verified t op (o : observation) _local_extension _source_preserved
+    _remote_preserved =
   match check_inspected_destination op ~observed:o.destination with
   | Error reason -> diagnose t op reason
   | Ok () -> (
       let op = { op with destination = Bound_remote o.destination } in
       match op.repair with
-      | Some
-          ({ mode = History_recovery { reason; baseline; task }; _ } as recovery)
-        -> (
-          (* [source_preserved] proves the scoped contribution and required ancestry. A
-             newly observed remote adds an obligation; it does not make a
-             successful repair of the captured work a failed agent turn. *)
-          let new_remote =
-            Option.exists o.remote ~f:(fun remote ->
-                not (Option.equal Commit.equal op.expected (Some remote)))
-          in
+      | Some { mode = History_recovery { reason; baseline; task }; _ } ->
           let op =
             {
               op with
               retained_revisions =
                 List.dedup_and_sort ~compare:Commit.compare
                   ((o.head :: o.source :: Option.to_list o.remote)
-                  @ Option.to_list op.expected
-                  @ Option.to_list op.candidate
                   @ op.retained_revisions);
             }
           in
-          let target_matches =
-            Option.equal Commit.equal op.target (Some o.target)
-          in
-          let extension_scope =
-            Option.bind (local_extension_contract op)
-              ~f:(fun (source, contract) ->
-                Option.bind local_extension ~f:(fun extension ->
-                    if
-                      String.equal extension.Replay_scope.source
-                        (Commit.to_string o.source)
-                      && String.equal extension.boundary
-                           (Commit.to_string source)
-                    then Replay_scope.extend_local contract extension
-                    else None))
-          in
-          let source_preserved =
-            source_preserved && target_matches
-            && ((not (equal_recovery_task task Finish_local_work))
-               || Option.is_some extension_scope)
-          in
-          let op =
-            if
-              equal_recovery_task task Finish_local_work
-              && source_preserved && o.clean && Option.is_none o.sequencer
-            then
-              {
-                op with
-                source = Some o.source;
-                approved_scope =
-                  Option.value extension_scope ~default:op.approved_scope;
-                scope_revision = None;
-                integration =
-                  Option.map op.integration ~f:(fun capture ->
-                      { capture with source_revision = o.source });
-              }
-            else if
-              equal_recovery_task task Repair_publication
-              && source_preserved && o.clean && Option.is_none o.sequencer
-              && not (Option.equal Commit.equal op.candidate (Some o.source))
-            then
-              match extension_scope with
-              | Some approved_scope ->
-                  { op with approved_scope; scope_revision = None }
-              | None -> op
-            else op
-          in
-          let op =
-            if
-              equal_recovery_task task Finish_local_work
-              && recovery.attempt_completed && source_preserved && o.clean
-              && Option.is_none o.sequencer
-              &&
-              match op.intent.purpose with
-              | Reconcile_base | Reconcile_request _ | Reconcile_scoped _ ->
-                  true
-              | Provision_checkout _ | Integrate_revision _ | Publish_revision _
-              | Publish_session _ | Verify_publication ->
-                  false
-            then { op with reobserve_after_completion = true }
-            else op
-          in
-          let target_satisfied =
-            match op.local_action with
-            | Publish_source -> true
-            | Integrate_source _ | Prepare_remote_replay _ -> o.target_included
-          in
-          let module P = Reconcile_plan in
-          let plan : P.t =
-            {
-              authority = P.Manage;
-              execution = P.Available;
-              preserve_work = P.Satisfied;
-              finish_work =
-                (if o.clean && Option.is_none o.sequencer then P.Satisfied
-                 else P.required P.Agent_required);
-              integrate =
-                (if not source_preserved then P.required P.Agent_required
-                 else if target_satisfied then P.Satisfied
-                 else
-                   match task with
-                   | Finish_local_work -> P.required P.Deterministic
-                   | Reconstruct_history | Repair_publication ->
-                       P.required P.Agent_required);
-              publish =
-                (if
-                   Option.exists op.candidate ~f:(fun candidate ->
-                       Commit.equal candidate o.source
-                       && Option.equal Commit.equal o.remote (Some candidate))
-                 then P.Satisfied
-                 else if
-                   remote_preserved
-                   && ((not (equal_recovery_task task Repair_publication))
-                      || recovery.attempt_completed)
-                 then P.required P.Deterministic
-                 else
-                   P.required
-                     ~recovery_failures:op.publication_recovery_attempts
-                     P.Agent_required);
-            }
-          in
-          let decision = P.next plan in
-          let task =
-            match decision with
-            | P.Run_agent ((P.Preserve_work | P.Integrate | P.Publish), _) ->
-                if equal_recovery_task task Repair_publication then task
-                else Reconstruct_history
-            | P.Run_agent (P.Finish_work, _)
-              when (not op.agent_dispatched) && Option.is_none o.sequencer ->
-                Finish_local_work
-            | P.Run_agent (P.Finish_work, _)
-            | P.Execute _ | P.Settled | P.Wait | P.Observe | P.Verify_agent _
-            | P.Hold _ ->
-                task
-          in
-          match decision with
-          | P.Settled -> settle t op
-          | P.Execute P.Integrate -> (
-              match op.target with
-              | Some target ->
-                  integrate t
-                    {
-                      op with
-                      repair = None;
-                      candidate = None;
-                      scope_revision = None;
-                    }
-                    o.source target op.boundary (execution_policy op)
-              | None -> recover_with_agent t op "recovery_target_missing")
-          | P.Execute P.Publish ->
-              publish ~evidence:Verified_history t
-                {
-                  op with
-                  expected = o.remote;
-                  publication_recovery_attempts =
-                    (if equal_recovery_task task Repair_publication then
-                       Int.min 2
-                         (op.publication_recovery_attempts
-                        + recovery.attempts_without_progress + 1)
-                     else op.publication_recovery_attempts);
-                }
-                o.source
-          | P.Run_agent (P.Publish, _)
-            when (new_remote || Option.is_none op.remote_integration)
-                 && not remote_preserved -> (
-              let t, op =
-                capture_candidate ~evidence:Verified_history t op o.source
-              in
-              match o.remote with
-              | Some remote -> integrate_remote t op o.source remote
-              | None -> recover_with_agent t op "recovery_remote_missing")
-          | P.Hold _ -> stop_after_recovery t op reason
-          | P.Run_agent _
-          | P.Execute (P.Preserve_work | P.Finish_work)
-          | P.Wait | P.Observe | P.Verify_agent _ ->
-              repair
-                ~mode:
-                  (History_recovery
-                     {
-                       reason;
-                       baseline = Some (Option.value baseline ~default:o.head);
-                       task;
-                     })
-                t op o.head "history-recovery" o.conflicts)
-      | Some { mode = Content_repair | Diagnosis _; _ } | None ->
-          recover_with_agent t op "unexpected_recovery_verification")
+          repair
+            ~mode:
+              (History_recovery
+                 {
+                   reason;
+                   baseline = Some (Option.value baseline ~default:o.head);
+                   task;
+                 })
+            t op o.head "history-recovery" o.conflicts
+      | None | Some { mode = Content_repair | Diagnosis _; _ } ->
+          recover_with_agent t op "missing_recovery_turn")
 
 let remote t (op : operation) at sha topology =
   match op.candidate with
@@ -2068,6 +1947,25 @@ let remote t (op : operation) at sha topology =
            In particular, a rewritten candidate can diverge from the captured
            remote while retaining authority to publish against that same lease. *)
         publish t op candidate
+      else if agent_candidate op candidate then
+        repair
+          ~mode:
+            (History_recovery
+               {
+                 reason = "remote_lease_changed";
+                 baseline = Some candidate;
+                 task = Reconstruct_history;
+               })
+          t
+          {
+            op with
+            expected = sha;
+            retained_revisions =
+              List.dedup_and_sort ~compare:Commit.compare
+                ((candidate :: Option.to_list sha)
+                @ Option.to_list op.expected @ op.retained_revisions);
+          }
+          candidate "history-recovery" 0
       else
         match (sha, topology) with
         | None, _ -> publish t { op with expected = None } candidate
@@ -2445,8 +2343,13 @@ let step_transition t = function
               op with
               agent_dispatched = true;
               repair = Some { r with attempt_completed = true };
+              candidate_origin =
+                (match r.mode with
+                | Diagnosis _ -> op.candidate_origin
+                | Content_repair | History_recovery _ ->
+                    Capture_agent_repair token);
             }
-            Recovering (inspection op)
+            Recovering Inspect
       | None
       | Some
           {
@@ -2503,6 +2406,11 @@ let step_transition t = function
                 diagnose t op "command_result_mismatch"
             | Attempt_failed reason, _ ->
                 retry ~attempt_failed:true t op at reason None
+            | Retryable { reason; retry_after }, Some Inspect
+              when match op.candidate_origin with
+                   | Capture_agent_repair _ -> true
+                   | Deterministic | Accepted_agent_repair _ -> false ->
+                retry t op at reason retry_after
             | Retryable { reason; retry_after }, _ ->
                 retry_observation t op at reason retry_after
             | Needs_diagnosis reason, _ -> diagnose t op reason
@@ -2542,6 +2450,49 @@ let step_transition t = function
             | Observed_active { observation; policy }, Some Inspect
               when Option.is_none op.source ->
                 adopt_integration t op observation policy
+            | Integrated candidate, Some Inspect -> (
+                match op.candidate_origin with
+                | Capture_agent_repair turn ->
+                    let op =
+                      {
+                        op with
+                        publication_recovery_attempts =
+                          (match op.repair with
+                          | Some
+                              {
+                                mode =
+                                  History_recovery
+                                    { task = Repair_publication; _ };
+                                _;
+                              } ->
+                              Int.min 2 (op.publication_recovery_attempts + 1)
+                          | Some
+                              {
+                                mode =
+                                  ( History_recovery
+                                      {
+                                        task =
+                                          ( Finish_local_work
+                                          | Reconstruct_history );
+                                        _;
+                                      }
+                                  | Content_repair | Diagnosis _ );
+                                _;
+                              }
+                          | None ->
+                              op.publication_recovery_attempts);
+                      }
+                    in
+                    publish ~evidence:(Agent_reported turn) t
+                      {
+                        op with
+                        candidate_origin =
+                          Accepted_agent_repair { turn; revision = candidate };
+                        reobserve_after_completion = false;
+                      }
+                      candidate
+                | Deterministic | Accepted_agent_repair _ ->
+                    diagnose t op "unexpected_repair_capture")
             | Inspected o, Some Inspect when Option.is_none o.sequencer ->
                 recovered t op o
             | Inspected_active { observation; ready }, Some Inspect ->
@@ -2712,6 +2663,9 @@ let step_transition t = function
                 repair t { op with merge_progress } head sequencer conflicts
             | Published, Some (Publish { candidate; _ }) ->
                 issue t op Confirming (Confirm candidate)
+            | Remote { sha; topology }, Some Inspect
+              when Option.exists op.candidate ~f:(agent_candidate op) ->
+                remote t op at sha topology
             | Remote { sha; topology }, Some (Confirm _) ->
                 remote t op at sha topology
             | ( ( Checkout_ready | Observed _ | Observed_active _
@@ -2813,7 +2767,16 @@ let check_checkout ?operation (command : command) ~branch
       if named_head checkout_source && G.clean checkout then Ok ()
       else Error "integration_precondition_changed"
   | Publish { candidate; _ } | Verify_scope candidate ->
-      if named_head candidate && checkout.valid then Ok ()
+      if
+        checkout.valid
+        &&
+        match operation with
+        | Some op when agent_candidate op candidate ->
+            Option.equal String.equal checkout.branch (Some branch)
+            && G.equal_sequencer checkout.sequencer G.None_active
+            && String.equal checkout.head (Commit.to_string candidate)
+        | Some _ | None -> named_head candidate
+      then Ok ()
       else Error "publication_precondition_changed"
   | Continue { head; target; sequencer } ->
       let target = Commit.to_string target in
@@ -3402,6 +3365,18 @@ let decode json =
                  && op.publication_recovery_attempts <= 2
                  && optional op.source && optional op.target
                  && optional op.candidate && optional op.expected
+                 && (match op.candidate_origin with
+                   | Deterministic -> true
+                   | Capture_agent_repair turn ->
+                       turn.operation = op.id && turn.command > 0
+                       && turn.command < op.command_sequence
+                   | Accepted_agent_repair { turn; revision } ->
+                       turn.operation = op.id && turn.command > 0
+                       && turn.command < op.command_sequence
+                       && Option.equal equal_integration_evidence
+                            op.candidate_evidence (Some (Agent_reported turn))
+                       && valid_commit revision
+                       && Option.equal Commit.equal op.candidate (Some revision))
                  && optional op.deferred_remote
                  && (match op.local_action with
                    | Publish_source | Integrate_source _ -> true
@@ -3498,31 +3473,7 @@ let decode json =
               else Ok t
           | Some _ -> Error "invalid branch operation")
   in
-  Result.map decoded ~f:(fun t ->
-      match t.active with
-      | Some ({ phase = Intervention _; _ } as op)
-        when op.command_sequence < Int.max_value
-             && op.publication_recovery_attempts < 2
-             && not
-                  (Option.exists op.repair ~f:(fun r ->
-                       match r.mode with
-                       | History_recovery _ | Diagnosis _ ->
-                           r.attempts_without_progress >= 2
-                       | Content_repair -> false)) ->
-          (* Older checkpoints stored a diagnostic as the entire recovery decision.
-           Re-evaluate every unexhausted stop, including intermediate checkpoints
-           that already contain planning counters. Captured destination authority
-           and exhausted agent budgets remain binding. *)
-          fst (issue t op Recovering (inspection op))
-      | None
-      | Some
-          {
-            phase =
-              ( Preparing | Integrating | Repairing _ | Publishing | Confirming
-              | Waiting _ | Recovering | Settled | Intervention _ );
-            _;
-          } ->
-          t)
+  decoded
 
 let recovery_name_hex s =
   String.to_list s
@@ -3594,22 +3545,13 @@ let repair_turn t ~branch token =
                     (Commit.to_string request.preserved)
               | Publish_source | Integrate_source _ -> "")
             ^ "\n\
-               For history reconstruction, use only this contract's inputs. A \
-               retained ref or an observed remote head is a recovery backup, \
-               not permission to add its commits to the patch. For a Replay \
-               contract, inspect the first-parent chain from its recorded \
-               boundary to its source. Reconstruct onto its exact target using \
-               only the ordinary single-parent commits in that chain, in \
-               order. Exclude merge commits and their side-parent histories. \
-               Keep excluded work in the existing recovery refs. Do not use a \
-               plain rebase or merge a remote branch to recover missing scope. \
-               A Merge contract authorizes exactly its two captured inputs. An \
-               Identity contract authorizes only the captured commit. If the \
-               contract is Unproven, repair missing environmental evidence and \
-               report the missing recorded provenance; do not guess ownership \
-               from a merge base or commit subject. Onton independently checks \
-               the resulting history and tree, allowing conflict resolution \
-               only on paths found by its own prediction.\n"
+               The captured deterministic contract describes the original \
+               inputs. Complete the requested Git repair, including necessary \
+               repository-wide edits and the resulting commits. You own \
+               validation of the repair and its history. Retain recovery refs \
+               and preserve required patch and upstream work. Successful \
+               repair authorizes exact-HEAD capture and publication; Onton \
+               trusts your validation.\n"
             ^ "Repair environmental conditions that block this operation: \
                inspect and repair local gate state, install or restore missing \
                project dependencies and system tools, and correct environment \
@@ -3623,7 +3565,9 @@ let repair_turn t ~branch token =
                verification result, and any remaining blocker. The Git \
                permissions below still apply.\n"
             ^ (match execution_policy op with
-              | Rewrite -> "Preservation policy: verified rewrites permitted.\n"
+              | Rewrite ->
+                  "Preservation policy: rewrites permitted; validate \
+                   preservation of required work.\n"
               | Preserve_ancestry ->
                   "Preservation policy: retain required commits as ancestors; \
                    patch equivalence is insufficient.\n")
@@ -3658,28 +3602,14 @@ let repair_turn t ~branch token =
             | History_recovery { reason; baseline; task } ->
                 (match task with
                   | Finish_local_work ->
-                      "First finish the interrupted local work: inspect the \
-                       edits, complete the intended changes and checks, and \
-                       commit them as a linear continuation of the captured \
-                       source; do not merge other branches. Onton \
-                       independently verifies this extension before \
-                       integrating the pinned base.\n"
+                      "Finish the interrupted local work and integrate the \
+                       pinned target.\n"
                   | Repair_publication ->
-                      "Repair the local content or history responsible for the \
-                       publication rejection below. Make source fixes as \
-                       ordinary commits after the already verified candidate; \
-                       do not import or merge other branches. Onton will \
-                       verify that linear extension before accepting the new \
-                       candidate. Preserve all required work. Do not disable \
-                       hooks, checks or branch protections, change credentials \
-                       or permission scopes, change the destination, or push. \
-                       Do not remove required work to evade authorization. If \
-                       the rejection requires authority you do not have, \
-                       explain the required external action. Onton will verify \
-                       preservation and retry publication.\n"
+                      "Repair the publication rejection. Do not disable checks \
+                       or protections, change credentials or destination, or \
+                       push.\n"
                   | Reconstruct_history ->
-                      "Deterministic integration needs recovery. Complete the \
-                       integration while preserving the retained history.\n")
+                      "Complete the Git integration repair.\n")
                 ^ Printf.sprintf
                     "Recover managed branch %s after deterministic \
                      reconciliation could not proceed: %s.\n\
@@ -3698,10 +3628,12 @@ let repair_turn t ~branch token =
                      against the pinned target. Do not discard uncommitted \
                      work or delete recovery refs. Do not push. Leave a clean \
                      checkout of the managed branch with no active sequencer. \
-                     Onton will independently verify preserved history and \
-                     publish the captured candidate with an explicit remote \
-                     lease. If preservation cannot be established, leave the \
-                     work intact and explain the uncertainty.\n"
+                     Run applicable repository checks and validate the \
+                     complete repair. Successful completion authorizes Onton \
+                     to capture HEAD and publish the exact candidate with an \
+                     explicit remote lease. You own repository validation and \
+                     the resulting history. If repair cannot be completed, \
+                     report failure and explain the blocker.\n"
                     branch reason (sha source) (sha target) (sha candidate)
                     (sha expected)
                     (match boundary with
@@ -3729,11 +3661,13 @@ let repair_turn t ~branch token =
                    Repair step: %s\n\
                    Inspect git status and the unmerged index, preserve valid \
                    patch and upstream changes, edit conflicted files, and \
-                   stage the resolved paths. Leave staged resolutions in \
-                   place. Do not commit, rebase, merge, reset, continue, skip, \
-                   abort, switch branches, or push. Onton owns the sequencer \
-                   and publication. A successful repair does not require a new \
-                   commit.\n"
+                   stage the resolutions. Make necessary repository-wide \
+                   edits, finish the merge or rebase, commit the result, and \
+                   run applicable checks. Validate the resulting history and \
+                   leave the managed branch ready for publication. Do not \
+                   push. Successful completion authorizes Onton to capture \
+                   HEAD and publish that exact revision with the captured \
+                   remote lease.\n"
                   branch (sha source) (sha target) r.sequencer);
         }
   | None
@@ -3782,18 +3716,13 @@ let repair_result ~(turn : repair_turn) ~turn_accepted ~at ~before_head
            | Content_repair | History_recovery _ -> true)
          && not (Option.equal Commit.equal turn.head (Some head)) ->
       Repair_invalidated { token; reason = "unexpected_agent_head_change" }
-  | _, Some head
-    when equal_repair_mode turn.mode Content_repair
-         && not (Option.equal Commit.equal turn.head (Some head)) ->
-      Repair_invalidated { token; reason = "unexpected_agent_head_change" }
   | _, _
     when (match turn.mode with
            | Diagnosis _ -> true
            | Content_repair | History_recovery _ -> false)
          && (not timed_out) && final_result ->
       Repair_completed { token; at }
-  | Some _, Some _ when (not timed_out) && final_result ->
-      Repair_completed { token; at }
+  | _, _ when (not timed_out) && final_result -> Repair_completed { token; at }
   | Some _, Some _ | None, _ | _, None ->
       let reason =
         if String.is_empty (String.strip detail) then
@@ -3882,6 +3811,16 @@ let diagnostics t =
         ("Source SHA", revision op.source);
         ("Target SHA", revision op.target);
         ("Candidate", revision op.candidate);
+        ( "Candidate authority",
+          match op.candidate_origin with
+          | Deterministic -> "deterministic verification"
+          | Capture_agent_repair turn ->
+              Printf.sprintf "agent completion %d/%d; awaiting HEAD capture"
+                turn.operation turn.command
+          | Accepted_agent_repair { turn; revision } ->
+              Printf.sprintf "accepted agent repair %d/%d: %s" turn.operation
+                turn.command
+                (Commit.to_string revision) );
         ( "Remote lease",
           match (op.source, op.expected) with
           | None, _ -> "unknown"

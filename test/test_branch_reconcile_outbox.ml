@@ -123,7 +123,9 @@ let tests =
                   Option.equal Message_id.equal
                     (Orchestrator.agent next pid).Patch_agent.current_message_id
                     (Some original.message_id));
-                assert (B.equal owner (state next));
+                assert (
+                  Option.equal B.equal_operation (B.operation owner)
+                    (B.operation (state next)));
                 assert (Orchestrator.agent next pid).Patch_agent.busy;
                 next
               in
@@ -152,7 +154,9 @@ let tests =
                   Runtime.read runtime (fun snapshot ->
                       snapshot.Runtime.orchestrator)
                 in
-                assert (B.equal owner (state restored));
+                assert (
+                  Option.equal B.equal_operation (B.operation owner)
+                    (B.operation (state restored)));
                 assert (
                   List.exists (Orchestrator.all_messages restored)
                     ~f:(fun message ->
@@ -247,7 +251,9 @@ let tests =
                       receipt_seen := true;
                       Orchestrator.record_session_completion t pid completion
                 in
-                assert (B.equal owner (state t));
+                assert (
+                  Option.equal B.equal_operation (B.operation owner)
+                    (B.operation (state t)));
                 assert (Orchestrator.agent t pid).Patch_agent.busy;
                 assert (
                   Option.is_none
@@ -456,13 +462,15 @@ let tests =
           Option.is_some accepted
           && (Orchestrator.agent t other).Patch_agent.busy
           && (not (Orchestrator.agent t pid).Patch_agent.busy)
-          && B.equal owner (state t)
+          && Option.equal B.equal_operation (B.operation owner)
+               (B.operation (state t))
           && (not (B.can_execute_git ~at:104. (state t)))
           && B.can_execute_git ~at:105. (state t)
           && Option.value (Json.bool_field "runnable" json) ~default:false
           && List.exists (pending restored.orchestrator) ~f:(fun message ->
               Message_id.equal message.Orchestrator.message_id retry.message_id)
-          && B.equal owner (state restored.orchestrator)
+          && Option.equal B.equal_operation (B.operation owner)
+               (B.operation (state restored.orchestrator))
         with _ -> false);
     QCheck2.Test.make
       ~name:"terminal patch completes held reconciliation delivery" ~count:50

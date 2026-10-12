@@ -186,7 +186,7 @@ let graphql_query =
       headRefName
       headRefOid
       baseRefName
-      baseRefOid
+      baseRef { target { oid } }
       stack { id }
       mergeCommit { oid }
       mergeQueueEntry {
@@ -408,6 +408,9 @@ type stack_node = Stack
 
 let stack_node_of_yojson _ = Stack
 
+type base_ref = { target : oid_obj option [@yojson.default None] }
+[@@deriving of_yojson] [@@yojson.allow_extra_fields]
+
 type pull_request = {
   number : int option; [@yojson.default None]
   id : string option; [@yojson.default None]
@@ -420,7 +423,7 @@ type pull_request = {
       [@key "reviewDecision"] [@yojson.default None]
   head_ref_name : string option; [@key "headRefName"] [@yojson.default None]
   head_ref_oid : string option; [@key "headRefOid"] [@yojson.default None]
-  base_ref_oid : string option; [@key "baseRefOid"] [@yojson.default None]
+  base_ref : base_ref option; [@key "baseRef"] [@yojson.default None]
   base_ref_name : string option; [@key "baseRefName"] [@yojson.default None]
   stack : stack_node option; [@yojson.default None]
   merge_commit : oid_obj option; [@key "mergeCommit"] [@yojson.default None]
@@ -754,7 +757,11 @@ let pr_state_of_pull_request ~owner ~merge_queue_required (pr : pull_request) :
     merge_queue_required;
     merge_queue_entry;
     head_branch = Option.map pr.head_ref_name ~f:Types.Branch.of_string;
-    base_oid = pr.base_ref_oid;
+    (* The PR's baseRefOid is its recorded base and may never advance when
+       the branch does. Confirm the live ref target against direct Git. *)
+    base_oid =
+      Option.bind pr.base_ref ~f:(fun r ->
+          Option.bind r.target ~f:(fun t -> t.oid));
     head_oid = pr.head_ref_oid;
     merge_commit_sha = Option.bind pr.merge_commit ~f:(fun o -> o.oid);
     base_branch = Option.map pr.base_ref_name ~f:Types.Branch.of_string;
@@ -2198,7 +2205,9 @@ let%test "forge base revision remains distinct from head and missing evidence" =
               ~pattern:"\"baseRefName\": \"main\""
               ~with_:
                 (Printf.sprintf
-                   "\"baseRefName\": \"main\", \"baseRefOid\": \"%s\"" sha)
+                   "\"baseRefName\": \"main\", \"baseRef\": {\"target\": \
+                    {\"oid\": \"%s\"}}"
+                   sha)
       in
       match
         parse_response_json ~owner:"octo" (Yojson.Safe.from_string body)
@@ -2938,3 +2947,65 @@ let make ~net ~clock ~token ~owner ~repo ~main_branch :
     let check_repo_access () = check_repo_access_internal ~net ~clock client
   end in
   (module M)
+
+let%test "live base target supersedes the PR recorded base for readiness" =
+  let body =
+    String.substr_replace_first
+      (String.substr_replace_first (thread_fixture_json "[]") ~pattern:"abc123"
+         ~with_:"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+      ~pattern:"\"baseRefName\": \"main\""
+      ~with_:
+        "\"baseRefName\": \"main\", \"baseRefOid\": \"old-base\", \"baseRef\": \
+         {\"target\": {\"oid\": \"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\"}}"
+  in
+  match parse_response_json ~owner:"octo" (Yojson.Safe.from_string body) with
+  | Error _ -> false
+  | Ok pr -> (
+      let request : Forge_observation.request =
+        { id = "live-base"; pr_number = Types.Pr_number.of_int 11141 }
+      in
+      let scope =
+        Forge_observation.
+          {
+            pr_number = Some request.pr_number;
+            branch = "patch";
+            generation = 1;
+            head = pr.head_oid;
+            base_branch = Some "main";
+          }
+      in
+      let pr =
+        {
+          pr with
+          Pr_state.pr_number = Some request.pr_number;
+          head_branch = Some (Types.Branch.of_string "patch");
+        }
+      in
+      let history, ticket =
+        Forge_observation.begin_request Forge_observation.empty_history ~request
+          ~scope
+      in
+      match ticket with
+      | None -> false
+      | Some ticket -> (
+          let history, outcome =
+            Forge_observation.accept history ~ticket ~current:scope
+              ~confirmed_head:pr.head_oid
+              ~confirmed_base:"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+              { request; outcome = Poll_outcome.Ok_pr_state pr }
+          in
+          match outcome with
+          | Error _ -> false
+          | Ok outcome -> Forge_observation.can_apply history outcome))
+
+let%test "recorded PR base alone cannot confirm the live branch" =
+  let body =
+    String.substr_replace_first (thread_fixture_json "[]")
+      ~pattern:"\"baseRefName\": \"main\""
+      ~with_:
+        "\"baseRefName\": \"main\", \"baseRefOid\": \"old-base\", \"baseRef\": \
+         null"
+  in
+  match parse_response_json ~owner:"octo" (Yojson.Safe.from_string body) with
+  | Error _ -> false
+  | Ok pr -> Option.is_none pr.base_oid

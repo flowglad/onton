@@ -391,20 +391,49 @@ let enqueue_rebase_for_stranded_dependents t patch_id =
       |> List.fold ~init:t ~f:(fun t dep_id ->
           match find_agent t dep_id with
           | None -> t
-          | Some d ->
+          | Some d -> (
               if
                 d.Patch_agent.merged
                 || (not
                       (Patch_agent.has_pr d || branch_only_published t dep_id))
                 || Patch_agent.in_merge_queue d
-                || List.mem d.Patch_agent.queue Operation_kind.Rebase
-                     ~equal:Operation_kind.equal
+                || (not (Branch_reconcile.is_unsettled d.branch_reconcile))
+                   && List.mem d.Patch_agent.queue Operation_kind.Rebase
+                        ~equal:Operation_kind.equal
                 || not
                      (Option.equal Branch.equal
                         (Patch_agent.branch_rebased_onto d)
                         (Some rebased_branch))
               then t
-              else enqueue t dep_id Operation_kind.Rebase)
+              else
+                match
+                  ( Branch_reconcile.operation d.branch_reconcile,
+                    List.hd
+                      (Branch_reconcile.integrations rebased.branch_reconcile)
+                  )
+                with
+                | Some op, Some receipt
+                  when Branch_reconcile.is_unsettled d.branch_reconcile
+                       && not
+                            (Option.equal Branch_reconcile.Commit.equal
+                               op.target (Some receipt.integrated_revision)) ->
+                    update_agent t dep_id ~f:(fun agent ->
+                        fst
+                          (Patch_agent.reconcile_branch agent
+                             (Branch_reconcile.Request
+                                {
+                                  op.intent with
+                                  base = Branch.to_string rebased_branch;
+                                  purpose =
+                                    Reconcile_request
+                                      ("dependency:"
+                                      ^ Patch_id.to_string patch_id
+                                      ^ ":"
+                                      ^ Branch_reconcile.Commit.to_string
+                                          receipt.integrated_revision);
+                                })))
+                | Some _, Some _ | Some _, None | None, Some _ | None, None ->
+                    enqueue t dep_id Operation_kind.Rebase))
 
 let remove_agent t patch_id =
   {
@@ -612,7 +641,11 @@ let runnable_messages t =
               match Patch_agent.worktree_state (agent t patch_id) with
               | Patch_agent.Unmaterialized -> eligibility patch_id base
               | Patch_agent.Materialized _ -> true)
-          | Rebase (patch_id, base) -> eligibility patch_id base
+          | Rebase (patch_id, base) ->
+              (not
+                 (Branch_reconcile.is_unsettled
+                    (agent t patch_id).branch_reconcile))
+              && eligibility patch_id base
           | Respond _ -> true
           | Reconcile_branch _ ->
               reconciliation_message_current t msg
@@ -1323,6 +1356,13 @@ let reconcile_branch t patch_id event =
                       when Patch_id.equal pid patch_id
                            && equal_message_status msg.status Pending ->
                         { msg with status = Completed }
+                    | Rebase (pid, _)
+                      when Patch_id.equal pid patch_id
+                           && equal_message_status msg.status Pending
+                           && not
+                                (List.mem agent.queue Operation_kind.Rebase
+                                   ~equal:Operation_kind.equal) ->
+                        { msg with status = Obsolete }
                     | Start _ | Respond _ | Rebase _ | Reconcile_branch _ -> msg);
             }
       in

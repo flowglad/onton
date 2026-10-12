@@ -434,7 +434,7 @@ let runner_without_backend ?(repair = false) env ~feature ~retry =
                         assert (patch_id = id "0");
                         assert (
                           Base.String.is_substring prompt
-                            ~substring:"First finish the interrupted local work");
+                            ~substring:"Finish the interrupted local work");
                         on_event Types.Stream_event.Turn_started;
                         Git.run_git ~cwd:path [ "add"; "recovery-work" ];
                         Git.run_git ~cwd:path
@@ -443,6 +443,7 @@ let runner_without_backend ?(repair = false) env ~feature ~retry =
                             "-qm";
                             "Finish interrupted publication work";
                           ];
+                        Git.run_git ~cwd:path [ "rebase"; "origin/main" ];
                         {
                           exit_code = 0;
                           stdout = "";
@@ -552,8 +553,15 @@ let runner_without_backend ?(repair = false) env ~feature ~retry =
                 Eio.Time.sleep clock 0.02;
                 wait_rebase ())
             in
-            Eio.Time.with_timeout_exn clock 25. (fun () ->
-                Eio.Fiber.first (fun () -> Runner.run ()) wait_rebase);
+            (try
+               Eio.Time.with_timeout_exn clock 25. (fun () ->
+                   Eio.Fiber.first (fun () -> Runner.run ()) wait_rebase)
+             with Eio.Time.Timeout ->
+               let agent =
+                 Runtime.read runtime (fun snap ->
+                     Orchestrator.agent snap.Runtime.orchestrator (id "0"))
+               in
+               failwith ("rebase timed out: " ^ Patch_agent.show agent));
             Git.run_git ~cwd:origin
               [ "merge-base"; "--is-ancestor"; target; "demo/patch-0" ];
             assert (

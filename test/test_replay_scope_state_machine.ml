@@ -13,9 +13,14 @@ let permitted state =
   match B.pending state with
   | Some { kind = B.Publish { candidate; _ }; _ } -> (
       match B.operation state with
-      | Some operation ->
-          operation.B.scope_revision = Some candidate
-          && Replay_scope.valid_request operation.B.approved_scope
+      | Some operation -> (
+          match operation.B.candidate_origin with
+          | B.Accepted_agent_repair { revision; turn } ->
+              revision = candidate
+              && operation.candidate_evidence = Some (B.Agent_reported turn)
+          | B.Deterministic | B.Capture_agent_repair _ ->
+              operation.B.scope_revision = Some candidate
+              && Replay_scope.valid_request operation.B.approved_scope)
       | None -> false)
   | Some { kind = B.Checkout_remote _; _ } -> false
   | Some { kind = B.Integrate { source; target; boundary; policy }; _ } -> (
@@ -77,8 +82,8 @@ let () =
     [
       QCheck2.Test.make ~count:1000
         ~name:
-          "queued dirty recovery may extend local work only before durable \
-           agent dispatch"
+          "complete recovery retains its captured task across dispatch and \
+           restart"
         G.(pair bool (list_size (int_range 0 80) (int_range 0 3)))
         (fun (sequencer, actions) ->
           try
@@ -112,7 +117,7 @@ let () =
               |> Option.get
             in
             let state = F.step state (B.Repair_started token) in
-            let state, dispatched =
+            let state, _dispatched =
               List.fold_left
                 (fun (state, dispatched) action ->
                   let state, dispatched =
@@ -147,10 +152,7 @@ let () =
                    })
             in
             let op = Option.get (B.operation state) in
-            let expected =
-              if dispatched || sequencer then B.Reconstruct_history
-              else B.Finish_local_work
-            in
+            let expected = B.Reconstruct_history in
             permitted state
             && B.equal state (F.restore state)
             &&
@@ -291,12 +293,12 @@ let () =
           with _ -> false);
       QCheck2.Test.make ~count:1000
         ~name:
-          "repair authority cannot widen across restart, retarget and \
-           stale-completion interleavings without a matching linear extension"
+          "successful repair authority survives restart, retarget and stale \
+           completions"
         G.(
           triple (int_range 0 2) (int_range 0 2)
             (list_size (int_range 0 80) (int_range 0 4)))
-        (fun (task, evidence, actions) ->
+        (fun (task, _evidence, actions) ->
           try
             let source = F.commit 10
             and candidate = F.commit 30
@@ -326,10 +328,6 @@ let () =
                        (Push_reject_classify.Hook_failure "fixture gate"))
             in
             let baseline = if task = 1 then candidate else source in
-            assert (
-              Option.map fst
-                (B.local_extension_contract (Option.get (B.operation initial)))
-              = if task = 2 then None else Some baseline);
             let inspection =
               {
                 (observation 0) with
@@ -380,43 +378,11 @@ let () =
                   | _ -> F.step state B.Recover)
                 state actions
             in
-            let local_extension =
-              if evidence = 2 then None
-              else
-                Onton_core_test_support.Scope_fixture.local_extension
-                  ~source:(if evidence = 0 then baseline else F.commit 99)
-                  ~candidate:extended
-            in
-            let state =
-              F.reply state
-                (B.Recovery_verified
-                   {
-                     observation =
-                       {
-                         inspection with
-                         source = extended;
-                         head = extended;
-                         clean = true;
-                       };
-                     local_extension;
-                     source_preserved = true;
-                     remote_preserved = true;
-                   })
-            in
-            let contract = (Option.get (B.operation state)).B.approved_scope in
-            let expected =
-              if evidence <> 0 || task = 2 then original
-              else if task = 1 then
-                Replay_scope.Identity (B.Commit.to_string extended)
-              else
-                Replay_scope.Replay
-                  {
-                    source = B.Commit.to_string extended;
-                    boundary = B.Commit.to_string (F.commit 1);
-                    target = B.Commit.to_string (F.commit 20);
-                  }
-            in
-            Replay_scope.equal_request contract expected
+            let state = F.reply state (B.Integrated extended) in
+            let operation = Option.get (B.operation state) in
+            Replay_scope.equal_request operation.approved_scope original
+            && operation.candidate_origin
+               = B.Accepted_agent_repair { turn = token; revision = extended }
             && permitted state
             && B.equal state (F.restore state)
             && List.mem baseline (B.required_revisions state)

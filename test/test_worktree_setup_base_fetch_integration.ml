@@ -1419,9 +1419,10 @@ let scenario_adopted_publication env policy history =
           token
       in
       (match repair () with
-      | R.Repair_needed _ -> ()
-      | R.Idle | R.Waiting | R.Intervention _ | R.Checkpoint_failed _ ->
-          failwith "unproven remote merge did not retain owned repair");
+      | R.Idle -> ()
+      | R.Repair_needed _ | R.Waiting | R.Intervention _ | R.Checkpoint_failed _
+        ->
+          failwith "successful remote repair did not publish");
       ignore (repair ());
       if !calls <> 1 then failwith "duplicate recovery claim reran agent"
   | `Ahead, outcome -> settle outcome
@@ -1437,10 +1438,11 @@ let scenario_adopted_publication env policy history =
     if List.is_empty (B.publications (state ())) then
       failwith "verified publication omitted receipt")
   else (
-    assert_string "unproven adoption preserves the remote" remote
+    assert_string "successful repair publishes its exact candidate"
+      (git_capture ~dir:path [ "rev-parse"; "HEAD" ])
       (git_capture ~dir:origin_dir [ "rev-parse"; branch ]);
-    if not (List.is_empty (B.publications (state ()))) then
-      failwith "adoption fabricated remote contribution authority");
+    if List.is_empty (B.publications (state ())) then
+      failwith "successful repair omitted publication receipt");
   Stdlib.print_endline
     ("  adopted_publication_"
     ^ (match policy with

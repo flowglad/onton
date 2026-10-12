@@ -285,6 +285,344 @@ let checkout_recovery env detached =
                  [ "cat-file"; "-e"; "patch:interrupted" ]
                <> 0)))
 
+let repair_capture_checkout_change env detached =
+  Git.with_temp_repo (fun remote ->
+      let base = commit remote "base" "base\n" "base" in
+      Git.with_temp_repo (fun dir ->
+          prepare remote dir;
+          ignore (commit dir "work" "work\n" "work");
+          write dir "unfinished" "unfinished\n";
+          ignore (commit remote "upstream" "upstream\n" "upstream");
+          let runtime = make_runtime () in
+          let io =
+            E.make_io
+              ~process_mgr:(Eio.Stdenv.process_mgr env)
+              ~clock:(Eio.Stdenv.clock env) ~path:dir
+          in
+          let checkpoint = Filename.temp_file "capture-checkout" ".json" in
+          Fun.protect
+            ~finally:(fun () -> Sys.remove checkpoint)
+            (fun () ->
+              ignore
+                (run runtime (persist checkpoint) io
+                   (B.Materialized (B.New_branch (sha base))));
+              let token =
+                require_turn
+                  (run runtime (persist checkpoint) io (B.Request intent))
+              in
+              ignore
+                (run runtime (persist checkpoint) io (B.Repair_started token));
+              if detached then
+                Git.run_git ~cwd:dir [ "checkout"; "--detach"; "-q" ]
+              else Git.run_git ~cwd:dir [ "checkout"; "-q"; "-b"; "other" ];
+              let capture, _ =
+                B.step (state runtime) (B.Repair_completed { token; at = 100. })
+              in
+              let result =
+                execute io
+                  ~operation:(Option.get (B.operation capture))
+                  (Option.get (B.pending capture))
+              in
+              check "changed repair checkout requires recovery"
+                (result = B.Recovery_required "repair_capture_checkout_changed");
+              let outcome =
+                run runtime (persist checkpoint) io
+                  (B.Repair_completed { token; at = 100. })
+              in
+              check "changed repair checkout offers visible owned recovery"
+                (match outcome with
+                | R.Repair_needed _ | R.Intervention _ -> true
+                | R.Idle | R.Waiting | R.Checkpoint_failed _ -> false);
+              check "changed repair checkout cannot publish"
+                (B.publications (state runtime) = []
+                && Git.git_exit_code ~cwd:remote
+                     [ "rev-parse"; "--verify"; "patch" ]
+                   <> 0))))
+
+let trusted_migration_repair ?(lost_checkpoint = false) env ~held ~lost_capture
+    ~lost_ack =
+  Git.with_temp_repo (fun remote ->
+      ignore
+        (commit remote "migration.sql" "initial schema\n" "initial migration");
+      Git.with_temp_repo (fun dir ->
+          prepare remote dir;
+          ignore (commit dir "migration.sql" "patch schema\n" "patch migration");
+          ignore
+            (commit remote "migration.sql" "upstream schema\n"
+               "upstream migration");
+          write dir "snapshot.json" "unfinished snapshot\n";
+          let runtime = make_runtime () in
+          Runtime.update_orchestrator runtime (fun orch ->
+              Orchestrator.set_worktree_path orch id dir);
+          let io =
+            E.make_io
+              ~process_mgr:(Eio.Stdenv.process_mgr env)
+              ~clock:(Eio.Stdenv.clock env) ~path:dir
+          in
+          let pushes = ref 0
+          and fail_capture = ref false
+          and lose_ack = ref lost_ack in
+          let checked_io =
+            E.
+              {
+                git =
+                  (fun args ->
+                    if
+                      !fail_capture
+                      && args = [ "rev-parse"; "--verify"; "HEAD^{commit}" ]
+                    then (
+                      fail_capture := false;
+                      (128, "", "injected HEAD capture failure"))
+                    else
+                      match args with
+                      | "push" :: _ ->
+                          incr pushes;
+                          let result = io.git args in
+                          if !lose_ack then (
+                            lose_ack := false;
+                            (128, "", "lost publication acknowledgement"))
+                          else result
+                      | _ -> io.git args);
+              }
+          in
+          let checkpoint = Filename.temp_file "trusted-migration" ".json" in
+          let refuse_receipt = ref lost_checkpoint in
+          let save snapshot =
+            let owner =
+              (Orchestrator.agent snapshot.Runtime.orchestrator id)
+                .Patch_agent.branch_reconcile
+            in
+            if
+              !refuse_receipt
+              &&
+              match B.operation owner with
+              | Some op ->
+                  B.agent_candidate op
+                    (sha (Git.git_capture ~cwd:dir [ "rev-parse"; "HEAD" ]))
+              | None -> false
+            then (
+              refuse_receipt := false;
+              Error "injected accepted-receipt checkpoint failure")
+            else persist checkpoint snapshot
+          in
+          Fun.protect
+            ~finally:(fun () -> Sys.remove checkpoint)
+            (fun () ->
+              let token =
+                require_turn
+                  (run runtime save checked_io
+                     (B.Request { intent with policy = Preserve_ancestry }))
+              in
+              (* The repair owns repository-wide changes and finishes the merge. *)
+              Git.run_git ~cwd:dir [ "add"; "snapshot.json" ];
+              Git.run_git ~cwd:dir [ "commit"; "-qm"; "snapshot work" ];
+              let merge_code, _, _ =
+                io.git [ "merge"; "--no-edit"; "origin/main" ]
+              in
+              check "upstream merge reports a conflict" (merge_code = 1);
+              check "upstream merge is in progress"
+                (Git.git_capture ~cwd:dir [ "rev-parse"; "MERGE_HEAD" ]
+                = Git.git_capture ~cwd:dir [ "rev-parse"; "origin/main" ]);
+              Git.run_git ~cwd:dir [ "rm"; "-f"; "migration.sql" ];
+              write dir "renamed-migration.sql"
+                "validated patch and upstream schema\n";
+              write dir "snapshot.json" "validated schema snapshot\n";
+              write dir "repository-validation"
+                "repository-wide guidance completed\n";
+              Git.run_git ~cwd:dir
+                [
+                  "add";
+                  "renamed-migration.sql";
+                  "snapshot.json";
+                  "repository-validation";
+                ];
+              Git.run_git ~cwd:dir
+                [
+                  "commit";
+                  "-qm";
+                  "resolve migration collision and validate repository";
+                ];
+              let candidate =
+                Git.git_capture ~cwd:dir [ "rev-parse"; "HEAD" ]
+              in
+              let runtime, token =
+                if not held then (runtime, token)
+                else
+                  let failed =
+                    run runtime save checked_io
+                      (B.Repair_failed
+                         {
+                           token;
+                           at = 100.;
+                           reason =
+                             "repair agent failed before reporting validation";
+                         })
+                  in
+                  check "failed turn waits without acceptance"
+                    (failed = R.Waiting);
+                  let second =
+                    require_turn (run runtime save checked_io (B.Tick 10000.))
+                  in
+                  ignore
+                    (run runtime save checked_io
+                       (B.Repair_failed
+                          {
+                            token = second;
+                            at = 100.;
+                            reason = "validation interrupted";
+                          }));
+                  check "failed repair budget holds"
+                    (match run runtime save checked_io (B.Tick 10000.) with
+                    | R.Intervention _ -> true
+                    | R.Idle | R.Waiting | R.Repair_needed _
+                    | R.Checkpoint_failed _ ->
+                        false);
+                  let runtime =
+                    Runtime.create ~gameplan
+                      ~main_branch:(Types.Branch.of_string "main")
+                      ~snapshot:(get (Persistence.load ~path:checkpoint))
+                      ()
+                  in
+                  check "restart preserves held repair"
+                    (match run runtime save checked_io B.Recover with
+                    | R.Intervention _ -> true
+                    | R.Idle | R.Waiting | R.Repair_needed _
+                    | R.Checkpoint_failed _ ->
+                        false);
+                  Runtime.update_orchestrator runtime (fun orch ->
+                      Orchestrator.send_human_message orch id
+                        "Validate the renamed SQL migration and snapshot \
+                         across the repository; finish without another commit \
+                         if already correct.");
+                  (runtime, require_turn (run runtime save checked_io B.Recover))
+              in
+              let turn =
+                Option.get (B.repair_turn (state runtime) ~branch:"patch" token)
+              in
+              if held then
+                check "resumed prompt includes repository-wide guidance"
+                  (Base.String.is_substring
+                     (B.recovery_prompt ~context:"repository validation"
+                        ~guidance:
+                          (Runtime.read runtime (fun snap ->
+                               (Orchestrator.agent snap.orchestrator id)
+                                 .human_messages))
+                        turn)
+                     ~substring:"renamed SQL migration");
+              check "resumed repair need not create a commit"
+                (Git.git_capture ~cwd:dir [ "rev-parse"; "HEAD" ] = candidate);
+              fail_capture := lost_capture;
+              let outcome =
+                run runtime save checked_io
+                  (B.Repair_completed { token; at = 100. })
+              in
+              let runtime =
+                Runtime.create ~gameplan
+                  ~main_branch:(Types.Branch.of_string "main")
+                  ~snapshot:(get (Persistence.load ~path:checkpoint))
+                  ()
+              in
+              let outcome =
+                if lost_checkpoint then (
+                  check "pin survives an accepted-receipt checkpoint failure"
+                    (match outcome with
+                    | R.Checkpoint_failed _ -> true
+                    | R.Idle | R.Waiting | R.Repair_needed _ | R.Intervention _
+                      ->
+                        false);
+                  fail_capture := true;
+                  let outcome = run runtime save checked_io B.Recover in
+                  let op = Option.get (B.operation (state runtime)) in
+                  check
+                    "retry recovers the pinned successful repair before \
+                     another HEAD read"
+                    (B.agent_candidate op (sha candidate));
+                  outcome)
+                else outcome
+              in
+              let outcome =
+                if outcome = R.Waiting then
+                  run runtime save checked_io (B.Tick 10000.)
+                else outcome
+              in
+              let outcome =
+                if outcome = R.Waiting then
+                  run runtime save checked_io (B.Tick 20000.)
+                else outcome
+              in
+              check "trusted repair settles after restart and read/ack loss"
+                (outcome = R.Idle && B.phase (state runtime) = Some B.Settled);
+              check "exact repaired SHA published once"
+                (!pushes = 1
+                && Git.git_capture ~cwd:remote [ "rev-parse"; "patch" ]
+                   = candidate);
+              check "SQL rename and snapshot are published"
+                (Git.git_capture ~cwd:remote
+                   [ "show"; "patch:renamed-migration.sql" ]
+                 = "validated patch and upstream schema"
+                && Git.git_capture ~cwd:remote [ "show"; "patch:snapshot.json" ]
+                   = "validated schema snapshot");
+              let receipt = List.hd (B.publications (state runtime)) in
+              check "publication preserves agent-reported evidence"
+                (receipt.publication_evidence = B.Agent_reported token);
+              check "duplicate completion cannot republish"
+                (run runtime save checked_io
+                   (B.Repair_completed { token; at = 20001. })
+                 = R.Idle
+                && !pushes = 1))))
+
+let already_current_preserves_files env =
+  Git.with_temp_repo (fun remote ->
+      ignore (commit remote "staged" "original staged\n" "initial");
+      ignore (commit remote "unstaged" "original unstaged\n" "tracked fixture");
+      Git.with_temp_repo (fun dir ->
+          prepare remote dir;
+          Git.run_git ~cwd:dir [ "push"; "-q"; "origin"; "patch" ];
+          write dir "staged" "pending staged edit\n";
+          Git.run_git ~cwd:dir [ "add"; "staged" ];
+          write dir "unstaged" "pending unstaged edit\n";
+          Unix.symlink remote (Filename.concat dir "node_modules");
+          let head = Git.git_capture ~cwd:dir [ "rev-parse"; "HEAD" ] in
+          let index = Git.git_capture ~cwd:dir [ "write-tree" ] in
+          let status =
+            Git.git_capture ~cwd:dir [ "status"; "--porcelain=v1" ]
+          in
+          let io =
+            E.make_io
+              ~process_mgr:(Eio.Stdenv.process_mgr env)
+              ~clock:(Eio.Stdenv.clock env) ~path:dir
+          in
+          let mutations = ref 0 in
+          let io =
+            E.
+              {
+                git =
+                  (fun args ->
+                    (match args with
+                    | ( "push" | "rebase" | "merge" | "cherry-pick" | "reset"
+                      | "commit" | "add" | "checkout" )
+                      :: _ ->
+                        incr mutations
+                    | _ -> ());
+                    io.git args);
+              }
+          in
+          let runtime = make_runtime () in
+          let outcome = run runtime (fun _ -> Ok ()) io (B.Request intent) in
+          check "already-current branch launches no repair or integration/push"
+            (outcome = R.Idle && !mutations = 0);
+          check "already-current branch confirms committed revision"
+            (B.phase (state runtime) = Some B.Settled);
+          check "already-current branch preserves HEAD, index and status"
+            (Git.git_capture ~cwd:dir [ "rev-parse"; "HEAD" ] = head
+            && Git.git_capture ~cwd:dir [ "write-tree" ] = index
+            && Git.git_capture ~cwd:dir [ "status"; "--porcelain=v1" ] = status
+            );
+          check "pending file contents and dependency symlink survive"
+            (Git.git_capture ~cwd:dir [ "show"; ":staged" ]
+             = "pending staged edit"
+            && Unix.readlink (Filename.concat dir "node_modules") = remote)))
+
 let () =
   Eio_main.run @@ fun env ->
   List.iter
@@ -416,7 +754,9 @@ let () =
                           Git.run_git ~cwd:dir
                             [ "add"; "test-a"; "test-b"; "test-c" ];
                           Git.run_git ~cwd:dir
-                            [ "commit"; "-qm"; "Finish interrupted tests" ]);
+                            [ "commit"; "-qm"; "Finish interrupted tests" ];
+                          Git.run_git ~cwd:dir
+                            [ "merge"; "--no-edit"; "origin/main" ]);
                         B.Repair_completed { token = turn.B.token; at = 1002. })
                       token
                   in
@@ -446,6 +786,13 @@ let () =
                          ("upstream", "upstream");
                        ])))))
     [ false; true ];
+  already_current_preserves_files env;
+  trusted_migration_repair env ~held:false ~lost_capture:true ~lost_ack:true;
+  trusted_migration_repair ~lost_checkpoint:true env ~held:false
+    ~lost_capture:false ~lost_ack:false;
+  trusted_migration_repair env ~held:true ~lost_capture:false ~lost_ack:false;
+  repair_capture_checkout_change env false;
+  repair_capture_checkout_change env true;
   checkout_recovery env false;
   checkout_recovery env true;
   publication_recovery env ~persistent:false ~timeout:false ~local_hook:false;

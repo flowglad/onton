@@ -797,7 +797,9 @@ module Make (Forge : Forge.S) (W : Worktree.S) (Env : Poller_env.S) = struct
                             || Orchestrator.branch_only_published orch
                                  a.patch_id;
                           merged = a.Patch_agent.merged;
-                          busy = a.Patch_agent.busy;
+                          busy =
+                            a.Patch_agent.busy
+                            || Branch_reconcile.is_unsettled a.branch_reconcile;
                           needs_intervention = Patch_agent.needs_intervention a;
                           branch_blocked = a.Patch_agent.branch_blocked;
                           in_merge_queue = Patch_agent.in_merge_queue a;

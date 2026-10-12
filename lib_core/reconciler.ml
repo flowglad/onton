@@ -80,6 +80,8 @@ let detect_rebases graph views ~newly_merged =
       | Some v
         when (not (Set.mem newly_merged_set dep_id))
              && v.has_pr && (not v.merged) && (not v.in_merge_queue)
+             && (not v.busy) && (not v.needs_intervention)
+             && (not v.branch_blocked)
              && not
                   (List.mem v.queue Operation_kind.Rebase
                      ~equal:Operation_kind.equal) ->
@@ -100,9 +102,12 @@ let detect_rebases graph views ~newly_merged =
     enqueued. *)
 
 let detect_notified_base_drift views =
+  (* The poller projects unsettled reconciliation owners as busy. Ordinary
+     agent intervention must still allow orchestrator-driven rebase demand. *)
   List.filter_map views ~f:(fun v ->
       if
-        v.has_pr && (not v.merged) && (not v.in_merge_queue)
+        v.has_pr && (not v.merged) && (not v.in_merge_queue) && (not v.busy)
+        && (not v.branch_blocked)
         && not
              (List.mem v.queue Operation_kind.Rebase ~equal:Operation_kind.equal)
       then
@@ -121,7 +126,8 @@ let detect_stale_bases_with_mode ~mode graph views ~has_merged ~branch_of ~main
     =
   List.filter_map views ~f:(fun v ->
       if
-        v.has_pr && (not v.merged) && (not v.in_merge_queue)
+        v.has_pr && (not v.merged) && (not v.in_merge_queue) && (not v.busy)
+        && (not v.needs_intervention) && (not v.branch_blocked)
         && (not
               (List.mem v.queue Operation_kind.Rebase
                  ~equal:Operation_kind.equal))
@@ -193,8 +199,9 @@ let detect_sibling_stale_bases_with_mode ~mode graph views ~has_merged =
                   %s"
                  (Patch_id.to_string v.id)))
   in
-  (* [b] is rebasable only once it has a PR and does not already have a Rebase
-     queued. Guarding on [b]'s own view (and only [b]'s — the fan-in patch [v]
+  (* [b] is rebasable only once it has a PR, is outside the merge queue,
+     is not busy, does not need intervention, is not branch-blocked, and does
+     not already have a Rebase queued. Guarding on [b]'s own view (and only [b]'s — the fan-in patch [v]
      may itself be unstarted) keeps this detector as disciplined as the other
      three, which only ever enqueue a rebase for a patch they have validated.
      In particular, an unstarted/queued dep with no worktree leaves the fan-in
@@ -203,7 +210,9 @@ let detect_sibling_stale_bases_with_mode ~mode graph views ~has_merged =
   let base_rebasable b =
     match Map.find view_by_id b with
     | Some bv ->
-        bv.has_pr && (not bv.in_merge_queue)
+        bv.has_pr && (not bv.in_merge_queue) && (not bv.busy)
+        && (not bv.needs_intervention)
+        && (not bv.branch_blocked)
         && not
              (List.mem bv.queue Operation_kind.Rebase
                 ~equal:Operation_kind.equal)

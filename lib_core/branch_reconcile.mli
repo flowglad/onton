@@ -238,7 +238,11 @@ type integration_capture = private {
 }
 [@@deriving eq, compare, sexp_of]
 
-type integration_evidence = Executed | Recovered_completion | Verified_history
+type integration_evidence =
+  | Executed
+  | Recovered_completion
+  | Verified_history
+  | Agent_reported of token
 [@@deriving eq, compare, sexp_of]
 
 type integration_receipt = private {
@@ -253,8 +257,17 @@ type publication_receipt = private {
   operation_id : int;
   published_intent : intent;
   published_revision : Commit.t;
+  publication_evidence : integration_evidence;
+      (** Agent-reported evidence retains its successful repair turn identity.
+      *)
 }
 [@@deriving eq, compare, sexp_of]
+
+type candidate_origin =
+  | Deterministic
+  | Capture_agent_repair of token
+  | Accepted_agent_repair of { turn : token; revision : Commit.t }
+[@@deriving eq, compare, sexp_of, yojson]
 
 type operation = private {
   id : int;
@@ -277,6 +290,10 @@ type operation = private {
   boundary_candidates : boundary list;
   remote_replay : remote_replay option;
   candidate : Commit.t option;
+  candidate_origin : candidate_origin;
+      (** Durable completion/capture authority. Missing legacy provenance
+          defaults to deterministic verification, never accepted agent repair.
+      *)
   expected : Commit.t option;
   recovery_revisions : Commit.t list;
   retained_revisions : Commit.t list;
@@ -286,8 +303,8 @@ type operation = private {
       (** Durable execution fence: reservation alone does not grant agent work.
       *)
   approved_scope : Replay_scope.request;
-      (** Captured Git inputs. Only explicitly authorized linear local work may
-          extend this contract; reconstructed history cannot widen it. *)
+      (** Immutable inputs for deterministic verification; diagnostic context
+          for a complete agent repair. *)
   scope_revision : Commit.t option;
       (** Candidate independently verified against [approved_scope]. *)
   deferred_remote : Commit.t option;
@@ -446,12 +463,13 @@ val integration_scope_matches :
   policy:policy ->
   bool
 (** Integration inputs must exactly match the captured contribution contract. A
-    remote observation or recovery-head change cannot expand that contract. *)
+    remote observation cannot expand a deterministic contract. Accepted agent
+    repairs carry separate authority and do not use this deterministic gate. *)
 
 val ancestry_requirements : operation -> Commit.t list
-(** Revisions that must remain ancestors under an ancestry-preserving contract.
-    Includes retained requirements from preceding steps. Rewrite contracts
-    return an empty list; their preservation uses the separate replay proofs. *)
+(** Revisions that deterministic candidates must preserve as ancestors. Includes
+    retained requirements from preceding steps. Rewrite contracts return an
+    empty list; their preservation uses the separate replay proofs. *)
 
 val observation_boundaries : operation -> boundary list
 val materialization : t -> materialization option
@@ -587,12 +605,6 @@ val integration_result :
 (** Interpret post-command ancestry observations against the captured
     integration. *)
 
-val local_extension_contract :
-  operation -> (Commit.t * Replay_scope.request) option
-(** A linear source extension is permitted only when finishing interrupted work
-    or repairing a rejected publication whose candidate already passed scope
-    verification. History reconstruction cannot widen its input contract. *)
-
 val check_checkout :
   ?operation:operation ->
   command ->
@@ -648,12 +660,10 @@ val repair_result :
   final_result:bool ->
   detail:string ->
   event
-(** Validate repair-turn observations. A backend failure after accepting the
-    turn is a completed attempt, verified before charging its budget. Failures
-    before acceptance retry without spending agent attempts. Changed HEAD
-    invalidates content-repair authority and enters history recovery. History
-    recovery may change HEAD, but only independent verification can authorize
-    publication. *)
+(** A successful non-diagnostic turn authorizes durable HEAD capture even if its
+    completion HEAD probe failed or HEAD changed during repair. Failed accepted
+    turns spend the repair budget; interrupted transport does not. The
+    pre-dispatch HEAD check retains checkout concurrency authority. *)
 
 val continuation :
   operation -> Git_observation.t -> Git_observation.continuation
@@ -674,3 +684,5 @@ val diagnostics : t -> (string * string) list
 (** Derived operator details. Unknown observations remain distinct from an
     absent remote ref, and inferred replay evidence is never described as
     proven. *)
+
+val agent_candidate : operation -> Commit.t -> bool

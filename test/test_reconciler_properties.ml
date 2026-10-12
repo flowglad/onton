@@ -502,16 +502,16 @@ let dep_br = Types.Branch.of_string "dep"
 let other_br = Types.Branch.of_string "other"
 
 let mk_view ~id ?(has_pr = true) ?(merged = false) ?(queue = [])
-    ?(base_branch = main_br) ?(branch_rebased_onto = Some main_br)
-    ?(in_merge_queue = false) ?(base_contains_merged_siblings = true)
-    ?(sibling_rebase_target = None) () =
+    ?(needs_intervention = false) ?(base_branch = main_br)
+    ?(branch_rebased_onto = Some main_br) ?(in_merge_queue = false)
+    ?(base_contains_merged_siblings = true) ?(sibling_rebase_target = None) () =
   Reconciler.
     {
       id;
       has_pr;
       merged;
       busy = false;
-      needs_intervention = false;
+      needs_intervention;
       branch_blocked = false;
       in_merge_queue;
       queue;
@@ -734,23 +734,22 @@ let prop_detect_stale_bases_enqueues_wrong_base =
 
 (* End-to-end: reconcile emits Enqueue_rebase on a drifted view when no
    other detector would have caught it (base_branch already matches
-   initial_base, merged list is empty, no newly_merged). This is the exact
-   patch-2 scenario from retire-blue-green. *)
+   initial_base and the dependency was merged on a previous poll tick). *)
 let prop_reconcile_e2e_catches_drift =
   QCheck2.Test.make
-    ~name:"reconcile: drift detector catches GitHub-auto-retargeted case"
-    ~count:1
-    QCheck2.Gen.(return ())
-    (fun () ->
-      (* Single patch with no deps; base_branch = main, rebased_onto = dep
-         (stale). No merged_prs. *)
+    ~name:
+      "reconcile: notified base drift queues rebase despite ordinary \
+       intervention" ~count:100 QCheck2.Gen.bool (fun needs_intervention ->
+      (* The dependency is already merged and the PR has been retargeted to
+         main, but the integration receipt still names dep. An ordinary
+         intervention (such as persistent CI failure) must not hide drift. *)
       let patch : Types.Patch.t =
         {
           id = pid "p1";
           title = "t";
           description = "";
           branch = Types.Branch.of_string "p1";
-          dependencies = [];
+          dependencies = [ pid "dep" ];
           spec = "";
           acceptance_criteria = [];
           files = [];
@@ -763,16 +762,23 @@ let prop_reconcile_e2e_catches_drift =
           required_context = [];
         }
       in
-      let graph = Graph.of_patches [ patch ] in
+      let dependency =
+        { patch with id = pid "dep"; branch = dep_br; dependencies = [] }
+      in
+      let graph = Graph.of_patches [ dependency; patch ] in
       let views =
         [
+          mk_view ~id:(pid "dep") ~merged:true ~base_branch:main_br ();
           mk_view ~id:(pid "p1") ~base_branch:main_br
-            ~branch_rebased_onto:(Some dep_br) ();
+            ~branch_rebased_onto:(Some dep_br) ~needs_intervention ();
         ]
       in
       let actions =
-        Reconciler.reconcile ~graph ~main:main_br ~merged_pr_patches:[]
-          ~branch_of:(fun _ -> main_br)
+        Reconciler.reconcile ~graph ~main:main_br
+          ~merged_pr_patches:[ pid "dep" ]
+          ~branch_of:(fun id ->
+            if Types.Patch_id.equal id dependency.id then dep_br
+            else patch.branch)
           views
       in
       List.exists actions ~f:(function
@@ -1157,9 +1163,78 @@ let prop_merge_target_all_merged_is_main =
            ~branch_of ~main:main_br)
         main_br)
 
+let prop_rebase_detectors_skip_held_targets =
+  QCheck2.Test.make ~count:1
+    ~name:"rebase detectors respect holds; drift allows ordinary intervention"
+    QCheck2.Gen.unit (fun () ->
+      try
+        let a = pid "merged" and b = pid "open" and c = pid "fanin" in
+        let patch id dependencies : Types.Patch.t =
+          {
+            id;
+            title = Types.Patch_id.to_string id;
+            description = "";
+            branch = dep_br;
+            dependencies;
+            spec = "";
+            acceptance_criteria = [];
+            files = [];
+            classification = "";
+            changes = [];
+            test_stubs_introduced = [];
+            test_stubs_implemented = [];
+            complexity = None;
+            precedents = [];
+            required_context = [];
+          }
+        in
+        let graph =
+          Graph.of_patches [ patch a []; patch b [ a ]; patch c [ a; b ] ]
+        in
+        let view =
+          mk_view ~id:b ~base_branch:dep_br ~branch_rebased_onto:None ()
+        in
+        let fanin =
+          mk_view ~id:c ~base_contains_merged_siblings:false
+            ~sibling_rebase_target:(Some b) ()
+        in
+        let detectors =
+          [
+            (fun view ->
+              Reconciler.detect_rebases graph [ view ] ~newly_merged:[ a ]);
+            (fun view ->
+              Reconciler.detect_stale_bases graph [ view ]
+                ~has_merged:(Types.Patch_id.equal a)
+                ~branch_of:(fun _ -> dep_br)
+                ~main:main_br);
+            (fun view ->
+              Reconciler.detect_sibling_stale_bases graph [ view; fanin ]
+                ~has_merged:(Types.Patch_id.equal a));
+          ]
+        in
+        let drift = Reconciler.detect_notified_base_drift in
+        (not (List.is_empty (drift [ view ])))
+        && List.for_all
+             [ { view with busy = true }; { view with branch_blocked = true } ]
+             ~f:(fun held -> List.is_empty (drift [ held ]))
+        && (not
+              (List.is_empty
+                 (drift [ { view with needs_intervention = true } ])))
+        && List.for_all detectors ~f:(fun detect ->
+            (not (List.is_empty (detect view)))
+            && List.for_all
+                 [
+                   { view with busy = true };
+                   { view with needs_intervention = true };
+                   { view with branch_blocked = true };
+                 ]
+                 ~f:(fun held -> List.is_empty (detect held)))
+      with _ -> false)
+
 let () =
   let tests =
     [
+      prop_rebase_detectors_skip_held_targets;
       prop_detect_merges_only_mark_merged;
       prop_detect_merges_subset_of_merged_prs;
       prop_detect_merges_skips_already_merged;

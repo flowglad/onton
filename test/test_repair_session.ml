@@ -83,7 +83,7 @@ let repair_turn mode =
   let state = F.step state (B.Repair_started token) in
   Option.get (B.repair_turn state ~branch:"patch" token)
 
-let run env root ~existing mode =
+let[@warning "-4"] run env root ~existing mode =
   let project_name = Printf.sprintf "repair-%b-%d" existing mode in
   let gameplan =
     (get
@@ -207,7 +207,7 @@ let run env root ~existing mode =
             on_event
               (Final_result { text = "repair done"; stop_reason = End_turn });
             {
-              exit_code = 0;
+              exit_code = (if !calls = 1 then 143 else 0);
               stdout = "";
               stderr = "";
               got_events = true;
@@ -230,11 +230,17 @@ let run env root ~existing mode =
     in
     let before = agent.branch_reconcile in
     (try
-       ignore
-         (SD.run_repair ~patch_id:id ~agent ~backend ~complexity:None
-            ~cwd:Env.fs ~context:"repair context" ~guidance:[ "human guidance" ]
-            ~turn ~read_head:(fun () -> Some (B.Commit.to_string source))
-           : B.event);
+       let result =
+         SD.run_repair ~patch_id:id ~agent ~backend ~complexity:None ~cwd:Env.fs
+           ~context:"repair context" ~guidance:[ "human guidance" ] ~turn
+           ~read_head:(fun () -> Some (B.Commit.to_string source))
+       in
+       if attempt = 1 then
+         check "final result survives graceful CLI termination"
+           (match result with B.Repair_completed _ -> true | _ -> false);
+       if attempt = 6 then
+         check "timed-out final result cannot authorize repair"
+           (match result with B.Repair_completed _ -> false | _ -> true);
        check "cancellation must propagate" (attempt <> 5)
      with Eio.Cancel.Cancelled _ ->
        check "only cancellation propagates" (attempt = 5));

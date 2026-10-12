@@ -325,26 +325,25 @@ let scenario env entrypoint policy interruption unrelated =
                         ~now:(fun () -> 100.))
                     token
                 in
-                let rejected = repair () in
-                check "an unrelated merge cannot pass scope verification"
-                  (match rejected with
-                  | R.Repair_needed _ -> true
-                  | R.Idle | R.Waiting | R.Intervention _
-                  | R.Checkpoint_failed _ ->
-                      false);
-                ignore (repair ());
-                check "duplicate history repair reran" (!calls = 1);
                 check
-                  "unrelated ancestry cannot authorize a publication or receipt"
-                  (!publications = 0
-                  && B.publications (state ()) = []
-                  && B.remote_integrations (state ()) = []);
-                check "unrelated remote remains unchanged"
-                  (Git.git_capture ~cwd:remote [ "rev-parse"; "patch" ]
-                  = incoming);
-                check "unrelated remote is retained as evidence"
-                  (List.mem (revision incoming)
-                     (B.required_revisions (state ())))
+                  "successful repository repair publishes without \
+                   deterministic scope approval"
+                  (repair () = R.Idle);
+                ignore (repair ());
+                check "duplicate completion cannot rerun repair" (!calls = 1);
+                check "exact repaired SHA published once"
+                  (match B.publications (state ()) with
+                  | [ receipt ] ->
+                      !publications = 1
+                      && B.Commit.to_string receipt.published_revision
+                         = Git.git_capture ~cwd:dir [ "rev-parse"; "HEAD" ]
+                      && Git.git_capture ~cwd:remote [ "rev-parse"; "patch" ]
+                         = B.Commit.to_string receipt.published_revision
+                  | _ -> false);
+                check "repair keeps incoming contribution"
+                  (Git.git_exit_code ~cwd:dir
+                     [ "merge-base"; "--is-ancestor"; incoming; "HEAD" ]
+                  = 0)
             | R.Idle | R.Waiting | R.Intervention _ | R.Checkpoint_failed _ ->
                 failwith "unrelated remote did not reach history recovery"
           else settle outcome;

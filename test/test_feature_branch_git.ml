@@ -116,8 +116,9 @@ let () =
               ~repo_root:dir
           in
           let module W = (val client) in
-          let drive (module Client : Worktree.S) checkpoint event =
-            let rec execute remaining state =
+          let drive ?(on_repair = fun _ -> ()) (module Client : Worktree.S)
+              checkpoint event =
+            let rec execute remaining (state, effects) =
               if remaining = 0 then
                 failwith "root reconciliation did not settle";
               let state =
@@ -126,6 +127,9 @@ let () =
                 | Error reason -> failwith reason
               in
               checkpoint := state;
+              List.iter effects ~f:(function
+                | B.Repair token -> on_repair token
+                | B.Execute _ | B.Start_repair _ | B.Completed _ -> ());
               match (B.operation state, B.pending state) with
               | Some operation, Some command ->
                   let result =
@@ -133,13 +137,11 @@ let () =
                       ~branch:(Branch.of_string "root") ~operation command
                   in
                   execute (remaining - 1)
-                    (fst
-                       (B.step state
-                          (B.Result
-                             { token = command.B.token; at = 100.; result })))
+                    (B.step state
+                       (B.Result { token = command.B.token; at = 100.; result }))
               | None, _ | _, None -> state
             in
-            checkpoint := execute 100 (fst (B.step !checkpoint event))
+            checkpoint := execute 100 (B.step !checkpoint event)
           in
           let rt =
             Runtime.create ~gameplan:empty_gameplan
@@ -295,7 +297,20 @@ let () =
                   "shared";
                 ];
               if untracked then Unix.unlink (root_path ^ "/user-change");
-              drive (module W) publication B.Recover;
+              let offered = ref None in
+              drive
+                ~on_repair:(fun token -> offered := Some token)
+                (module W)
+                publication B.Recover;
+              let token = Stdlib.Option.get !offered in
+              drive (module W) publication (B.Repair_started token);
+              let resumed = !publication in
+              Git.run_git ~cwd:root_path [ "merge"; "--no-edit"; dirty_head ];
+              publication := resumed;
+              drive
+                (module W)
+                publication
+                (B.Repair_completed { token; at = 100. });
               ignore (integrated !publication);
               check "explicit resume publishes the retained contribution"
                 (Git.git_exit_code ~cwd:bare

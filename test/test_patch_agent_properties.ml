@@ -9,6 +9,46 @@ let agent id =
 
 let tests =
   [
+    QCheck2.Test.make ~count:100
+      ~name:"base retarget retains each deferred operation purpose and command"
+      QCheck2.Gen.(pair (int_range 0 3) bool)
+      (fun (kind, restart) ->
+        try
+          let module B = Branch_reconcile in
+          let revision = Onton_core_test_support.Replay_fixture.commit 10 in
+          let purpose =
+            match kind with
+            | 0 -> B.Publish_session "session-uuid"
+            | 1 -> B.Publish_revision revision
+            | 2 -> B.Integrate_revision { contributor = "child"; revision }
+            | _ -> B.Verify_publication
+          in
+          let intent =
+            B.{ base = "main"; policy = Preserve_ancestry; purpose }
+          in
+          let initial =
+            Patch_agent.set_base_branch (agent "retarget")
+              (Branch.of_string "main")
+          in
+          let initial =
+            fst (Patch_agent.reconcile_branch initial (B.Request intent))
+          in
+          let owner = initial.Patch_agent.branch_reconcile in
+          let expected =
+            fst (B.step owner (B.Request B.{ intent with base = "new-base" }))
+          in
+          let retargeted =
+            Patch_agent.set_base_branch initial (Branch.of_string "new-base")
+          in
+          let actual = retargeted.Patch_agent.branch_reconcile in
+          let actual =
+            if restart then
+              Result.ok_or_failwith (B.decode (B.yojson_of_t actual))
+            else actual
+          in
+          B.equal actual expected
+          && Option.equal B.equal_command (B.pending owner) (B.pending actual)
+        with _ -> false);
     QCheck2.Test.make
       ~name:"readiness flags require proof for the current PR head and base"
       ~count:400

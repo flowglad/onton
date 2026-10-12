@@ -125,6 +125,7 @@ let () =
                 commit dir "work" "committed\n" "previous session"
               in
               Git.run_git ~cwd:dir [ "push"; "-q"; "origin"; "patch" ];
+              ignore (commit remote "upstream" "upstream\n" "base advanced");
               let oc = open_out_bin (Filename.concat dir "work") in
               output_string oc "unfinished session\n";
               close_out oc;
@@ -247,6 +248,9 @@ let () =
                         Git.run_git ~cwd:dir [ "add"; "unstaged" ];
                         Git.run_git ~cwd:dir
                           [ "commit"; "-q"; "-m"; "finish interrupted session" ];
+                        Git.run_git ~cwd:dir [ "fetch"; "origin" ];
+                        Git.run_git ~cwd:dir
+                          [ "merge"; "--no-edit"; "origin/main" ];
                         B.Repair_completed { token = turn.B.token; at = 101. })
                       token
                   in
@@ -758,7 +762,9 @@ let () =
               output_string oc "resolved\n";
               close_out oc;
               Git.run_git ~cwd:dir [ "add"; "file" ];
-              check "SourceHut staged repair publishes through common owner"
+              Git.run_git ~cwd:dir
+                [ "-c"; "core.editor=true"; "rebase"; "--continue" ];
+              check "SourceHut complete repair publishes through common owner"
                 (run runtime (persist checkpoint) io
                    (B.Repair_completed { token; at = 100. })
                 = R.Idle);
@@ -985,17 +991,11 @@ let () =
                           B.Repair_completed { token = turn.B.token; at = 301. })
                         token
                     in
-                    check
-                      "unproven legacy ancestry cannot authorize publication"
-                      (match outcome with
-                      | R.Repair_needed _ -> true
-                      | R.Idle | R.Waiting | R.Intervention _
-                      | R.Checkpoint_failed _ ->
-                          false);
-                    check "unproven legacy repair leaves the remote unchanged"
-                      (Git.git_exit_code ~cwd:remote
-                         [ "show-ref"; "--verify"; "refs/heads/patch" ]
-                      <> 0);
+                    check "successful complete legacy repair publishes its HEAD"
+                      (outcome = R.Idle);
+                    check "legacy repair publishes the exact agent candidate"
+                      (Git.git_capture ~cwd:remote [ "rev-parse"; "patch" ]
+                      = Git.git_capture ~cwd:dir [ "rev-parse"; "HEAD" ]);
                     List.iter
                       (fun retained ->
                         check
@@ -2134,17 +2134,28 @@ let () =
                     run runtime (persist checkpoint) io
                       (B.Repair_completed { token; at = 100. })
                   in
-                  check "agent cannot authorize an unproven remote merge"
-                    (match outcome with
-                    | R.Repair_needed _ -> true
-                    | R.Idle | R.Waiting | R.Intervention _
-                    | R.Checkpoint_failed _ ->
-                        false);
-                  check "unproven repair cannot publish"
-                    (B.publications (state runtime) = []);
-                  check "unproven repair preserves the remote writer"
+                  let outcome =
+                    if outcome = R.Waiting then
+                      run runtime (persist checkpoint) io (B.Tick 10000.)
+                    else outcome
+                  in
+                  check
+                    "lease movement preserves accepted repair and requests new \
+                     work"
+                    (if late_remote then
+                       match outcome with
+                       | R.Repair_needed _ -> true
+                       | R.Idle | R.Waiting | R.Intervention _
+                       | R.Checkpoint_failed _ ->
+                           false
+                     else outcome = R.Idle);
+                  check
+                    "remote receives exact accepted HEAD or keeps its newer \
+                     lease"
                     (Git.git_capture ~cwd:remote [ "rev-parse"; "patch" ]
-                    = Option.value later ~default:remote_head);
+                    = Option.value later
+                        ~default:
+                          (Git.git_capture ~cwd:dir [ "rev-parse"; "HEAD" ]));
                   List.iter
                     (fun revision ->
                       check "unproven merge inputs remain recoverable"
@@ -2294,39 +2305,18 @@ let () =
                   let outcome =
                     run runtime (persist checkpoint) io (invoke turn)
                   in
-                  let outcome =
-                    if lost_probe then (
-                      check "unknown recovery result remains pending"
-                        (outcome = R.Waiting);
-                      run (restore ()) (persist checkpoint) io (B.Tick 105.))
-                    else outcome
-                  in
-                  if discard then (
-                    let token =
-                      match outcome with
-                      | R.Repair_needed token -> token
-                      | R.Idle | R.Waiting | R.Intervention _
-                      | R.Checkpoint_failed _ ->
-                          failwith
-                            "unverified recovery should allow its second \
-                             attempt"
-                    in
-                    let turn =
-                      Option.get
-                        (B.repair_turn (state runtime) ~branch:"patch" token)
-                    in
-                    let outcome =
-                      run runtime (persist checkpoint) io (invoke turn)
-                    in
+                  if lost_probe then
                     check
-                      "agent success alone cannot authorize losing captured \
-                       work"
-                      (outcome = R.Intervention "recovery_preservation_unproven"
-                      && !calls = 2);
-                    check "unverified recovery never publishes"
-                      (Git.git_exit_code ~cwd:remote
-                         [ "show-ref"; "--verify"; "refs/heads/patch" ]
-                      <> 0))
+                      "successful turn does not depend on completion HEAD probe"
+                      (outcome = R.Idle && !calls = 1);
+                  if discard then (
+                    check
+                      "successful agent repair accepts topology beyond \
+                       deterministic criteria"
+                      (outcome = R.Idle && !calls = 1);
+                    check "published revision is the captured agent HEAD"
+                      (Git.git_capture ~cwd:remote [ "rev-parse"; "patch" ]
+                      = target))
                   else (
                     check "verified agent recovery publishes" (outcome = R.Idle);
                     check
@@ -2454,6 +2444,8 @@ let () =
                         Git.run_git ~cwd:dir [ "add"; "extra"; "untracked" ];
                         Git.run_git ~cwd:dir
                           [ "commit"; "-qm"; "Finish interrupted changes" ];
+                        Git.run_git ~cwd:dir
+                          [ "merge"; "--no-edit"; "origin/main" ];
                         B.Repair_completed { token = turn.B.token; at = 100. })
                       token
                   in
@@ -2531,6 +2523,20 @@ let () =
                           ->
                             incr calls;
                             unexpected_commit ();
+                            ignore
+                              (io.git
+                                 [
+                                   "-c";
+                                   "core.editor=true";
+                                   "rebase";
+                                   "--continue";
+                                 ]);
+                            if
+                              not
+                                (Git_observation.equal_sequencer
+                                   (E.observe_checkout io).sequencer
+                                   Git_observation.None_active)
+                            then Git.run_git ~cwd:dir [ "rebase"; "--skip" ];
                             {
                               exit_code = 0;
                               stdout = "";
@@ -2566,39 +2572,27 @@ let () =
                   let unexpected_head =
                     Git.git_capture ~cwd:dir [ "rev-parse"; "HEAD" ]
                   in
-                  let outcome =
-                    if mutate_before then outcome
-                    else (
-                      check "lost HEAD probe defers without charging repair"
-                        (outcome = R.Waiting);
-                      let snapshot = get (Persistence.load ~path:checkpoint) in
-                      let runtime =
-                        Runtime.create ~gameplan
-                          ~main_branch:(Types.Branch.of_string "main")
-                          ~snapshot ()
-                      in
-                      run runtime (persist checkpoint) io (B.Tick 105.))
-                  in
                   check
-                    "restart invalidates content authority and enters history \
-                     recovery"
-                    (match outcome with
-                    | R.Repair_needed _ -> true
-                    | R.Idle | R.Waiting | R.Intervention _
-                    | R.Checkpoint_failed _ ->
-                        false);
-                  check "unexpected agent work remains recoverable"
+                    "completion capture trusts a finished repair while \
+                     preserving preflight fencing"
+                    (if mutate_before then
+                       match outcome with
+                       | R.Repair_needed _ -> true
+                       | R.Idle | R.Waiting | R.Intervention _
+                       | R.Checkpoint_failed _ ->
+                           false
+                     else outcome = R.Idle);
+                  check "agent work remains recoverable"
                     (Git.git_capture ~cwd:dir [ "rev-parse"; "HEAD" ]
                     = unexpected_head);
-                  check "no continuation after unexpected commit"
-                    (not
-                       (Git_observation.equal_sequencer
-                          (E.observe_checkout io).sequencer
-                          Git_observation.None_active));
-                  check "unverified agent work was not published"
-                    (Git.git_exit_code ~cwd:remote
-                       [ "show-ref"; "--verify"; "refs/heads/patch" ]
-                    <> 0)))))
+                  check "preflight rejection cannot publish"
+                    (if mutate_before then
+                       Git.git_exit_code ~cwd:remote
+                         [ "show-ref"; "--verify"; "refs/heads/patch" ]
+                       <> 0
+                     else
+                       Git.git_capture ~cwd:remote [ "rev-parse"; "patch" ]
+                       = unexpected_head)))))
     [ false; true ];
   (* PR #483: a repair agent has published the candidate, while the local
      tracking ref still names the old tip and Onton's lease has been rejected.
@@ -2750,8 +2744,7 @@ let () =
       check "settled recovery" (B.phase (state runtime) = Some B.Settled);
       check "pinned source retained"
         (Git.git_capture ~cwd:dir [ "rev-parse"; prefix ^ "/1/2/source" ] = work));
-  (* A new checkout with two conflicting replay steps. Agents only stage; the
-     executor owns continuation and publication, including empty/no-op steps. *)
+  (* The repair agent completes both conflicting replay steps before reporting success. *)
   Git.with_temp_repo @@ fun repair_dir ->
   prepare remote repair_dir;
   Git.run_git ~cwd:repair_dir [ "reset"; "--hard"; base ];
@@ -2802,6 +2795,15 @@ let () =
                   output_string oc content;
                   close_out oc;
                   Git.run_git ~cwd:repair_dir [ "add"; "file" ];
+                  ignore
+                    (io.git
+                       [ "-c"; "core.editor=true"; "rebase"; "--continue" ]);
+                  let oc = open_out (Filename.concat repair_dir "file") in
+                  output_string oc "resolved two\n";
+                  close_out oc;
+                  Git.run_git ~cwd:repair_dir [ "add"; "file" ];
+                  Git.run_git ~cwd:repair_dir
+                    [ "-c"; "core.editor=true"; "rebase"; "--continue" ];
                   {
                     exit_code = 0;
                     stdout = "";
@@ -2824,8 +2826,9 @@ let () =
             ~now:(fun () -> 100.)
         in
         let before = E.observe_checkout io in
-        check "staged repair is ready without an agent commit"
-          (Git_observation.repair_ready before);
+        check "agent finishes the sequencer before successful completion"
+          (Git_observation.equal_sequencer before.sequencer
+             Git_observation.None_active);
         run runtime (persist snap) io result
       in
       let second =
