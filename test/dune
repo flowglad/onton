@@ -928,13 +928,10 @@
 (test
  (name test_branch_reconcile_boundaries)
  (modules test_branch_reconcile_boundaries)
- (locks git-integration)
- (libraries onton onton_core onton_test_support eio_main unix)
- (deps (package onton))
- (action
-  (setenv ONTON_SETSID_EXEC
-   %{bin:onton-setsid-exec}
-   (run %{test}))))
+ ; Keep Archlint's test-scope classification without adding the exhaustive
+ ; matrix to runtest. The acceptance rule below is its only runner.
+ (enabled_if false)
+ (libraries onton onton_core onton_test_support eio_main unix))
 
 (rule
  (alias reconciliation-checkpoint-acceptance)
