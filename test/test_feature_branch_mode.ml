@@ -725,13 +725,7 @@ let () =
              })
       in
       let orch = reply orch B.Pinned in
-      let orch =
-        reply orch (B.Integrated candidate)
-        |> Onton_core_test_support.Publication_fixture.verify_scope
-             ~step:(fun orch event ->
-               fst (Orchestrator.reconcile_branch orch (id 1) event))
-             ~state
-      in
+      let orch = reply orch (B.Integrated candidate) in
       check "local root integration cannot complete descendant"
         (not (Orchestrator.agent orch (id 2)).Patch_agent.merged);
       let orch = reply orch B.Published in

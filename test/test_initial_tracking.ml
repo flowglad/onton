@@ -147,10 +147,10 @@ let () =
                                 | Merge_config | Confirmation ),
                                 _ )
                           | None ),
-                          ( B.Observe | Verify_scope _ | Inspect
-                          | Verify_recovery | Pin _ | Integrate _ | Continue _
-                          | Commit_merge _ | Plan_remote_replay _
-                          | Checkout_remote _ | Publish _ | Confirm _ ) ) ->
+                          ( B.Observe | Inspect | Verify_recovery | Pin _
+                          | Integrate _ | Continue _ | Commit_merge _
+                          | Plan_remote_replay _ | Checkout_remote _ | Publish _
+                          | Confirm _ ) ) ->
                           None
                     in
                     match stop with

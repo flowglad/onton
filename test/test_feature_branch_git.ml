@@ -178,8 +178,8 @@ let () =
               | B.Confirm _ when not !lost_confirmation ->
                   lost_confirmation := true;
                   raise Stdlib.Exit
-              | B.Verify_scope _ | B.Observe | Inspect | Verify_recovery | Pin _
-              | Integrate _ | Continue _ | Commit_merge _ | Plan_remote_replay _
+              | B.Observe | Inspect | Verify_recovery | Pin _ | Integrate _
+              | Continue _ | Commit_merge _ | Plan_remote_replay _
               | Checkout_remote _ | Publish _ | Confirm _ ->
                   result
           end in

@@ -125,20 +125,15 @@ let run ?(mask = 0) env ~recorded ~side_merge =
                   failwith "scope fixture stopped unexpectedly"
           in
           let state = drive 15 state in
-          if recorded && not side_merge then (
-            check "recorded linear patch publishes"
-              (B.publication_status state = `Published);
-            check "only patch work enters the PR diff"
-              (Git.git_capture ~cwd:remote
-                 [ "diff"; "--name-only"; "main...patch" ]
-              = "patch"))
-          else (
-            check "unproven scope performs no integration or push"
-              (!mutations = []);
-            check "unproven scope leaves the original checkout intact"
-              (Git.git_capture ~cwd:dir [ "rev-parse"; "HEAD" ] = source);
-            check "unproven scope remains pending for agent repair"
-              (B.publication_status state = `Pending))))
+          check "Git ancestry allows adopted and merged histories to publish"
+            (B.publication_status state = `Published);
+          check "rebase publishes all branch contributions"
+            (Git.git_capture ~cwd:remote
+               [ "diff"; "--name-only"; "main...patch" ]
+            = if side_merge then "patch\nunrelated" else "patch");
+          check "original work remains recoverable"
+            (List.mem (revision source) (B.required_revisions state));
+          check "integration and publication used Git" (!mutations <> [])))
 
 let repair_scope env policy ~side_merge =
   Git.with_temp_repo (fun remote ->
@@ -440,11 +435,10 @@ let remote_scope env policy ~side_merge =
             (Git.git_capture ~cwd:remote
                [ "diff"; "--name-only"; "main...patch" ]
             =
-            if side_merge && policy = B.Preserve_ancestry then
-              "foreign\nlocal\npatch\nremote"
+            if side_merge then "foreign\nlocal\npatch\nremote"
             else "local\npatch\nremote");
           check "remote scope preserves normal deterministic progress"
-            (!repairs = if side_merge && policy = B.Rewrite then 1 else 0)))
+            (!repairs = 0)))
 
 let () =
   Eio_main.run (fun env ->
@@ -462,4 +456,4 @@ let () =
       remote_scope env B.Preserve_ancestry ~side_merge:false;
       remote_scope env B.Rewrite ~side_merge:true;
       remote_scope env B.Preserve_ancestry ~side_merge:true);
-  print_endline "replay scope pre-mutation acceptance: OK"
+  print_endline "Git ancestry and agent recovery acceptance: OK"

@@ -9,7 +9,7 @@ type io = { git : string list -> int * string * string }
 exception Probe_failed of string
 exception Mutation_failed of string
 exception Unsupported_destination of string
-exception Scope_required of string
+exception History_unclear of string
 
 let checked ?(mutation = false) io args =
   let code, out, err = io.git args in
@@ -29,203 +29,6 @@ let commit s =
 
 let resolve io name =
   checked io [ "rev-parse"; "--verify"; name ^ "^{commit}" ] |> commit
-
-let capture_replay_scope io ~source boundary =
-  let upstream =
-    match boundary with
-    | Branch_reconcile.Recorded revision ->
-        Some (Branch_reconcile.Commit.to_string revision)
-    | Branch_reconcile.Inferred _ | Branch_reconcile.Reconstructed _
-    | Branch_reconcile.Subject_inferred _ | Branch_reconcile.Patch_equivalent _
-    | Branch_reconcile.Plain ->
-        None
-  in
-  let source = Branch_reconcile.Commit.to_string source in
-  let history =
-    match upstream with
-    | None -> ""
-    | Some boundary ->
-        let code, out, err =
-          io.git
-            [
-              "log";
-              "--topo-order";
-              "--no-show-signature";
-              "--format=%H%x00%P";
-              boundary ^ ".." ^ source;
-              "--";
-            ]
-        in
-        if code <> 0 then
-          raise (Probe_failed ("replay scope observation failed: " ^ err));
-        out
-  in
-  match Replay_scope.capture ~boundary:upstream ~source history with
-  | Ok scope -> scope
-  | Error reason -> raise (Scope_required (Replay_scope.error_reason reason))
-
-let verify_candidate_scope io ~request ~candidate =
-  let raw args =
-    let code, out, err = io.git args in
-    if code <> 0 then raise (Probe_failed ("scope observation failed: " ^ err));
-    out
-  in
-  let tree revision =
-    checked io [ "rev-parse"; "--verify"; revision ^ "^{tree}" ]
-  in
-  let candidate = Branch_reconcile.Commit.to_string candidate in
-  let plan =
-    match request with
-    | Replay_scope.Unproven -> Error "replay_scope_missing_boundary"
-    | Replay_scope.Identity source ->
-        Replay_scope.prepare_identity ~source ~tree:(tree source)
-    | Replay_scope.Replay { source; boundary; target } ->
-        let history =
-          raw
-            [
-              "log";
-              "--first-parent";
-              "--no-show-signature";
-              "--no-color";
-              "--format=%H%x00%P";
-              boundary ^ ".." ^ source;
-              "--";
-            ]
-        in
-        let scope =
-          match
-            Replay_scope.capture_first_parent ~source ~boundary:(Some boundary)
-              history
-          with
-          | Ok scope -> scope
-          | Error reason ->
-              raise (Scope_required (Replay_scope.error_reason reason))
-        in
-        let initial_tree = tree target in
-        let _, reversed =
-          List.fold scope.commits ~init:(target, [])
-            ~f:(fun (onto, predictions) origin ->
-              let status, output, err =
-                io.git
-                  [
-                    "merge-tree";
-                    "--write-tree";
-                    "--no-messages";
-                    "--name-only";
-                    "-z";
-                    "--merge-base=" ^ origin ^ "^";
-                    onto;
-                    origin;
-                  ]
-              in
-              if status <> 0 && status <> 1 then
-                raise (Probe_failed ("scope tree prediction failed: " ^ err));
-              let step =
-                match Replay_scope.prepare scope ~target ~status output with
-                | Ok plan -> plan
-                | Error reason -> raise (Scope_required reason)
-              in
-              (* Prediction objects never update a ref, index, or checkout.
-                 The next three-way application uses exactly this tree. *)
-              let next =
-                checked io
-                  [
-                    "-c";
-                    "user.name=Onton";
-                    "-c";
-                    "user.email=onton@localhost";
-                    "commit-tree";
-                    step.expected_tree;
-                    "-p";
-                    onto;
-                    "-m";
-                    "Onton scope prediction";
-                  ]
-              in
-              ignore (commit next : Branch_reconcile.Commit.t);
-              (next, (origin, status, output) :: predictions))
-        in
-        Replay_scope.prepare_composed scope ~target ~initial_tree
-          ~predictions:(List.rev reversed)
-    | Replay_scope.Merge { source; target } ->
-        let status, output, err =
-          io.git
-            [
-              "merge-tree";
-              "--write-tree";
-              "--no-messages";
-              "--name-only";
-              "-z";
-              "--allow-unrelated-histories";
-              source;
-              target;
-            ]
-        in
-        if status <> 0 && status <> 1 then
-          raise (Probe_failed ("scope tree prediction failed: " ^ err));
-        Replay_scope.prepare_merge ~source ~target ~status output
-  in
-  let plan =
-    match plan with
-    | Ok plan -> plan
-    | Error reason -> raise (Scope_required reason)
-  in
-  let history =
-    let exclusions =
-      match request with
-      | Replay_scope.Replay { target; _ } -> [ target ]
-      | Replay_scope.Merge { source; target } -> [ source; target ]
-      | Replay_scope.Identity _ | Replay_scope.Unproven -> []
-    in
-    if List.is_empty exclusions then ""
-    else
-      raw
-        ([
-           "log";
-           "--topo-order";
-           "--no-show-signature";
-           "--no-color";
-           "--format=%H%x00%P";
-           candidate;
-           "--not";
-         ]
-        @ exclusions @ [ "--" ])
-  in
-  let candidate_tree = tree candidate in
-  let changed_paths =
-    raw
-      [
-        "diff";
-        "--no-ext-diff";
-        "--no-textconv";
-        "--no-renames";
-        "--ignore-submodules=none";
-        "--name-only";
-        "-z";
-        plan.expected_tree;
-        candidate_tree;
-        "--";
-      ]
-  in
-  let merge_inputs_included =
-    match request with
-    | Replay_scope.Merge { source; target } when String.is_empty history ->
-        List.for_all [ source; target ] ~f:(fun input ->
-            match
-              io.git [ "merge-base"; "--is-ancestor"; input; candidate ]
-            with
-            | 0, _, _ -> true
-            | 1, _, _ -> false
-            | _, _, err ->
-                raise (Probe_failed ("merge ancestry probe failed: " ^ err)))
-    | Replay_scope.Merge _ | Unproven | Identity _ | Replay _ -> false
-  in
-  match
-    Replay_scope.verify ~merge_inputs_included plan ~candidate
-      ~tree:candidate_tree ~history ~changed_paths
-  with
-  | Ok proof -> proof
-  | Error reason -> raise (Scope_required reason)
 
 let git_path io name =
   checked io [ "rev-parse"; "--path-format=absolute"; "--git-path"; name ]
@@ -250,40 +53,6 @@ let required io name =
   match read_optional io name with
   | Some s -> s
   | None -> raise (Probe_failed ("missing sequencer state: " ^ name))
-
-let check_continuation_scope io request (checkout : G.t) =
-  let allowed =
-    match checkout.sequencer with
-    | G.Rebase rebase -> (
-        match request with
-        | Replay_scope.Replay { source; boundary; _ } ->
-            let scope =
-              capture_replay_scope io ~source:(commit source)
-                (Branch_reconcile.Recorded (commit boundary))
-            in
-            let todo =
-              read_optional ~strip:false io "rebase-merge/git-rebase-todo"
-            in
-            let done_ =
-              Option.value
-                (read_optional ~strip:false io "rebase-merge/done")
-                ~default:""
-            in
-            Option.exists todo ~f:(fun todo ->
-                Replay_scope.rebase_continuation request ~scope
-                  ~original:rebase.original ~target:rebase.target
-                  ~current:(read_optional io "REBASE_HEAD")
-                  ~todo:(done_ ^ "\n" ^ todo))
-        | Replay_scope.Unproven | Replay_scope.Identity _ | Replay_scope.Merge _
-          ->
-            false)
-    | G.Merge merge ->
-        Replay_scope.merge_continuation request ~head:checkout.head
-          ~target:merge.target
-    | G.Cherry_pick _ | G.None_active -> false
-  in
-  if not allowed then
-    raise (Scope_required "sequencer_contribution_scope_unverified")
 
 let observe_checkout io =
   let head = resolve io "HEAD" |> Branch_reconcile.Commit.to_string in
@@ -432,42 +201,19 @@ let remote io ~destination branch =
           : string);
       Some sha
 
-let reconstruct_boundary io ~source boundaries =
-  let recorded =
-    List.filter_map boundaries ~f:(function
-      | Branch_reconcile.Recorded original ->
-          Some
-            ( original,
-              checked io
-                [
-                  "rev-parse";
-                  "--verify";
-                  Branch_reconcile.Commit.to_string original ^ "^{tree}";
-                ] )
-      | Inferred _ | Reconstructed _ | Patch_equivalent _ | Subject_inferred _
-      | Plain ->
-          None)
+let shared_ancestor io source target =
+  let code, out, err =
+    io.git
+      [
+        "merge-base";
+        Branch_reconcile.Commit.to_string source;
+        Branch_reconcile.Commit.to_string target;
+      ]
   in
-  if List.is_empty recorded then None
-  else
-    let code, history, err =
-      io.git
-        [
-          "log";
-          "--first-parent";
-          "--no-show-signature";
-          "--format=%H%x00%P%x00%T";
-          Branch_reconcile.Commit.to_string source;
-          "--";
-        ]
-    in
-    if code <> 0 then
-      raise (Probe_failed ("boundary reconstruction failed: " ^ err));
-    match
-      Branch_reconcile.reconstructed_boundary ~source ~recorded ~history
-    with
-    | Ok boundary -> boundary
-    | Error reason -> raise (Probe_failed reason)
+  match code with
+  | 0 -> Some (commit (String.strip out))
+  | 1 -> None
+  | _ -> raise (Probe_failed ("shared ancestor probe failed: " ^ err))
 
 let observation io ~destination ~branch ~intent ~policy ~boundaries ~target
     ~original_source =
@@ -510,85 +256,23 @@ let observation io ~destination ~branch ~intent ~policy ~boundaries ~target
                   ("refs/remotes/origin/" ^ intent.Branch_reconcile.base)))
   in
   let remote_sha = remote io ~destination branch in
+  (* Previous bases are useful rebase hints, never a permission requirement.
+     Git must confirm reachability; imported branches need no such hint. *)
   let rec select evidence =
     match Branch_reconcile.choose_boundary ~candidates:boundaries ~evidence with
     | Branch_reconcile.Chosen boundary -> boundary
-    | Branch_reconcile.Probe sha ->
-        let reachable = ancestor io sha source in
-        select ((sha, reachable) :: evidence)
+    | Branch_reconcile.Probe revision ->
+        select ((revision, ancestor io revision source) :: evidence)
   in
   let boundary =
-    match select [] with
-    | Branch_reconcile.Plain
-      when Option.is_none original_source
-           && Branch_reconcile.equal_policy policy Rewrite
-           &&
-           match intent.purpose with
-           | Branch_reconcile.Reconcile_base | Reconcile_request _
-           | Reconcile_scoped _ ->
-               true
-           | Provision_checkout _ | Publish_revision _ | Publish_session _
-           | Verify_publication | Integrate_revision _ ->
-               false -> (
-        match reconstruct_boundary io ~source boundaries with
-        | Some boundary -> boundary
-        | None -> (
-            let history =
-              let code, out, err =
-                io.git
-                  [
-                    "log";
-                    "--cherry-mark";
-                    "--right-only";
-                    "--topo-order";
-                    "--no-show-signature";
-                    "--format=%m%x00%H%x00%P";
-                    Branch_reconcile.Commit.to_string target
-                    ^ "..."
-                    ^ Branch_reconcile.Commit.to_string source;
-                    "--";
-                  ]
-              in
-              if code <> 0 then
-                raise (Probe_failed ("patch-equivalence probe failed: " ^ err));
-              out
-            in
-            match
-              Branch_reconcile.patch_equivalent_boundary ~source history
-            with
-            | Ok (Some upstream) -> Branch_reconcile.Patch_equivalent upstream
-            | Ok None -> (
-                match Branch_reconcile.subject_scope intent.purpose with
-                | None -> Branch_reconcile.Plain
-                | Some (project, ancestors) -> (
-                    let code, text, err =
-                      io.git
-                        [
-                          "log";
-                          "--right-only";
-                          "--topo-order";
-                          "--no-show-signature";
-                          "--format=%H%x00%P%x00%s";
-                          Branch_reconcile.Commit.to_string target
-                          ^ "..."
-                          ^ Branch_reconcile.Commit.to_string source;
-                          "--";
-                        ]
-                    in
-                    if code <> 0 then
-                      raise (Probe_failed ("subject probe failed: " ^ err));
-                    match
-                      Branch_reconcile.subject_boundary ~source ~project
-                        ~ancestors text
-                    with
-                    | Ok (Some upstream) ->
-                        Branch_reconcile.Subject_inferred upstream
-                    | Ok None -> Branch_reconcile.Plain
-                    | Error reason -> raise (Probe_failed reason)))
-            | Error reason -> raise (Probe_failed reason)))
-    | ( Branch_reconcile.Recorded _ | Inferred _ | Patch_equivalent _
-      | Subject_inferred _ | Reconstructed _ | Plain ) as boundary ->
-        boundary
+    match shared_ancestor io source target with
+    | None -> Branch_reconcile.Plain
+    | Some shared -> (
+        match select [] with
+        | Branch_reconcile.Plain -> Branch_reconcile.Inferred shared
+        | ( Branch_reconcile.Recorded _ | Inferred _ | Patch_equivalent _
+          | Subject_inferred _ | Reconstructed _ ) as boundary ->
+            boundary)
   in
   let sequencer =
     match checkout.sequencer with
@@ -679,21 +363,6 @@ let mutation_result io ~(operation : Branch_reconcile.operation) code err =
 let ancestry_preserved io operation candidate =
   List.for_all (Branch_reconcile.ancestry_requirements operation)
     ~f:(fun required -> ancestor io required candidate)
-
-let preserved_revision io ~branch ~original ~candidate =
-  ancestor io original candidate
-  ||
-  match
-    Git_publication_evidence.rewrite_authority ~git:io.git ~branch
-      ~local_sha:(Branch_reconcile.Commit.to_string candidate)
-      ~remote_sha:(Branch_reconcile.Commit.to_string original)
-  with
-  | Error reason -> raise (Probe_failed reason)
-  | Ok None -> false
-  | Ok (Some evidence) ->
-      Rewrite_lineage.authorizes evidence ~branch
-        ~local_sha:(Branch_reconcile.Commit.to_string candidate)
-        ~remote_sha:(Branch_reconcile.Commit.to_string original)
 
 let completed_merge io ~branch (capture : Branch_reconcile.merge_completion)
     (checkout : G.t) =
@@ -823,11 +492,6 @@ let execute ~io ~prefix ~branch ~(operation : Branch_reconcile.operation)
       | Error reason -> raise (Unsupported_destination reason));
       ignore (checked io [ "check-ref-format"; prefix ^ "/probe" ] : string);
       let pin_captured () =
-        List.iter (Replay_scope.revisions operation.approved_scope)
-          ~f:(fun revision ->
-            pin io ~prefix command.token
-              ("scope-input-" ^ revision)
-              (commit revision));
         List.iter
           [
             ("source", operation.source);
@@ -880,17 +544,6 @@ let execute ~io ~prefix ~branch ~(operation : Branch_reconcile.operation)
             ()
       in
       match command.kind with
-      | Branch_reconcile.Verify_scope candidate -> (
-          pin_captured ();
-          match
-            Branch_reconcile.check_checkout ~operation command ~branch
-              (observe_checkout io)
-          with
-          | Error reason -> Branch_reconcile.Recovery_required reason
-          | Ok () ->
-              Branch_reconcile.Scope_verified
-                (verify_candidate_scope io ~request:operation.approved_scope
-                   ~candidate))
       | Branch_reconcile.Observe ->
           refresh_base ();
           let o, checkout =
@@ -1013,73 +666,48 @@ let execute ~io ~prefix ~branch ~(operation : Branch_reconcile.operation)
           Branch_reconcile.Recovery_verified
             {
               observation = o;
-              local_extension = None;
               source_preserved = false;
               remote_preserved = false;
             }
       | Branch_reconcile.Plan_remote_replay request -> (
           pin_captured ();
-          List.iteri request.boundaries ~f:(fun i boundary ->
-              match boundary with
-              | Branch_reconcile.Recorded sha
-              | Branch_reconcile.Inferred sha
-              | Branch_reconcile.Patch_equivalent sha
-              | Branch_reconcile.Subject_inferred sha
-              | Branch_reconcile.Reconstructed { upstream = sha; original = _ }
-                ->
-                  pin io ~prefix command.token
-                    ("boundary-" ^ Int.to_string i)
-                    sha
-              | Branch_reconcile.Plain -> ());
           match
             Branch_reconcile.check_checkout ~operation command ~branch
               (observe_checkout io)
           with
           | Error reason -> Branch_reconcile.Recovery_required reason
           | Ok () -> (
-              let rec select evidence =
-                match
-                  Branch_reconcile.choose_boundary
-                    ~candidates:request.boundaries ~evidence
-                with
-                | Branch_reconcile.Chosen boundary -> boundary
-                | Branch_reconcile.Probe sha ->
-                    let usable =
-                      ancestor io sha request.incoming
-                      && preserved_revision io ~branch ~original:sha
-                           ~candidate:request.preserved
-                    in
-                    select ((sha, usable) :: evidence)
-              in
-              match select [] with
-              | Branch_reconcile.Recorded _ as boundary ->
-                  Branch_reconcile.Remote_replay_selected boundary
-              | Branch_reconcile.Plain | Branch_reconcile.Inferred _
-              | Branch_reconcile.Patch_equivalent _
-              | Branch_reconcile.Subject_inferred _
-              | Branch_reconcile.Reconstructed _ ->
-                  Branch_reconcile.Recovery_required
-                    "remote_replay_scope_missing_boundary"))
+              match shared_ancestor io request.incoming request.preserved with
+              | Some upstream ->
+                  Branch_reconcile.Remote_replay_selected
+                    (Branch_reconcile.Inferred upstream)
+              | None -> Branch_reconcile.Recovery_required "no_shared_ancestor")
+          )
       | Branch_reconcile.Checkout_remote _ ->
           (* Retain old checkpoint syntax, but never reset the managed checkout
              to an unsolicited remote contribution. *)
           pin_captured ();
           Branch_reconcile.Recovery_required
-            "remote_contribution_scope_unverified"
-      | Branch_reconcile.Commit_merge _ ->
+            "legacy_remote_checkout_requires_recovery"
+      | Branch_reconcile.Commit_merge _ -> (
           pin_captured ();
-          Branch_reconcile.Recovery_required
-            "sequencer_contribution_scope_unverified"
+          match
+            Branch_reconcile.check_checkout ~operation command ~branch
+              (observe_checkout io)
+          with
+          | Error reason -> Branch_reconcile.Recovery_required reason
+          | Ok () ->
+              let code, _, err =
+                io.git [ "-c"; "core.editor=true"; "commit"; "--no-edit" ]
+              in
+              if code = 0 then
+                Branch_reconcile.Merge_completed (resolve io "HEAD")
+              else Branch_reconcile.Attempt_failed err)
       | Branch_reconcile.Pin _ ->
           pin_captured ();
           Branch_reconcile.Pinned
       | Branch_reconcile.Integrate { source; target; boundary; policy } -> (
           pin_captured ();
-          if
-            not
-              (Branch_reconcile.integration_scope_matches operation ~source
-                 ~target ~boundary ~policy)
-          then raise (Scope_required "integration_scope_unverified");
           let checkout = observe_checkout io in
           match
             Branch_reconcile.check_checkout ~operation command ~branch checkout
@@ -1088,17 +716,23 @@ let execute ~io ~prefix ~branch ~(operation : Branch_reconcile.operation)
           | Ok () -> (
               match operation.remote_replay with
               | Some replay ->
-                  let scope =
-                    match policy with
-                    | Branch_reconcile.Preserve_ancestry -> None
-                    | Branch_reconcile.Rewrite ->
-                        Some
-                          (capture_replay_scope io ~source:replay.incoming
-                             (Branch_reconcile.Recorded replay.upstream))
+                  let commits =
+                    checked io
+                      [
+                        "rev-list";
+                        "--reverse";
+                        "--topo-order";
+                        "--no-merges";
+                        Branch_reconcile.Commit.to_string replay.upstream
+                        ^ ".."
+                        ^ Branch_reconcile.Commit.to_string replay.incoming;
+                      ]
+                    |> String.split_lines
                   in
                   if
-                    Option.exists scope ~f:(fun scope ->
-                        List.is_empty scope.Replay_scope.commits)
+                    Branch_reconcile.equal_policy policy
+                      Branch_reconcile.Rewrite
+                    && List.is_empty commits
                   then Branch_reconcile.Integrated replay.preserved
                   else
                     let args =
@@ -1117,8 +751,7 @@ let execute ~io ~prefix ~branch ~(operation : Branch_reconcile.operation)
                               "--empty=drop";
                               "--no-rerere-autoupdate";
                             ]
-                            @ Option.value_map scope ~default:[]
-                                ~f:(fun scope -> scope.Replay_scope.commits)
+                            @ commits
                       | Branch_reconcile.Preserve_ancestry ->
                           [
                             "merge";
@@ -1138,9 +771,23 @@ let execute ~io ~prefix ~branch ~(operation : Branch_reconcile.operation)
                       match (policy, boundary) with
                       | Branch_reconcile.Preserve_ancestry, _ ->
                           [ "merge"; "--no-edit"; "--no-autostash"; target ]
-                      | Branch_reconcile.Rewrite, _ ->
-                          let scope =
-                            capture_replay_scope io ~source boundary
+                      | Branch_reconcile.Rewrite, boundary ->
+                          let upstream =
+                            match boundary with
+                            | Branch_reconcile.Recorded revision
+                            | Inferred revision
+                            | Patch_equivalent revision
+                            | Subject_inferred revision
+                            | Reconstructed { upstream = revision; _ } ->
+                                Some revision
+                            | Plain -> shared_ancestor io source (commit target)
+                          in
+                          let upstream =
+                            match upstream with
+                            | Some revision ->
+                                Branch_reconcile.Commit.to_string revision
+                            | None ->
+                                raise (History_unclear "no_shared_ancestor")
                           in
                           [
                             "rebase";
@@ -1152,7 +799,7 @@ let execute ~io ~prefix ~branch ~(operation : Branch_reconcile.operation)
                             "--no-fork-point";
                             "--onto";
                             target;
-                            scope.boundary;
+                            upstream;
                           ]
                     in
                     let code, _, err = io.git args in
@@ -1165,7 +812,6 @@ let execute ~io ~prefix ~branch ~(operation : Branch_reconcile.operation)
           with
           | Error reason -> Branch_reconcile.Recovery_required reason
           | Ok () ->
-              check_continuation_scope io operation.approved_scope checkout;
               let next = Branch_reconcile.continuation operation checkout in
               if G.equal_continuation next G.Complete_merge then
                 match checkout.sequencer with
@@ -1211,11 +857,6 @@ let execute ~io ~prefix ~branch ~(operation : Branch_reconcile.operation)
                 mutation_result io ~operation code err)
       | Branch_reconcile.Publish { candidate; expected } -> (
           pin_captured ();
-          if not (Branch_reconcile.agent_candidate operation candidate) then
-            ignore
-              (verify_candidate_scope io ~request:operation.approved_scope
-                 ~candidate
-                : Replay_scope.verified);
           let checkout = observe_checkout io in
           match
             Branch_reconcile.check_checkout ~operation command ~branch checkout
@@ -1314,8 +955,8 @@ let execute ~io ~prefix ~branch ~(operation : Branch_reconcile.operation)
             Branch_reconcile.Remote
               { sha; topology = topology io candidate sha }
     with
-    | Scope_required reason -> Branch_reconcile.Recovery_required reason
     | Mutation_failed reason -> Branch_reconcile.Attempt_failed reason
+    | History_unclear reason -> Branch_reconcile.Recovery_required reason
     | Unsupported_destination reason -> Branch_reconcile.Needs_diagnosis reason
     | Probe_failed reason ->
         Branch_reconcile.Retryable { reason; retry_after = None }

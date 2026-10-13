@@ -19,28 +19,20 @@ let permitted state =
               revision = candidate
               && operation.candidate_evidence = Some (B.Agent_reported turn)
           | B.Deterministic | B.Capture_agent_repair _ ->
-              operation.B.scope_revision = Some candidate
-              && Replay_scope.valid_request operation.B.approved_scope)
+              operation.B.candidate = Some candidate
+              && operation.source <> None && operation.target <> None)
       | None -> false)
   | Some { kind = B.Checkout_remote _; _ } -> false
   | Some { kind = B.Integrate { source; target; boundary; policy }; _ } -> (
       match B.operation state with
-      | Some operation -> (
-          B.integration_scope_matches operation ~source ~target ~boundary
-            ~policy
-          &&
-          match (policy, boundary) with
-          | B.Preserve_ancestry, _ | B.Rewrite, B.Recorded _ -> true
-          | ( B.Rewrite,
-              ( B.Plain | B.Inferred _ | B.Reconstructed _
-              | B.Patch_equivalent _ | B.Subject_inferred _ ) ) ->
-              false)
+      | Some operation ->
+          B.integration_inputs_match operation ~source ~target ~boundary ~policy
       | None -> false)
   | Some
       {
         kind =
-          ( Observe | Pin _ | Verify_scope _ | Inspect | Verify_recovery
-          | Continue _ | Confirm _ | Commit_merge _ | Plan_remote_replay _ );
+          ( Observe | Pin _ | Inspect | Verify_recovery | Continue _ | Confirm _
+          | Commit_merge _ | Plan_remote_replay _ );
         _;
       }
   | None ->
@@ -70,8 +62,8 @@ let respond state kind =
         | B.Pin _ -> B.Pinned
         | B.Inspect -> B.Inspected (observation kind)
         | B.Integrate _ | B.Continue _ | B.Commit_merge _ | B.Checkout_remote _
-        | B.Verify_scope _ | B.Plan_remote_replay _ | B.Publish _ | B.Confirm _
-        | B.Verify_recovery ->
+        | B.Plan_remote_replay _ | B.Publish _ | B.Confirm _ | B.Verify_recovery
+          ->
             B.Retryable
               { reason = "fixture transport failure"; retry_after = None }
       in
@@ -80,6 +72,111 @@ let respond state kind =
 let () =
   QCheck_base_runner.run_tests_main
     [
+      QCheck2.Test.make ~count:300
+        ~name:"legacy certificates are discarded rather than carried forward"
+        G.(int_range 1 50)
+        (fun revision ->
+          try
+            let state = F.step B.empty (request "main") in
+            let json =
+              match B.yojson_of_t state with
+              | `Assoc fields ->
+                  `Assoc
+                    (List.map
+                       (fun (key, value) ->
+                         if key = "active" then
+                           ( key,
+                             match value with
+                             | `Assoc fields ->
+                                 `Assoc
+                                   (( "scope_revision",
+                                      `String
+                                        (B.Commit.to_string (F.commit revision))
+                                    )
+                                   :: ( "approved_scope",
+                                        `String "malformed legacy certificate"
+                                      )
+                                   :: List.filter
+                                        (fun (key, _) ->
+                                          key <> "scope_revision")
+                                        fields)
+                             | value -> value )
+                         else (key, value))
+                       fields)
+              | json -> json
+            in
+            match B.decode json with
+            | Error _ -> false
+            | Ok restored -> B.equal restored state && permitted restored
+          with _ -> false);
+      QCheck2.Test.make ~count:300
+        ~name:"retired certificate commands resume through Git observation"
+        G.bool (fun confirming ->
+          try
+            let state = F.step B.empty (request "main") in
+            let state = F.reply state (B.Observed (observation 0)) in
+            let state = F.reply state B.Pinned in
+            let candidate = F.commit 30 in
+            let state = F.reply state (B.Integrated candidate) in
+            let json =
+              match B.yojson_of_t state with
+              | `Assoc fields ->
+                  `Assoc
+                    (List.map
+                       (fun (key, value) ->
+                         if key <> "active" then (key, value)
+                         else
+                           ( key,
+                             match value with
+                             | `Assoc fields ->
+                                 `Assoc
+                                   (List.map
+                                      (fun (key, value) ->
+                                        if key = "phase" then
+                                          ( key,
+                                            `List
+                                              [
+                                                `String
+                                                  (if confirming then
+                                                     "Confirming"
+                                                   else "Recovering");
+                                              ] )
+                                        else if key = "pending" then
+                                          ( key,
+                                            match value with
+                                            | `Assoc fields ->
+                                                `Assoc
+                                                  (List.map
+                                                     (fun (key, value) ->
+                                                       if key = "kind" then
+                                                         ( key,
+                                                           `List
+                                                             [
+                                                               `String
+                                                                 "Verify_scope";
+                                                               `String
+                                                                 (B.Commit
+                                                                  .to_string
+                                                                    candidate);
+                                                             ] )
+                                                       else (key, value))
+                                                     fields)
+                                            | value -> value )
+                                        else (key, value))
+                                      fields)
+                             | value -> value ))
+                       fields)
+              | json -> json
+            in
+            match B.decode json with
+            | Error _ -> false
+            | Ok restored ->
+                B.phase restored = Some B.Recovering
+                && (match B.pending restored with
+                  | Some command -> B.equal_command_kind command.kind B.Inspect
+                  | None -> false)
+                && B.equal restored (F.restore restored)
+          with _ -> false);
       QCheck2.Test.make ~count:1000
         ~name:
           "complete recovery retains its captured task across dispatch and \
@@ -102,7 +199,6 @@ let () =
                        B.Recovery_verified
                          {
                            observation = observation 0;
-                           local_extension = None;
                            source_preserved = false;
                            remote_preserved = true;
                          };
@@ -146,7 +242,6 @@ let () =
                          clean = false;
                          sequencer = (if sequencer then Some "rebase" else None);
                        };
-                     local_extension = None;
                      source_preserved = false;
                      remote_preserved = true;
                    })
@@ -217,9 +312,7 @@ let () =
                 retained
               &&
               match B.operation state with
-              | Some op ->
-                  op.B.approved_scope = Replay_scope.Unproven
-                  && op.boundary_candidates = []
+              | Some op -> op.B.boundary_candidates = []
               | None -> false
             in
             let _, ok =
@@ -264,17 +357,11 @@ let () =
                 (B.Observed_active
                    { observation = observed; policy = B.Rewrite })
             in
-            let expected =
-              Replay_scope.Merge
-                {
-                  source = B.Commit.to_string observed.source;
-                  target = B.Commit.to_string observed.target;
-                }
-            in
             let valid state =
               match B.operation state with
               | Some op ->
-                  op.B.approved_scope = expected
+                  op.source = Some observed.source
+                  && op.target = Some observed.target
                   && B.execution_policy op = B.Preserve_ancestry
               | None -> false
             in
@@ -317,12 +404,6 @@ let () =
                     (B.Recovery_required "fixture integration failure")
                 else
                   let initial = F.reply initial (B.Integrated candidate) in
-                  let operation = Option.get (B.operation initial) in
-                  let initial =
-                    F.reply initial
-                      (Onton_core_test_support.Scope_fixture.verified
-                         operation.B.approved_scope candidate)
-                  in
                   F.reply initial
                     (B.Publication_rejected
                        (Push_reject_classify.Hook_failure "fixture gate"))
@@ -348,7 +429,6 @@ let () =
                        B.Recovery_verified
                          {
                            observation = inspection;
-                           local_extension = None;
                            source_preserved = task = 1;
                            remote_preserved = task = 1;
                          };
@@ -366,7 +446,6 @@ let () =
             let state =
               F.step state (B.Repair_completed { token; at = 100. })
             in
-            let original = (Option.get (B.operation state)).B.approved_scope in
             let state =
               List.fold_left
                 (fun state action ->
@@ -380,99 +459,57 @@ let () =
             in
             let state = F.reply state (B.Integrated extended) in
             let operation = Option.get (B.operation state) in
-            Replay_scope.equal_request operation.approved_scope original
-            && operation.candidate_origin
-               = B.Accepted_agent_repair { turn = token; revision = extended }
+            operation.candidate_origin
+            = B.Accepted_agent_repair { turn = token; revision = extended }
             && permitted state
             && B.equal state (F.restore state)
             && List.mem baseline (B.required_revisions state)
           with _ -> false);
       QCheck2.Test.make ~count:1000
         ~name:
-          "publication requires a matching scope proof across recovery and \
-           stale-result interleavings"
-        G.(list_size (int_range 1 150) (int_range 0 9))
+          "publication retains its pinned candidate across retries and stale \
+           results"
+        G.(list_size (int_range 1 150) (int_range 0 5))
         (fun actions ->
           try
             let candidate = F.commit 30 in
-            let state = F.step B.empty (request "main") in
-            let state = F.reply state (B.Observed (observation 0)) in
+            let initial = F.step B.empty (request "main") in
+            let stale = Option.get (B.pending initial) in
+            let state = F.reply initial (B.Observed (observation 2)) in
             let state = F.reply state B.Pinned in
             let state = F.reply state (B.Integrated candidate) in
-            let proof, token =
-              match (B.operation state, B.pending state) with
-              | Some operation, Some command ->
-                  ( Onton_core_test_support.Scope_fixture.verified
-                      operation.B.approved_scope candidate,
-                    command.B.token )
-              | None, _ | _, None -> failwith "missing scope verification"
+            let valid state =
+              permitted state
+              && (Option.get (B.operation state)).B.candidate = Some candidate
+              && B.equal state (F.restore state)
             in
-            let rec run state = function
-              | [] -> permitted state
-              | action :: rest ->
+            let _, valid =
+              List.fold_left
+                (fun (state, ok) action ->
                   let state =
                     match action with
-                    | 0 ->
-                        F.step state
-                          (B.Result { token; at = 100.; result = proof })
+                    | 0 -> F.restore state
                     | 1 -> F.step state (request "other-base")
-                    | 2 ->
-                        F.restore state |> fun state -> F.step state B.Recover
-                    | 3 -> (
-                        match B.pending state with
-                        | Some { kind = B.Inspect; _ } ->
-                            F.reply state
-                              (B.Inspected
-                                 {
-                                   (observation 0) with
-                                   source = candidate;
-                                   head = candidate;
-                                   completed_integration = true;
-                                   target_included = true;
-                                 })
-                        | Some
-                            {
-                              kind =
-                                ( Observe | Pin _ | Verify_scope _
-                                | Verify_recovery | Continue _ | Publish _
-                                | Confirm _ | Commit_merge _
-                                | Plan_remote_replay _ | Checkout_remote _
-                                | Integrate _ );
-                              _;
-                            }
-                        | None ->
-                            state)
-                    | 4 -> (
-                        match B.pending state with
-                        | None -> state
-                        | Some _ ->
-                            F.reply state
-                              (Onton_core_test_support.Scope_fixture.verified
-                                 (Replay_scope.Identity
-                                    (B.Commit.to_string (F.commit 99)))
-                                 (F.commit 99)))
-                    | 5 -> (
-                        match B.pending state with
-                        | None -> state
-                        | Some _ ->
-                            F.reply state
-                              (B.Retryable
-                                 { reason = "offline"; retry_after = None }))
-                    | 6 -> F.step state (B.Tick 1e9)
-                    | 7 -> F.step state B.Resume
-                    | 8 ->
-                        F.step state (B.Repair_completed { token; at = 100. })
-                    | _ -> (
-                        match B.pending state with
-                        | None -> state
-                        | Some _ -> F.reply state (B.Integrated (F.commit 99)))
+                    | 2 -> F.step state B.Recover
+                    | 3 ->
+                        F.step state
+                          (B.Result
+                             {
+                               token = stale.token;
+                               at = 100.;
+                               result = B.Integrated (F.commit 99);
+                             })
+                    | 4 -> F.step state (B.Tick 1e9)
+                    | _ -> F.step state B.Resume
                   in
-                  permitted state && run state rest
+                  (state, ok && valid state))
+                (state, valid state)
+                actions
             in
-            B.integrations state = [] && permitted state && run state actions
+            valid
           with _ -> false);
       QCheck2.Test.make ~count:1000
-        ~name:"remote replay cannot reset the checkout using inferred ownership"
+        ~name:"remote replay uses observed ancestors across restart"
         G.(pair (int_range 1 5) (list_size (int_range 0 100) bool))
         (fun (kind, restarts) ->
           try
@@ -481,14 +518,6 @@ let () =
             let state = F.reply state (B.Observed (observation 0)) in
             let state = F.reply state B.Pinned in
             let state = F.reply state (B.Integrated candidate) in
-            let state =
-              match B.operation state with
-              | Some operation ->
-                  F.reply state
-                    (Onton_core_test_support.Scope_fixture.verified
-                       operation.B.approved_scope candidate)
-              | None -> failwith "missing scope operation"
-            in
             let state = F.reply state B.Published in
             let state =
               F.reply state
@@ -501,8 +530,8 @@ let () =
               | Some
                   {
                     kind =
-                      ( Observe | Pin _ | Verify_scope _ | Inspect | Continue _
-                      | Publish _ | Confirm _ | Commit_merge _ | Verify_recovery
+                      ( Observe | Pin _ | Inspect | Continue _ | Publish _
+                      | Confirm _ | Commit_merge _ | Verify_recovery
                       | Checkout_remote _ | Integrate _ );
                     _;
                   }
@@ -538,7 +567,7 @@ let () =
             permitted rejected && boundary_probe && run rejected restarts
           with _ -> false);
       QCheck2.Test.make ~count:1000
-        ~name:"unknown replay boundaries request agent recovery before mutation"
+        ~name:"rebase inputs do not require recorded ownership boundaries"
         G.(int_range 1 5)
         (fun kind ->
           try
@@ -548,12 +577,17 @@ let () =
             in
             permitted state
             &&
-            match B.operation state with
-            | Some { repair = Some { mode = History_recovery _; _ }; _ } -> true
+            match B.pending state with
+            | Some { kind = B.Integrate { source; target; boundary; _ }; _ } ->
+                source = F.commit 10
+                && target = F.commit 20
+                && B.equal_boundary boundary (observation kind).boundary
             | Some
                 {
-                  repair =
-                    None | Some { mode = Diagnosis _ | Content_repair; _ };
+                  kind =
+                    ( Observe | Pin _ | Inspect | Verify_recovery | Continue _
+                    | Publish _ | Confirm _ | Commit_merge _
+                    | Plan_remote_replay _ | Checkout_remote _ );
                   _;
                 }
             | None ->
@@ -561,8 +595,8 @@ let () =
           with _ -> false);
       QCheck2.Test.make ~count:1000
         ~name:
-          "restart, retry, retarget and stale-result interleavings cannot \
-           authorize an unrecorded replay"
+          "restart, retry, retarget and stale results retain captured Git \
+           inputs"
         G.(pair (int_range 0 5) (list_size (int_range 1 150) (int_range 0 7)))
         (fun (kind, actions) ->
           try

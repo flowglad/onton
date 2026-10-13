@@ -170,7 +170,6 @@ type command_kind =
     }
   | Inspect
   | Verify_recovery
-  | Verify_scope of Commit.t
   | Continue of { head : Commit.t; target : Commit.t; sequencer : string }
   | Publish of { candidate : Commit.t; expected : Commit.t option }
   | Confirm of Commit.t
@@ -291,9 +290,8 @@ type operation = private {
   remote_replay : remote_replay option;
   candidate : Commit.t option;
   candidate_origin : candidate_origin;
-      (** Durable completion/capture authority. Missing legacy provenance
-          defaults to deterministic verification, never accepted agent repair.
-      *)
+      (** Captures the exact completed agent revision across restarts. Older
+          checkpoints default to ordinary Git inspection. *)
   expected : Commit.t option;
   recovery_revisions : Commit.t list;
   retained_revisions : Commit.t list;
@@ -302,13 +300,8 @@ type operation = private {
   agent_dispatched : bool;
       (** Durable execution fence: reservation alone does not grant agent work.
       *)
-  approved_scope : Replay_scope.request;
-      (** Immutable inputs for deterministic verification; diagnostic context
-          for a complete agent repair. *)
-  scope_revision : Commit.t option;
-      (** Candidate independently verified against [approved_scope]. *)
   deferred_remote : Commit.t option;
-      (** Incoming head waiting for certification of the preserved candidate. *)
+      (** Incoming head retained by older checkpoints during publication. *)
   candidate_evidence : integration_evidence option;
   phase : phase;
   pending : command option;
@@ -346,11 +339,9 @@ type result =
   | Remote_replay_selected of boundary
   | Remote_checked_out
   | Integrated of Commit.t
-  | Scope_verified of Replay_scope.verified
   | Conflict of { head : Commit.t; sequencer : string; conflicts : int }
   | Recovery_verified of {
       observation : observation;
-      local_extension : Replay_scope.t option;
       source_preserved : bool;
       remote_preserved : bool;
     }
@@ -455,21 +446,20 @@ val execution_policy : operation -> policy
     captured integration strategy. An existing rebase cannot weaken a request to
     preserve ancestry; an existing merge can strengthen a rewrite request. *)
 
-val integration_scope_matches :
+val integration_inputs_match :
   operation ->
   source:Commit.t ->
   target:Commit.t ->
   boundary:boundary ->
   policy:policy ->
   bool
-(** Integration inputs must exactly match the captured contribution contract. A
-    remote observation cannot expand a deterministic contract. Accepted agent
-    repairs carry separate authority and do not use this deterministic gate. *)
+(** Compare a command with its pinned Git inputs. No provenance certificate is
+    required; observed shared ancestors are valid rebase boundaries. *)
 
 val ancestry_requirements : operation -> Commit.t list
 (** Revisions that deterministic candidates must preserve as ancestors. Includes
-    retained requirements from preceding steps. Rewrite contracts return an
-    empty list; their preservation uses the separate replay proofs. *)
+    retained requirements from preceding steps. Rewrites instead use Git's
+    rebase result and agent validation when recovery is necessary. *)
 
 val observation_boundaries : operation -> boundary list
 val materialization : t -> materialization option

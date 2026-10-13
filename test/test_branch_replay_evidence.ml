@@ -25,15 +25,15 @@ let evidence = function
   | B.Retryable _ -> (None, true)
   | B.Checkout_ready | B.Observed_recovery _ | B.Observed_active _ | Pinned
   | Merge_completion_needed _ | Merge_completed _ | Remote_replay_selected _
-  | Remote_checked_out | Scope_verified _ | Integrated _ | Conflict _
-  | Recovery_verified _ | Inspected _ | Inspected_active _ | Published
-  | Remote _ | Recovery_required _ | Publication_rejected _ | Attempt_failed _
+  | Remote_checked_out | Integrated _ | Conflict _ | Recovery_verified _
+  | Inspected _ | Inspected_active _ | Published | Remote _
+  | Recovery_required _ | Publication_rejected _ | Attempt_failed _
   | Needs_diagnosis _ ->
       (None, false)
 
 let plain_replay env merged_history =
   Git.with_temp_repo (fun remote ->
-      ignore (commit remote "base" "base");
+      let base = commit remote "base" "base" in
       Git.with_temp_repo (fun dir ->
           Git.run_git ~cwd:dir [ "remote"; "add"; "origin"; remote ];
           Git.run_git ~cwd:dir [ "fetch"; "-q"; "origin" ];
@@ -70,17 +70,16 @@ let plain_replay env merged_history =
                   in
                   (match result with
                   | B.Observed observed ->
-                      check "unproven replay remains labelled plain"
-                        (observed.boundary = B.Plain)
+                      check "adopted branch observes a shared ancestor"
+                        (observed.boundary = B.Inferred (sha base))
                   | B.Checkout_ready | B.Observed_recovery _
                   | B.Observed_active _ | B.Pinned | B.Merge_completion_needed _
                   | B.Merge_completed _ | B.Remote_replay_selected _
-                  | B.Remote_checked_out | B.Scope_verified _ | B.Integrated _
-                  | B.Conflict _ | B.Recovery_verified _ | B.Inspected _
-                  | B.Inspected_active _ | B.Published | B.Remote _
-                  | B.Retryable _ | B.Recovery_required _
-                  | B.Publication_rejected _ | B.Attempt_failed _
-                  | B.Needs_diagnosis _ ->
+                  | B.Remote_checked_out | B.Integrated _ | B.Conflict _
+                  | B.Recovery_verified _ | B.Inspected _ | B.Inspected_active _
+                  | B.Published | B.Remote _ | B.Retryable _
+                  | B.Recovery_required _ | B.Publication_rejected _
+                  | B.Attempt_failed _ | B.Needs_diagnosis _ ->
                       ());
                   let next, _ =
                     B.step state
@@ -107,19 +106,23 @@ let plain_replay env merged_history =
                   failwith "unproven replay stopped without agent recovery")
           in
           let settled = settle initial 12 in
-          check "unproven boundary remains pending for owned recovery"
-            (B.publication_status settled = `Pending
-            && B.integrations settled = []);
-          check "unproven history leaves the captured checkout unchanged"
-            (Git.git_capture ~cwd:dir [ "rev-parse"; "HEAD" ] = source);
-          check "unproven history never publishes a patch ref"
+          check
+            "adopted branch rebases and publishes without materialization \
+             evidence"
+            (B.publication_status settled = `Published);
+          check "upstream is included in the published branch"
             (Git.git_exit_code ~cwd:remote
-               [ "show-ref"; "--verify"; "refs/heads/patch" ]
-            <> 0);
-          check "captured source and target remain retained for repair"
+               [ "merge-base"; "--is-ancestor"; target; "patch" ]
+            = 0);
+          List.iter
+            (fun file ->
+              check "rebase preserves patch content"
+                (Git.git_capture ~cwd:remote [ "show"; "patch:" ^ file ] = file))
+            (if merged_history then [ "patch"; "side" ] else [ "patch" ]);
+          check "captured source and target remain retained for recovery"
             (List.for_all
-               (fun commit ->
-                 List.mem (sha commit) (B.required_revisions settled))
+               (fun revision ->
+                 List.mem (sha revision) (B.required_revisions settled))
                [ source; target ])))
 
 let deep_stack env empty_tip =
@@ -355,349 +358,121 @@ let () =
   Eio_main.run @@ fun env ->
   List.iter (deep_stack env) [ false; true ];
   List.iter (plain_replay env) [ false; true ];
-  List.iter
-    (fun (subject, empty) ->
-      Git.with_temp_repo (fun remote ->
-          let original_base = commit remote "base" "base" in
-          Git.with_temp_repo (fun dir ->
-              Git.run_git ~cwd:dir [ "remote"; "add"; "origin"; remote ];
-              Git.run_git ~cwd:dir [ "fetch"; "-q"; "origin" ];
-              Git.run_git ~cwd:dir
-                [ "checkout"; "-q"; "-b"; "patch"; "origin/main" ];
-              let first =
-                commit dir "dependency" "[demo] Patch 1: dependency"
-              in
-              let dependency =
-                if subject then
-                  commit dir "dependency-extra" "[demo] Patch 1: follow-up"
-                else first
-              in
-              let source =
-                if empty then dependency else commit dir "patch" "patch"
-              in
-              ignore (commit remote "base-advance" "advance");
-              Git.run_git ~cwd:remote [ "fetch"; "-q"; dir; dependency ];
-              if subject then (
-                Git.run_git ~cwd:remote [ "merge"; "--squash"; dependency ];
-                Git.run_git ~cwd:remote
-                  [ "commit"; "-q"; "-m"; "squash dependency" ])
-              else Git.run_git ~cwd:remote [ "cherry-pick"; dependency ];
-              let target =
-                Git.git_capture ~cwd:remote [ "rev-parse"; "HEAD" ]
-              in
-              let io =
-                E.make_io
-                  ~process_mgr:(Eio.Stdenv.process_mgr env)
-                  ~clock:(Eio.Stdenv.clock env) ~path:dir
-              in
-              let intent =
-                B.
-                  {
-                    base = "main";
-                    policy = Rewrite;
-                    purpose =
-                      Reconcile_scoped
-                        {
-                          request = "fixture";
-                          project = "demo";
-                          ancestors = [ Types.Patch_id.of_string "1" ];
-                        };
-                  }
-              in
-              let request state = fst (B.step state (B.Request intent)) in
-              let execute io state =
-                match (B.operation state, B.pending state) with
-                | Some operation, Some command ->
-                    ( command,
-                      E.execute ~io ~prefix:"refs/onton/reconcile/replay-test"
-                        ~branch:"patch" ~operation command )
-                | None, _ | _, None -> failwith "expected pending command"
-              in
-              let expected_boundary =
-                if subject then B.Subject_inferred (sha dependency)
-                else B.Patch_equivalent (sha dependency)
-              in
-              let initial = request B.empty in
-              let _, result = execute io initial in
-              check "patch equivalence records the dependency boundary"
-                (match fst (evidence result) with
-                | Some o -> o.boundary = expected_boundary
-                | None -> false);
-              if subject then (
-                let unscoped =
-                  fst
-                    (B.step B.empty
-                       (B.Request { intent with purpose = Reconcile_base }))
-                in
-                let _, result = execute io unscoped in
-                check "unscoped requests cannot infer dependency subjects"
-                  (match fst (evidence result) with
-                  | Some o -> o.boundary = B.Plain
-                  | None -> false);
-                let subject_failure =
-                  E.
-                    {
-                      git =
-                        (fun args ->
-                          if List.mem "--format=%H%x00%P%x00%s" args then
-                            (128, "", "injected subject probe failure")
-                          else io.git args);
-                    }
-                in
-                let _, result = execute subject_failure initial in
-                check "subject probe failures remain retryable"
-                  (snd (evidence result)));
-              let failing =
-                E.
-                  {
-                    git =
-                      (fun args ->
-                        match args with
-                        | "log" :: _ -> (128, "", "injected probe failure")
-                        | _ -> io.git args);
-                  }
-              in
-              let _, failed = execute failing initial in
-              check "failed patch-id probe remains retryable"
-                (snd (evidence failed));
-              let recorded, _ =
-                B.step B.empty
-                  (B.Materialized (B.New_branch (sha original_base)))
-              in
-              let _, preferred = execute failing (request recorded) in
-              check "recorded provenance precedes patch-equivalence probe"
-                (match fst (evidence preferred) with
-                | Some o -> o.boundary = B.Recorded (sha original_base)
-                | None -> false);
-              let rec inspect state remaining =
-                check "inferred replay reaches owned repair" (remaining > 0);
-                match B.pending state with
-                | None -> state
-                | Some _ ->
-                    let command, result = execute io state in
-                    let state, _ =
-                      B.step state
-                        (B.Result { token = command.token; at = 100.; result })
-                    in
-                    let state =
-                      match B.decode (B.yojson_of_t state) with
-                      | Ok state -> state
-                      | Error reason -> failwith reason
-                    in
-                    inspect state (remaining - 1)
-              in
-              let state = inspect initial 12 in
-              check
-                "inferred evidence survives without granting replay authority"
-                (match B.operation state with
-                | Some op -> (
-                    op.boundary = expected_boundary
-                    &&
-                    match op.phase with
-                    | B.Repairing _ -> true
-                    | B.Preparing | B.Integrating | B.Publishing | B.Confirming
-                    | B.Waiting _ | B.Recovering | B.Settled | B.Intervention _
-                      ->
-                        false)
-                | None -> false);
-              check "inferred replay leaves the captured branch unchanged"
-                (Git.git_capture ~cwd:dir [ "rev-parse"; "patch" ] = source);
-              check "inferred evidence cannot publish"
-                (B.publications state = [] && B.integrations state = []);
-              check "source and target remain recoverable"
-                (List.for_all
-                   (fun value ->
-                     List.mem (sha value) (B.required_revisions state))
-                   [ source; target ]))))
-    [ (false, false); (false, true); (true, false); (true, true) ];
+  (* Failed ancestry reads are transport failures, not absent provenance. *)
   Git.with_temp_repo (fun remote ->
-      let base = commit remote "base" "base" in
+      ignore (commit remote "base" "base");
       Git.with_temp_repo (fun dir ->
           Git.run_git ~cwd:dir [ "remote"; "add"; "origin"; remote ];
           Git.run_git ~cwd:dir [ "fetch"; "-q"; "origin" ];
           Git.run_git ~cwd:dir
             [ "checkout"; "-q"; "-b"; "patch"; "origin/main" ];
-          let original = commit dir "dependency" "original dependency" in
           ignore (commit dir "patch" "patch");
-          let reconstructed =
-            Git.git_capture ~cwd:dir
-              [
-                "commit-tree";
-                original ^ "^{tree}";
-                "-p";
-                base;
-                "-m";
-                "rewritten dependency";
-              ]
-          in
-          Git.run_git ~cwd:dir
-            [ "rebase"; "--onto"; reconstructed; original; "patch" ];
-          ignore (commit remote "base-advance" "advance");
-          Git.run_git ~cwd:remote [ "fetch"; "-q"; dir; original ];
-          Git.run_git ~cwd:remote [ "cherry-pick"; original ];
-          let io =
+          ignore (commit remote "upstream" "upstream");
+          let raw =
             E.make_io
               ~process_mgr:(Eio.Stdenv.process_mgr env)
               ~clock:(Eio.Stdenv.clock env) ~path:dir
           in
-          let state, _ =
-            B.step B.empty (B.Materialized (B.New_branch (sha original)))
-          in
-          let state, _ =
-            B.step state
-              (B.Request
-                 { base = "main"; policy = Rewrite; purpose = Reconcile_base })
-          in
-          let execute io state =
-            match (B.operation state, B.pending state) with
-            | Some operation, Some command ->
-                ( command,
-                  E.execute ~io ~prefix:"refs/onton/reconcile/reconstruction"
-                    ~branch:"patch" ~operation command )
-            | None, _ | _, None -> failwith "missing reconstruction command"
-          in
-          let no_equivalence =
-            E.
-              {
-                git =
-                  (fun args ->
-                    if List.mem "--cherry-mark" args then
-                      (128, "", "must not probe equivalence")
-                    else io.git args);
-              }
-          in
-          let _, result = execute no_equivalence state in
-          let boundary =
-            B.Reconstructed
-              { original = sha original; upstream = sha reconstructed }
-          in
-          check "exact tree reconstruction precedes patch equivalence"
-            (match fst (evidence result) with
-            | Some o -> o.boundary = boundary
-            | None -> false);
-          let failed =
-            E.
-              {
-                git =
-                  (fun args ->
-                    if List.mem "--first-parent" args then
-                      (128, "", "injected topology failure")
-                    else io.git args);
-              }
-          in
-          let _, result = execute failed state in
-          check "reconstruction probe failures retry" (snd (evidence result));
-          let rec settle state remaining =
-            if B.pending state = None then state
-            else (
-              check "reconstructed replay converges" (remaining > 0);
-              let command, result = execute io state in
-              let state, _ =
-                B.step state
-                  (B.Result { token = command.token; at = 100.; result })
-              in
-              let state =
-                match B.decode (B.yojson_of_t state) with
-                | Ok state -> state
-                | Error reason -> failwith reason
-              in
-              settle state (remaining - 1))
-          in
-          let settled = settle state 12 in
-          let retained =
-            Git.git_capture ~cwd:dir
-              [
-                "for-each-ref";
-                "--format=%(objectname)";
-                "refs/onton/reconcile/reconstruction";
-              ]
-            |> String.split_on_char '\n'
-          in
-          check "reconstruction retains original and new boundary refs"
-            (List.mem original retained && List.mem reconstructed retained);
-
-          check "both reconstruction revisions survive checkpoints"
-            (match B.operation settled with
-            | Some op -> op.boundary = boundary
-            | None -> false);
-          check "reconstructed evidence cannot authorize publication"
-            (B.publications settled = [] && B.integrations settled = []);
-          check "reconstructed boundary requests owned repair"
-            (match B.operation settled with
-            | Some { repair = Some _; _ } -> true
-            | Some { repair = None; _ } | None -> false)));
-  Git.with_temp_repo (fun remote ->
-      let target = commit remote "upstream" "independent upstream root" in
-      Git.with_temp_repo (fun dir ->
-          let source = commit dir "local" "independent local root" in
-          Git.run_git ~cwd:dir [ "checkout"; "-q"; "-b"; "patch" ];
-          Git.run_git ~cwd:dir [ "remote"; "add"; "origin"; remote ];
           let io =
-            E.make_io
-              ~process_mgr:(Eio.Stdenv.process_mgr env)
-              ~clock:(Eio.Stdenv.clock env) ~path:dir
+            E.
+              {
+                git =
+                  (fun args ->
+                    match args with
+                    | "merge-base" :: _ -> (128, "", "injected ancestry outage")
+                    | _ -> raw.git args);
+              }
           in
           let state, _ =
             B.step B.empty
               (B.Request
-                 {
-                   base = "main";
-                   policy = Preserve_ancestry;
-                   purpose = Reconcile_base;
-                 })
+                 { base = "main"; policy = Rewrite; purpose = Reconcile_base })
           in
-          let rec advance state remaining effects =
-            check "unrelated recovery converges" (remaining > 0);
-            match (B.operation state, B.pending state) with
-            | Some operation, Some command ->
-                let result =
-                  E.execute ~io ~prefix:"refs/onton/reconcile/unrelated"
-                    ~branch:"patch" ~operation command
-                in
-                let state, effects =
-                  B.step state
-                    (B.Result { token = command.token; at = 100.; result })
-                in
-                advance state (remaining - 1) effects
-            | None, _ | _, None -> (state, effects)
-          in
-          let repair, effects = advance state 12 [] in
-          let token =
-            match effects with
-            | [ B.Repair token ] -> token
-            | []
-            | B.Execute _ :: _
-            | B.Start_repair _ :: _
-            | B.Completed _ :: _
-            | B.Repair _ :: _ :: _ ->
-                failwith "expected history repair"
-          in
-          let claimed, effects = B.step repair (B.Repair_started token) in
-          check "agent dispatch is claimed once"
-            (effects = [ B.Start_repair token ]);
-          let turn =
-            match B.repair_turn claimed ~branch:"patch" token with
-            | Some turn -> turn
-            | None -> failwith "missing claimed turn"
-          in
-          check "topology failure reaches history recovery"
-            (match turn.mode with
-            | B.History_recovery { reason; _ } -> reason = "unrelated_histories"
-            | B.Content_repair | B.Diagnosis _ -> false);
-          (* Simulate the claimed history-repair agent's preserving merge. *)
-          Git.run_git ~cwd:dir
-            [ "merge"; "--allow-unrelated-histories"; "--no-edit"; target ];
-          let completed, _ =
-            B.step claimed (B.Repair_completed { token; at = 100. })
-          in
-          let settled, _ = advance completed 12 [] in
-          check "verified agent history repair publishes"
-            (B.publication_status settled = `Published);
-          List.iter
-            (fun ancestor ->
-              check "both unrelated histories preserved"
-                (Git.git_exit_code ~cwd:remote
-                   [ "merge-base"; "--is-ancestor"; ancestor; "patch" ]
-                = 0))
-            [ source; target ]));
+          let operation = Option.get (B.operation state) in
+          let command = Option.get (B.pending state) in
+          check "shared ancestor failures remain retryable"
+            (snd
+               (evidence
+                  (E.execute ~io ~prefix:"refs/onton/reconcile/probe"
+                     ~branch:"patch" ~operation command)))));
+  List.iter
+    (fun policy ->
+      Git.with_temp_repo (fun remote ->
+          let target = commit remote "upstream" "independent upstream root" in
+          Git.with_temp_repo (fun dir ->
+              let source = commit dir "local" "independent local root" in
+              Git.run_git ~cwd:dir [ "checkout"; "-q"; "-b"; "patch" ];
+              Git.run_git ~cwd:dir [ "remote"; "add"; "origin"; remote ];
+              let io =
+                E.make_io
+                  ~process_mgr:(Eio.Stdenv.process_mgr env)
+                  ~clock:(Eio.Stdenv.clock env) ~path:dir
+              in
+              let created =
+                fst
+                  (B.step B.empty (B.Materialized (B.New_branch (sha source))))
+              in
+              let state, _ =
+                B.step created
+                  (B.Request { base = "main"; policy; purpose = Reconcile_base })
+              in
+              let rec advance state remaining effects =
+                check "unrelated recovery converges" (remaining > 0);
+                match (B.operation state, B.pending state) with
+                | Some operation, Some command ->
+                    let result =
+                      E.execute ~io ~prefix:"refs/onton/reconcile/unrelated"
+                        ~branch:"patch" ~operation command
+                    in
+                    let state, effects =
+                      B.step state
+                        (B.Result { token = command.token; at = 100.; result })
+                    in
+                    advance state (remaining - 1) effects
+                | None, _ | _, None -> (state, effects)
+              in
+              let repair, effects = advance state 12 [] in
+              let token =
+                match effects with
+                | [ B.Repair token ] -> token
+                | []
+                | B.Execute _ :: _
+                | B.Start_repair _ :: _
+                | B.Completed _ :: _
+                | B.Repair _ :: _ :: _ ->
+                    failwith "expected history repair"
+              in
+              let claimed, effects = B.step repair (B.Repair_started token) in
+              check "agent dispatch is claimed once"
+                (effects = [ B.Start_repair token ]);
+              let turn =
+                match B.repair_turn claimed ~branch:"patch" token with
+                | Some turn -> turn
+                | None -> failwith "missing claimed turn"
+              in
+              check "topology failure reaches history recovery"
+                (match turn.mode with
+                | B.History_recovery { reason; _ } ->
+                    reason
+                    =
+                    if policy = B.Rewrite then "no_shared_ancestor"
+                    else "unrelated_histories"
+                | B.Content_repair | B.Diagnosis _ -> false);
+              (* Simulate the claimed history-repair agent's preserving merge. *)
+              Git.run_git ~cwd:dir
+                [ "merge"; "--allow-unrelated-histories"; "--no-edit"; target ];
+              let completed, _ =
+                B.step claimed (B.Repair_completed { token; at = 100. })
+              in
+              let settled, _ = advance completed 12 [] in
+              check "verified agent history repair publishes"
+                (B.publication_status settled = `Published);
+              List.iter
+                (fun ancestor ->
+                  check "both unrelated histories preserved"
+                    (Git.git_exit_code ~cwd:remote
+                       [ "merge-base"; "--is-ancestor"; ancestor; "patch" ]
+                    = 0))
+                [ source; target ])))
+    [ B.Rewrite; B.Preserve_ancestry ];
   print_endline "deterministic replay and agent fallback evidence: OK"

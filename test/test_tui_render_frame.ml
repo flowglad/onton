@@ -572,7 +572,7 @@ let[@warning "-42"] () =
       ( Reconstructed { original = proof; upstream = target },
         "tree reconstruction (best effort) " ^ Commit.to_string proof ^ " -> "
         ^ Commit.to_string target );
-      (Plain, "plain (no proven boundary)");
+      (Plain, "no shared ancestor");
     ]
   in
   List.iter proofs ~f:(fun (boundary, expected_proof) ->
@@ -606,11 +606,6 @@ let[@warning "-42"] () =
              })
       in
       let publishing = reply (reply captured Pinned) (Integrated candidate) in
-      let publishing =
-        Onton_core_test_support.Publication_fixture.verify_scope
-          ~step:(fun state event -> fst (B.step state event))
-          ~state:Fn.id publishing
-      in
       List.iter [ false; true ] ~f:(fun permanent ->
           let failed =
             reply publishing
@@ -643,7 +638,7 @@ let[@warning "-42"] () =
               "Target SHA: " ^ Commit.to_string target;
               "Candidate: " ^ Commit.to_string candidate;
               "Remote lease: " ^ Commit.to_string source;
-              "Replay proof: " ^ expected_proof;
+              "Rebase boundary: " ^ expected_proof;
               ("Reconcile: " ^ if permanent then "diagnosis" else "waiting");
               ("Reason: "
               ^

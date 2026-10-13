@@ -45,7 +45,6 @@ let repair_turn mode =
           B.Recovery_verified
             {
               observation = { observation with clean = not dirty };
-              local_extension = None;
               source_preserved = false;
               remote_preserved = true;
             } )
@@ -61,12 +60,7 @@ let repair_turn mode =
         in
         ( state,
           B.Recovery_verified
-            {
-              observation;
-              local_extension = None;
-              source_preserved = true;
-              remote_preserved = true;
-            } )
+            { observation; source_preserved = true; remote_preserved = true } )
   in
   let command = Option.get (B.pending state) in
   let state, effects =

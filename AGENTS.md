@@ -135,26 +135,26 @@ unattended supervisor session. There are two supported transports:
 
 ## Rebase anchor lifecycle
 
-`Branch_reconcile` owns live replay-boundary selection. Recorded integration
-receipts (newest first) precede the exact new-branch materialization boundary.
-An ancestry probe verifies reachability from the captured source; a failed probe
-retries rather than discarding evidence. Initial rewrite reconciliation without
-a reachable recorded boundary first attempts exact-tree reconstruction of that
-boundary in the current first-parent history, then a linear patch-equivalent prefix, then
-a dependency-subject prefix for explicitly scoped requests. Inferred boundaries remain best
-effort and cannot grant recorded-boundary publication authority. The selected
-boundary, source and target survive restart in the operation checkpoint.
+`Branch_reconcile` owns reconciliation and pins source/target revisions before
+Git mutations. Rebase boundaries come from Git ancestry. A previous base can be
+used as a hint when Git confirms it is reachable from the source; otherwise
+Onton calculates the shared ancestor of source and target. Existing/adopted
+branches do not need materialization provenance or a recorded ownership boundary.
+No contribution certificate, predicted-tree proof, or recorded-boundary authority
+may gate integration, sequencer continuation, or publication. If Git cannot
+resolve the history or complete integration, dispatch agent recovery. Agents may
+inspect ancestry, reconstruct history, and validate the resulting work; successful
+repair publishes the captured HEAD with an explicit remote lease.
+Certificates have no runtime types, fields, or verification API. Import discards
+legacy certificate fields and replaces pending certificate commands with Git
+observation; checkpoints never write certificate data back out.
 
-Start provisions through `Worktree_setup.ensure_owned`; materialization provenance
-is checkpointed by the reconciliation owner before hooks or implementation work.
-Adopting a branch records its starting revision without proving a replay boundary.
-The legacy `Anchor`, `Anchor_history`, `Worktree_plan`, and anchor-event executor
-APIs are removed. Old snapshot anchor SHAs migrate into owner retention only;
-they cannot authorize replay or publication. Pruning reads the owner's revision
-inventory exclusively. The last integrated base is derived from owner receipts;
-Start and legacy base-name fields grant no integration evidence. Published
-branches with unknown base evidence request reconciliation. Conflict state is a
-view of the owner's local repair and current forge evidence.
+Start provisions through `Worktree_setup.ensure_owned`. Recovery refs retain
+captured revisions across restarts. Materialization and integration records are
+useful rebase hints and retention/operation state, not a chain of provenance.
+Pruning reads the owner's revision inventory. The selected inputs and pending
+commands survive restart. Conflict state is a view of the owner's local repair
+and current forge evidence.
 
 Publication is derived from owner receipts. Legacy `branch_published` snapshot
 claims queue verification-only owner work; they never authorize a push or a new
@@ -169,8 +169,8 @@ reset/rebase prompt renderers are removed; repair prompts come from the captured
 owner turn. Do not restore a separate Git mutation path.
 
 `Orchestrator.refresh_base_branch` preserves existing anchor evidence when the
-base retargets. Reconciliation verifies that evidence against the actual source
-rather than treating a branch-name change as proof of a new replay boundary.
+base retargets. Reconciliation checks previous-base hints against the actual source and falls
+back to Git shared ancestry when a hint is unavailable.
 
 Current owner coverage includes `test_branch_reconcile_properties.ml`, the
 independent `test_branch_reconcile_model.ml`, real Git/checkpoint acceptance in

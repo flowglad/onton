@@ -602,21 +602,11 @@ let[@warning "-4"] () =
        ()
    in
    (match B.operation result.state with
-   | Some
-       {
-         boundary = B.Subject_inferred revision;
-         repair = Some { mode = B.History_recovery _; _ };
-         _;
-       } ->
-       assert (String.equal (B.Commit.to_string revision) patch1_sha);
-       assert (List.is_empty (B.integrations result.state));
-       assert_eq "test10: inferred ownership cannot rewrite the checkout"
-         result.before result.after
+   | Some { repair = Some { mode = B.Content_repair; _ }; _ } -> ()
    | _ ->
        failwith
-         "test10: missing scoped agent recovery for unproven dependency \
-          ownership");
-   assert_eq "test10: inferred ownership does not authorize publication"
+         "test10: drifted dependency conflict should reach agent recovery");
+   assert_eq "test10: unresolved conflict leaves published branch unchanged"
      result.before
      (Git_env.git_capture
         ~cwd:(Stdlib.Filename.concat dir ".git/fixture-origin.git")

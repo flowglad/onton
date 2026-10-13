@@ -175,9 +175,9 @@ let scenario env entrypoint policy interruption unrelated =
               match command.B.kind with
               | B.Checkout_remote _ -> false
               | B.Integrate _ -> true
-              | B.Verify_scope _ | B.Observe | B.Pin _ | B.Commit_merge _
-              | B.Plan_remote_replay _ | B.Inspect | B.Verify_recovery
-              | B.Continue _ | B.Publish _ | B.Confirm _ ->
+              | B.Observe | B.Pin _ | B.Commit_merge _ | B.Plan_remote_replay _
+              | B.Inspect | B.Verify_recovery | B.Continue _ | B.Publish _
+              | B.Confirm _ ->
                   false
             in
             let publication =
@@ -185,9 +185,9 @@ let scenario env entrypoint policy interruption unrelated =
               &&
               match command.B.kind with
               | B.Publish _ -> true
-              | B.Verify_scope _ | B.Observe | B.Pin _ | B.Integrate _
-              | B.Commit_merge _ | B.Plan_remote_replay _ | B.Checkout_remote _
-              | B.Inspect | B.Verify_recovery | B.Continue _ | B.Confirm _ ->
+              | B.Observe | B.Pin _ | B.Integrate _ | B.Commit_merge _
+              | B.Plan_remote_replay _ | B.Checkout_remote _ | B.Inspect
+              | B.Verify_recovery | B.Continue _ | B.Confirm _ ->
                   false
             in
             let stop before =
@@ -285,8 +285,7 @@ let scenario env entrypoint policy interruption unrelated =
                           check
                             "repair prompt omitted attempted remote integration"
                             (Base.String.is_substring prompt
-                               ~substring:
-                                 ("Pending remote contribution: " ^ incoming));
+                               ~substring:("Pending remote work: " ^ incoming));
                           Git.run_git ~cwd:dir
                             [
                               "merge";

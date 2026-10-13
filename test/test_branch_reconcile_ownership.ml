@@ -69,8 +69,8 @@ let prepare ~persist runtime =
       | B.Integrate _ ->
           B.Conflict { head = source; sequencer = "step"; conflicts = 1 }
       | B.Commit_merge _ | B.Plan_remote_replay _ | B.Checkout_remote _
-      | B.Verify_scope _ | B.Inspect | B.Verify_recovery | B.Continue _
-      | B.Publish _ | B.Confirm _ ->
+      | B.Inspect | B.Verify_recovery | B.Continue _ | B.Publish _ | B.Confirm _
+        ->
           failwith "unexpected preparation command")
     (B.Request { base = "main"; policy = B.Rewrite; purpose = B.Reconcile_base })
 
@@ -159,9 +159,9 @@ let failed_claim ~root ~lost_ack =
                 ready = false;
               }
         | B.Pin _ -> B.Pinned
-        | B.Verify_scope _ | B.Observe | B.Integrate _ | B.Commit_merge _
-        | B.Plan_remote_replay _ | B.Checkout_remote _ | B.Verify_recovery
-        | B.Continue _ | B.Publish _ | B.Confirm _ ->
+        | B.Observe | B.Integrate _ | B.Commit_merge _ | B.Plan_remote_replay _
+        | B.Checkout_remote _ | B.Verify_recovery | B.Continue _ | B.Publish _
+        | B.Confirm _ ->
             failwith "claim recovery cannot mutate Git"
       in
       let token =
@@ -251,13 +251,12 @@ let waiting_repair ~root ~stale ~changed =
                 B.Recovery_verified
                   {
                     observation;
-                    local_extension = None;
                     source_preserved = false;
                     remote_preserved = false;
                   }
-            | B.Verify_scope _ | B.Observe | B.Pin _ | B.Integrate _
-            | B.Continue _ | B.Commit_merge _ | B.Plan_remote_replay _
-            | B.Checkout_remote _ | B.Publish _ | B.Confirm _ ->
+            | B.Observe | B.Pin _ | B.Integrate _ | B.Continue _
+            | B.Commit_merge _ | B.Plan_remote_replay _ | B.Checkout_remote _
+            | B.Publish _ | B.Confirm _ ->
                 failwith "repair handoff cannot blindly mutate Git")
           ~perform:(fun ~agent:_ ~turn ->
             incr calls;
@@ -418,11 +417,8 @@ let cancelled_active_repair ~root ~resolved ~compete =
           }
       in
       let observed_successor = ref 0 in
-      let execute ~agent:_ ~(operation : B.operation) (command : B.command) =
+      let execute ~agent:_ ~operation:(_ : B.operation) (command : B.command) =
         match command.kind with
-        | B.Verify_scope candidate ->
-            Onton_core_test_support.Scope_fixture.verified
-              operation.approved_scope candidate
         | B.Inspect ->
             B.Inspected_active
               {

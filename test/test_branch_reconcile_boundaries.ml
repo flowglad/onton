@@ -66,7 +66,6 @@ let command_name = function
   | B.Inspect -> "inspect"
   | B.Continue _ -> "continue"
   | B.Verify_recovery -> "verify-recovery"
-  | B.Verify_scope _ -> "verify-scope"
   | B.Plan_remote_replay _ -> "plan-remote"
   | B.Checkout_remote _ -> "checkout-remote"
   | B.Commit_merge _ -> "commit-merge"
@@ -158,9 +157,9 @@ let scenario env selected boundary =
           let execute ~operation command =
             (match command.B.kind with
             | B.Verify_recovery -> incr verifications
-            | B.Verify_scope _ | B.Observe | B.Pin _ | B.Integrate _
-            | B.Publish _ | B.Confirm _ | B.Inspect | B.Continue _
-            | B.Commit_merge _ | B.Plan_remote_replay _ | B.Checkout_remote _ ->
+            | B.Observe | B.Pin _ | B.Integrate _ | B.Publish _ | B.Confirm _
+            | B.Inspect | B.Continue _ | B.Commit_merge _
+            | B.Plan_remote_replay _ | B.Checkout_remote _ ->
                 ());
             E.execute ~io ~prefix:"refs/onton/reconcile/boundary-test"
               ~branch:"patch" ~operation command
