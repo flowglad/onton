@@ -4,6 +4,7 @@
 open Onton
 open Onton_core
 module B = Branch_reconcile
+module G = Git_observation
 module E = Branch_reconcile_executor
 module Git = Onton_test_support.Git_env
 
@@ -36,7 +37,8 @@ let run ?(mask = 0) env ~recorded ~side_merge =
           let patch = commit dir "patch" in
           if side_merge then
             Git.run_git ~cwd:dir
-              [ "merge"; "--no-ff"; "--no-edit"; "unrelated" ];
+              [ "merge"; "--no-ff"; "--no-commit"; "unrelated" ];
+          if side_merge then ignore (commit dir "merge-only");
           let source = Git.git_capture ~cwd:dir [ "rev-parse"; "HEAD" ] in
           if mask = 1 then
             let replacement =
@@ -86,9 +88,11 @@ let run ?(mask = 0) env ~recorded ~side_merge =
               (B.Request
                  { base = "main"; policy = Rewrite; purpose = Reconcile_base })
           in
-          let rec drive remaining state =
+          let rec drive remaining state effects =
             check "scope fixture converges" (remaining > 0);
             let recovering =
+              Option.is_none (B.pending state)
+              &&
               match B.operation state with
               | Some { repair = Some { mode = History_recovery _; _ }; _ } ->
                   true
@@ -101,7 +105,24 @@ let run ?(mask = 0) env ~recorded ~side_merge =
               | None ->
                   false
             in
-            if recovering then state
+            if recovering then (
+              let token =
+                List.find_map
+                  (function
+                    | B.Repair token -> Some token
+                    | B.Execute _ | B.Start_repair _ | B.Completed _ -> None)
+                  effects
+                |> Option.get
+              in
+              let state = fst (B.step state (B.Repair_started token)) in
+              let code, _, err =
+                io.git [ "merge"; "--no-edit"; "origin/main" ]
+              in
+              check ("agent merge: " ^ err) (code = 0);
+              let state, effects =
+                B.step state (B.Repair_completed { token; at = 100. })
+              in
+              drive (remaining - 1) state effects)
             else
               match (B.operation state, B.pending state) with
               | Some operation, Some command ->
@@ -109,7 +130,7 @@ let run ?(mask = 0) env ~recorded ~side_merge =
                     E.execute ~io ~prefix:"refs/onton/reconcile/scope"
                       ~branch:"patch" ~operation command
                   in
-                  let next, _ =
+                  let next, effects =
                     B.step state
                       (B.Result { token = command.token; at = 100.; result })
                   in
@@ -120,25 +141,27 @@ let run ?(mask = 0) env ~recorded ~side_merge =
                     | Error reason -> failwith reason
                   in
                   if B.publication_status next = `Published then next
-                  else drive (remaining - 1) next
+                  else drive (remaining - 1) next effects
               | None, _ | Some _, None ->
                   failwith "scope fixture stopped unexpectedly"
           in
-          let state = drive 15 state in
-          if recorded && not side_merge then (
-            check "recorded linear patch publishes"
-              (B.publication_status state = `Published);
-            check "only patch work enters the PR diff"
-              (Git.git_capture ~cwd:remote
-                 [ "diff"; "--name-only"; "main...patch" ]
-              = "patch"))
-          else (
-            check "unproven scope performs no integration or push"
-              (!mutations = []);
-            check "unproven scope leaves the original checkout intact"
-              (Git.git_capture ~cwd:dir [ "rev-parse"; "HEAD" ] = source);
-            check "unproven scope remains pending for agent repair"
-              (B.publication_status state = `Pending))))
+          let state = drive 15 state [] in
+          check "Git ancestry allows adopted and merged histories to publish"
+            (B.publication_status state = `Published);
+          check "rebase publishes all branch contributions"
+            (Git.git_capture ~cwd:remote
+               [ "diff"; "--name-only"; "main...patch" ]
+            = if side_merge then "merge-only\npatch\nunrelated" else "patch");
+          check "original work remains recoverable"
+            (List.mem (revision source) (B.required_revisions state));
+          check "integration used Git"
+            (List.exists
+               (function "rebase" :: _ | "merge" :: _ -> true | _ -> false)
+               !mutations);
+          check "publication used Git"
+            (List.exists
+               (function "push" :: _ -> true | _ -> false)
+               !mutations)))
 
 let repair_scope env policy ~side_merge =
   Git.with_temp_repo (fun remote ->
@@ -152,7 +175,9 @@ let repair_scope env policy ~side_merge =
             Git.run_git ~cwd:dir [ "checkout"; "-qb"; "foreign"; "origin/main" ];
             ignore (commit dir "foreign");
             Git.run_git ~cwd:dir [ "checkout"; "-q"; "patch" ];
-            Git.run_git ~cwd:dir [ "merge"; "--no-ff"; "--no-edit"; "foreign" ]);
+            Git.run_git ~cwd:dir
+              [ "merge"; "--no-ff"; "--no-commit"; "foreign" ];
+            ignore (commit remote "merge-only"));
           let target = commit remote "upstream" in
           let raw =
             E.make_io
@@ -216,6 +241,11 @@ let repair_scope env policy ~side_merge =
             | None -> failwith "missing pinned failure boundary"
           in
           let claimed, token = repair_turn 10 failed effects in
+          (match (E.observe_checkout io).sequencer with
+          | G.Rebase _ -> Git.run_git ~cwd:dir [ "rebase"; "--abort" ]
+          | G.Merge _ -> Git.run_git ~cwd:dir [ "merge"; "--abort" ]
+          | G.Cherry_pick _ -> Git.run_git ~cwd:dir [ "cherry-pick"; "--abort" ]
+          | G.None_active -> ());
           (if side_merge then (
              Git.run_git ~cwd:dir [ "reset"; "--keep"; target ];
              Git.run_git ~cwd:dir [ "cherry-pick"; own_commit ])
@@ -339,13 +369,14 @@ let remote_scope env policy ~side_merge =
           Git.run_git ~cwd:dir [ "push"; "-q"; "origin"; "patch" ];
           ignore (commit dir "local");
           Git.run_git ~cwd:remote [ "checkout"; "-q"; "patch" ];
-          let remote_commit = commit remote "remote" in
+          ignore (commit remote "remote");
           if side_merge then (
             Git.run_git ~cwd:remote [ "checkout"; "-qb"; "foreign"; base ];
             ignore (commit remote "foreign");
             Git.run_git ~cwd:remote [ "checkout"; "-q"; "patch" ];
             Git.run_git ~cwd:remote
-              [ "merge"; "--no-ff"; "--no-edit"; "foreign" ]);
+              [ "merge"; "--no-ff"; "--no-commit"; "foreign" ];
+            ignore (commit remote "merge-only"));
           let incoming = Git.git_capture ~cwd:remote [ "rev-parse"; "patch" ] in
           Git.run_git ~cwd:remote [ "checkout"; "-q"; "main" ];
           let raw =
@@ -386,24 +417,9 @@ let remote_scope env policy ~side_merge =
                     | B.Execute _ | B.Start_repair _ | B.Completed _ -> None)
                   effects
               with
-              | Some token -> (
+              | Some _ ->
                   incr repairs;
-                  check "only side history requires fallback"
-                    (side_merge && !repairs = 1);
-                  check
-                    "unscoped remote history cannot mutate the managed checkout"
-                    (!integrations = 0);
-                  match policy with
-                  | B.Preserve_ancestry -> state
-                  | B.Rewrite ->
-                      let state = fst (B.step state (B.Repair_started token)) in
-                      (* Reconstruct only the remote's ordinary patch commit;
-                        its merged foreign branch must not enter the diff. *)
-                      Git.run_git ~cwd:dir [ "cherry-pick"; remote_commit ];
-                      let state, effects =
-                        B.step state (B.Repair_completed { token; at = 100. })
-                      in
-                      drive (fuel - 1) state effects)
+                  failwith "disjoint remote work unexpectedly requires recovery"
               | None -> (
                   match (B.operation state, B.pending state) with
                   | Some operation, Some command ->
@@ -440,11 +456,10 @@ let remote_scope env policy ~side_merge =
             (Git.git_capture ~cwd:remote
                [ "diff"; "--name-only"; "main...patch" ]
             =
-            if side_merge && policy = B.Preserve_ancestry then
-              "foreign\nlocal\npatch\nremote"
+            if side_merge then "foreign\nlocal\nmerge-only\npatch\nremote"
             else "local\npatch\nremote");
           check "remote scope preserves normal deterministic progress"
-            (!repairs = if side_merge && policy = B.Rewrite then 1 else 0)))
+            (!repairs = 0)))
 
 let () =
   Eio_main.run (fun env ->
@@ -462,4 +477,4 @@ let () =
       remote_scope env B.Preserve_ancestry ~side_merge:false;
       remote_scope env B.Rewrite ~side_merge:true;
       remote_scope env B.Preserve_ancestry ~side_merge:true);
-  print_endline "replay scope pre-mutation acceptance: OK"
+  print_endline "Git ancestry and agent recovery acceptance: OK"

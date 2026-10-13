@@ -1073,20 +1073,14 @@
  (libraries onton_core qcheck-core qcheck-core.runner))
 
 (test
- (name test_replay_scope_properties)
- (modules test_replay_scope_properties)
- (libraries onton_core qcheck-core qcheck-core.runner)
- (flags (:standard -w -40-42)))
-
-(test
- (name test_replay_scope_state_machine)
- (modules test_replay_scope_state_machine)
+ (name test_branch_git_inputs_properties)
+ (modules test_branch_git_inputs_properties)
  (libraries onton_core onton_core_test_support qcheck-core qcheck-core.runner)
  (flags (:standard -w -40-42)))
 
 (test
- (name test_replay_scope_git)
- (modules test_replay_scope_git)
+ (name test_branch_git_inputs_git)
+ (modules test_branch_git_inputs_git)
  (libraries onton onton_core onton_test_support eio_main unix)
  (flags (:standard -w -40-42))
  (deps (package onton))

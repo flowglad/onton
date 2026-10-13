@@ -1519,12 +1519,7 @@ let settled_conflict_owner () =
          })
     |> fun t ->
     reply t B.Pinned |> fun t ->
-    reply t (B.Integrated (sha candidate))
-    |> Onton_core_test_support.Publication_fixture.verify_scope
-         ~step:(fun t event -> fst (Orchestrator.reconcile_branch t pid event))
-         ~state:(fun t ->
-           (Orchestrator.agent t pid).Patch_agent.branch_reconcile)
-    |> fun t ->
+    reply t (B.Integrated (sha candidate)) |> fun t ->
     reply t B.Published |> fun t ->
     reply t (B.Remote { sha = Some (sha candidate); topology = Equal })
   in
@@ -1642,10 +1637,6 @@ let () =
                  destination = B.Remote_id.of_destination "fixture-origin";
                });
           reply B.Pinned;
-          reply
-            (Onton_core_test_support.Scope_fixture.verified
-               (B.operation (current ()).branch_reconcile |> Option.value_exn)
-                 .approved_scope (sha new_head));
           let poll result =
             let next, _, _ =
               Patch_controller.apply_poll_result !orch pid

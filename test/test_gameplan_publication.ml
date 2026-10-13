@@ -345,8 +345,7 @@ let runner_without_backend ?(repair = false) env ~feature ~retry =
                     (retry && first) || base_failure
                 | Branch_reconcile.Commit_merge _
                 | Branch_reconcile.Plan_remote_replay _
-                | Branch_reconcile.Checkout_remote _
-                | Branch_reconcile.Verify_scope _ | Branch_reconcile.Observe
+                | Branch_reconcile.Checkout_remote _ | Branch_reconcile.Observe
                 | Branch_reconcile.Pin _ | Branch_reconcile.Integrate _
                 | Branch_reconcile.Inspect | Branch_reconcile.Verify_recovery
                 | Branch_reconcile.Continue _ | Branch_reconcile.Confirm _ ->
@@ -366,8 +365,7 @@ let runner_without_backend ?(repair = false) env ~feature ~retry =
                       published := Some candidate
                 | Branch_reconcile.Commit_merge _
                 | Branch_reconcile.Plan_remote_replay _
-                | Branch_reconcile.Checkout_remote _
-                | Branch_reconcile.Verify_scope _ | Branch_reconcile.Observe
+                | Branch_reconcile.Checkout_remote _ | Branch_reconcile.Observe
                 | Branch_reconcile.Pin _ | Branch_reconcile.Integrate _
                 | Branch_reconcile.Inspect | Branch_reconcile.Verify_recovery
                 | Branch_reconcile.Continue _ | Branch_reconcile.Confirm _ ->

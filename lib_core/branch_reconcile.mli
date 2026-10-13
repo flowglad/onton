@@ -69,40 +69,6 @@ val choose_boundary :
 (** Select the first verified reachable boundary, or request the next ancestry
     observation. Missing evidence never counts as a negative observation. *)
 
-val patch_equivalent_boundary :
-  source:Commit.t -> string -> (Commit.t option, string) Result.t
-(** Decode NUL-delimited cherry-mark/revision/parent records in newest-first
-    topological order. A complete linear source chain with an equivalent prefix
-    yields the parent of its oldest remaining unique commit. All-equivalent
-    history yields [source]. Malformed/truncated probes are errors; merges and
-    non-linear histories provide no boundary. This is best-effort evidence. *)
-
-val reconstructed_boundary :
-  source:Commit.t ->
-  recorded:(Commit.t * string) list ->
-  history:string ->
-  (boundary option, string) Result.t
-(** Reconstruct an unreachable recorded boundary using exact tree identity in a
-    complete first-parent history (NUL-delimited revision/parents/tree).
-    Recorded candidates take precedence in supplied order; the newest matching
-    ancestor wins for each candidate. Both revisions remain explicit evidence.
-    Missing/malformed topology is a failed probe. This grants no recorded
-    publication authority. *)
-
-val subject_scope : purpose -> (string * Types.Patch_id.t list) option
-(** Dependency-subject heuristics require an explicitly captured project and
-    nonempty dependency set. Unscoped legacy requests cannot infer them. *)
-
-val subject_boundary :
-  source:Commit.t ->
-  project:string ->
-  ancestors:Types.Patch_id.t list ->
-  string ->
-  (Commit.t option, string) Result.t
-(** Read newest-first NUL-delimited revision/parents/subject records. Only a
-    linear leading prefix matching the captured dependency subjects can be
-    excluded. The result is best-effort inference, never recorded provenance. *)
-
 type token = private { operation : int; command : int }
 [@@deriving eq, compare, sexp_of]
 
@@ -170,7 +136,6 @@ type command_kind =
     }
   | Inspect
   | Verify_recovery
-  | Verify_scope of Commit.t
   | Continue of { head : Commit.t; target : Commit.t; sequencer : string }
   | Publish of { candidate : Commit.t; expected : Commit.t option }
   | Confirm of Commit.t
@@ -291,9 +256,8 @@ type operation = private {
   remote_replay : remote_replay option;
   candidate : Commit.t option;
   candidate_origin : candidate_origin;
-      (** Durable completion/capture authority. Missing legacy provenance
-          defaults to deterministic verification, never accepted agent repair.
-      *)
+      (** Captures the exact completed agent revision across restarts. Older
+          checkpoints default to ordinary Git inspection. *)
   expected : Commit.t option;
   recovery_revisions : Commit.t list;
   retained_revisions : Commit.t list;
@@ -302,13 +266,8 @@ type operation = private {
   agent_dispatched : bool;
       (** Durable execution fence: reservation alone does not grant agent work.
       *)
-  approved_scope : Replay_scope.request;
-      (** Immutable inputs for deterministic verification; diagnostic context
-          for a complete agent repair. *)
-  scope_revision : Commit.t option;
-      (** Candidate independently verified against [approved_scope]. *)
   deferred_remote : Commit.t option;
-      (** Incoming head waiting for certification of the preserved candidate. *)
+      (** Incoming head retained by older checkpoints during publication. *)
   candidate_evidence : integration_evidence option;
   phase : phase;
   pending : command option;
@@ -346,14 +305,8 @@ type result =
   | Remote_replay_selected of boundary
   | Remote_checked_out
   | Integrated of Commit.t
-  | Scope_verified of Replay_scope.verified
   | Conflict of { head : Commit.t; sequencer : string; conflicts : int }
-  | Recovery_verified of {
-      observation : observation;
-      local_extension : Replay_scope.t option;
-      source_preserved : bool;
-      remote_preserved : bool;
-    }
+  | Recovery_observed of observation
   | Inspected of observation
   | Inspected_active of { observation : observation; ready : bool }
   | Published
@@ -455,21 +408,20 @@ val execution_policy : operation -> policy
     captured integration strategy. An existing rebase cannot weaken a request to
     preserve ancestry; an existing merge can strengthen a rewrite request. *)
 
-val integration_scope_matches :
+val integration_inputs_match :
   operation ->
   source:Commit.t ->
   target:Commit.t ->
   boundary:boundary ->
   policy:policy ->
   bool
-(** Integration inputs must exactly match the captured contribution contract. A
-    remote observation cannot expand a deterministic contract. Accepted agent
-    repairs carry separate authority and do not use this deterministic gate. *)
+(** Compare a command with its pinned Git inputs. No provenance certificate is
+    required; observed shared ancestors are valid rebase boundaries. *)
 
 val ancestry_requirements : operation -> Commit.t list
 (** Revisions that deterministic candidates must preserve as ancestors. Includes
-    retained requirements from preceding steps. Rewrite contracts return an
-    empty list; their preservation uses the separate replay proofs. *)
+    retained requirements from preceding steps. Rewrites instead use Git's
+    rebase result and agent validation when recovery is necessary. *)
 
 val observation_boundaries : operation -> boundary list
 val materialization : t -> materialization option

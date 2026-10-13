@@ -926,13 +926,16 @@ let scenario_unmatched_merge env =
       ~base:(Types.Branch.of_string "main")
       ()
   in
-  require_history_repair "unmatched merge resolution" outcome;
+  require_settled "complete remote merge result is integrated" outcome;
   let actual =
     git_capture ~dir:managed [ "ls-remote"; "origin"; "refs/heads/feat" ]
     |> fun value -> String.prefix value 40
   in
-  if not (String.equal actual remote) then failwith "merge resolution lost";
-  Stdlib.print_endline "  unmatched_merge: OK (refused)"
+  if
+    Git_env.git_exit_code ~cwd:managed [ "diff"; "--quiet"; remote; actual ]
+    <> 0
+  then failwith "merge-only resolution content lost";
+  Stdlib.print_endline "  unmatched_merge: OK (resolution preserved)"
 
 type missing_tracking_case =
   | Fast_forward

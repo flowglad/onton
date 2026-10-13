@@ -524,14 +524,10 @@ let[@warning "-4"] () =
    assert_eq "test9: x.txt content" "v2" (read_file ~dir ~filename:"x.txt");
    Stdlib.Sys.command (Printf.sprintf "rm -rf %s" dir) |> ignore);
 
-  (* ── Test 10: ancestor-subject filter strips drifted dep commits ─── *)
-  (* Regression for the trigger-only-execution / patch-7 case. A dep's
-     commit survives on our branch with the conventional
-     [<project>] Patch N: prefix but with *modified* content — so
-     git log --cherry-pick cannot equate it with the squash on main by
-     patch-id. Without the ancestor_ids fallback, the old dep commit
-     would be replayed onto main; with ancestor_ids=["1"] the owner
-     picks a newer old_base and only our own commit survives. *)
+  (* ── Test 10: drifted dependency content reaches agent repair ─── *)
+  (* A dependency recommitted with modified content is not patch-equivalent to
+     main's squash. Replay uses Git ancestry rather than dependency subjects,
+     so the actual conflict is left for the agent to resolve. *)
   (let dir = init_repo () in
    commit_file ~process_mgr ~dir ~filename:"a.txt" ~content:"a" ~msg:"A"
    |> ignore;
@@ -553,13 +549,7 @@ let[@warning "-4"] () =
    |> ignore;
    squash_merge ~process_mgr ~dir ~branch:"dep";
    git ~process_mgr ~dir [ "checkout"; "feat" ] |> ignore;
-   (* Sanity: the cherry-pick filter alone keeps the drifted Patch 1 commit,
-      so the positive end-state assertion below is specifically exercising
-      the subject-filter code path. We verify both that the log contains
-      both commits (not just Patch 7) *and* that the oldest kept SHA is
-      Patch 1, so a future git version that patch-id-equates the drift with
-      the squash surfaces as a line-count mismatch rather than a confusing
-      SHA mismatch. *)
+   (* Git distinguishes the drifted dependency from main's squash. *)
    let raw_log =
      git ~process_mgr ~dir
        [
@@ -579,11 +569,7 @@ let[@warning "-4"] () =
    assert_eq "test10: cherry-pick log has 2 commits (sanity)" "2"
      (Int.to_string (List.length log_lines));
    let patch1_sha = git ~process_mgr ~dir [ "rev-parse"; "HEAD~1" ] in
-   (* The purpose of this precondition is to show that the raw cherry-pick walk
-      still includes the drifted Patch 1 commit before the subject filter runs.
-      Do not assert a specific line order here: [git log --cherry-pick] can
-      vary its presentation order across environments. The owner receipt below
-      establishes which replay boundary was actually selected. *)
+   (* Commit display order varies; require the drifted dependency to appear. *)
    let log_shas =
      List.filter_map log_lines ~f:(fun line ->
          String.lsplit2 line ~on:' ' |> Option.map ~f:fst)
@@ -602,21 +588,11 @@ let[@warning "-4"] () =
        ()
    in
    (match B.operation result.state with
-   | Some
-       {
-         boundary = B.Subject_inferred revision;
-         repair = Some { mode = B.History_recovery _; _ };
-         _;
-       } ->
-       assert (String.equal (B.Commit.to_string revision) patch1_sha);
-       assert (List.is_empty (B.integrations result.state));
-       assert_eq "test10: inferred ownership cannot rewrite the checkout"
-         result.before result.after
+   | Some { repair = Some { mode = B.Content_repair; _ }; _ } -> ()
    | _ ->
        failwith
-         "test10: missing scoped agent recovery for unproven dependency \
-          ownership");
-   assert_eq "test10: inferred ownership does not authorize publication"
+         "test10: drifted dependency conflict should reach agent recovery");
+   assert_eq "test10: unresolved conflict leaves published branch unchanged"
      result.before
      (Git_env.git_capture
         ~cwd:(Stdlib.Filename.concat dir ".git/fixture-origin.git")

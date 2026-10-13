@@ -1425,10 +1425,13 @@ let scenario_adopted_publication env policy history =
           failwith "successful remote repair did not publish");
       ignore (repair ());
       if !calls <> 1 then failwith "duplicate recovery claim reran agent"
-  | `Ahead, outcome -> settle outcome
-  | ( (`Unrelated | `Diverged),
-      (R.Idle | R.Waiting | R.Intervention _ | R.Checkpoint_failed _) ) ->
+  | (`Ahead | `Diverged), outcome -> settle outcome
+  | `Unrelated, (R.Idle | R.Waiting | R.Intervention _ | R.Checkpoint_failed _)
+    ->
       failwith "unrelated adopted history did not reach agent recovery");
+  if Poly.equal history `Diverged then
+    assert_string "published remote-only work" "remote"
+      (git_capture ~dir:origin_dir [ "show"; branch ^ ":remote.txt" ]);
   if Poly.equal history `Ahead then (
     let published = git_capture ~dir:origin_dir [ "rev-parse"; branch ] in
     assert_string "published local work" "local"

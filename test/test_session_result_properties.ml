@@ -90,9 +90,6 @@ let () =
             let owner =
               if confirmed then
                 reply owner B.(Remote { sha = Some source; topology = Equal })
-                |> Onton_core_test_support.Publication_fixture.verify_scope
-                     ~step:(fun state event -> fst (B.step state event))
-                     ~state:Fn.id
               else owner
             in
             let owner =

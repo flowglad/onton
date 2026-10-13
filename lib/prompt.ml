@@ -482,17 +482,13 @@ let render_patch_layer ~(project_name : string) (patch : Patch.t) ?pr_number
         base_branch base_branch
   in
   let pr_instructions =
-    (* Commit subjects are not rewritten or rejected downstream. The rebase
-       subject filter in [Branch_reconcile.subject_boundary] treats this prompt
-       convention as best-effort evidence for explicitly scoped requests.
-       Malformed subjects do not establish a dependency boundary; the owner
-       can still attempt plain replay and bounded history recovery. *)
+    (* Commit subjects identify patches for humans; Git ancestry selects rebase inputs. *)
     let commit_block =
       Printf.sprintf
         {|
 **Commit your work with `git commit` before ending the session.** Every code change you make must land in a commit — uncommitted changes are discarded by the supervisor's push, and no PR can be opened from an empty branch. Multiple commits are fine; commit whenever it makes sense.
 
-**Prefix every commit subject with `[%s] Patch %s: `** (the same project name and patch number used by this branch and its PR title), e.g. `[%s] Patch %s: <short summary>`. This lets the supervisor recognize your commits as belonging to this patch when rebasing onto dependency branches later.
+**Prefix every commit subject with `[%s] Patch %s: `** (the same project name and patch number used by this branch and its PR title), e.g. `[%s] Patch %s: <short summary>`. This identifies the patch in commit history and PR review.
 
 **Do NOT run `git push` or `gh pr create` yourself.** The supervisor pushes your commits and opens/updates the PR.|}
         project_name patch_id project_name patch_id

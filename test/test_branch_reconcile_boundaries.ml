@@ -66,7 +66,6 @@ let command_name = function
   | B.Inspect -> "inspect"
   | B.Continue _ -> "continue"
   | B.Verify_recovery -> "verify-recovery"
-  | B.Verify_scope _ -> "verify-scope"
   | B.Plan_remote_replay _ -> "plan-remote"
   | B.Checkout_remote _ -> "checkout-remote"
   | B.Commit_merge _ -> "commit-merge"
@@ -87,13 +86,11 @@ let scenario env selected boundary =
     | "merge-continue" -> "continue"
     | "replay-integrate" -> "integrate"
     | "replay-publish" -> "publish"
-    | "replay-scope" -> "verify-scope"
     | name -> name
   in
   let recovery = selected = "capture-recovery" in
   let remote_replay =
-    List.mem selected
-      [ "plan-remote"; "replay-scope"; "replay-integrate"; "replay-publish" ]
+    List.mem selected [ "plan-remote"; "replay-integrate"; "replay-publish" ]
   in
   Git.with_temp_repo (fun remote ->
       let base = commit remote "base" in
@@ -158,9 +155,9 @@ let scenario env selected boundary =
           let execute ~operation command =
             (match command.B.kind with
             | B.Verify_recovery -> incr verifications
-            | B.Verify_scope _ | B.Observe | B.Pin _ | B.Integrate _
-            | B.Publish _ | B.Confirm _ | B.Inspect | B.Continue _
-            | B.Commit_merge _ | B.Plan_remote_replay _ | B.Checkout_remote _ ->
+            | B.Observe | B.Pin _ | B.Integrate _ | B.Publish _ | B.Confirm _
+            | B.Inspect | B.Continue _ | B.Commit_merge _
+            | B.Plan_remote_replay _ | B.Checkout_remote _ ->
                 ());
             E.execute ~io ~prefix:"refs/onton/reconcile/boundary-test"
               ~branch:"patch" ~operation command
@@ -348,7 +345,7 @@ let scenario env selected boundary =
             check "remote work is replayed exactly once"
               (Git.git_capture ~cwd:remote
                  [ "log"; "--format=%s"; target ^ "..patch" ]
-              = "incoming\nwork");
+              = "Integrate remote patch work\nwork");
             let candidate =
               match !first_candidate with
               | Some value -> value
@@ -402,8 +399,6 @@ let scenarios =
     "inspect";
     "capture-recovery";
     "plan-remote";
-    "replay-scope";
-    "verify-scope";
     "repair-completion";
     "merge-inspect";
     "merge-completion";

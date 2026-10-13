@@ -47,51 +47,7 @@ let reply_raw state result =
   | Some command ->
       B.step state (B.Result { token = command.token; at = 100.; result })
 
-(* These existing protocol properties assume a healthy scope observer. The
-   dedicated scope interleaving suite exercises withheld, stale and false proofs. *)
-let[@warning "-4"] reply state result =
-  let result =
-    match (result, B.operation state) with
-    | ( B.Recovery_verified evidence,
-        Some
-          {
-            source = Some source;
-            repair =
-              Some
-                {
-                  mode = B.History_recovery { task = B.Finish_local_work; _ };
-                  _;
-                };
-            _;
-          } )
-      when evidence.source_preserved ->
-        B.Recovery_verified
-          {
-            evidence with
-            local_extension =
-              Onton_core_test_support.Scope_fixture.local_extension ~source
-                ~candidate:evidence.observation.source;
-          }
-    | _ -> result
-  in
-  let state, effects = reply_raw state result in
-  match (B.pending state, B.operation state) with
-  | Some { kind = B.Verify_scope candidate; _ }, Some operation ->
-      reply_raw state
-        (Onton_core_test_support.Scope_fixture.verified
-           operation.B.approved_scope candidate)
-  | ( Some
-        {
-          kind =
-            ( Observe | Inspect | Pin _ | Integrate _ | Continue _ | Publish _
-            | Confirm _ | Verify_recovery | Commit_merge _
-            | Plan_remote_replay _ | Checkout_remote _ );
-          _;
-        },
-      _ )
-  | None, _
-  | _, None ->
-      (state, effects)
+let reply = reply_raw
 
 let is_diagnosis state =
   match B.phase state with
@@ -151,22 +107,9 @@ let settled () =
   let state, _ = reply (publishing ()) B.Published in
   reply state (B.Remote { sha = Some candidate; topology = Equal }) |> fst
 
-let progress_result state command =
+let progress_result _state command =
   match command.B.kind with
-  | B.Verify_scope revision ->
-      Onton_core_test_support.Scope_fixture.verified
-        (match B.operation state with
-        | Some op -> op.B.approved_scope
-        | None -> Replay_scope.Unproven)
-        revision
-  | B.Verify_recovery ->
-      B.Recovery_verified
-        {
-          observation;
-          local_extension = None;
-          source_preserved = false;
-          remote_preserved = false;
-        }
+  | B.Verify_recovery -> B.Recovery_observed observation
   | B.Commit_merge _ -> B.Merge_completed candidate
   | B.Plan_remote_replay _ -> B.Remote_replay_selected (B.Recorded source)
   | B.Checkout_remote _ -> B.Remote_checked_out
@@ -193,31 +136,7 @@ let recovery () =
   |> fst
 
 let unverified =
-  B.Recovery_verified
-    {
-      observation = { observation with source = candidate; head = candidate };
-      local_extension = None;
-      source_preserved = false;
-      remote_preserved = false;
-    }
-
-let equivalence_fixture equivalent =
-  let revision n = Printf.sprintf "%040x" n in
-  let records =
-    List.mapi
-      (fun index equivalent ->
-        Printf.sprintf "%s\000%s\000%s\n"
-          (if equivalent then "=" else ">")
-          (revision (index + 1))
-          (revision index))
-      equivalent
-  in
-  let source =
-    match B.Commit.make (revision (List.length equivalent)) with
-    | Some value -> value
-    | None -> assert false
-  in
-  (source, String.concat "" (List.rev records), revision)
+  B.Recovery_observed { observation with source = candidate; head = candidate }
 
 let restore state = Result.get_ok (B.decode (B.yojson_of_t state))
 
@@ -570,9 +489,9 @@ let[@warning "-4"] tests =
             | Some
                 {
                   kind =
-                    ( B.Observe | B.Verify_scope _ | B.Inspect | B.Pin _
-                    | B.Integrate _ | B.Verify_recovery | B.Continue _
-                    | B.Confirm _ | B.Commit_merge _ | B.Plan_remote_replay _
+                    ( B.Observe | B.Inspect | B.Pin _ | B.Integrate _
+                    | B.Verify_recovery | B.Continue _ | B.Confirm _
+                    | B.Commit_merge _ | B.Plan_remote_replay _
                     | B.Checkout_remote _ );
                   _;
                 } ->
@@ -580,18 +499,12 @@ let[@warning "-4"] tests =
           let state, _ = reply state (B.Attempt_failed "timeout") in
           let state, effects =
             reply state
-              (B.Recovery_verified
+              (B.Recovery_observed
                  {
-                   observation =
-                     {
-                       observation with
-                       source = candidate;
-                       head = candidate;
-                       target_included = true;
-                     };
-                   local_extension = None;
-                   source_preserved = true;
-                   remote_preserved = true;
+                   observation with
+                   source = candidate;
+                   head = candidate;
+                   target_included = true;
                  })
           in
           (match effects with
@@ -1159,165 +1072,6 @@ let[@warning "-4"] tests =
         else
           result
           = B.Attempt_failed "fatal: Unable to create index.lock: File exists");
-    QCheck2.Test.make ~name:"BR reconstruction decoding is total" ~count:500
-      Gen.(pair string string)
-      (fun (tree, history) ->
-        try
-          ignore
-            (B.reconstructed_boundary ~source
-               ~recorded:[ (target, tree) ]
-               ~history);
-          true
-        with _ -> false);
-    QCheck2.Test.make
-      ~name:"BR reconstruction prefers recorded order and newest exact tree"
-      ~count:200 Gen.bool (fun same_tree ->
-        let original = sha 'd' in
-        let history =
-          Printf.sprintf "%s\000%s\000%s\n%s\000\000%s\n"
-            (B.Commit.to_string source)
-            (B.Commit.to_string target)
-            (B.Commit.to_string (if same_tree then candidate else source))
-            (B.Commit.to_string target)
-            (B.Commit.to_string candidate)
-        in
-        B.reconstructed_boundary ~source
-          ~recorded:
-            [
-              (original, B.Commit.to_string candidate);
-              (candidate, B.Commit.to_string source);
-            ]
-          ~history
-        = Ok
-            (Some
-               (B.Reconstructed
-                  {
-                    original;
-                    upstream = (if same_tree then source else target);
-                  })));
-    QCheck2.Test.make
-      ~name:"BR missing reconstruction topology stays a probe error" ~count:200
-      Gen.bool (fun truncated ->
-        let history =
-          Printf.sprintf "%s\000%s\000%s%s"
-            (B.Commit.to_string source)
-            (B.Commit.to_string target)
-            (B.Commit.to_string candidate)
-            (if truncated then "" else "\n")
-        in
-        match
-          B.reconstructed_boundary ~source
-            ~recorded:[ (target, B.Commit.to_string candidate) ]
-            ~history
-        with
-        | Error _ -> true
-        | Ok _ -> false);
-    QCheck2.Test.make
-      ~name:"BR captured subject scope survives queued intent and restart"
-      ~count:200 Gen.string (fun project ->
-        try
-          let ancestors = [ Types.Patch_id.of_string "1" ] in
-          let original =
-            {
-              intent with
-              purpose =
-                B.Reconcile_scoped { request = "original"; project; ancestors };
-            }
-          in
-          let state, _ = B.step B.empty (B.Request original) in
-          let state, _ = B.step state (B.Request intent) in
-          match B.decode (B.yojson_of_t state) with
-          | Error _ -> false
-          | Ok state -> (
-              match B.operation state with
-              | None -> false
-              | Some operation ->
-                  (B.subject_scope operation.intent.purpose
-                  = if project = "" then None else Some (project, ancestors))
-                  && B.subject_scope intent.purpose = None)
-        with _ -> false);
-    QCheck2.Test.make
-      ~name:"BR subject inference is total on arbitrary observations" ~count:500
-      Gen.(pair string string)
-      (fun (project, text) ->
-        try
-          ignore
-            (B.subject_boundary ~source ~project
-               ~ancestors:[ Types.Patch_id.of_string "1" ]
-               text);
-          true
-        with _ -> false);
-    QCheck2.Test.make
-      ~name:"BR subject inference stays within captured dependency scope"
-      ~count:500
-      Gen.(pair (int_range 0 100000) bool)
-      (fun (number, matches) ->
-        try
-          let project = "project-" ^ string_of_int number in
-          let text =
-            Printf.sprintf
-              "%s\000%s\000own patch\n%s\000%s\000[%s] Patch 1: dep\n"
-              (B.Commit.to_string source)
-              (B.Commit.to_string target)
-              (B.Commit.to_string target)
-              (B.Commit.to_string candidate)
-              project
-          in
-          let ancestors =
-            [ Types.Patch_id.of_string (if matches then "1" else "11") ]
-          in
-          B.subject_boundary ~source ~project ~ancestors text
-          = Ok (if matches then Some target else None)
-          && B.subject_boundary ~source ~project:(project ^ "-other") ~ancestors
-               text
-             = Ok None
-          && B.subject_boundary ~source ~project ~ancestors:[] text = Ok None
-        with _ -> false);
-    QCheck2.Test.make ~name:"BR patch-equivalence decoding is total" ~count:500
-      Gen.string (fun text ->
-        try
-          ignore (B.patch_equivalent_boundary ~source text);
-          true
-        with _ -> false);
-    QCheck2.Test.make
-      ~name:"BR patch equivalence excludes only an equivalent prefix" ~count:500
-      Gen.(list_size (int_range 1 40) bool)
-      (fun equivalent ->
-        try
-          let source, text, revision = equivalence_fixture equivalent in
-          let rec prefix count = function
-            | true :: rest -> prefix (count + 1) rest
-            | false :: _ | [] -> count
-          in
-          let count = prefix 0 equivalent in
-          let expected =
-            if count = 0 then None else B.Commit.make (revision count)
-          in
-          B.patch_equivalent_boundary ~source text = Ok expected
-        with _ -> false);
-    QCheck2.Test.make
-      ~name:"BR truncated equivalence observations fail as probes" ~count:200
-      Gen.(list_size (int_range 1 20) bool)
-      (fun equivalent ->
-        try
-          let source, text, _ = equivalence_fixture equivalent in
-          match
-            B.patch_equivalent_boundary ~source
-              (String.sub text 0 (String.length text - 1))
-          with
-          | Error _ -> true
-          | Ok _ -> false
-        with _ -> false);
-    QCheck2.Test.make
-      ~name:"BR disconnected and merge history cannot infer ownership"
-      ~count:200 Gen.bool (fun merge ->
-        let record =
-          Printf.sprintf "=\000%s\000%s%s\n"
-            (B.Commit.to_string target)
-            (B.Commit.to_string candidate)
-            (if merge then " " ^ B.Commit.to_string source else "")
-        in
-        B.patch_equivalent_boundary ~source record = Ok None);
     QCheck2.Test.make
       ~name:"BR repeated publication confirmations preserve receipt history"
       ~count:200
@@ -1465,8 +1219,7 @@ let[@warning "-4"] tests =
         && B.publication_destination (List.init (copies + 1) (fun _ -> "one"))
            = Ok "one");
     QCheck2.Test.make
-      ~name:
-        "BR recorded replay publication authority is revision and policy bound"
+      ~name:"BR rewrite publication inputs are revision and policy bound"
       ~count:200
       Gen.(triple bool bool bool)
       (fun (recorded, preserve, matches) ->
@@ -1494,9 +1247,8 @@ let[@warning "-4"] tests =
             (B.rewrite_publication_input op
                ~candidate:(if matches then candidate else target)
                ~expected:source
-            =
-            if recorded && (not preserve) && matches then Some (source, source)
-            else None)
+            = if (not preserve) && matches then Some (source, source) else None
+            )
             && B.rewrite_publication_input op ~candidate ~expected:target = None);
     QCheck2.Test.make
       ~name:"BR completion proof preserves captured integration policy"
@@ -1551,16 +1303,7 @@ let[@warning "-4"] tests =
         Option.map (fun c -> c.B.kind) (B.pending state)
         = Some B.Verify_recovery
         &&
-        let state, effects =
-          reply state
-            (B.Recovery_verified
-               {
-                 observation = active;
-                 local_extension = None;
-                 source_preserved = false;
-                 remote_preserved = false;
-               })
-        in
+        let state, effects = reply state (B.Recovery_observed active) in
         match B.operation state with
         | Some { repair = Some { mode = B.History_recovery _; _ }; failures; _ }
           ->
@@ -1644,14 +1387,7 @@ let[@warning "-4"] tests =
           }
         in
         let state, effects =
-          reply (recovery ())
-            (B.Recovery_verified
-               {
-                 observation;
-                 local_extension = None;
-                 source_preserved = false;
-                 remote_preserved = false;
-               })
+          reply (recovery ()) (B.Recovery_observed observation)
         in
         match B.decode (B.yojson_of_t state) with
         | Error _ -> false
@@ -1695,18 +1431,12 @@ let[@warning "-4"] tests =
                 let head = sha (Char.chr (97 + a))
                 and remote = sha (Char.chr (97 + b)) in
                 let report =
-                  B.Recovery_verified
+                  B.Recovery_observed
                     {
-                      observation =
-                        {
-                          observation with
-                          source = head;
-                          head;
-                          remote = Some remote;
-                        };
-                      local_extension = None;
-                      source_preserved = false;
-                      remote_preserved = false;
+                      observation with
+                      source = head;
+                      head;
+                      remote = Some remote;
                     }
                 in
                 let state, effects = reply state report in
@@ -2079,8 +1809,8 @@ let[@warning "-4"] tests =
                       kind =
                         ( B.Observe | B.Pin _ | B.Plan_remote_replay _
                         | B.Checkout_remote _ | B.Commit_merge _ | B.Integrate _
-                        | B.Verify_scope _ | B.Inspect | B.Verify_recovery
-                        | B.Publish _ | B.Confirm _ );
+                        | B.Inspect | B.Verify_recovery | B.Publish _
+                        | B.Confirm _ );
                       _;
                     } ),
                 _ )
@@ -2093,7 +1823,7 @@ let[@warning "-4"] tests =
                effects
         with _ -> false);
     QCheck2.Test.make
-      ~name:"BR only recorded remote boundaries authorize replay across restart"
+      ~name:"BR observed remote ancestors select replay across restart"
       ~count:100 Gen.bool (fun inferred ->
         try
           let state, _ = reply (publishing ()) B.Published in
@@ -2106,43 +1836,38 @@ let[@warning "-4"] tests =
           in
           let state, _ = reply state (B.Remote_replay_selected boundary) in
           let state = Result.get_ok (B.decode (B.yojson_of_t state)) in
-          if inferred then
-            Option.map (fun c -> c.B.kind) (B.pending state)
-            = Some B.Verify_recovery
-            && B.remote_integrations state = []
-          else
-            let expected =
-              B.Integrate
-                {
-                  source = incoming;
-                  target = candidate;
-                  boundary;
-                  policy = B.Rewrite;
-                }
-            in
-            let ready =
-              Option.map (fun c -> c.B.kind) (B.pending state) = Some expected
-            in
-            let result = sha 'e' in
-            let state, _ = reply state (B.Integrated result) in
-            let receipts = B.remote_integrations state in
-            let state, _ = reply state B.Published in
-            let state, _ =
-              reply state (B.Remote { sha = Some result; topology = Equal })
-            in
-            ready
-            && B.phase state = Some B.Settled
-            && B.remote_integrations
-                 (Result.get_ok (B.decode (B.yojson_of_t state)))
-               = receipts
-            &&
-            match receipts with
-            | [ receipt ] ->
-                receipt.B.capture.source_revision = incoming
-                && receipt.capture.target_revision = candidate
-                && receipt.capture.replay_boundary = boundary
-                && receipt.integrated_revision = result
-            | [] | _ :: _ :: _ -> false
+          let expected =
+            B.Integrate
+              {
+                source = incoming;
+                target = candidate;
+                boundary;
+                policy = B.Rewrite;
+              }
+          in
+          let ready =
+            Option.map (fun c -> c.B.kind) (B.pending state) = Some expected
+          in
+          let result = sha 'e' in
+          let state, _ = reply state (B.Integrated result) in
+          let receipts = B.remote_integrations state in
+          let state, _ = reply state B.Published in
+          let state, _ =
+            reply state (B.Remote { sha = Some result; topology = Equal })
+          in
+          ready
+          && B.phase state = Some B.Settled
+          && B.remote_integrations
+               (Result.get_ok (B.decode (B.yojson_of_t state)))
+             = receipts
+          &&
+          match receipts with
+          | [ receipt ] ->
+              receipt.B.capture.source_revision = incoming
+              && receipt.capture.target_revision = candidate
+              && receipt.capture.replay_boundary = boundary
+              && receipt.integrated_revision = result
+          | [] | _ :: _ :: _ -> false
         with _ -> false);
     QCheck2.Test.make
       ~name:
@@ -2286,9 +2011,9 @@ let[@warning "-4"] tests =
                 {
                   kind =
                     ( B.Commit_merge _ | B.Plan_remote_replay _
-                    | B.Checkout_remote _ | B.Verify_scope _ | B.Observe
-                    | B.Pin _ | B.Inspect | B.Verify_recovery | B.Continue _
-                    | B.Publish _ | B.Confirm _
+                    | B.Checkout_remote _ | B.Observe | B.Pin _ | B.Inspect
+                    | B.Verify_recovery | B.Continue _ | B.Publish _
+                    | B.Confirm _
                     | B.Integrate { policy = Rewrite; _ } );
                   _;
                 } ->
@@ -2358,9 +2083,9 @@ let[@warning "-4"] tests =
                 {
                   kind =
                     ( B.Commit_merge _ | B.Plan_remote_replay _
-                    | B.Checkout_remote _ | B.Verify_scope _ | B.Observe
-                    | B.Pin _ | B.Integrate _ | B.Inspect | B.Verify_recovery
-                    | B.Publish _ | B.Confirm _ );
+                    | B.Checkout_remote _ | B.Observe | B.Pin _ | B.Integrate _
+                    | B.Inspect | B.Verify_recovery | B.Publish _ | B.Confirm _
+                      );
                   _;
                 } ->
                 false
@@ -2380,9 +2105,9 @@ let[@warning "-4"] tests =
               {
                 kind =
                   ( B.Commit_merge _ | B.Plan_remote_replay _
-                  | B.Checkout_remote _ | B.Pin _ | B.Integrate _
-                  | B.Verify_scope _ | B.Inspect | B.Verify_recovery
-                  | B.Continue _ | B.Publish _ | B.Confirm _ );
+                  | B.Checkout_remote _ | B.Pin _ | B.Integrate _ | B.Inspect
+                  | B.Verify_recovery | B.Continue _ | B.Publish _ | B.Confirm _
+                    );
                 _;
               } ->
               false
@@ -2455,9 +2180,8 @@ let[@warning "-4"] tests =
               {
                 kind =
                   ( B.Commit_merge _ | B.Plan_remote_replay _
-                  | B.Checkout_remote _ | B.Verify_scope _ | B.Observe | B.Pin _
-                  | B.Integrate _ | B.Inspect | B.Verify_recovery | B.Continue _
-                  | B.Confirm _ );
+                  | B.Checkout_remote _ | B.Observe | B.Pin _ | B.Integrate _
+                  | B.Inspect | B.Verify_recovery | B.Continue _ | B.Confirm _ );
                 _;
               } ->
               false
@@ -2609,24 +2333,18 @@ let[@warning "-4"] tests =
         "BR history observations cannot accept repairs without a successful \
          turn"
       ~count:100
-      Gen.(pair (pair bool bool) (pair bool bool))
-      (fun ((source_preserved, remote_preserved), (clean, target_included)) ->
+      Gen.(pair bool bool)
+      (fun (clean, target_included) ->
         try
           let state, effects =
             reply (recovery ())
-              (B.Recovery_verified
+              (B.Recovery_observed
                  {
-                   observation =
-                     {
-                       observation with
-                       source = candidate;
-                       head = candidate;
-                       clean;
-                       target_included;
-                     };
-                   local_extension = None;
-                   source_preserved;
-                   remote_preserved;
+                   observation with
+                   source = candidate;
+                   head = candidate;
+                   clean;
+                   target_included;
                  })
           in
           B.pending state = None
@@ -2661,15 +2379,7 @@ let[@warning "-4"] tests =
             fails_recovery (fails_recovery (recovery ()) false) false
           in
           let result =
-            if proof then
-              B.Recovery_verified
-                {
-                  observation;
-                  local_extension = None;
-                  source_preserved = true;
-                  remote_preserved = true;
-                }
-            else unverified
+            if proof then B.Recovery_observed observation else unverified
           in
           let state = fst (reply state result) in
           B.phase state = Some (B.Intervention "repair_attempts_exhausted")
@@ -2972,9 +2682,9 @@ let[@warning "-4"] tests =
           | Some
               {
                 kind =
-                  ( Commit_merge _ | Checkout_remote _ | Verify_scope _
-                  | Observe | Pin _ | Inspect | Verify_recovery | Continue _
-                  | Publish _ | Confirm _ );
+                  ( Commit_merge _ | Checkout_remote _ | Observe | Pin _
+                  | Inspect | Verify_recovery | Continue _ | Publish _
+                  | Confirm _ );
                 _;
               } ->
               false
@@ -3020,8 +2730,8 @@ let[@warning "-4"] tests =
               {
                 kind =
                   ( Commit_merge _ | Plan_remote_replay _ | Checkout_remote _
-                  | Verify_scope _ | Observe | Pin _ | Integrate _ | Inspect
-                  | Verify_recovery | Continue _ | Confirm _ );
+                  | Observe | Pin _ | Integrate _ | Inspect | Verify_recovery
+                  | Continue _ | Confirm _ );
                 _;
               } ->
               false
@@ -3110,9 +2820,8 @@ let[@warning "-4"] tests =
             {
               kind =
                 ( B.Commit_merge _ | B.Plan_remote_replay _
-                | B.Checkout_remote _ | B.Verify_scope _ | B.Observe | B.Pin _
-                | B.Integrate _ | B.Inspect | B.Verify_recovery | B.Continue _
-                | B.Confirm _ );
+                | B.Checkout_remote _ | B.Observe | B.Pin _ | B.Integrate _
+                | B.Inspect | B.Verify_recovery | B.Continue _ | B.Confirm _ );
               _;
             } ->
             false);
@@ -3135,13 +2844,7 @@ let[@warning "-4"] tests =
         &&
         let state, _ =
           reply state
-            (B.Recovery_verified
-               {
-                 observation = { observation with clean = not dirty };
-                 local_extension = None;
-                 source_preserved = false;
-                 remote_preserved = false;
-               })
+            (B.Recovery_observed { observation with clean = not dirty })
         in
         B.pending state = None && B.is_pending state);
     QCheck2.Test.make ~name:"BR duplicate command results are fixed points"
@@ -3257,9 +2960,9 @@ let[@warning "-4"] tests =
                 (match command.kind with
                 | B.Integrate _ -> incr mutations
                 | B.Commit_merge _ | B.Plan_remote_replay _
-                | B.Checkout_remote _ | B.Verify_scope _ | B.Observe | B.Pin _
-                | B.Inspect | B.Verify_recovery | B.Continue _ | B.Publish _
-                | B.Confirm _ ->
+                | B.Checkout_remote _ | B.Observe | B.Pin _ | B.Inspect
+                | B.Verify_recovery | B.Continue _ | B.Publish _ | B.Confirm _
+                  ->
                     ());
                 let event =
                   B.Result
@@ -3342,9 +3045,8 @@ let[@warning "-4"] tests =
             {
               kind =
                 ( B.Commit_merge _ | B.Plan_remote_replay _
-                | B.Checkout_remote _ | B.Verify_scope _ | B.Observe | B.Pin _
-                | B.Integrate _ | B.Inspect | B.Continue _ | B.Publish _
-                | B.Confirm _ );
+                | B.Checkout_remote _ | B.Observe | B.Pin _ | B.Integrate _
+                | B.Inspect | B.Continue _ | B.Publish _ | B.Confirm _ );
               _;
             } ->
             false);
@@ -3794,16 +3496,7 @@ let[@warning "-4"] m2_upgrade_tests =
             B.equal restored (Result.get_ok (B.decode (B.yojson_of_t restored))));
           let dirty = { observation with clean = false } in
           let restored, _ = reply restored (B.Inspected dirty) in
-          let restored, _ =
-            reply restored
-              (B.Recovery_verified
-                 {
-                   observation = dirty;
-                   local_extension = None;
-                   source_preserved = true;
-                   remote_preserved = true;
-                 })
-          in
+          let restored, _ = reply restored (B.Recovery_observed dirty) in
           match B.operation restored with
           | Some
               {
@@ -3918,18 +3611,8 @@ let initial_remote_integration_tests =
           let op = Option.get (B.operation state) in
           let verified, _ =
             reply state
-              (B.Recovery_verified
-                 {
-                   observation =
-                     {
-                       observation with
-                       target = sha 'f';
-                       target_included = true;
-                     };
-                   local_extension = None;
-                   source_preserved = true;
-                   remote_preserved = true;
-                 })
+              (B.Recovery_observed
+                 { observation with target = sha 'f'; target_included = true })
           in
           B.is_pending verified
           && B.pending verified = None
@@ -3947,9 +3630,8 @@ let initial_remote_integration_tests =
                 {
                   kind =
                     ( B.Observe | B.Pin _ | B.Integrate _ | B.Commit_merge _
-                    | B.Plan_remote_replay _ | B.Checkout_remote _
-                    | B.Verify_scope _ | B.Inspect | B.Continue _ | B.Publish _
-                    | B.Confirm _ );
+                    | B.Plan_remote_replay _ | B.Checkout_remote _ | B.Inspect
+                    | B.Continue _ | B.Publish _ | B.Confirm _ );
                   _;
                 }
             | None ->
@@ -4025,9 +3707,9 @@ let initial_remote_integration_tests =
             | B.Integrate { source = kept; target = remote; policy; _ } ->
                 (not rewrite) && kept = preserved && remote = incoming
                 && policy = B.Preserve_ancestry
-            | B.Verify_scope _ | B.Observe | B.Pin _ | B.Commit_merge _
-            | B.Checkout_remote _ | B.Inspect | B.Verify_recovery | B.Continue _
-            | B.Publish _ | B.Confirm _ ->
+            | B.Observe | B.Pin _ | B.Commit_merge _ | B.Checkout_remote _
+            | B.Inspect | B.Verify_recovery | B.Continue _ | B.Publish _
+            | B.Confirm _ ->
                 false
           in
           let stale, effects =
@@ -4117,9 +3799,8 @@ let initial_remote_integration_tests =
               {
                 kind =
                   ( B.Observe | B.Pin _ | B.Integrate _ | B.Commit_merge _
-                  | B.Plan_remote_replay _ | B.Checkout_remote _
-                  | B.Verify_scope _ | B.Inspect | B.Continue _ | B.Publish _
-                  | B.Confirm _ );
+                  | B.Plan_remote_replay _ | B.Checkout_remote _ | B.Inspect
+                  | B.Continue _ | B.Publish _ | B.Confirm _ );
                 _;
               }
           | None ->
@@ -4166,9 +3847,7 @@ let initial_remote_integration_tests =
           | Ok restored ->
               if stage > 0 then B.equal restored state
               else
-                (Option.get (B.operation restored)).approved_scope
-                = Replay_scope.Unproven
-                && B.pending restored = B.pending state
+                B.pending restored = B.pending state
                 && B.remote_integrations restored = []
                 && B.required_revisions restored = B.required_revisions state
         with _ -> false);
@@ -4886,12 +4565,7 @@ let[@warning "-4"] trusted_repair_tests =
             reply agent B.Pinned |> fun agent ->
             reply agent (B.Integrated candidate)
           in
-          let op = Option.get (B.operation agent.branch_reconcile) in
           let agent =
-            reply agent
-              (Onton_core_test_support.Scope_fixture.verified op.approved_scope
-                 candidate)
-            |> fun agent ->
             reply agent B.Published |> fun agent ->
             reply agent (B.Remote { sha = Some candidate; topology = Equal })
           in
