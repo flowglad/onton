@@ -1144,7 +1144,11 @@ let settle_unchecked t op =
       publications =
         (match op.candidate with
         | Some candidate
-          when (not op.reobserve_after_completion)
+          when ((not op.reobserve_after_completion)
+               || Option.exists op.candidate_evidence ~f:(function
+                 | Agent_reported _ -> true
+                 | Executed | Recovered_completion | Verified_history -> false)
+               )
                && not
                     (List.exists t.publications ~f:(fun receipt ->
                          receipt.operation_id = op.id

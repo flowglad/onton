@@ -1747,10 +1747,21 @@ let () =
                        (B.Repair_started token));
                   Git.run_git ~cwd:dir
                     [ "-c"; "core.editor=true"; "rebase"; "--continue" ];
+                  let repaired_head =
+                    Git.git_capture ~cwd:dir [ "rev-parse"; "HEAD" ]
+                  in
                   check "agent completes adopted staged rebase and newer base"
                     (run runtime (persist checkpoint) io
                        (B.Repair_completed { token; at = 200. })
                     = R.Idle);
+                  check
+                    "agent publication remains recorded across the base refresh"
+                    (List.exists
+                       (fun receipt ->
+                         receipt.B.published_revision = sha repaired_head
+                         && receipt.publication_evidence
+                            = B.Agent_reported token)
+                       (B.publications (state runtime)));
                   check "staged resolution survives adoption"
                     (Git.git_capture ~cwd:remote [ "show"; "patch:file" ]
                     = "resolved");
