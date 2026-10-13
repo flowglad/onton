@@ -572,7 +572,7 @@ let[@warning "-42"] () =
       ( Reconstructed { original = proof; upstream = target },
         "tree reconstruction (best effort) " ^ Commit.to_string proof ^ " -> "
         ^ Commit.to_string target );
-      (Plain, "no shared ancestor");
+      (Plain, "no unique shared ancestor");
     ]
   in
   List.iter proofs ~f:(fun (boundary, expected_proof) ->

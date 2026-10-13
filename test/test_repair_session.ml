@@ -41,13 +41,7 @@ let repair_turn mode =
             F.reply state B.Pinned |> fun s ->
             F.reply s (B.Recovery_required "history")
         in
-        ( state,
-          B.Recovery_verified
-            {
-              observation = { observation with clean = not dirty };
-              source_preserved = false;
-              remote_preserved = true;
-            } )
+        (state, B.Recovery_observed { observation with clean = not dirty })
     | _ ->
         let state =
           P.publishing
@@ -58,9 +52,7 @@ let repair_turn mode =
           F.reply state
             (B.Publication_rejected (Push_reject_classify.Hook_failure "gate"))
         in
-        ( state,
-          B.Recovery_verified
-            { observation; source_preserved = true; remote_preserved = true } )
+        (state, B.Recovery_observed observation)
   in
   let command = Option.get (B.pending state) in
   let state, effects =

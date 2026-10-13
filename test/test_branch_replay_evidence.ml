@@ -25,7 +25,7 @@ let evidence = function
   | B.Retryable _ -> (None, true)
   | B.Checkout_ready | B.Observed_recovery _ | B.Observed_active _ | Pinned
   | Merge_completion_needed _ | Merge_completed _ | Remote_replay_selected _
-  | Remote_checked_out | Integrated _ | Conflict _ | Recovery_verified _
+  | Remote_checked_out | Integrated _ | Conflict _ | Recovery_observed _
   | Inspected _ | Inspected_active _ | Published | Remote _
   | Recovery_required _ | Publication_rejected _ | Attempt_failed _
   | Needs_diagnosis _ ->
@@ -44,8 +44,9 @@ let plain_replay env merged_history =
             ignore (commit dir "side" "side contribution");
             Git.run_git ~cwd:dir [ "checkout"; "-q"; "patch" ]);
           ignore (commit dir "patch" "patch contribution");
-          if merged_history then
-            Git.run_git ~cwd:dir [ "merge"; "--no-ff"; "--no-edit"; "side" ];
+          if merged_history then (
+            Git.run_git ~cwd:dir [ "merge"; "--no-ff"; "--no-commit"; "side" ];
+            ignore (commit dir "merge-only" "merge-only edit"));
           let source = Git.git_capture ~cwd:dir [ "rev-parse"; "HEAD" ] in
           let target = commit remote "base-advance" "advance" in
           let io =
@@ -58,7 +59,7 @@ let plain_replay env merged_history =
               (B.Request
                  { base = "main"; policy = Rewrite; purpose = Reconcile_base })
           in
-          let rec settle state remaining =
+          let rec settle state remaining effects =
             if B.publication_status state = `Published then state
             else (
               check "plain replay converges" (remaining > 0);
@@ -76,12 +77,12 @@ let plain_replay env merged_history =
                   | B.Observed_active _ | B.Pinned | B.Merge_completion_needed _
                   | B.Merge_completed _ | B.Remote_replay_selected _
                   | B.Remote_checked_out | B.Integrated _ | B.Conflict _
-                  | B.Recovery_verified _ | B.Inspected _ | B.Inspected_active _
+                  | B.Recovery_observed _ | B.Inspected _ | B.Inspected_active _
                   | B.Published | B.Remote _ | B.Retryable _
                   | B.Recovery_required _ | B.Publication_rejected _
                   | B.Attempt_failed _ | B.Needs_diagnosis _ ->
                       ());
-                  let next, _ =
+                  let next, effects =
                     B.step state
                       (B.Result { token = command.token; at = 100.; result })
                   in
@@ -90,10 +91,23 @@ let plain_replay env merged_history =
                     | Ok restored -> restored
                     | Error reason -> failwith reason
                   in
-                  settle restored (remaining - 1)
+                  settle restored (remaining - 1) effects
               | ( Some { repair = Some { mode = B.History_recovery _; _ }; _ },
                   None ) ->
-                  state
+                  let token =
+                    List.find_map
+                      (function
+                        | B.Repair token -> Some token
+                        | B.Execute _ | B.Start_repair _ | B.Completed _ -> None)
+                      effects
+                    |> Option.get
+                  in
+                  let state = fst (B.step state (B.Repair_started token)) in
+                  Git.run_git ~cwd:dir [ "merge"; "--no-edit"; "origin/main" ];
+                  let state, effects =
+                    B.step state (B.Repair_completed { token; at = 100. })
+                  in
+                  settle state (remaining - 1) effects
               | None, _
               | ( Some
                     {
@@ -105,7 +119,7 @@ let plain_replay env merged_history =
                   None ) ->
                   failwith "unproven replay stopped without agent recovery")
           in
-          let settled = settle initial 12 in
+          let settled = settle initial 18 [] in
           check
             "adopted branch rebases and publishes without materialization \
              evidence"
@@ -118,12 +132,129 @@ let plain_replay env merged_history =
             (fun file ->
               check "rebase preserves patch content"
                 (Git.git_capture ~cwd:remote [ "show"; "patch:" ^ file ] = file))
-            (if merged_history then [ "patch"; "side" ] else [ "patch" ]);
+            (if merged_history then [ "merge-only"; "patch"; "side" ]
+             else [ "patch" ]);
           check "captured source and target remain retained for recovery"
             (List.for_all
                (fun revision ->
                  List.mem (sha revision) (B.required_revisions settled))
                [ source; target ])))
+
+let criss_cross env =
+  Git.with_temp_repo (fun remote ->
+      let root = commit remote "root" "root" in
+      Git.run_git ~cwd:remote [ "checkout"; "-qb"; "left" ];
+      let left = commit remote "left" "left" in
+      Git.run_git ~cwd:remote [ "checkout"; "-q"; "main" ];
+      let right = commit remote "right" "right" in
+      Git.run_git ~cwd:remote [ "merge"; "--no-ff"; "--no-edit"; left ];
+      let opposite =
+        Git.git_capture ~cwd:remote
+          [
+            "commit-tree";
+            "HEAD^{tree}";
+            "-p";
+            left;
+            "-p";
+            right;
+            "-m";
+            "opposite merge";
+          ]
+      in
+      Git.run_git ~cwd:remote [ "branch"; "patch"; opposite ];
+      let target = commit remote "upstream" "upstream" in
+      Git.with_temp_repo (fun dir ->
+          Git.run_git ~cwd:dir [ "remote"; "add"; "origin"; remote ];
+          Git.run_git ~cwd:dir [ "fetch"; "-q"; "origin" ];
+          Git.run_git ~cwd:dir [ "checkout"; "-qb"; "patch"; "origin/patch" ];
+          let source = commit dir "patch" "patch" in
+          let bases =
+            Git.git_capture ~cwd:dir [ "merge-base"; "--all"; source; target ]
+            |> String.split_on_char '\n'
+          in
+          check "fixture has two best shared ancestors"
+            (List.length bases = 2
+            && List.mem left bases && List.mem right bases);
+          let raw =
+            E.make_io
+              ~process_mgr:(Eio.Stdenv.process_mgr env)
+              ~clock:(Eio.Stdenv.clock env) ~path:dir
+          in
+          let mutations = ref 0 and turns = ref 0 in
+          let io =
+            E.
+              {
+                git =
+                  (fun args ->
+                    (match args with
+                    | "rebase" :: _ | "merge" :: _ | "cherry-pick" :: _ ->
+                        incr mutations
+                    | _ -> ());
+                    raw.git args);
+              }
+          in
+          let initial =
+            fst (B.step B.empty (B.Materialized (B.New_branch (sha root))))
+          in
+          let initial =
+            fst
+              (B.step initial
+                 (B.Request
+                    {
+                      base = "main";
+                      policy = Rewrite;
+                      purpose = Reconcile_base;
+                    }))
+          in
+          let rec drive state fuel effects =
+            check "criss-cross recovery converges" (fuel > 0);
+            if B.publication_status state = `Published then state
+            else
+              match (B.operation state, B.pending state) with
+              | Some operation, Some command ->
+                  let result =
+                    E.execute ~io ~prefix:"refs/onton/reconcile/criss-cross"
+                      ~branch:"patch" ~operation command
+                  in
+                  let state, effects =
+                    B.step state
+                      (B.Result { token = command.token; at = 100.; result })
+                  in
+                  drive state (fuel - 1) effects
+              | Some { repair = Some _; _ }, None ->
+                  incr turns;
+                  check "ambiguous ancestry delegates before mutation"
+                    (!turns = 1 && !mutations = 0);
+                  let token =
+                    List.find_map
+                      (function
+                        | B.Repair token -> Some token
+                        | B.Execute _ | B.Start_repair _ | B.Completed _ -> None)
+                      effects
+                    |> Option.get
+                  in
+                  let state = fst (B.step state (B.Repair_started token)) in
+                  Git.run_git ~cwd:dir [ "merge"; "--no-edit"; target ];
+                  let state, effects =
+                    B.step state (B.Repair_completed { token; at = 100. })
+                  in
+                  drive state (fuel - 1) effects
+              | Some { repair = None; _ }, None | None, _ ->
+                  failwith "criss-cross recovery stopped"
+          in
+          let state = drive initial 30 [] in
+          check "ambiguous ancestry used exactly one recovery turn" (!turns = 1);
+          List.iter
+            (fun revision ->
+              check "agent recovery preserves the criss-cross inputs"
+                (Git.git_exit_code ~cwd:remote
+                   [ "merge-base"; "--is-ancestor"; revision; "patch" ]
+                = 0))
+            [ source; target ];
+          check "criss-cross recovery survives checkpoint import"
+            (match B.decode (B.yojson_of_t state) with
+            | Ok restored -> B.equal restored state
+            | Error _ -> false)))
 
 let deep_stack env empty_tip =
   Git.with_temp_repo (fun remote ->
@@ -358,6 +489,7 @@ let () =
   Eio_main.run @@ fun env ->
   List.iter (deep_stack env) [ false; true ];
   List.iter (plain_replay env) [ false; true ];
+  criss_cross env;
   (* Failed ancestry reads are transport failures, not absent provenance. *)
   Git.with_temp_repo (fun remote ->
       ignore (commit remote "base" "base");

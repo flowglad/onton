@@ -1014,7 +1014,8 @@ let () =
           Git.run_git ~cwd:remote [ "checkout"; "-q"; "main" ];
           Git.with_temp_repo (fun dir ->
               prepare remote dir;
-              let source = commit dir "work" "work\n" "patch work" in
+              ignore (commit dir "work" "work\n" "patch work");
+              let source = commit dir "second" "second\n" "second patch work" in
               let target =
                 commit remote "upstream" "upstream\n" "base advanced"
               in
@@ -1074,6 +1075,32 @@ let () =
                   let checkout = E.observe_checkout io in
                   check "interrupted rebase has no unresolved content"
                     (Git_observation.repair_ready checkout);
+                  let todo_path =
+                    Git.git_capture ~cwd:dir
+                      [
+                        "rev-parse";
+                        "--git-path";
+                        "rebase-merge/git-rebase-todo";
+                      ]
+                  in
+                  let todo_path =
+                    if Filename.is_relative todo_path then
+                      Filename.concat dir todo_path
+                    else todo_path
+                  in
+                  let ic = open_in_bin todo_path in
+                  let original_todo =
+                    Fun.protect
+                      ~finally:(fun () -> close_in ic)
+                      (fun () -> really_input_string ic (in_channel_length ic))
+                  in
+                  let oc = open_out_bin todo_path in
+                  Fun.protect
+                    ~finally:(fun () -> close_out oc)
+                    (fun () ->
+                      output_string oc
+                        (Base.String.substr_replace_all original_todo
+                           ~pattern:"pick " ~with_:"drop "));
                   let snapshot = get (Persistence.load ~path:checkpoint) in
                   let restored =
                     Runtime.create ~gameplan
@@ -1126,14 +1153,46 @@ let () =
                           op.target = Some (sha target)
                           && op.source = Some (sha source)
                       | None -> false))
-                  else (
+                  else
+                    let token =
+                      match outcome with
+                      | R.Repair_needed token -> token
+                      | R.Idle | R.Waiting | R.Intervention _
+                      | R.Checkpoint_failed _ ->
+                          failwith
+                            "a paused rebase with changed instructions needs \
+                             agent recovery"
+                    in
+                    check "changed-todo recovery has not published"
+                      (Git.git_exit_code ~cwd:remote
+                         [ "show-ref"; "--verify"; "refs/heads/patch" ]
+                      <> 0);
+                    ignore
+                      (run restored (persist checkpoint) io
+                         (B.Repair_started token));
+                    (* The agent may inspect and complete this Git operation;
+                       its successful result needs no instruction certificate. *)
+                    let oc = open_out_bin todo_path in
+                    Fun.protect
+                      ~finally:(fun () -> close_out oc)
+                      (fun () ->
+                        output_string oc
+                          (Base.String.substr_replace_all original_todo
+                             ~pattern:"exec false"
+                             ~with_:"# removed by recovery agent"));
+                    Git.run_git ~cwd:dir
+                      [ "-c"; "core.editor=true"; "rebase"; "--continue" ];
+                    check "agent restores the dropped patch contribution"
+                      (Git.git_capture ~cwd:dir [ "show"; "HEAD:second" ]
+                      = "second");
                     check
-                      "matching stopped integration can resume without a scope \
-                       certificate"
-                      (outcome = R.Idle);
-                    check "resumed integration publishes the current branch"
+                      "agent-approved continuation publishes the captured HEAD"
+                      (run restored (persist checkpoint) io
+                         (B.Repair_completed { token; at = 300. })
+                      = R.Idle);
+                    check "agent continuation publishes the current branch"
                       (Git.git_capture ~cwd:remote [ "rev-parse"; "patch" ]
-                      = Git.git_capture ~cwd:dir [ "rev-parse"; "HEAD" ]))))))
+                      = Git.git_capture ~cwd:dir [ "rev-parse"; "HEAD" ])))))
     [ (false, true); (true, true); (false, false); (true, false) ];
   Git.with_temp_repo (fun remote ->
       let base = commit remote "base" "base\n" "base" in
@@ -1326,7 +1385,7 @@ let () =
                   check "unrelated refs survive user updateRefs configuration"
                     (Git.git_capture ~cwd:dir [ "rev-parse"; "unrelated" ]
                     = candidate);
-                  if history >= 6 || stop_at = 4 then (
+                  if stop_at = 4 then (
                     check "conflicting or dirty replay reaches owned repair"
                       (match outcome with
                       | R.Repair_needed _ -> true
@@ -1386,10 +1445,16 @@ let () =
                          Git.git_capture ~cwd:remote
                            [ "show"; "patch:incoming" ]
                          = "incoming");
-                    if history = 5 then
+                    if history >= 5 && history < 7 then
                       check "merged remote side work survives replay"
                         (Git.git_capture ~cwd:remote [ "show"; "patch:side" ]
                         = "side");
+                    if history >= 6 then
+                      check "remote merge resolution survives integration"
+                        (Git.git_capture ~cwd:remote [ "show"; "patch:base" ]
+                        =
+                        if history >= 7 then "main change"
+                        else "remote resolution");
                     check "remote replay cannot introduce merge commits"
                       (Git.git_capture ~cwd:remote
                          [ "rev-list"; "--merges"; base ^ "..patch" ]
@@ -1669,10 +1734,23 @@ let () =
                         run runtime (persist checkpoint) io (B.Request intent)
                       )
                   in
-                  check
-                    "adopted staged rebase and newer base converge without \
-                     another repair"
-                    (outcome = R.Idle);
+                  let token =
+                    match outcome with
+                    | R.Repair_needed token -> token
+                    | R.Idle | R.Waiting | R.Intervention _
+                    | R.Checkpoint_failed _ ->
+                        failwith
+                          "adopted paused rebase must request agent recovery"
+                  in
+                  ignore
+                    (run runtime (persist checkpoint) io
+                       (B.Repair_started token));
+                  Git.run_git ~cwd:dir
+                    [ "-c"; "core.editor=true"; "rebase"; "--continue" ];
+                  check "agent completes adopted staged rebase and newer base"
+                    (run runtime (persist checkpoint) io
+                       (B.Repair_completed { token; at = 200. })
+                    = R.Idle);
                   check "staged resolution survives adoption"
                     (Git.git_capture ~cwd:remote [ "show"; "patch:file" ]
                     = "resolved");

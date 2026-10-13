@@ -247,13 +247,7 @@ let waiting_repair ~root ~stale ~changed =
             | B.Inspect when !external_work ->
                 B.Recovery_required "external_work"
             | B.Inspect -> B.Inspected_active { observation; ready = false }
-            | B.Verify_recovery ->
-                B.Recovery_verified
-                  {
-                    observation;
-                    source_preserved = false;
-                    remote_preserved = false;
-                  }
+            | B.Verify_recovery -> B.Recovery_observed observation
             | B.Observe | B.Pin _ | B.Integrate _ | B.Continue _
             | B.Commit_merge _ | B.Plan_remote_replay _ | B.Checkout_remote _
             | B.Publish _ | B.Confirm _ ->

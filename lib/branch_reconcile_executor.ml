@@ -206,12 +206,17 @@ let shared_ancestor io source target =
     io.git
       [
         "merge-base";
+        "--all";
         Branch_reconcile.Commit.to_string source;
         Branch_reconcile.Commit.to_string target;
       ]
   in
   match code with
-  | 0 -> Some (commit (String.strip out))
+  | 0 -> (
+      match String.split_lines (String.strip out) with
+      | [ revision ] -> Some (commit revision)
+      | [] -> raise (Probe_failed "shared ancestor probe returned no revision")
+      | _ :: _ :: _ -> None)
   | 1 -> None
   | _ -> raise (Probe_failed ("shared ancestor probe failed: " ^ err))
 
@@ -256,8 +261,9 @@ let observation io ~destination ~branch ~intent ~policy ~boundaries ~target
                   ("refs/remotes/origin/" ^ intent.Branch_reconcile.base)))
   in
   let remote_sha = remote io ~destination branch in
-  (* Previous bases are useful rebase hints, never a permission requirement.
-     Git must confirm reachability; imported branches need no such hint. *)
+  (* With a unique shared ancestor, a reachable previous base can refine the
+     replay range. Unrelated or ambiguous histories go to the agent, even when
+     a previous-base hint exists; imported branches need no such hint. *)
   let rec select evidence =
     match Branch_reconcile.choose_boundary ~candidates:boundaries ~evidence with
     | Branch_reconcile.Chosen boundary -> boundary
@@ -663,12 +669,7 @@ let execute ~io ~prefix ~branch ~(operation : Branch_reconcile.operation)
                 ("observed-remote/" ^ Branch_reconcile.Commit.to_string remote)
                 remote);
           ignore (checkout : Git_observation.t);
-          Branch_reconcile.Recovery_verified
-            {
-              observation = o;
-              source_preserved = false;
-              remote_preserved = false;
-            }
+          Branch_reconcile.Recovery_observed o
       | Branch_reconcile.Plan_remote_replay request -> (
           pin_captured ();
           match
@@ -716,52 +717,46 @@ let execute ~io ~prefix ~branch ~(operation : Branch_reconcile.operation)
           | Ok () -> (
               match operation.remote_replay with
               | Some replay ->
-                  let commits =
-                    checked io
-                      [
-                        "rev-list";
-                        "--reverse";
-                        "--topo-order";
-                        "--no-merges";
-                        Branch_reconcile.Commit.to_string replay.upstream
-                        ^ ".."
-                        ^ Branch_reconcile.Commit.to_string replay.incoming;
-                      ]
-                    |> String.split_lines
+                  let incoming =
+                    Branch_reconcile.Commit.to_string replay.incoming
                   in
-                  if
-                    Branch_reconcile.equal_policy policy
-                      Branch_reconcile.Rewrite
-                    && List.is_empty commits
-                  then Branch_reconcile.Integrated replay.preserved
-                  else
-                    let args =
-                      match policy with
-                      | Branch_reconcile.Rewrite ->
-                          if ancestor io replay.preserved replay.incoming then
-                            [
-                              "merge";
-                              "--ff-only";
-                              "--no-autostash";
-                              Branch_reconcile.Commit.to_string replay.incoming;
-                            ]
-                          else
-                            [
-                              "cherry-pick";
-                              "--empty=drop";
-                              "--no-rerere-autoupdate";
-                            ]
-                            @ commits
-                      | Branch_reconcile.Preserve_ancestry ->
-                          [
-                            "merge";
-                            "--no-edit";
-                            "--no-autostash";
-                            Branch_reconcile.Commit.to_string replay.incoming;
-                          ]
+                  let args =
+                    match policy with
+                    | Branch_reconcile.Rewrite
+                      when not (ancestor io replay.preserved replay.incoming) ->
+                        [
+                          "merge";
+                          "--squash";
+                          "--no-commit";
+                          "--no-autostash";
+                          "--no-rerere-autoupdate";
+                          incoming;
+                        ]
+                    | Branch_reconcile.Rewrite ->
+                        [ "merge"; "--ff-only"; "--no-autostash"; incoming ]
+                    | Branch_reconcile.Preserve_ancestry ->
+                        [ "merge"; "--no-edit"; "--no-autostash"; incoming ]
+                  in
+                  let code, _, err = io.git args in
+                  if code = 0 && List.mem args "--squash" ~equal:String.equal
+                  then
+                    let staged, _, detail =
+                      io.git [ "diff"; "--cached"; "--quiet" ]
                     in
-                    let code, _, err = io.git args in
-                    mutation_result io ~operation code err
+                    match staged with
+                    | 0 -> mutation_result io ~operation 0 err
+                    | 1 ->
+                        let code, _, err =
+                          io.git
+                            [ "commit"; "-m"; "Integrate remote patch work" ]
+                        in
+                        mutation_result io ~operation code err
+                    | _ ->
+                        raise
+                          (Probe_failed
+                             ("cannot inspect remote integration index: "
+                            ^ detail))
+                  else mutation_result io ~operation code err
               | None ->
                   if ancestor io target source then
                     Branch_reconcile.Integrated source
@@ -789,6 +784,20 @@ let execute ~io ~prefix ~branch ~(operation : Branch_reconcile.operation)
                             | None ->
                                 raise (History_unclear "no_shared_ancestor")
                           in
+                          (* Ordinary rebase drops merge-only edits. Let the
+                             agent reconstruct merged replay ranges instead. *)
+                          let merges =
+                            checked io
+                              [
+                                "rev-list";
+                                "--merges";
+                                upstream ^ ".."
+                                ^ Branch_reconcile.Commit.to_string source;
+                              ]
+                          in
+                          if not (String.is_empty (String.strip merges)) then
+                            raise
+                              (History_unclear "merged_history_requires_agent");
                           [
                             "rebase";
                             "--merge";
@@ -812,49 +821,60 @@ let execute ~io ~prefix ~branch ~(operation : Branch_reconcile.operation)
           with
           | Error reason -> Branch_reconcile.Recovery_required reason
           | Ok () ->
-              let next = Branch_reconcile.continuation operation checkout in
-              if G.equal_continuation next G.Complete_merge then
+              if
                 match checkout.sequencer with
-                | G.Rebase r ->
-                    Branch_reconcile.Merge_completion_needed
-                      {
-                        head = commit checkout.head;
-                        target;
-                        parents = List.map r.merge_heads ~f:commit;
-                        sequencer;
-                        resumed_sequencer =
-                          G.sequencer_key (G.Rebase { r with merge_heads = [] });
-                      }
-                | G.Merge _ | G.Cherry_pick _ | G.None_active ->
-                    Branch_reconcile.Recovery_required
-                      "merge_completion_context_missing"
-              else if G.equal_continuation next G.Blocked then
-                Branch_reconcile.Conflict
-                  {
-                    head = commit checkout.head;
-                    sequencer;
-                    conflicts = List.length checkout.conflicts;
-                  }
+                | G.Rebase _ -> true
+                | G.Merge _ | G.Cherry_pick _ | G.None_active -> false
+              then
+                Branch_reconcile.Recovery_required
+                  "paused_rebase_requires_agent"
               else
-                let args =
+                let next = Branch_reconcile.continuation operation checkout in
+                if G.equal_continuation next G.Complete_merge then
                   match checkout.sequencer with
-                  | G.Rebase _ ->
-                      [
-                        "-c";
-                        "core.editor=true";
-                        "rebase";
-                        (if G.equal_continuation next G.Skip_empty_replay then
-                           "--skip"
-                         else "--continue");
-                      ]
-                  | G.Merge _ ->
-                      [ "-c"; "core.editor=true"; "merge"; "--continue" ]
-                  | G.Cherry_pick _ ->
-                      [ "-c"; "core.editor=true"; "cherry-pick"; "--continue" ]
-                  | G.None_active -> []
-                in
-                let code, _, err = io.git args in
-                mutation_result io ~operation code err)
+                  | G.Rebase r ->
+                      Branch_reconcile.Merge_completion_needed
+                        {
+                          head = commit checkout.head;
+                          target;
+                          parents = List.map r.merge_heads ~f:commit;
+                          sequencer;
+                          resumed_sequencer =
+                            G.sequencer_key
+                              (G.Rebase { r with merge_heads = [] });
+                        }
+                  | G.Merge _ | G.Cherry_pick _ | G.None_active ->
+                      Branch_reconcile.Recovery_required
+                        "merge_completion_context_missing"
+                else if G.equal_continuation next G.Blocked then
+                  Branch_reconcile.Conflict
+                    {
+                      head = commit checkout.head;
+                      sequencer;
+                      conflicts = List.length checkout.conflicts;
+                    }
+                else
+                  let args =
+                    match checkout.sequencer with
+                    | G.Rebase _ ->
+                        [
+                          "-c";
+                          "core.editor=true";
+                          "rebase";
+                          (if G.equal_continuation next G.Skip_empty_replay then
+                             "--skip"
+                           else "--continue");
+                        ]
+                    | G.Merge _ ->
+                        [ "-c"; "core.editor=true"; "merge"; "--continue" ]
+                    | G.Cherry_pick _ ->
+                        [
+                          "-c"; "core.editor=true"; "cherry-pick"; "--continue";
+                        ]
+                    | G.None_active -> []
+                  in
+                  let code, _, err = io.git args in
+                  mutation_result io ~operation code err)
       | Branch_reconcile.Publish { candidate; expected } -> (
           pin_captured ();
           let checkout = observe_checkout io in

@@ -195,13 +195,7 @@ let () =
                    {
                      token = command.token;
                      at = 100.;
-                     result =
-                       B.Recovery_verified
-                         {
-                           observation = observation 0;
-                           source_preserved = false;
-                           remote_preserved = true;
-                         };
+                     result = B.Recovery_observed (observation 0);
                    })
             in
             let token =
@@ -234,16 +228,11 @@ let () =
             let state = F.step (F.restore state) B.Recover in
             let state =
               F.reply state
-                (B.Recovery_verified
+                (B.Recovery_observed
                    {
-                     observation =
-                       {
-                         (observation 0) with
-                         clean = false;
-                         sequencer = (if sequencer then Some "rebase" else None);
-                       };
-                     source_preserved = false;
-                     remote_preserved = true;
+                     (observation 0) with
+                     clean = false;
+                     sequencer = (if sequencer then Some "rebase" else None);
                    })
             in
             let op = Option.get (B.operation state) in
@@ -425,13 +414,7 @@ let () =
                    {
                      token = command.token;
                      at = 100.;
-                     result =
-                       B.Recovery_verified
-                         {
-                           observation = inspection;
-                           source_preserved = task = 1;
-                           remote_preserved = task = 1;
-                         };
+                     result = B.Recovery_observed inspection;
                    })
             in
             let token =

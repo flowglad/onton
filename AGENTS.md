@@ -138,13 +138,16 @@ unattended supervisor session. There are two supported transports:
 `Branch_reconcile` owns reconciliation and pins source/target revisions before
 Git mutations. Rebase boundaries come from Git ancestry. A previous base can be
 used as a hint when Git confirms it is reachable from the source; otherwise
-Onton calculates the shared ancestor of source and target. Existing/adopted
+Onton calculates the unique shared ancestor of source and target. Existing/adopted
 branches do not need materialization provenance or a recorded ownership boundary.
 No contribution certificate, predicted-tree proof, or recorded-boundary authority
 may gate integration, sequencer continuation, or publication. If Git cannot
 resolve the history or complete integration, dispatch agent recovery. Agents may
 inspect ancestry, reconstruct history, and validate the resulting work; successful
-repair publishes the captured HEAD with an explicit remote lease.
+repair publishes the captured HEAD with an explicit remote lease. Ambiguous merge
+bases, merged local replay ranges, and paused rebases go to
+agent recovery. Remote rewrite integration uses Git three-way squash merging to
+preserve the complete incoming result, including merge-only resolution edits.
 Certificates have no runtime types, fields, or verification API. Import discards
 legacy certificate fields and replaces pending certificate commands with Git
 observation; checkpoints never write certificate data back out.

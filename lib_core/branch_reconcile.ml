@@ -296,11 +296,7 @@ type result =
   | Remote_checked_out
   | Integrated of Commit.t
   | Conflict of { head : Commit.t; sequencer : string; conflicts : int }
-  | Recovery_verified of {
-      observation : observation;
-      source_preserved : bool;
-      remote_preserved : bool;
-    }
+  | Recovery_observed of observation
   | Inspected of observation
   | Inspected_active of { observation : observation; ready : bool }
   | Published
@@ -859,127 +855,6 @@ let observation_boundaries (op : operation) =
 
 (* Git's right-side cherry marks are observations, not ownership proofs.
    Only a complete linear chain can identify an equivalent prefix to omit. *)
-let patch_equivalent_boundary ~source text =
-  let parse line =
-    match String.split line ~on:'\000' with
-    | [ marker; revision; parents ]
-      when String.equal marker "=" || String.equal marker ">" -> (
-        let parents =
-          if String.is_empty parents then Some []
-          else
-            let parsed =
-              String.split parents ~on:' ' |> List.map ~f:Commit.make
-            in
-            if List.for_all parsed ~f:Option.is_some then
-              Some (List.filter_opt parsed)
-            else None
-        in
-        match (Commit.make revision, parents) with
-        | Some revision, Some parents ->
-            Ok (revision, parents, String.equal marker "=")
-        | None, _ | _, None -> Error "malformed patch-equivalence commit")
-    | _ -> Error "malformed patch-equivalence observation"
-  in
-  if String.is_empty text then Ok None
-  else if not (String.is_suffix text ~suffix:"\n") then
-    Error "incomplete patch-equivalence observation"
-  else
-    let lines = String.split_lines text in
-    match Result.all (List.map lines ~f:parse) with
-    | Error _ as error -> error
-    | Ok commits ->
-        let rec linear expected = function
-          | [] -> true
-          | (revision, [ parent ], _) :: rest ->
-              Commit.equal revision expected && linear parent rest
-          | (_, ([] | _ :: _ :: _), _) :: _ -> false
-        in
-        let rec prefix skipped = function
-          | [] -> if skipped then Some source else None
-          | (_, _, true) :: rest -> prefix true rest
-          | (_, [ parent ], false) :: _ -> if skipped then Some parent else None
-          | (_, ([] | _ :: _ :: _), false) :: _ -> None
-        in
-        Ok
-          (if linear source commits then prefix false (List.rev commits)
-           else None)
-
-let reconstructed_boundary ~source ~recorded ~history =
-  let parse line =
-    match String.split line ~on:'\000' with
-    | [ revision; parents; tree ] -> (
-        let parents =
-          if String.is_empty parents then [] else String.split parents ~on:' '
-        in
-        match (Commit.make revision, Commit.make tree) with
-        | Some revision, Some tree
-          when List.for_all parents ~f:(fun parent ->
-                   Option.is_some (Commit.make parent)) ->
-            Ok (revision, List.hd parents, tree)
-        | Some _, Some _ | None, _ | _, None ->
-            Error "invalid reconstruction object")
-    | _ -> Error "malformed reconstruction history"
-  in
-  if List.is_empty recorded then Ok None
-  else if not (String.is_suffix history ~suffix:"\n") then
-    Error "incomplete reconstruction history"
-  else if
-    List.exists recorded ~f:(fun (_, tree) -> Option.is_none (Commit.make tree))
-  then Error "invalid recorded boundary tree"
-  else
-    match Result.all (List.map (String.split_lines history) ~f:parse) with
-    | Error _ as error -> error
-    | Ok commits ->
-        let rec connected expected = function
-          | [] -> false
-          | [ (revision, None, _) ] ->
-              String.equal expected (Commit.to_string revision)
-          | (revision, Some parent, _) :: rest ->
-              String.equal expected (Commit.to_string revision)
-              && connected parent rest
-          | (_, None, _) :: _ :: _ -> false
-        in
-        if not (connected (Commit.to_string source) commits) then
-          Error "incomplete or disconnected reconstruction topology"
-        else
-          Ok
-            (List.find_map recorded ~f:(fun (original, tree) ->
-                 List.find_map commits ~f:(fun (upstream, _, observed_tree) ->
-                     if String.equal tree (Commit.to_string observed_tree) then
-                       Some (Reconstructed { original; upstream })
-                     else None)))
-
-let subject_scope = function
-  | Reconcile_scoped { project; ancestors; request = _ }
-    when (not (String.is_empty project)) && not (List.is_empty ancestors) ->
-      Some (project, ancestors)
-  | Provision_checkout _ | Reconcile_scoped _ | Reconcile_request _
-  | Reconcile_base | Integrate_revision _ | Publish_revision _
-  | Publish_session _ | Verify_publication ->
-      None
-
-let subject_boundary ~source ~project ~ancestors text =
-  if not (String.is_empty text || String.is_suffix text ~suffix:"\n") then
-    Error "incomplete subject observation"
-  else
-    let marked =
-      List.map (String.split_lines text) ~f:(fun line ->
-          match String.split line ~on:'\000' with
-          | [ revision; parents; subject ] ->
-              let dependency =
-                Worktree_parser.is_ancestor_patch_subject ~project_name:project
-                  ~ancestor_ids:ancestors subject
-              in
-              Ok
-                (String.concat ~sep:"\000"
-                   [ (if dependency then "=" else ">"); revision; parents ]
-                ^ "\n")
-          | _ -> Error "malformed subject observation")
-    in
-    match Result.all marked with
-    | Error _ as error -> error
-    | Ok records -> patch_equivalent_boundary ~source (String.concat records)
-
 let recorded_boundaries t =
   let revisions =
     List.map t.integrations ~f:(fun receipt -> receipt.capture.target_revision)
@@ -1833,8 +1708,7 @@ let recovered ?(ready = false) t op (o : observation) =
               recover_with_agent t op "unexpected_agent_sequencer_change"
           | Some _ | None -> recovered_unchanged ~ready t op o))
 
-let recovery_verified t op (o : observation) _source_preserved _remote_preserved
-    =
+let recovery_observed t op (o : observation) =
   match check_inspected_destination op ~observed:o.destination with
   | Error reason -> diagnose t op reason
   | Ok () -> (
@@ -1961,7 +1835,7 @@ let verification_result t (op : operation) at command result =
   | Checkout_ready | Observed_active _ | Observed_recovery _
   | Inspected_active _ | Integrated _ | Conflict _ | Merge_completion_needed _
   | Merge_completed _ | Remote_replay_selected _ | Remote_checked_out
-  | Recovery_verified _ | Published ->
+  | Recovery_observed _ | Published ->
       diagnose t op "legacy_publication_requires_reconciliation"
 
 let valid_intent (intent : intent) =
@@ -2284,7 +2158,7 @@ let step_transition t = function
             match result with
             | Checkout_ready | Observed _ | Observed_active _
             | Observed_recovery _ | Inspected _ | Inspected_active _
-            | Recovery_verified _
+            | Recovery_observed _
             | Remote { topology = Equal | Includes | Behind | Diverged; _ } ->
                 0
             | Remote { topology = Unproven; _ }
@@ -2403,7 +2277,6 @@ let step_transition t = function
                         op with
                         candidate_origin =
                           Accepted_agent_repair { turn; revision = candidate };
-                        reobserve_after_completion = false;
                       }
                       candidate
                 | Deterministic | Accepted_agent_repair _ ->
@@ -2414,11 +2287,8 @@ let step_transition t = function
                 recovered ~ready t op observation
             | Inspected _, Some Inspect ->
                 recover_with_agent t op "unidentified_integration_context"
-            | ( Recovery_verified
-                  { observation; source_preserved; remote_preserved },
-                Some Verify_recovery ) ->
-                recovery_verified t op observation source_preserved
-                  remote_preserved
+            | Recovery_observed observation, Some Verify_recovery ->
+                recovery_observed t op observation
             | ( Merge_completion_needed capture,
                 Some (Continue { head; target; sequencer }) )
               when Commit.equal capture.head head
@@ -2548,7 +2418,7 @@ let step_transition t = function
                 | Observed_recovery _ | Pinned | Integrated _ | Conflict _
                 | Merge_completion_needed _ | Merge_completed _
                 | Remote_replay_selected _ | Remote_checked_out | Inspected _
-                | Inspected_active _ | Recovery_verified _ | Published
+                | Inspected_active _ | Recovery_observed _ | Published
                 | Remote _ ),
                 ( None
                 | Some
@@ -3375,11 +3245,12 @@ let repair_turn t ~branch token =
               | Publish_source | Integrate_source _ -> "")
             ^ "Inspect Git ancestry to determine the shared ancestor and the \
                commits to integrate. Complete the requested Git repair, \
-               including necessary repository-wide edits and resulting \
-               commits. You own validation of the repair and its history. \
-               Retain recovery refs and preserve patch and upstream work. \
-               Successful repair authorizes exact-HEAD capture and \
-               publication; Onton trusts your validation.\n"
+               including repository-wide edits and commits only when needed. \
+               Reuse the existing HEAD when no changes are necessary. You own \
+               validation of the repair and its history. Retain recovery refs \
+               and preserve patch and upstream work. Successful repair \
+               authorizes exact-HEAD capture and publication; Onton trusts \
+               your validation.\n"
             ^ "Repair environmental conditions that block this operation: \
                inspect and repair local gate state, install or restore missing \
                project dependencies and system tools, and correct environment \
@@ -3476,7 +3347,7 @@ let repair_turn t ~branch token =
                         "best-effort patch equivalence " ^ Commit.to_string sha
                     | Inferred sha ->
                         "best-effort inference " ^ Commit.to_string sha
-                    | Plain -> "no shared ancestor found")
+                    | Plain -> "no unique shared ancestor found")
                     (sha baseline)
                     (String.concat ~sep:", "
                        (List.map recovery_revisions ~f:Commit.to_string))
@@ -3569,6 +3440,9 @@ let stopped_integration_result (checkout : Git_observation.t) ~detail =
       when String.is_substring detail
              ~substring:"refusing to merge unrelated histories" ->
         Recovery_required "unrelated_histories"
+    | Git_observation.None_active, _ when not (List.is_empty checkout.conflicts)
+      ->
+        Recovery_required "integration_conflict_requires_agent"
     | Git_observation.None_active, _ ->
         Attempt_failed
           (if String.is_empty detail then "integration_sequencer_missing"
@@ -3665,7 +3539,7 @@ let diagnostics t =
           | Patch_equivalent sha ->
               "patch-equivalent (best effort) " ^ Commit.to_string sha
           | Inferred sha -> "inferred " ^ Commit.to_string sha
-          | Plain -> "no shared ancestor" );
+          | Plain -> "no unique shared ancestor" );
       ]
       @ Option.value_map op.remote_integration ~default:[] ~f:(fun capture ->
           [

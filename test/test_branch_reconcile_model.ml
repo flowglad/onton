@@ -741,18 +741,7 @@ module Remote_writers = struct
               sha = Some repo.remote;
               topology = topology repo candidate repo.remote;
             } )
-    | B.Verify_recovery ->
-        let preserved = preserved repo (B.execution_policy op) repo.head in
-        ( repo,
-          B.Recovery_verified
-            {
-              observation = observation repo op;
-              source_preserved =
-                List.for_all preserved (Option.to_list op.source);
-              remote_preserved =
-                preserved repo.remote
-                && List.for_all preserved (Option.to_list op.expected);
-            } )
+    | B.Verify_recovery -> (repo, B.Recovery_observed (observation repo op))
     | B.Commit_merge _ | B.Continue _ ->
         failwith "disjoint model contributions cannot create content conflicts"
 

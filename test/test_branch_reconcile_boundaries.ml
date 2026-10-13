@@ -86,13 +86,11 @@ let scenario env selected boundary =
     | "merge-continue" -> "continue"
     | "replay-integrate" -> "integrate"
     | "replay-publish" -> "publish"
-    | "replay-scope" -> "verify-scope"
     | name -> name
   in
   let recovery = selected = "capture-recovery" in
   let remote_replay =
-    List.mem selected
-      [ "plan-remote"; "replay-scope"; "replay-integrate"; "replay-publish" ]
+    List.mem selected [ "plan-remote"; "replay-integrate"; "replay-publish" ]
   in
   Git.with_temp_repo (fun remote ->
       let base = commit remote "base" in
@@ -347,7 +345,7 @@ let scenario env selected boundary =
             check "remote work is replayed exactly once"
               (Git.git_capture ~cwd:remote
                  [ "log"; "--format=%s"; target ^ "..patch" ]
-              = "incoming\nwork");
+              = "Integrate remote patch work\nwork");
             let candidate =
               match !first_candidate with
               | Some value -> value
@@ -401,8 +399,6 @@ let scenarios =
     "inspect";
     "capture-recovery";
     "plan-remote";
-    "replay-scope";
-    "verify-scope";
     "repair-completion";
     "merge-inspect";
     "merge-completion";

@@ -109,9 +109,7 @@ let settled () =
 
 let progress_result _state command =
   match command.B.kind with
-  | B.Verify_recovery ->
-      B.Recovery_verified
-        { observation; source_preserved = false; remote_preserved = false }
+  | B.Verify_recovery -> B.Recovery_observed observation
   | B.Commit_merge _ -> B.Merge_completed candidate
   | B.Plan_remote_replay _ -> B.Remote_replay_selected (B.Recorded source)
   | B.Checkout_remote _ -> B.Remote_checked_out
@@ -138,30 +136,7 @@ let recovery () =
   |> fst
 
 let unverified =
-  B.Recovery_verified
-    {
-      observation = { observation with source = candidate; head = candidate };
-      source_preserved = false;
-      remote_preserved = false;
-    }
-
-let equivalence_fixture equivalent =
-  let revision n = Printf.sprintf "%040x" n in
-  let records =
-    List.mapi
-      (fun index equivalent ->
-        Printf.sprintf "%s\000%s\000%s\n"
-          (if equivalent then "=" else ">")
-          (revision (index + 1))
-          (revision index))
-      equivalent
-  in
-  let source =
-    match B.Commit.make (revision (List.length equivalent)) with
-    | Some value -> value
-    | None -> assert false
-  in
-  (source, String.concat "" (List.rev records), revision)
+  B.Recovery_observed { observation with source = candidate; head = candidate }
 
 let restore state = Result.get_ok (B.decode (B.yojson_of_t state))
 
@@ -524,17 +499,12 @@ let[@warning "-4"] tests =
           let state, _ = reply state (B.Attempt_failed "timeout") in
           let state, effects =
             reply state
-              (B.Recovery_verified
+              (B.Recovery_observed
                  {
-                   observation =
-                     {
-                       observation with
-                       source = candidate;
-                       head = candidate;
-                       target_included = true;
-                     };
-                   source_preserved = true;
-                   remote_preserved = true;
+                   observation with
+                   source = candidate;
+                   head = candidate;
+                   target_included = true;
                  })
           in
           (match effects with
@@ -1102,165 +1072,6 @@ let[@warning "-4"] tests =
         else
           result
           = B.Attempt_failed "fatal: Unable to create index.lock: File exists");
-    QCheck2.Test.make ~name:"BR reconstruction decoding is total" ~count:500
-      Gen.(pair string string)
-      (fun (tree, history) ->
-        try
-          ignore
-            (B.reconstructed_boundary ~source
-               ~recorded:[ (target, tree) ]
-               ~history);
-          true
-        with _ -> false);
-    QCheck2.Test.make
-      ~name:"BR reconstruction prefers recorded order and newest exact tree"
-      ~count:200 Gen.bool (fun same_tree ->
-        let original = sha 'd' in
-        let history =
-          Printf.sprintf "%s\000%s\000%s\n%s\000\000%s\n"
-            (B.Commit.to_string source)
-            (B.Commit.to_string target)
-            (B.Commit.to_string (if same_tree then candidate else source))
-            (B.Commit.to_string target)
-            (B.Commit.to_string candidate)
-        in
-        B.reconstructed_boundary ~source
-          ~recorded:
-            [
-              (original, B.Commit.to_string candidate);
-              (candidate, B.Commit.to_string source);
-            ]
-          ~history
-        = Ok
-            (Some
-               (B.Reconstructed
-                  {
-                    original;
-                    upstream = (if same_tree then source else target);
-                  })));
-    QCheck2.Test.make
-      ~name:"BR missing reconstruction topology stays a probe error" ~count:200
-      Gen.bool (fun truncated ->
-        let history =
-          Printf.sprintf "%s\000%s\000%s%s"
-            (B.Commit.to_string source)
-            (B.Commit.to_string target)
-            (B.Commit.to_string candidate)
-            (if truncated then "" else "\n")
-        in
-        match
-          B.reconstructed_boundary ~source
-            ~recorded:[ (target, B.Commit.to_string candidate) ]
-            ~history
-        with
-        | Error _ -> true
-        | Ok _ -> false);
-    QCheck2.Test.make
-      ~name:"BR captured subject scope survives queued intent and restart"
-      ~count:200 Gen.string (fun project ->
-        try
-          let ancestors = [ Types.Patch_id.of_string "1" ] in
-          let original =
-            {
-              intent with
-              purpose =
-                B.Reconcile_scoped { request = "original"; project; ancestors };
-            }
-          in
-          let state, _ = B.step B.empty (B.Request original) in
-          let state, _ = B.step state (B.Request intent) in
-          match B.decode (B.yojson_of_t state) with
-          | Error _ -> false
-          | Ok state -> (
-              match B.operation state with
-              | None -> false
-              | Some operation ->
-                  (B.subject_scope operation.intent.purpose
-                  = if project = "" then None else Some (project, ancestors))
-                  && B.subject_scope intent.purpose = None)
-        with _ -> false);
-    QCheck2.Test.make
-      ~name:"BR subject inference is total on arbitrary observations" ~count:500
-      Gen.(pair string string)
-      (fun (project, text) ->
-        try
-          ignore
-            (B.subject_boundary ~source ~project
-               ~ancestors:[ Types.Patch_id.of_string "1" ]
-               text);
-          true
-        with _ -> false);
-    QCheck2.Test.make
-      ~name:"BR subject inference stays within captured dependency scope"
-      ~count:500
-      Gen.(pair (int_range 0 100000) bool)
-      (fun (number, matches) ->
-        try
-          let project = "project-" ^ string_of_int number in
-          let text =
-            Printf.sprintf
-              "%s\000%s\000own patch\n%s\000%s\000[%s] Patch 1: dep\n"
-              (B.Commit.to_string source)
-              (B.Commit.to_string target)
-              (B.Commit.to_string target)
-              (B.Commit.to_string candidate)
-              project
-          in
-          let ancestors =
-            [ Types.Patch_id.of_string (if matches then "1" else "11") ]
-          in
-          B.subject_boundary ~source ~project ~ancestors text
-          = Ok (if matches then Some target else None)
-          && B.subject_boundary ~source ~project:(project ^ "-other") ~ancestors
-               text
-             = Ok None
-          && B.subject_boundary ~source ~project ~ancestors:[] text = Ok None
-        with _ -> false);
-    QCheck2.Test.make ~name:"BR patch-equivalence decoding is total" ~count:500
-      Gen.string (fun text ->
-        try
-          ignore (B.patch_equivalent_boundary ~source text);
-          true
-        with _ -> false);
-    QCheck2.Test.make
-      ~name:"BR patch equivalence excludes only an equivalent prefix" ~count:500
-      Gen.(list_size (int_range 1 40) bool)
-      (fun equivalent ->
-        try
-          let source, text, revision = equivalence_fixture equivalent in
-          let rec prefix count = function
-            | true :: rest -> prefix (count + 1) rest
-            | false :: _ | [] -> count
-          in
-          let count = prefix 0 equivalent in
-          let expected =
-            if count = 0 then None else B.Commit.make (revision count)
-          in
-          B.patch_equivalent_boundary ~source text = Ok expected
-        with _ -> false);
-    QCheck2.Test.make
-      ~name:"BR truncated equivalence observations fail as probes" ~count:200
-      Gen.(list_size (int_range 1 20) bool)
-      (fun equivalent ->
-        try
-          let source, text, _ = equivalence_fixture equivalent in
-          match
-            B.patch_equivalent_boundary ~source
-              (String.sub text 0 (String.length text - 1))
-          with
-          | Error _ -> true
-          | Ok _ -> false
-        with _ -> false);
-    QCheck2.Test.make
-      ~name:"BR disconnected and merge history cannot infer ownership"
-      ~count:200 Gen.bool (fun merge ->
-        let record =
-          Printf.sprintf "=\000%s\000%s%s\n"
-            (B.Commit.to_string target)
-            (B.Commit.to_string candidate)
-            (if merge then " " ^ B.Commit.to_string source else "")
-        in
-        B.patch_equivalent_boundary ~source record = Ok None);
     QCheck2.Test.make
       ~name:"BR repeated publication confirmations preserve receipt history"
       ~count:200
@@ -1492,15 +1303,7 @@ let[@warning "-4"] tests =
         Option.map (fun c -> c.B.kind) (B.pending state)
         = Some B.Verify_recovery
         &&
-        let state, effects =
-          reply state
-            (B.Recovery_verified
-               {
-                 observation = active;
-                 source_preserved = false;
-                 remote_preserved = false;
-               })
-        in
+        let state, effects = reply state (B.Recovery_observed active) in
         match B.operation state with
         | Some { repair = Some { mode = B.History_recovery _; _ }; failures; _ }
           ->
@@ -1584,13 +1387,7 @@ let[@warning "-4"] tests =
           }
         in
         let state, effects =
-          reply (recovery ())
-            (B.Recovery_verified
-               {
-                 observation;
-                 source_preserved = false;
-                 remote_preserved = false;
-               })
+          reply (recovery ()) (B.Recovery_observed observation)
         in
         match B.decode (B.yojson_of_t state) with
         | Error _ -> false
@@ -1634,17 +1431,12 @@ let[@warning "-4"] tests =
                 let head = sha (Char.chr (97 + a))
                 and remote = sha (Char.chr (97 + b)) in
                 let report =
-                  B.Recovery_verified
+                  B.Recovery_observed
                     {
-                      observation =
-                        {
-                          observation with
-                          source = head;
-                          head;
-                          remote = Some remote;
-                        };
-                      source_preserved = false;
-                      remote_preserved = false;
+                      observation with
+                      source = head;
+                      head;
+                      remote = Some remote;
                     }
                 in
                 let state, effects = reply state report in
@@ -2541,23 +2333,18 @@ let[@warning "-4"] tests =
         "BR history observations cannot accept repairs without a successful \
          turn"
       ~count:100
-      Gen.(pair (pair bool bool) (pair bool bool))
-      (fun ((source_preserved, remote_preserved), (clean, target_included)) ->
+      Gen.(pair bool bool)
+      (fun (clean, target_included) ->
         try
           let state, effects =
             reply (recovery ())
-              (B.Recovery_verified
+              (B.Recovery_observed
                  {
-                   observation =
-                     {
-                       observation with
-                       source = candidate;
-                       head = candidate;
-                       clean;
-                       target_included;
-                     };
-                   source_preserved;
-                   remote_preserved;
+                   observation with
+                   source = candidate;
+                   head = candidate;
+                   clean;
+                   target_included;
                  })
           in
           B.pending state = None
@@ -2592,14 +2379,7 @@ let[@warning "-4"] tests =
             fails_recovery (fails_recovery (recovery ()) false) false
           in
           let result =
-            if proof then
-              B.Recovery_verified
-                {
-                  observation;
-                  source_preserved = true;
-                  remote_preserved = true;
-                }
-            else unverified
+            if proof then B.Recovery_observed observation else unverified
           in
           let state = fst (reply state result) in
           B.phase state = Some (B.Intervention "repair_attempts_exhausted")
@@ -3064,12 +2844,7 @@ let[@warning "-4"] tests =
         &&
         let state, _ =
           reply state
-            (B.Recovery_verified
-               {
-                 observation = { observation with clean = not dirty };
-                 source_preserved = false;
-                 remote_preserved = false;
-               })
+            (B.Recovery_observed { observation with clean = not dirty })
         in
         B.pending state = None && B.is_pending state);
     QCheck2.Test.make ~name:"BR duplicate command results are fixed points"
@@ -3721,15 +3496,7 @@ let[@warning "-4"] m2_upgrade_tests =
             B.equal restored (Result.get_ok (B.decode (B.yojson_of_t restored))));
           let dirty = { observation with clean = false } in
           let restored, _ = reply restored (B.Inspected dirty) in
-          let restored, _ =
-            reply restored
-              (B.Recovery_verified
-                 {
-                   observation = dirty;
-                   source_preserved = true;
-                   remote_preserved = true;
-                 })
-          in
+          let restored, _ = reply restored (B.Recovery_observed dirty) in
           match B.operation restored with
           | Some
               {
@@ -3844,17 +3611,8 @@ let initial_remote_integration_tests =
           let op = Option.get (B.operation state) in
           let verified, _ =
             reply state
-              (B.Recovery_verified
-                 {
-                   observation =
-                     {
-                       observation with
-                       target = sha 'f';
-                       target_included = true;
-                     };
-                   source_preserved = true;
-                   remote_preserved = true;
-                 })
+              (B.Recovery_observed
+                 { observation with target = sha 'f'; target_included = true })
           in
           B.is_pending verified
           && B.pending verified = None

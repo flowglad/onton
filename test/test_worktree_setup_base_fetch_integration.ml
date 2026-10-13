@@ -1429,6 +1429,9 @@ let scenario_adopted_publication env policy history =
   | `Unrelated, (R.Idle | R.Waiting | R.Intervention _ | R.Checkpoint_failed _)
     ->
       failwith "unrelated adopted history did not reach agent recovery");
+  if Poly.equal history `Diverged then
+    assert_string "published remote-only work" "remote"
+      (git_capture ~dir:origin_dir [ "show"; branch ^ ":remote.txt" ]);
   if Poly.equal history `Ahead then (
     let published = git_capture ~dir:origin_dir [ "rev-parse"; branch ] in
     assert_string "published local work" "local"

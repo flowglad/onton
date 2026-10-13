@@ -482,11 +482,7 @@ let render_patch_layer ~(project_name : string) (patch : Patch.t) ?pr_number
         base_branch base_branch
   in
   let pr_instructions =
-    (* Commit subjects are not rewritten or rejected downstream. The rebase
-       subject filter in [Branch_reconcile.subject_boundary] treats this prompt
-       convention as best-effort evidence for explicitly scoped requests.
-       Malformed subjects do not establish a dependency boundary; the owner
-       can still attempt plain replay and bounded history recovery. *)
+    (* Commit subjects identify patches for humans; Git ancestry selects rebase inputs. *)
     let commit_block =
       Printf.sprintf
         {|
