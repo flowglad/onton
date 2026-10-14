@@ -4,12 +4,12 @@
 class Onton < Formula
   desc "OCaml orchestrator for parallel Claude Code agents executing gameplan patches"
   homepage "https://github.com/flowglad/onton"
-  version "0.68.1"
+  version "0.68.2"
   license "MIT"
 
   on_arm do
-    url "https://github.com/flowglad/onton/releases/download/v0.68.1/onton-arm64-apple-darwin.tar.gz"
-    sha256 "f9b6171048dadca4ed3110851c1d236a5c1f7d24f40c9f720dd65d40d6ba0db2"
+    url "https://github.com/flowglad/onton/releases/download/v0.68.2/onton-arm64-apple-darwin.tar.gz"
+    sha256 "e42fc94bffa6dbf556eef3e5bc3b4ea2be8bd6d7bc44fb523d7078b5c498a23c"
   end
 
   depends_on "gmp"
