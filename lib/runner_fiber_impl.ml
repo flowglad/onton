@@ -1028,6 +1028,40 @@ module Make (Forge : Forge.S) (W : Worktree.S) (Env : Runner_env.S) = struct
     let run_llm_session ~write_owner ~kind ~delivery_mode ~patch_id ~prompt
         ~(agent : Patch_agent.t) ~on_pr_detected ~complexity =
       let gameplan = Runtime.read runtime (fun snap -> snap.Runtime.gameplan) in
+      let run_agent () =
+        let backend, _decision = pick_backend ~complexity in
+        let patch =
+          Base.List.find gameplan.Gameplan.patches ~f:(fun (p : Patch.t) ->
+              Patch_id.equal p.id patch_id)
+        in
+        let base_branch =
+          Base.Option.value agent.Patch_agent.base_branch
+            ~default:
+              (Runtime.read runtime (fun snap ->
+                   Orchestrator.main_branch snap.Runtime.orchestrator))
+        in
+        let context ~worktree_path =
+          let agents_md =
+            read_optional_file
+              (Stdlib.Filename.concat worktree_path "AGENTS.md")
+          in
+          Prompt.render_session_context ~project_name
+            ?pr_number:(Patch_agent.pr_number agent)
+            ?patch ~gameplan
+            ~base_branch:(Branch.to_string base_branch)
+            ?agents_md ()
+        in
+        let turn =
+          match gameplan.Gameplan.publication with
+          | Some publication
+            when Gameplan.is_publication_patch gameplan patch_id ->
+              Prompt.render_publication_feedback ~publication prompt
+          | None | Some _ -> prompt
+        in
+        let prompt = Session_driver.create_prompt ~context ~turn in
+        Session_driver.run_owned ~write_owner ~kind ~delivery_mode ~patch_id
+          ~prompt ~agent ~on_pr_detected ~backend ~complexity
+      in
       let session_result =
         match gameplan.Gameplan.publication with
         | Some publication when Gameplan.is_publication_patch gameplan patch_id
@@ -1051,12 +1085,15 @@ module Make (Forge : Forge.S) (W : Worktree.S) (Env : Runner_env.S) = struct
                 match
                   Persistence.write_file_atomically ~path:artifact
                     ~content:
-                      ("Published the supplied gameplan unchanged at `"
+                      ("Published the gameplan at `"
                       ^ Gameplan_publication.path publication
-                      ^ "`. No agent was used.")
+                      ^ "`.")
                 with
                 | Ok () -> result `Ok
                 | Error message -> fail message)
+            | Some Operation_kind.Human
+              when Patch_decision.equal_delivery_mode delivery_mode Respond ->
+                run_agent ()
             | None | Some Operation_kind.Human -> (
                 let worktree_state =
                   Runtime.read runtime (fun snap ->
@@ -1140,39 +1177,16 @@ module Make (Forge : Forge.S) (W : Worktree.S) (Env : Runner_env.S) = struct
                                    0"
                             | `Pending -> result `Retry_push))))
             | Some
+                ( Operation_kind.Ci | Operation_kind.Review_comments
+                | Operation_kind.Findings ) ->
+                run_agent ()
+            | Some
                 ( Operation_kind.Rebase | Operation_kind.Merge_conflict
-                | Operation_kind.Ci | Operation_kind.Review_comments
-                | Operation_kind.Findings | Operation_kind.Uncommitted_changes
-                  ) ->
+                | Operation_kind.Uncommitted_changes ) ->
                 fail
-                  "Resolve this feedback manually; Patch 0 never invokes a \
-                   patch agent")
-        | None | Some _ ->
-            let backend, _decision = pick_backend ~complexity in
-            let patch =
-              Base.List.find gameplan.Gameplan.patches ~f:(fun (p : Patch.t) ->
-                  Patch_id.equal p.id patch_id)
-            in
-            let base_branch =
-              Base.Option.value agent.Patch_agent.base_branch
-                ~default:
-                  (Runtime.read runtime (fun snap ->
-                       Orchestrator.main_branch snap.Runtime.orchestrator))
-            in
-            let context ~worktree_path =
-              let agents_md =
-                read_optional_file
-                  (Stdlib.Filename.concat worktree_path "AGENTS.md")
-              in
-              Prompt.render_session_context ~project_name
-                ?pr_number:(Patch_agent.pr_number agent)
-                ?patch ~gameplan
-                ~base_branch:(Branch.to_string base_branch)
-                ?agents_md ()
-            in
-            let prompt = Session_driver.create_prompt ~context ~turn:prompt in
-            Session_driver.run_owned ~write_owner ~kind ~delivery_mode ~patch_id
-              ~prompt ~agent ~on_pr_detected ~backend ~complexity
+                  "Resolve this feedback manually; this operation is not \
+                   supported by the gameplan publication agent")
+        | None | Some _ -> run_agent ()
       in
       let disposition =
         if

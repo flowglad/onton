@@ -224,7 +224,8 @@ module Fake_forge : Forge.S with type error = string = struct
   let check_repo_access () = Ok ()
 end
 
-let runner_without_backend ?(repair = false) env ~feature ~retry =
+let runner_without_backend ?(repair = false) ?(feedback = false)
+    ?(feedback_kind = Operation_kind.Review_comments) env ~feature ~retry =
   Git.with_temp_repo (fun path ->
       let origin = Filename.temp_dir "onton-publication-origin-" "" in
       Fun.protect
@@ -384,6 +385,17 @@ let runner_without_backend ?(repair = false) env ~feature ~retry =
                 Orchestrator.set_execution_mode orch
                   (get (Execution_mode.infer_gameplan gameplan)));
           let backend_calls = ref 0 in
+          let feedback_turn = ref false in
+          let feedback_state = ref None in
+          let expected_source = ref source in
+          let module Feedback_forge = struct
+            include Fake_forge
+
+            let pr_state _ =
+              match !feedback_state with
+              | Some state -> Ok state
+              | None -> Error "unused"
+          end in
           let module Env : Runner_fiber.Runner_env.S = struct
             let runtime = runtime
             let clock = clock
@@ -413,7 +425,7 @@ let runner_without_backend ?(repair = false) env ~feature ~retry =
 
             let pick_backend ~complexity:_ =
               incr backend_calls;
-              if not repair then
+              if not (repair || !feedback_turn) then
                 failwith "Deterministic publication selected an agent backend";
               let backend =
                 Llm_backend.
@@ -430,18 +442,52 @@ let runner_without_backend ?(repair = false) env ~feature ~retry =
                         ~on_event
                       ->
                         assert (patch_id = id "0");
-                        assert (
-                          Base.String.is_substring prompt
-                            ~substring:"Finish the interrupted local work");
                         on_event Types.Stream_event.Turn_started;
-                        Git.run_git ~cwd:path [ "add"; "recovery-work" ];
-                        Git.run_git ~cwd:path
-                          [
-                            "commit";
-                            "-qm";
-                            "Finish interrupted publication work";
-                          ];
-                        Git.run_git ~cwd:path [ "rebase"; "origin/main" ];
+                        if !feedback_turn then (
+                          List.iter
+                            (fun substring ->
+                              assert (Base.String.is_substring prompt ~substring))
+                            [
+                              "write-gameplan";
+                              "For v3 plans only";
+                              "scripts/validate.py";
+                              "For retained v2 or unversioned plans";
+                              "validator and schema from that plan's version";
+                              "when the plan changed";
+                              "may end without a commit";
+                              "gameplans/demo/gameplan.yaml";
+                              "Clarify the plan";
+                            ];
+                          assert (
+                            not
+                              (Base.String.is_substring prompt
+                                 ~substring:"Do not edit this frozen plan"));
+                          let file = Gameplan_publication.path publication in
+                          let channel =
+                            open_out_gen
+                              [ Open_wronly; Open_append ]
+                              0
+                              (Filename.concat path file)
+                          in
+                          output_string channel "# Clarified after review\n";
+                          close_out channel;
+                          expected_source :=
+                            source ^ "# Clarified after review\n";
+                          Git.run_git ~cwd:path [ "add"; file ];
+                          Git.run_git ~cwd:path
+                            [ "commit"; "-qm"; "Clarify gameplan" ])
+                        else (
+                          assert (
+                            Base.String.is_substring prompt
+                              ~substring:"Finish the interrupted local work");
+                          Git.run_git ~cwd:path [ "add"; "recovery-work" ];
+                          Git.run_git ~cwd:path
+                            [
+                              "commit";
+                              "-qm";
+                              "Finish interrupted publication work";
+                            ];
+                          Git.run_git ~cwd:path [ "rebase"; "origin/main" ]);
                         {
                           exit_code = 0;
                           stdout = "";
@@ -458,7 +504,7 @@ let runner_without_backend ?(repair = false) env ~feature ~retry =
 
             let register_pr ~patch_id:_ ~pr_number:_ = ()
           end in
-          let module Runner = Runner_fiber.Make (Fake_forge) (W) (Env) in
+          let module Runner = Runner_fiber.Make (Feedback_forge) (W) (Env) in
           let wait () =
             let rec loop () =
               let ready =
@@ -499,6 +545,85 @@ let runner_without_backend ?(repair = false) env ~feature ~retry =
                 "show"; "demo/patch-0:" ^ Gameplan_publication.path publication;
               ]
             = String.trim source);
+          if feedback then (
+            let comment : Comment.t =
+              Comment.
+                {
+                  id = Comment_id.of_int 42;
+                  thread_id = Some "review-thread";
+                  body = "Clarify the plan";
+                  path = Some (Gameplan_publication.path publication);
+                  line = Some 1;
+                  commit_sha = None;
+                  original_commit_sha = None;
+                  outdated = false;
+                  last_reply_author = None;
+                }
+            in
+            feedback_state :=
+              Some
+                {
+                  Onton_core_test_support.Forge_fixture.base with
+                  Pr_state.pr_number = Some (Pr_number.of_int 10);
+                  comments = [ comment ];
+                  unresolved_comment_count = 1;
+                  ci_checks =
+                    (if feedback_kind = Operation_kind.Ci then
+                       [
+                         Ci_check.
+                           {
+                             name = "Clarify the plan";
+                             conclusion = "failure";
+                             details_url = None;
+                             description = None;
+                             started_at = None;
+                             app_id = None;
+                             check_suite_id = None;
+                             id = Some 123;
+                           };
+                       ]
+                     else []);
+                };
+            feedback_turn := true;
+            Runtime.update_orchestrator runtime (fun orch ->
+                Orchestrator.enqueue orch (id "0") feedback_kind);
+            let rec wait_feedback () =
+              let ready =
+                Runtime.read runtime (fun snap ->
+                    let agent =
+                      Orchestrator.agent snap.Runtime.orchestrator (id "0")
+                    in
+                    !backend_calls = 1
+                    && (not agent.Patch_agent.busy)
+                    && Branch_reconcile.phase agent.Patch_agent.branch_reconcile
+                       = Some Branch_reconcile.Settled)
+              in
+              if not ready then (
+                Eio.Time.sleep clock 0.02;
+                wait_feedback ())
+            in
+            Eio.Time.with_timeout_exn clock 25. (fun () ->
+                Eio.Fiber.first (fun () -> Runner.run ()) wait_feedback);
+            assert (!backend_calls = 1);
+            assert (
+              Git.git_capture ~cwd:origin
+                [
+                  "show";
+                  "demo/patch-0:" ^ Gameplan_publication.path publication;
+                ]
+              = String.trim !expected_source);
+            (* A fresh runtime still retains the original source, but subsequent
+               reconciliation must preserve the reviewed branch contents. *)
+            let snapshot = Runtime.read runtime Fun.id in
+            let restored =
+              get
+                (Persistence.snapshot_of_yojson
+                   (Persistence.snapshot_to_yojson snapshot))
+            in
+            assert (
+              Gameplan_publication.equal publication
+                (Option.get restored.Runtime.gameplan.Gameplan.publication));
+            feedback_turn := false);
           (* Later scheduling requests must observe a fresh base even after the
              preceding operation settled. A failed push retains the receipt and
              candidate checked by the executor wrapper above. *)
@@ -568,8 +693,10 @@ let runner_without_backend ?(repair = false) env ~feature ~retry =
                   "show";
                   "demo/patch-0:" ^ Gameplan_publication.path publication;
                 ]
-              = String.trim source);
-            assert (!backend_calls = if repair then 1 else 0);
+              = String.trim !expected_source);
+            assert (
+              !backend_calls
+              = (if repair then 1 else 0) + if feedback then 1 else 0);
             if repair then
               assert (
                 Git.git_capture ~cwd:origin
@@ -584,7 +711,9 @@ let runner_without_backend ?(repair = false) env ~feature ~retry =
           let third_base = advance_and_rebase next_base in
           ignore
             (advance_and_rebase ~kind:Operation_kind.Merge_conflict third_base);
-          assert (List.length !publications = if retry then 6 else 4)))
+          assert (
+            List.length !publications
+            = (if retry then 6 else 4) + if feedback then 1 else 0)))
 
 let () =
   let data = Filename.temp_dir "onton-publication-" "" in
@@ -608,5 +737,9 @@ let () =
           runner_without_backend env ~feature:false ~retry:true;
           runner_without_backend env ~feature:true ~retry:true;
           runner_without_backend ~repair:true env ~feature:false ~retry:false;
-          runner_without_backend ~repair:true env ~feature:true ~retry:false));
+          runner_without_backend ~repair:true env ~feature:true ~retry:false;
+          runner_without_backend ~feedback:true env ~feature:false ~retry:false;
+          runner_without_backend ~feedback:true env ~feature:true ~retry:false;
+          runner_without_backend ~feedback:true ~feedback_kind:Operation_kind.Ci
+            env ~feature:false ~retry:false));
   print_endline "test_gameplan_publication: OK"

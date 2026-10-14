@@ -665,6 +665,35 @@ let render_patch_layer_of_gameplan ~project_name ?pr_number (patch : Patch.t)
            Patch_id.equal c.before patch.id || Patch_id.equal c.after patch.id))
     ~base_branch ()
 
+let render_publication_feedback ~publication turn =
+  Printf.sprintf
+    "Gameplan publication feedback (Patch 0).\n\n\
+     The editable gameplan is `%s` in this worktree. Read its current contents \
+     from the branch; do not restore the original supplied copy. Address the \
+     feedback by updating this gameplan, not by implementing its planned code \
+     changes. Preserve unrelated work.\n\n\
+     Use the write-gameplan skill: locate and read its SKILL.md and the \
+     applicable schema before editing. Use the installed skill, or the \
+     repository's skills/write-gameplan/SKILL.md when available. Run its \
+     scripts/format_yaml.py where applicable. For v3 plans only, run `python3 \
+     <write-gameplan-skill-dir>/scripts/validate.py %s` from the repository \
+     root on the reviewed file. For retained v2 or unversioned plans, use the \
+     validator and schema from that plan's version and Onton's \
+     backward-compatible parser for admission checks; the current validator \
+     validates v3 authoring only. Do not silently migrate formats. Fix \
+     validation failures and warnings before committing. If the skill, \
+     validator, or required tooling is unavailable, report the blocker instead \
+     of claiming validation passed. Record the validation command and result \
+     in your response.\n\n\
+     Commit reviewed gameplan changes locally when the plan changed; a review \
+     that validates the plan and decides no update is needed may end without a \
+     commit. The supervisor publishes them; do not run git push. The runtime's \
+     loaded execution plan remains unchanged during this publication review.\n\n\
+     %s"
+    (Gameplan_publication.path publication)
+    (Stdlib.Filename.quote (Gameplan_publication.path publication))
+    turn
+
 (* Compose the stable context that precedes a turn prompt. Repository
    conventions are independent of whether the patch came from a gameplan, so
    retain [AGENTS.md] for ad-hoc PRs even when there is no gameplan+patch prefix
@@ -673,6 +702,10 @@ let render_session_context ~project_name ?pr_number ?patch ?gameplan
     ?base_branch ?agents_md () =
   let repo_context = agents_md_section agents_md in
   match (patch, gameplan, base_branch) with
+  | Some p, Some g, Some _ when Gameplan.is_publication_patch g p.Patch.id ->
+      (* Publication instructions travel with each turn, including resumes.
+         The ordinary implementation context calls the gameplan immutable. *)
+      repo_context
   | Some p, Some g, Some b ->
       render_gameplan_layer ~project_name g
       ^ repo_context

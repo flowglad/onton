@@ -198,50 +198,67 @@ let test_replacement_on_later_page () =
          ~entry_id:"entry"))
 
 let test_current_or_unidentified_checks_still_block () =
-  List.iter
-    [
-      [
-        check_run ~id:1 ~name:"build" "SUCCESS";
-        check_run ~id:2 ~name:"build" "FAILURE";
-      ];
+  let pending =
+    parse_pr ~truncated:false
       [
         check_run ~id:1 ~name:"build" "SUCCESS";
         check_run ~id:2 ~name:"build" "PENDING";
-      ];
-      [
-        check_run ~id:1 ~name:"build" "CANCELLED";
-        check_run ~id:2 ~name:"test" "SUCCESS";
-      ];
-      [
-        check_run ~id:1 ~name:"build" "CANCELLED";
-        check_run ~suite:2 ~id:2 ~name:"build" "SUCCESS";
-      ];
-      [
-        check_run ~suite:1 ~id:1 ~name:"build" "FAILURE";
-        check_run ~suite:2 ~id:2 ~name:"build" "SUCCESS";
-      ];
-      [
-        {|{"__typename":"CheckRun","name":"build","databaseId":1,
+      ]
+  in
+  assert (not (Pr_state.merge_ready pending));
+  assert (
+    not
+      (Onton.Patch_controller.should_dequeue_merge_queue (queued_agent pending)
+         ~main_branch:(Types.Branch.of_string "main")
+         ~entry_id:"entry"));
+  List.iter
+    [
+      ( true,
+        [
+          check_run ~id:1 ~name:"build" "SUCCESS";
+          check_run ~id:2 ~name:"build" "FAILURE";
+        ] );
+      ( false,
+        [
+          check_run ~id:1 ~name:"build" "CANCELLED";
+          check_run ~id:2 ~name:"test" "SUCCESS";
+        ] );
+      ( false,
+        [
+          check_run ~id:1 ~name:"build" "CANCELLED";
+          check_run ~suite:2 ~id:2 ~name:"build" "SUCCESS";
+        ] );
+      ( true,
+        [
+          check_run ~suite:1 ~id:1 ~name:"build" "FAILURE";
+          check_run ~suite:2 ~id:2 ~name:"build" "SUCCESS";
+        ] );
+      ( true,
+        [
+          {|{"__typename":"CheckRun","name":"build","databaseId":1,
           "checkSuite":{},"conclusion":"FAILURE"}|};
-        check_run ~id:2 ~name:"build" "SUCCESS";
-      ];
-      [
-        check_run ~suite:0 ~id:1 ~name:"build" "FAILURE";
-        check_run ~suite:0 ~id:2 ~name:"build" "SUCCESS";
-      ];
-      [
-        {|{"__typename":"CheckRun","name":"build","databaseId":1,
+          check_run ~id:2 ~name:"build" "SUCCESS";
+        ] );
+      ( true,
+        [
+          check_run ~suite:0 ~id:1 ~name:"build" "FAILURE";
+          check_run ~suite:0 ~id:2 ~name:"build" "SUCCESS";
+        ] );
+      ( false,
+        [
+          {|{"__typename":"CheckRun","name":"build","databaseId":1,
           "conclusion":"CANCELLED"}|};
-        check_run ~id:2 ~name:"build" "SUCCESS";
-      ];
+          check_run ~id:2 ~name:"build" "SUCCESS";
+        ] );
     ]
-    ~f:(fun nodes ->
+    ~f:(fun (expect_dequeue, nodes) ->
       let st = parse_pr ~truncated:false nodes in
       assert (not (Pr_state.merge_ready st));
       assert (
-        Onton.Patch_controller.should_dequeue_merge_queue (queued_agent st)
-          ~main_branch:(Types.Branch.of_string "main")
-          ~entry_id:"entry"))
+        Bool.equal expect_dequeue
+          (Onton.Patch_controller.should_dequeue_merge_queue (queued_agent st)
+             ~main_branch:(Types.Branch.of_string "main")
+             ~entry_id:"entry")))
 
 let test_merge_group_feedback_uses_current_runs () =
   let nodes =
