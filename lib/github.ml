@@ -1703,35 +1703,39 @@ let merge_group_actions_checks ~net ~clock ?timeout t pr =
           | Ok jobs_body -> parse_actions_jobs_response jobs_body))
 
 let resolve_merge_queue_removal_checks ~fetch_checks ~fetch_actions resp_str =
-  match Merge_queue_decision.removal_evidence ~body:resp_str with
-  | Missing ->
-      Error (Json_parse_error "Merge queue removal event is unavailable")
-  | Non_failure -> Ok []
-  | Needs_checks -> (
-      let result =
-        match parse_merge_queue_removal_pagination resp_str with
-        (* Complete first page (or no event): the parser has the full failure list. *)
-        | None -> parse_merge_queue_removal_response resp_str
-        (* A failed pagination is an incomplete observation. Preserve the error so
+  Result.bind (parse_merge_queue_removal_response resp_str)
+    ~f:(fun initial_checks ->
+      match Merge_queue_decision.removal_evidence ~body:resp_str with
+      | Missing ->
+          Error (Json_parse_error "Merge queue removal event is unavailable")
+      | Non_failure -> Ok []
+      | Needs_checks -> (
+          let result =
+            match parse_merge_queue_removal_pagination resp_str with
+            (* The validated first page has the full failure list. *)
+            | None -> Ok initial_checks
+            (* A failed pagination is an incomplete observation. Preserve the error so
        the poller retains the unresolved removal and retries it, rather than
        interpreting an empty Actions fallback as proof of a conflict. *)
-        | Some oid ->
-            Result.map (fetch_checks ~oid)
-              ~f:(List.filter ~f:Types.Ci_check.is_failure)
-      in
-      match result with
-      | Ok checks ->
-          let result =
-            if List.is_empty checks then fetch_actions () else Ok checks
+            | Some oid ->
+                Result.map (fetch_checks ~oid)
+                  ~f:(List.filter ~f:Types.Ci_check.is_failure)
           in
-          Result.bind result ~f:(fun checks ->
-              if Merge_queue_decision.removal_processed ~body:resp_str ~checks
-              then Ok checks
-              else
-                Error
-                  (Json_parse_error
-                     "Merge queue removal evidence is not yet complete"))
-      | Error _ -> result)
+          match result with
+          | Ok checks ->
+              let result =
+                if List.is_empty checks then fetch_actions () else Ok checks
+              in
+              Result.bind result ~f:(fun checks ->
+                  if
+                    Merge_queue_decision.removal_processed ~body:resp_str
+                      ~checks
+                  then Ok checks
+                  else
+                    Error
+                      (Json_parse_error
+                         "Merge queue removal evidence is not yet complete"))
+          | Error _ -> result))
 
 let merge_queue_removal_checks ~net ~clock ?timeout t pr =
   let body = build_merge_queue_removal_request_body t pr in
@@ -1753,6 +1757,43 @@ let%test "unavailable removal event is retried rather than resolving a conflict"
        ~fetch_actions:(fun () ->
          failwith "missing event must not fetch Actions")
        {|{"data":{"repository":{"pullRequest":{"timelineItems":{"nodes":[]}}}}}|})
+
+let%test_unit "removal response errors precede evidence classification" =
+  let resolve body =
+    resolve_merge_queue_removal_checks body
+      ~fetch_checks:(fun ~oid:_ ->
+        failwith "invalid response must not fetch checks")
+      ~fetch_actions:(fun () ->
+        failwith "invalid response must not fetch Actions")
+  in
+  List.iter
+    [
+      "null";
+      {|{"repository":{"pullRequest":{"timelineItems":{"nodes":[]}}}}|};
+      {|{"repository":{"pullRequest":{"timelineItems":{"nodes":[{"reason":"The merge commit has conflicts."}]}}}}|};
+      {|{"repository":{"pullRequest":{"timelineItems":{"nodes":[{"reason":"failed_checks"}]}}}}|};
+    ] ~f:(fun data ->
+      let body =
+        Printf.sprintf
+          {|{"errors":[{"message":"Resource not accessible by integration"}],"data":%s}|}
+          data
+      in
+      match resolve body with
+      | Error (Graphql_error [ message ]) ->
+          assert (String.equal message "Resource not accessible by integration")
+      | Ok _
+      | Error
+          ( Graphql_error _ | Http_error _ | Json_parse_error _ | Timeout _
+          | Transport_error _ ) ->
+          failwith "expected original GraphQL error");
+  match resolve "{" with
+  | Error (Json_parse_error message) ->
+      assert (not (String.is_empty message));
+      assert (
+        not (String.equal message "Merge queue removal event is unavailable"))
+  | Ok _ | Error (Graphql_error _ | Http_error _ | Timeout _ | Transport_error _)
+    ->
+      failwith "expected malformed JSON diagnostics"
 
 let%test "failed-check removal waits for checks; a conflict removal resolves" =
   let resolve reason =
