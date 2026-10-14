@@ -43,13 +43,15 @@ module type S = sig
 
   val merge_queue_removal_checks :
     pr_number:Types.Pr_number.t -> (Types.Ci_check.t list, error) Result.t
-  (** Failing checks from the most recent merge-queue removal event's
-      [beforeCommit] — the merge-group commit GitHub actually ran checks on.
-      Implementations may fall back to the matching [merge_group] Actions run
-      when the removal event omits the failing rollup. [Ok []] when no source
-      carries failing checks. Lets the runner replace the synthetic merge-queue
-      placeholder with the real failing checks (names, [details_url], dedup
-      ids). *)
+  (** For queue-capable forges, failing checks from the most recent merge-queue
+      removal event's [beforeCommit] — the merge-group commit GitHub actually
+      ran checks on. Implementations may fall back to the matching [merge_group]
+      Actions run when the removal event omits the failing rollup. [Ok []] only
+      for a resolved removal without failing checks. Missing or incomplete
+      removal evidence returns an error for retry. Lets the runner replace the
+      synthetic merge-queue placeholder with the real failing checks (names,
+      [details_url], dedup ids). Forges without merge queues may return [Ok []].
+  *)
 
   val check_failure_details :
     check:Types.Ci_check.t -> (Ci_log_digest.source, error) Result.t

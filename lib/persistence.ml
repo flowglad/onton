@@ -215,6 +215,13 @@ let patch_agent_to_yojson (a : Patch_agent.t) =
         `List (List.map a.inflight_human_messages ~f:(fun s -> `String s)) );
       ("ci_checks", `List (List.map a.ci_checks ~f:Ci_check.yojson_of_t));
       ("merge_ready", `Bool a.merge_ready);
+      ("merge_queue_required", `Bool a.merge_queue_required);
+      ( "merge_queue_entry",
+        Option.value_map a.merge_queue_entry ~default:`Null
+          ~f:Pr_state.yojson_of_merge_queue_entry );
+      ( "merge_queue_ejection",
+        Option.value_map a.merge_queue_ejection ~default:`Null
+          ~f:Merge_queue_decision.yojson_of_pending );
       ( "head_oid",
         Option.value_map a.head_oid ~default:`Null ~f:(fun s -> `String s) );
       ( "review_decision",
@@ -311,6 +318,14 @@ let patch_agent_of_yojson ?(snapshot_version = 1) ~main_branch ~gameplan json =
     | Some completion ->
         let* completion = Session_result.decode_completion completion in
         Ok (Some completion)
+  in
+  let* merge_queue_ejection =
+    match member "merge_queue_ejection" json with
+    | `Null -> Ok None
+    | v ->
+        Result.map
+          (try_of_yojson Merge_queue_decision.pending_of_yojson v)
+          ~f:Option.some
   in
   let has_session = bool_member "has_session" json in
   let migrate agent =
@@ -429,6 +444,7 @@ let patch_agent_of_yojson ?(snapshot_version = 1) ~main_branch ~gameplan json =
           (Option.value
              (bool_member_opt "merge_queue_required" json)
              ~default:false)
+        ~merge_queue_ejection
         ~merge_queue_entry:
           (match member "merge_queue_entry" json with
           | `Null -> None

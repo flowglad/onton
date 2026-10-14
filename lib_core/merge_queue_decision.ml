@@ -3,57 +3,150 @@
 
 open Base
 open Types
+open Ppx_yojson_conv_lib.Yojson_conv
 
-type application = { poll_result : Poller.t; merge_queue_ejected : bool }
+type pending =
+  | Awaiting_removal of {
+      entry : Pr_state.merge_queue_entry;
+      head_oid : string option;
+    }
+  | Failed of { head_oid : string option; checks : Ci_check.t list }
+[@@deriving show, eq, sexp_of, compare, yojson]
+
+type application = {
+  poll_result : Poller.t;
+  merge_queue_ejected : bool;
+  pending : pending option;
+}
 [@@deriving show, eq]
 
-let has_current_failure (poll_result : Poller.t) =
-  List.exists poll_result.ci_checks ~f:Ci_check.is_failure
+let queue_entry_disappeared ~previous_entry (poll : Poller.t) =
+  Option.is_some previous_entry
+  && Option.is_none poll.merge_queue_entry
+  && (not poll.merged) && not poll.closed
 
-(* A PR that was in the merge queue last poll and is now gone, while its own
-   head checks are still green and it still looks mergeable. GitHub runs
-   merge-queue CI on the ephemeral merge-group commit (not the PR head), so a
-   PR ejected because a {e required check} failed there shows all-green
-   PR-head signals — this predicate is how we notice that hidden failure.
+let should_fetch ~pending ~previous_entry poll =
+  (not poll.Poller.merged) && (not poll.closed)
+  &&
+  match pending with
+  | Some (Awaiting_removal _) -> true
+  | Some (Failed _) -> false
+  | None -> queue_entry_disappeared ~previous_entry poll
 
-   It is NOT, on its own, proof of a check failure: a PR ejected because its
-   speculative merge {e conflicts} with a sibling ahead of it in the queue
-   looks identical at the poll level (still clean against [main], head checks
-   green). The two are only distinguishable by the removal event's
-   [beforeCommit]: a check-failure ejection carries a failing merge-group
-   rollup, a conflict ejection carries none. The effectful poller fetches that
-   and passes the verdict in via [~ejection_confirmed]; this predicate just
-   gates {e whether} the fetch is worth doing. *)
-let should_treat_ejection_as_ci_failure ~previous_entry (poll_result : Poller.t)
-    =
-  let had_merge_queue_entry = Option.is_some previous_entry in
-  had_merge_queue_entry && poll_result.merge_queue_required
-  && Option.is_none poll_result.merge_queue_entry
-  && (not poll_result.merged) && (not poll_result.closed)
-  && poll_result.merge_ready && poll_result.checks_passing
-  && not (has_current_failure poll_result)
+let failed_checks = function
+  | Some (Failed { checks; _ }) -> checks
+  | None | Some (Awaiting_removal _) -> []
 
-let apply_failure (poll_result : Poller.t) =
-  {
-    poll_result with
-    queue = Operation_kind.Ci :: poll_result.queue;
-    merge_ready = false;
-    checks_passing = false;
-    ci_checks = Ci_check.merge_queue_failure () :: poll_result.ci_checks;
-  }
+let repair_evidence ~pending ~previous_head_oid ~head_oid ~checks =
+  let recorded_head =
+    match pending with
+    | Some (Failed { head_oid; _ } | Awaiting_removal { head_oid; _ }) ->
+        head_oid
+    | None -> previous_head_oid
+  in
+  match (recorded_head, head_oid) with
+  | Some old, Some fresh when String.equal old fresh ->
+      ( List.filter checks ~f:Ci_check.is_merge_queue_failure,
+        failed_checks pending )
+  | _ -> ([], [])
 
-(* Synthesize a CI failure for a merge-queue ejection only when the caller has
-   [~ejection_confirmed] it was a real check failure (the removal event's
-   merge-group commit carried failing checks, or the confirming fetch errored
-   and we err on the side of surfacing it). When the ejection was a conflict
-   with a sibling — [ejection_confirmed = false] — we do nothing: the patch
-   agent must not be told to "look for failing checks" that do not exist. The
-   conflict surfaces on its own once the sibling merges and the PR's
-   [merge_state] flips to [Conflicting], which enqueues [Merge_conflict]
-   through the normal path. *)
-let apply ~previous_entry ~ejection_confirmed poll_result =
-  if
-    ejection_confirmed
-    && should_treat_ejection_as_ci_failure ~previous_entry poll_result
-  then { poll_result = apply_failure poll_result; merge_queue_ejected = true }
-  else { poll_result; merge_queue_ejected = false }
+let repair_completed = function
+  | Some (Failed _) -> None
+  | (None | Some (Awaiting_removal _)) as pending -> pending
+
+let apply ?(pending = None) ?(previous_head_oid = None) ?removal_checks
+    ~previous_entry (poll_result : Poller.t) =
+  let pending =
+    match (pending, previous_entry) with
+    | None, Some entry when queue_entry_disappeared ~previous_entry poll_result
+      ->
+        Some
+          (Awaiting_removal
+             {
+               entry;
+               head_oid =
+                 Option.first_some previous_head_oid poll_result.head_oid;
+             })
+    | _ -> pending
+  in
+  let pending =
+    if poll_result.merged || poll_result.closed then None
+    else
+      match pending with
+      | Some (Awaiting_removal { head_oid; _ }) -> (
+          match removal_checks with
+          | Some [] -> None
+          | Some checks -> Some (Failed { head_oid; checks })
+          | None -> pending)
+      | None | Some (Failed _) -> pending
+  in
+  let pending =
+    match (pending, poll_result.head_oid) with
+    | ( Some
+          ( Failed { head_oid = Some old; _ }
+          | Awaiting_removal { head_oid = Some old; _ } ),
+        Some current )
+      when not (String.equal old current) ->
+        None
+    | None, _ | Some (Awaiting_removal _), _ | Some (Failed _), _ -> pending
+  in
+  match pending with
+  | Some (Failed { checks; _ }) ->
+      let marker = Ci_check.merge_queue_failure () in
+      let ci_checks =
+        List.dedup_and_sort
+          ((marker :: checks) @ poll_result.ci_checks)
+          ~compare:Ci_check.compare
+      in
+      {
+        pending;
+        merge_queue_ejected = true;
+        poll_result =
+          {
+            poll_result with
+            queue =
+              (if
+                 List.mem poll_result.queue Operation_kind.Ci
+                   ~equal:Operation_kind.equal
+               then poll_result.queue
+               else Operation_kind.Ci :: poll_result.queue);
+            merge_ready = false;
+            checks_passing = false;
+            ci_checks;
+          };
+      }
+  | None | Some (Awaiting_removal _) ->
+      { pending; poll_result; merge_queue_ejected = false }
+
+type removal_evidence = Missing | Non_failure | Needs_checks | Unknown_reason
+
+let removal_evidence ~body =
+  match Json.of_string body with
+  | Error _ -> Missing
+  | Ok json -> (
+      let event =
+        Json.field "data" json
+        |> Option.bind ~f:(Json.field "repository")
+        |> Option.bind ~f:(Json.field "pullRequest")
+        |> Option.bind ~f:(Json.field "timelineItems")
+        |> Option.bind ~f:(Json.field "nodes")
+        |> Option.bind ~f:Json.list |> Option.bind ~f:List.hd
+      in
+      match event with
+      | None | Some `Null -> Missing
+      | Some event -> (
+          match Json.string_field "reason" event with
+          | Some reason when not (String.is_empty reason) -> (
+              match String.lowercase reason with
+              | "the merge commit has conflicts." -> Non_failure
+              | "failed_checks"
+              | "the merge commit failed required status checks." ->
+                  Needs_checks
+              | _ -> Unknown_reason)
+          | None | Some _ -> Needs_checks))
+
+let removal_processed ~body ~checks =
+  match removal_evidence ~body with
+  | Missing | Unknown_reason -> false
+  | Non_failure -> true
+  | Needs_checks -> not (List.is_empty checks)

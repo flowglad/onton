@@ -1550,3 +1550,48 @@ let () =
                 (if index = 0 then root else child)
                 kind)
          with _ -> false))
+
+let () =
+  List.iter
+    Orchestrator.
+      [
+        Respond_no_commits;
+        Respond_failed;
+        Respond_retry_push;
+        Respond_skip_empty;
+        Respond_ok;
+      ]
+    ~f:(fun outcome ->
+      let orch, patches, gameplan, pid = bootstrap_one () in
+      let orch = make_busy orch patches gameplan pid Operation_kind.Ci in
+      let entry =
+        Pr_state.{ id = "entry"; state = Mq_awaiting_checks; position = 1 }
+      in
+      let observed =
+        Poller.poll ~was_merged:false Onton_core_test_support.Forge_fixture.base
+      in
+      let result =
+        Merge_queue_decision.apply ~previous_entry:(Some entry)
+          ~removal_checks:[ Ci_check.merge_queue_failure () ]
+          Poller.
+            {
+              observed with
+              merged = false;
+              closed = false;
+              merge_queue_entry = None;
+            }
+      in
+      assert (Option.is_some result.Merge_queue_decision.pending);
+      let orch =
+        Orchestrator.set_merge_queue_ejection orch pid
+          result.Merge_queue_decision.pending
+      in
+      let orch =
+        Orchestrator.apply_respond_outcome orch pid Operation_kind.Ci outcome
+      in
+      let agent = Orchestrator.agent orch pid in
+      assert (not agent.Patch_agent.busy);
+      assert (
+        Bool.equal
+          (Option.is_none agent.Patch_agent.merge_queue_ejection)
+          (Orchestrator.equal_respond_outcome outcome Orchestrator.Respond_ok)))

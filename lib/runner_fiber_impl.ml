@@ -2029,24 +2029,28 @@ module Make (Forge : Forge.S) (W : Worktree.S) (Env : Runner_env.S) = struct
                               (match (is_ci, fresh_pr_state) with
                               | true, Some pr_state
                                 when owns_after_wait && not branch_ci_stale ->
-                                  let synthetic_checks =
+                                  let synthetic_checks, retained_checks =
                                     Runtime.read runtime (fun snap ->
-                                        Orchestrator.agent
-                                          snap.Runtime.orchestrator patch_id)
-                                    |> fun agent ->
-                                    Base.List.filter agent.Patch_agent.ci_checks
-                                      ~f:Ci_check.is_merge_queue_failure
+                                        let agent =
+                                          Orchestrator.agent
+                                            snap.Runtime.orchestrator patch_id
+                                        in
+                                        Merge_queue_decision.repair_evidence
+                                          ~pending:
+                                            agent
+                                              .Patch_agent.merge_queue_ejection
+                                          ~previous_head_oid:agent.head_oid
+                                          ~head_oid:pr_state.Pr_state.head_oid
+                                          ~checks:agent.ci_checks)
                                   in
-                                  (* The synthetic placeholder only tells the
-                                         agent "merge queue failed". When it is
-                                         present, fetch the real failing checks
-                                         from the removal event's [beforeCommit]
-                                         (the merge-group commit GitHub ran) and
-                                         prefer them; fall back to the
-                                         placeholder on empty/error. *)
                                   let merge_queue_checks =
-                                    if Base.List.is_empty synthetic_checks then
-                                      []
+                                    if not (Base.List.is_empty retained_checks)
+                                    then (
+                                      ci_merge_queue_removal_checks :=
+                                        retained_checks;
+                                      synthetic_checks @ retained_checks)
+                                    else if Base.List.is_empty synthetic_checks
+                                    then []
                                     else
                                       match pr_number with
                                       | Some pr_num -> (

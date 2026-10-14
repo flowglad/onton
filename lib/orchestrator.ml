@@ -868,6 +868,10 @@ let set_merge_queue_entry t patch_id entry =
   update_agent t patch_id ~f:(fun a ->
       Patch_agent.set_merge_queue_entry a entry)
 
+let set_merge_queue_ejection t patch_id pending =
+  update_agent t patch_id ~f:(fun a ->
+      Patch_agent.set_merge_queue_ejection a pending)
+
 let set_native_stack t patch_id native_stack =
   update_agent t patch_id ~f:(fun a ->
       Patch_agent.set_native_stack a native_stack)
@@ -1274,6 +1278,13 @@ type respond_outcome =
 [@@deriving show, eq, sexp_of]
 
 let apply_respond_outcome t patch_id kind outcome =
+  let consume_ci_repair t =
+    if Operation_kind.equal kind Operation_kind.Ci then
+      update_agent t patch_id ~f:(fun agent ->
+          Patch_agent.set_merge_queue_ejection agent
+            (Merge_queue_decision.repair_completed agent.merge_queue_ejection))
+    else t
+  in
   let retry_rebase_after_cleanup t =
     if Operation_kind.equal kind Operation_kind.Uncommitted_changes then
       enqueue t patch_id Operation_kind.Rebase
@@ -1300,7 +1311,7 @@ let apply_respond_outcome t patch_id kind outcome =
       in
       retry_rebase_after_cleanup t
   | Respond_ok ->
-      let t = complete t patch_id in
+      let t = complete t patch_id |> consume_ci_repair in
       (* Only count CI fix attempts that actually delivered a payload with
          failure conclusions. Cancelled/pending/success-only runs yield
          [Respond_skip_empty] above and do not pollute the cap. *)

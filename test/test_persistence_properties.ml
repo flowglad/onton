@@ -1357,9 +1357,102 @@ let () =
              (Onton.Persistence.snapshot_to_yojson snap))
           (Some (not merged)))
   in
+  let malformed_ejection =
+    QCheck2.Test.make ~name:"malformed ejection checkpoints fail decoding"
+      ~count:100 QCheck2.Gen.string (fun value ->
+        let agent =
+          Onton_core.Patch_agent.create ~branch:(Branch.of_string "patch")
+            (Patch_id.of_string "1")
+        in
+        let json = Onton.Persistence.patch_agent_to_yojson agent in
+        let decode json =
+          Onton.Persistence.patch_agent_of_yojson
+            ~main_branch:(Branch.of_string "main")
+            ~gameplan:(gameplan_for_agent agent) json
+        in
+        match json with
+        | `Assoc fields ->
+            let fields =
+              List.Assoc.remove fields "merge_queue_ejection"
+                ~equal:String.equal
+            in
+            Result.is_ok (decode (`Assoc fields))
+            && Result.is_ok
+                 (decode (`Assoc (("merge_queue_ejection", `Null) :: fields)))
+            && Result.is_error
+                 (decode
+                    (`Assoc (("merge_queue_ejection", `String value) :: fields)))
+        | _ -> false)
+  in
+  let ejection_roundtrip =
+    QCheck2.Test.make
+      ~name:"pending and confirmed queue ejections survive checkpoint restart"
+      ~count:100 QCheck2.Gen.bool (fun confirmed ->
+        let agent =
+          Onton_core.Patch_agent.create ~branch:(Branch.of_string "patch")
+            (Patch_id.of_string "1")
+        in
+        let entry =
+          Onton_core.Pr_state.
+            { id = "queue"; state = Mq_awaiting_checks; position = 1 }
+        in
+        let state =
+          {
+            Onton_core_test_support.Forge_fixture.base with
+            Onton_core.Pr_state.merge_queue_required = true;
+            merge_queue_entry = None;
+            head_oid = Some "old";
+          }
+        in
+        let poll = Onton_core.Poller.poll ~was_merged:false state in
+        let result =
+          Onton_core.Merge_queue_decision.apply ~previous_entry:(Some entry)
+            ~previous_head_oid:(Some "old")
+            ?removal_checks:
+              (if confirmed then Some [ Ci_check.merge_queue_failure () ]
+               else None)
+            poll
+        in
+        let expected_state =
+          match (confirmed, result.pending) with
+          | false, Some (Onton_core.Merge_queue_decision.Awaiting_removal _) ->
+              true
+          | true, Some (Onton_core.Merge_queue_decision.Failed _) -> true
+          | _, None
+          | true, Some (Onton_core.Merge_queue_decision.Awaiting_removal _)
+          | false, Some (Onton_core.Merge_queue_decision.Failed _) ->
+              false
+        in
+        let agent =
+          Onton_core.Patch_agent.set_merge_queue_ejection agent result.pending
+        in
+        let roundtrip agent =
+          Onton.Persistence.patch_agent_of_yojson
+            ~main_branch:(Branch.of_string "main")
+            ~gameplan:(gameplan_for_agent agent)
+            (Onton.Persistence.patch_agent_to_yojson agent)
+        in
+        let queued =
+          Onton_core.Patch_agent.set_merge_queue_entry agent (Some entry)
+          |> fun agent ->
+          Onton_core.Patch_agent.set_merge_queue_required agent true
+        in
+        expected_state
+        &&
+        match (roundtrip agent, roundtrip queued) with
+        | Ok restored, Ok queued_restored ->
+            Option.equal Onton_core.Merge_queue_decision.equal_pending
+              agent.merge_queue_ejection restored.merge_queue_ejection
+            && queued_restored.merge_queue_required
+            && Option.equal Onton_core.Pr_state.equal_merge_queue_entry
+                 queued.merge_queue_entry queued_restored.merge_queue_entry
+        | Error _, _ | _, Error _ -> false)
+  in
   let exit_code =
     QCheck_base_runner.run_tests
       [
+        malformed_ejection;
+        ejection_roundtrip;
         runnable_snapshot;
         intervention_snapshot;
         snapshot_roundtrip;

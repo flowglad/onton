@@ -8,7 +8,7 @@ open Onton_core
 (** Ingest an explicitly identified fixture through the same owner ticket
     protocol as the poller. Missing revision identities are deliberately not
     filled in: such fixtures must exercise rejection separately. *)
-let apply ?merge_queue_ejection_confirmed ?confirmed_remote_head t pid
+let apply ?merge_queue_removal_checks ?confirmed_remote_head t pid
     (observation : Patch_controller.poll_observation) =
   let agent = Orchestrator.agent t pid in
   let previous_conflict = Patch_agent.has_conflict agent in
@@ -57,7 +57,7 @@ let apply ?merge_queue_ejection_confirmed ?confirmed_remote_head t pid
   | Ok _ -> ()
   | Error error -> failwith ("invalid identified forge fixture: " ^ error));
   Patch_controller.apply_poll_result ~previous_conflict
-    ?merge_queue_ejection_confirmed ?confirmed_remote_head t pid observation
+    ?merge_queue_removal_checks ?confirmed_remote_head t pid observation
 
 let conflicting ~head ~base ~base_branch t pid =
   let state =

@@ -74,6 +74,9 @@ type t = private {
           [clear_pr]. *)
   merge_queue_required : bool;
   merge_queue_entry : Pr_state.merge_queue_entry option;
+  merge_queue_ejection : Merge_queue_decision.pending option;
+      (** Unresolved removal or confirmed failures for the queued head. Blocks
+          approval and survives readiness changes and checkpoint restoration. *)
   native_stack : bool;
       (** GitHub linked this PR into a native stack. Cleared after two
           consecutive polls without membership or when the PR changes. *)
@@ -392,6 +395,8 @@ val set_mergeability_unknown : t -> bool -> t
 val set_merge_queue_required : t -> bool -> t
 (** Set whether the patch's target branch is governed by a merge queue. *)
 
+val set_merge_queue_ejection : t -> Merge_queue_decision.pending option -> t
+
 val set_merge_queue_entry : t -> Pr_state.merge_queue_entry option -> t
 (** Set the current merge-queue entry, if any. *)
 
@@ -700,6 +705,7 @@ val restore :
   mergeability_unknown:bool ->
   merge_queue_required:bool ->
   merge_queue_entry:Pr_state.merge_queue_entry option ->
+  ?merge_queue_ejection:Merge_queue_decision.pending option ->
   ?native_stack:bool ->
   ?native_stack_absent_polls:int ->
   merge_commit_sha:string option ->
