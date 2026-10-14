@@ -1294,8 +1294,7 @@ let apply_respond_outcome t patch_id kind outcome =
   | Respond_stale -> t
   | Respond_failed -> complete_failed t patch_id |> retry_rebase_after_cleanup
   | Respond_retry_push -> complete t patch_id |> retry_rebase_after_cleanup
-  | Respond_no_commits ->
-      complete t patch_id |> consume_ci_repair |> retry_rebase_after_cleanup
+  | Respond_no_commits -> complete t patch_id |> retry_rebase_after_cleanup
   | Respond_skip_empty -> complete t patch_id |> retry_rebase_after_cleanup
   | Respond_pr_body_miss ->
       let t = complete t patch_id in

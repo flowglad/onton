@@ -37,6 +37,19 @@ let failed_checks = function
   | Some (Failed { checks; _ }) -> checks
   | None | Some (Awaiting_removal _) -> []
 
+let repair_evidence ~pending ~previous_head_oid ~head_oid ~checks =
+  let recorded_head =
+    match pending with
+    | Some (Failed { head_oid; _ } | Awaiting_removal { head_oid; _ }) ->
+        head_oid
+    | None -> previous_head_oid
+  in
+  match (recorded_head, head_oid) with
+  | Some old, Some fresh when String.equal old fresh ->
+      ( List.filter checks ~f:Ci_check.is_merge_queue_failure,
+        failed_checks pending )
+  | _ -> ([], [])
+
 let repair_completed = function
   | Some (Failed _) -> None
   | (None | Some (Awaiting_removal _)) as pending -> pending
@@ -69,7 +82,10 @@ let apply ?(pending = None) ?(previous_head_oid = None) ?removal_checks
   in
   let pending =
     match (pending, poll_result.head_oid) with
-    | Some (Failed { head_oid = Some old; _ }), Some current
+    | ( Some
+          ( Failed { head_oid = Some old; _ }
+          | Awaiting_removal { head_oid = Some old; _ } ),
+        Some current )
       when not (String.equal old current) ->
         None
     | None, _ | Some (Awaiting_removal _), _ | Some (Failed _), _ -> pending
@@ -102,30 +118,32 @@ let apply ?(pending = None) ?(previous_head_oid = None) ?removal_checks
   | None | Some (Awaiting_removal _) ->
       { pending; poll_result; merge_queue_ejected = false }
 
-(* An empty failure list is definitive only when a removal reason is available
-   and does not report failed checks. Missing timeline evidence can lag the PR
-   poll; a failed-check reason without its checks must also be retried. *)
-let removal_processed ~body ~checks =
+type removal_evidence = Missing | Non_failure | Needs_checks
+
+let removal_evidence ~body =
   match Json.of_string body with
-  | Error _ -> false
+  | Error _ -> Missing
   | Ok json -> (
-      let nodes =
+      let event =
         Json.field "data" json
         |> Option.bind ~f:(Json.field "repository")
         |> Option.bind ~f:(Json.field "pullRequest")
         |> Option.bind ~f:(Json.field "timelineItems")
         |> Option.bind ~f:(Json.field "nodes")
-        |> Option.bind ~f:Json.list
+        |> Option.bind ~f:Json.list |> Option.bind ~f:List.hd
       in
-      match Option.bind nodes ~f:List.hd with
-      | None -> false
+      match event with
+      | None | Some `Null -> Missing
       | Some event -> (
           match Json.string_field "reason" event with
-          | None -> not (List.is_empty checks)
-          | Some reason ->
-              let reason = String.lowercase reason in
-              let failed_checks =
-                String.is_substring reason ~substring:"fail"
-              in
-              (not (String.is_empty reason))
-              && ((not failed_checks) || not (List.is_empty checks))))
+          | Some reason when not (String.is_empty reason) ->
+              if String.is_substring (String.lowercase reason) ~substring:"fail"
+              then Needs_checks
+              else Non_failure
+          | None | Some _ -> Needs_checks))
+
+let removal_processed ~body ~checks =
+  match removal_evidence ~body with
+  | Missing -> false
+  | Non_failure -> true
+  | Needs_checks -> not (List.is_empty checks)

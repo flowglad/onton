@@ -30,6 +30,16 @@ val should_fetch :
 
 val failed_checks : pending option -> Types.Ci_check.t list
 
+val repair_evidence :
+  pending:pending option ->
+  previous_head_oid:string option ->
+  head_oid:string option ->
+  checks:Types.Ci_check.t list ->
+  Types.Ci_check.t list * Types.Ci_check.t list
+(** Synthetic markers and retained failures for a repair turn, only when the
+    recorded head matches the freshly observed head. Legacy markers use the
+    previously observed PR head. *)
+
 val repair_completed : pending option -> pending option
 (** A successfully completed CI delivery consumes confirmed failure evidence.
     Unresolved removal lookups still require ingestion. *)
@@ -41,7 +51,7 @@ val apply :
   previous_entry:Pr_state.merge_queue_entry option ->
   Poller.t ->
   application
-(** No lookup result retains unresolved state. An empty successful lookup
+(** A missing lookup result retains unresolved state. An empty successful lookup
     resolves a non-CI removal; failures remain available for repair until a
     different head is observed or CI repair completes successfully. Terminal PRs
     clear the state. *)
@@ -50,3 +60,9 @@ val removal_processed : body:string -> checks:Types.Ci_check.t list -> bool
 (** Whether the removal response and resolved checks supply enough evidence to
     finish ingestion. Missing events and failed-check reasons without checks
     retry. *)
+
+type removal_evidence = Missing | Non_failure | Needs_checks
+
+val removal_evidence : body:string -> removal_evidence
+(** Classify the removal event before requesting additional checks. Known
+    non-failure removals must not inherit failures from older Actions runs. *)

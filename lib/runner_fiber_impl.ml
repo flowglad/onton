@@ -2029,24 +2029,19 @@ module Make (Forge : Forge.S) (W : Worktree.S) (Env : Runner_env.S) = struct
                               (match (is_ci, fresh_pr_state) with
                               | true, Some pr_state
                                 when owns_after_wait && not branch_ci_stale ->
-                                  let synthetic_checks =
+                                  let synthetic_checks, retained_checks =
                                     Runtime.read runtime (fun snap ->
-                                        Orchestrator.agent
-                                          snap.Runtime.orchestrator patch_id)
-                                    |> fun agent ->
-                                    Base.List.filter agent.Patch_agent.ci_checks
-                                      ~f:Ci_check.is_merge_queue_failure
-                                  in
-                                  (* Prefer retained removal evidence: a later
-                                     timeline event must not replace the checks
-                                     this repair was scheduled to address. Legacy
-                                     placeholders still use the lookup fallback. *)
-                                  let retained_checks =
-                                    Runtime.read runtime (fun snap ->
-                                        (Orchestrator.agent
-                                           snap.Runtime.orchestrator patch_id)
-                                          .Patch_agent.merge_queue_ejection)
-                                    |> Merge_queue_decision.failed_checks
+                                        let agent =
+                                          Orchestrator.agent
+                                            snap.Runtime.orchestrator patch_id
+                                        in
+                                        Merge_queue_decision.repair_evidence
+                                          ~pending:
+                                            agent
+                                              .Patch_agent.merge_queue_ejection
+                                          ~previous_head_oid:agent.head_oid
+                                          ~head_oid:pr_state.Pr_state.head_oid
+                                          ~checks:agent.ci_checks)
                                   in
                                   let merge_queue_checks =
                                     if not (Base.List.is_empty retained_checks)

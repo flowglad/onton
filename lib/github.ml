@@ -1703,30 +1703,35 @@ let merge_group_actions_checks ~net ~clock ?timeout t pr =
           | Ok jobs_body -> parse_actions_jobs_response jobs_body))
 
 let resolve_merge_queue_removal_checks ~fetch_checks ~fetch_actions resp_str =
-  let result =
-    match parse_merge_queue_removal_pagination resp_str with
-    (* Complete first page (or no event): the parser has the full failure list. *)
-    | None -> parse_merge_queue_removal_response resp_str
-    (* A failed pagination is an incomplete observation. Preserve the error so
+  match Merge_queue_decision.removal_evidence ~body:resp_str with
+  | Missing ->
+      Error (Json_parse_error "Merge queue removal event is unavailable")
+  | Non_failure -> Ok []
+  | Needs_checks -> (
+      let result =
+        match parse_merge_queue_removal_pagination resp_str with
+        (* Complete first page (or no event): the parser has the full failure list. *)
+        | None -> parse_merge_queue_removal_response resp_str
+        (* A failed pagination is an incomplete observation. Preserve the error so
        the poller retains the unresolved removal and retries it, rather than
        interpreting an empty Actions fallback as proof of a conflict. *)
-    | Some oid ->
-        Result.map (fetch_checks ~oid)
-          ~f:(List.filter ~f:Types.Ci_check.is_failure)
-  in
-  match result with
-  | Ok checks ->
-      let result =
-        if List.is_empty checks then fetch_actions () else Ok checks
+        | Some oid ->
+            Result.map (fetch_checks ~oid)
+              ~f:(List.filter ~f:Types.Ci_check.is_failure)
       in
-      Result.bind result ~f:(fun checks ->
-          if Merge_queue_decision.removal_processed ~body:resp_str ~checks then
-            Ok checks
-          else
-            Error
-              (Json_parse_error
-                 "Merge queue removal evidence is not yet complete"))
-  | Error _ -> result
+      match result with
+      | Ok checks ->
+          let result =
+            if List.is_empty checks then fetch_actions () else Ok checks
+          in
+          Result.bind result ~f:(fun checks ->
+              if Merge_queue_decision.removal_processed ~body:resp_str ~checks
+              then Ok checks
+              else
+                Error
+                  (Json_parse_error
+                     "Merge queue removal evidence is not yet complete"))
+      | Error _ -> result)
 
 let merge_queue_removal_checks ~net ~clock ?timeout t pr =
   let body = build_merge_queue_removal_request_body t pr in
@@ -1745,7 +1750,8 @@ let%test "unavailable removal event is retried rather than resolving a conflict"
   Result.is_error
     (resolve_merge_queue_removal_checks
        ~fetch_checks:(fun ~oid:_ -> Ok [])
-       ~fetch_actions:(fun () -> Ok [])
+       ~fetch_actions:(fun () ->
+         failwith "missing event must not fetch Actions")
        {|{"data":{"repository":{"pullRequest":{"timelineItems":{"nodes":[]}}}}}|})
 
 let%test "failed-check removal waits for checks; a conflict removal resolves" =
@@ -1762,6 +1768,27 @@ let%test "failed-check removal waits for checks; a conflict removal resolves" =
   match resolve "The merge commit has conflicts." with
   | Ok [] -> true
   | Ok (_ :: _) | Error _ -> false
+
+let%test "conflict removal ignores older Actions failures" =
+  match
+    resolve_merge_queue_removal_checks
+      ~fetch_checks:(fun ~oid:_ -> failwith "conflict must not fetch checks")
+      ~fetch_actions:(fun () -> failwith "conflict must not fetch Actions")
+      {|{"data":{"repository":{"pullRequest":{"timelineItems":{"nodes":[{"reason":"The merge commit has conflicts."}]}}}}}|}
+  with
+  | Ok [] -> true
+  | Ok (_ :: _) | Error _ -> false
+
+let%test "failed removal fetches and retains Actions failures" =
+  let check = Types.Ci_check.merge_queue_failure () in
+  match
+    resolve_merge_queue_removal_checks
+      ~fetch_checks:(fun ~oid:_ -> Ok [])
+      ~fetch_actions:(fun () -> Ok [ check ])
+      {|{"data":{"repository":{"pullRequest":{"timelineItems":{"nodes":[{"reason":"failed_checks"}]}}}}}|}
+  with
+  | Ok [ actual ] -> Types.Ci_check.equal actual check
+  | Ok _ | Error _ -> false
 
 (** Parse the REST response from [GET /repos/:owner/:repo/pulls]. Returns a list
     of [(pr_number, base_branch, merged)] for non-CLOSED PRs, newest first. Pure

@@ -387,6 +387,54 @@ let prop_resolution =
       && (not non_ci.merge_queue_ejected)
       && Bool.equal (Option.is_none terminal.pending) (merged || closed))
 
+let prop_head_change =
+  QCheck2.Test.make
+    ~name:"MQD known head changes release unresolved and failed evidence"
+    ~count:200
+    QCheck2.Gen.(pair bool (option gen_string))
+    (fun (confirmed, fresh) ->
+      let initial =
+        Merge_queue_decision.apply ~previous_entry:(Some previous_entry)
+          ~previous_head_oid:(Some "old")
+          ?removal_checks:(if confirmed then Some [ failing_check ] else None)
+          { base_ejection_poll with head_oid = Some "old" }
+      in
+      let result =
+        Merge_queue_decision.apply ~pending:initial.pending ~previous_entry:None
+          { base_ejection_poll with head_oid = fresh }
+      in
+      match fresh with
+      | Some head when not (String.equal head "old") ->
+          Option.is_none result.pending && not result.merge_queue_ejected
+      | _ ->
+          Option.equal Merge_queue_decision.equal_pending initial.pending
+            result.pending)
+
+let prop_repair_evidence =
+  QCheck2.Test.make
+    ~name:
+      "MQD repair checks require the recorded head, including legacy markers"
+    ~count:100 QCheck2.Gen.bool (fun legacy ->
+      let marker = Ci_check.merge_queue_failure () in
+      let pending =
+        if legacy then None
+        else
+          (Merge_queue_decision.apply ~previous_entry:(Some previous_entry)
+             ~previous_head_oid:(Some "old") ~removal_checks:[ failing_check ]
+             { base_ejection_poll with head_oid = Some "old" })
+            .pending
+      in
+      List.for_all [ None; Some "old"; Some "new" ] ~f:(fun head_oid ->
+          let markers, failures =
+            Merge_queue_decision.repair_evidence ~pending
+              ~previous_head_oid:(Some "old") ~head_oid ~checks:[ marker ]
+          in
+          if Option.equal String.equal head_oid (Some "old") then
+            List.equal Ci_check.equal markers [ marker ]
+            && List.equal Ci_check.equal failures
+                 (if legacy then [] else [ failing_check ])
+          else List.is_empty markers && List.is_empty failures))
+
 let prop_removal_totality =
   QCheck2.Test.make ~name:"MQD removal evidence parser is total" ~count:1000
     QCheck2.Gen.string (fun body ->
@@ -419,6 +467,8 @@ let prop_removal_boundaries =
 let () =
   List.iter
     [
+      prop_repair_evidence;
+      prop_head_change;
       prop_readiness_interleavings;
       prop_resolution;
       prop_removal_totality;

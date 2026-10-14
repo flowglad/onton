@@ -319,6 +319,14 @@ let patch_agent_of_yojson ?(snapshot_version = 1) ~main_branch ~gameplan json =
         let* completion = Session_result.decode_completion completion in
         Ok (Some completion)
   in
+  let* merge_queue_ejection =
+    match member "merge_queue_ejection" json with
+    | `Null -> Ok None
+    | v ->
+        Result.map
+          (try_of_yojson Merge_queue_decision.pending_of_yojson v)
+          ~f:Option.some
+  in
   let has_session = bool_member "has_session" json in
   let migrate agent =
     if snapshot_version <> 1 then agent
@@ -436,11 +444,7 @@ let patch_agent_of_yojson ?(snapshot_version = 1) ~main_branch ~gameplan json =
           (Option.value
              (bool_member_opt "merge_queue_required" json)
              ~default:false)
-        ~merge_queue_ejection:
-          (match member "merge_queue_ejection" json with
-          | `Null -> None
-          | v ->
-              Result.ok (try_of_yojson Merge_queue_decision.pending_of_yojson v))
+        ~merge_queue_ejection
         ~merge_queue_entry:
           (match member "merge_queue_entry" json with
           | `Null -> None
