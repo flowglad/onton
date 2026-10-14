@@ -435,6 +435,47 @@ let prop_repair_evidence =
                  (if legacy then [] else [ failing_check ])
           else List.is_empty markers && List.is_empty failures))
 
+let prop_failed_checks =
+  QCheck2.Test.make ~name:"MQD exposes only confirmed removal failures"
+    ~count:200 QCheck2.Gen.bool (fun confirmed ->
+      let first =
+        Merge_queue_decision.apply ~previous_entry:(Some previous_entry)
+          ?removal_checks:(if confirmed then Some [ failing_check ] else None)
+          base_ejection_poll
+      in
+      List.equal Ci_check.equal
+        (Merge_queue_decision.failed_checks first.pending)
+        (if confirmed then [ failing_check ] else [])
+      && List.is_empty (Merge_queue_decision.failed_checks None))
+
+let prop_removal_classification =
+  QCheck2.Test.make
+    ~name:"MQD classifies missing, non-failure and incomplete failure evidence"
+    ~count:200 QCheck2.Gen.bool (fun uppercase ->
+      let classify reason =
+        let reason = if uppercase then String.uppercase reason else reason in
+        Merge_queue_decision.removal_evidence
+          ~body:
+            (Printf.sprintf
+               {|{"data":{"repository":{"pullRequest":{"timelineItems":{"nodes":[{"reason":%S}]}}}}}|}
+               reason)
+      in
+      (match Merge_queue_decision.removal_evidence ~body:"{}" with
+        | Missing -> true
+        | Non_failure | Needs_checks -> false)
+      && (match classify "The merge commit has conflicts." with
+        | Non_failure -> true
+        | Missing | Needs_checks -> false)
+      && List.for_all
+           [
+             "failed_checks";
+             "The merge commit failed required status checks.";
+             "";
+           ] ~f:(fun reason ->
+             match classify reason with
+             | Needs_checks -> true
+             | Missing | Non_failure -> false))
+
 let prop_removal_totality =
   QCheck2.Test.make ~name:"MQD removal evidence parser is total" ~count:1000
     QCheck2.Gen.string (fun body ->
@@ -467,6 +508,8 @@ let prop_removal_boundaries =
 let () =
   List.iter
     [
+      prop_failed_checks;
+      prop_removal_classification;
       prop_repair_evidence;
       prop_head_change;
       prop_readiness_interleavings;

@@ -470,3 +470,48 @@ let () =
         with _ -> false)
   in
   QCheck2.Test.check_exn property
+
+let () =
+  QCheck2.Test.check_exn
+    (QCheck2.Test.make
+       ~name:
+         "queue ejection storage preserves intervention and clears reversibly"
+       ~count:200
+       QCheck2.Gen.(pair bool (int_range 0 5))
+       (fun (confirmed, failures) ->
+         try
+           let initial =
+             apply failures Patch_agent.increment_ci_failure_count (agent ())
+           in
+           let observed =
+             Poller.poll ~was_merged:false
+               Onton_core_test_support.Forge_fixture.base
+           in
+           let result =
+             Merge_queue_decision.apply
+               ~previous_entry:(Some (merge_queue_entry "ejected"))
+               ?removal_checks:
+                 (if confirmed then Some [ Ci_check.merge_queue_failure () ]
+                  else None)
+               {
+                 observed with
+                 Poller.merged = false;
+                 closed = false;
+                 merge_queue_entry = None;
+               }
+           in
+           let updated =
+             Patch_agent.set_merge_queue_ejection initial
+               result.Merge_queue_decision.pending
+           in
+           Option.is_some updated.Patch_agent.merge_queue_ejection
+           && Option.equal Merge_queue_decision.equal_pending
+                updated.Patch_agent.merge_queue_ejection
+                result.Merge_queue_decision.pending
+           && Patch_agent.needs_intervention updated
+              = Patch_agent.needs_intervention initial
+           && Patch_agent.intervention_reason updated
+              = Patch_agent.intervention_reason initial
+           && Patch_agent.equal initial
+                (Patch_agent.set_merge_queue_ejection updated None)
+         with _ -> false))
