@@ -985,53 +985,39 @@ type review_request_decision = {
 let merge_queue_entry_unmergeable (entry : Pr_state.merge_queue_entry) =
   Pr_state.equal_merge_queue_entry_state entry.state Pr_state.Mq_unmergeable
 
-let merge_queue_transient_unknown_hold (agent : Patch_agent.t) ~main_branch =
-  agent.Patch_agent.mergeability_unknown
-  && Patch_agent.is_approved_modulo_merge_ready agent ~main_branch
-  && agent.Patch_agent.checks_passing
-  && List.is_empty agent.Patch_agent.queue
-
-let dequeue_merge_queue_reasons agent ~main_branch ~entry_id =
-  match agent.Patch_agent.merge_queue_entry with
-  | Some entry when String.equal entry.Pr_state.id entry_id ->
-      let failing_checks =
-        List.filter agent.Patch_agent.ci_checks ~f:Ci_check.is_failure
-      in
-      let approval_lost =
-        (not (Patch_agent.is_approved agent ~main_branch))
-        && not (merge_queue_transient_unknown_hold agent ~main_branch)
-      in
-      let approval_reason =
-        if not approval_lost then []
-        else
+(* Queue retention is independent of Onton's readiness to schedule work.
+   Intervention pauses Onton; it does not revoke a GitHub queue entry. *)
+let dequeue_merge_queue_reasons agent ~main_branch:_ ~entry_id =
+  if Patch_agent.needs_intervention agent then []
+  else
+    match agent.Patch_agent.merge_queue_entry with
+    | Some entry when String.equal entry.Pr_state.id entry_id ->
+        let failing_checks =
+          List.filter agent.Patch_agent.ci_checks ~f:Ci_check.is_failure
+        in
+        (if merge_queue_entry_unmergeable entry then
+           [
+             Printf.sprintf "GitHub queue entry UNMERGEABLE (position %d)"
+               entry.position;
+           ]
+         else [])
+        @ (if
+             Branch_reconcile.forge_conflict agent.Patch_agent.branch_reconcile
+               ~scope:(Patch_agent.forge_scope agent)
+           then [ "GitHub merge conflict" ]
+           else [])
+        @ List.map failing_checks ~f:(fun check ->
+            Printf.sprintf "CI check %s (%s)" check.Ci_check.name
+              check.conclusion)
+        @ (if agent.Patch_agent.is_draft then [ "GitHub PR is draft" ] else [])
+        @
+        if Pr_state.review_blocking agent.Patch_agent.review_decision then
           [
-            Printf.sprintf
-              "approval lost (PR present=%b, merge_ready=%b, busy=%b, \
-               needs_intervention=%b, draft=%b, branch_blocked=%b, \
-               base_matches=%b, checks_passing=%b, mergeability_unknown=%b, \
-               review_decision=%s)"
-              (Patch_agent.is_pr_present agent)
-              agent.Patch_agent.merge_ready agent.Patch_agent.busy
-              (Patch_agent.needs_intervention agent)
-              agent.Patch_agent.is_draft agent.Patch_agent.branch_blocked
-              (Option.equal Branch.equal agent.Patch_agent.base_branch
-                 (Some main_branch))
-              agent.Patch_agent.checks_passing
-              agent.Patch_agent.mergeability_unknown
-              (Option.value agent.Patch_agent.review_decision ~default:"none");
+            "GitHub review decision: "
+            ^ Option.value agent.Patch_agent.review_decision ~default:"none";
           ]
-      in
-      (if merge_queue_entry_unmergeable entry then
-         [
-           Printf.sprintf "GitHub queue entry UNMERGEABLE (position %d)"
-             entry.position;
-         ]
-       else [])
-      @ (if Patch_agent.has_conflict agent then [ "merge conflict" ] else [])
-      @ List.map failing_checks ~f:(fun check ->
-          Printf.sprintf "CI check %s (%s)" check.Ci_check.name check.conclusion)
-      @ approval_reason
-  | Some _ | None -> []
+        else []
+    | Some _ | None -> []
 
 let should_dequeue_merge_queue agent ~main_branch ~entry_id =
   not (List.is_empty (dequeue_merge_queue_reasons agent ~main_branch ~entry_id))

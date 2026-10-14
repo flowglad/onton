@@ -59,30 +59,31 @@ let make_orch patch agent =
     ~outbox:(Map.empty (module Message_id))
     ~main_branch:main ()
 
-let make_agent ?(confirmed_pair = true) ?(merge_ready = false)
-    ?(mergeability_unknown = false) ?(merge_queue_required = false)
-    ?(merge_queue_entry = None) ?(native_stack = false)
-    ?(checks_passing = false) ?(ci_checks = []) ?(has_conflict = false)
-    ?(head_oid = None) ?(review_decision = None) ?(unresolved_comment_count = 0)
-    ?(review_requested_for_oid = None) ?(review_request_inflight = false)
-    ?(automerge_enabled = false) ?automerge_deadline
-    ?(automerge_failure_count = 0) ~patch_id ~branch ~pr_status ~merged ~queue
-    ~base_branch ~is_draft ~pr_body_delivered ~start_attempts_without_pr () =
-  Patch_agent.restore ~patch_id ~branch ~pr_status ~has_session:false
-    ~busy:false ~merged ~queue ~satisfies:false ~changed:false ~base_branch
-    ~notified_base_branch:base_branch ~ci_failure_count:0
-    ~session_fallback:Patch_agent.Fresh_available ~human_messages:[]
-    ~inflight_human_messages:[] ~ci_checks ~merge_ready ~head_oid
-    ~review_decision ~unresolved_comment_count ~mergeability_unknown
+let make_agent ?(busy = false) ?(branch_blocked = false)
+    ?(session_fallback = Patch_agent.Fresh_available) ?(confirmed_pair = true)
+    ?(merge_ready = false) ?(mergeability_unknown = false)
+    ?(merge_queue_required = false) ?(merge_queue_entry = None)
+    ?(native_stack = false) ?(checks_passing = false) ?(ci_checks = [])
+    ?(has_conflict = false) ?(head_oid = None) ?(review_decision = None)
+    ?(unresolved_comment_count = 0) ?(review_requested_for_oid = None)
+    ?(review_request_inflight = false) ?(automerge_enabled = false)
+    ?automerge_deadline ?(automerge_failure_count = 0) ~patch_id ~branch
+    ~pr_status ~merged ~queue ~base_branch ~is_draft ~pr_body_delivered
+    ~start_attempts_without_pr () =
+  Patch_agent.restore ~patch_id ~branch ~pr_status ~has_session:false ~busy
+    ~merged ~queue ~satisfies:false ~changed:false ~base_branch
+    ~notified_base_branch:base_branch ~ci_failure_count:0 ~session_fallback
+    ~human_messages:[] ~inflight_human_messages:[] ~ci_checks ~merge_ready
+    ~head_oid ~review_decision ~unresolved_comment_count ~mergeability_unknown
     ~merge_queue_required ~merge_queue_entry ~is_draft ~pr_body_delivered
     ~native_stack ~pr_body_artifact_miss_count:0 ~start_attempts_without_pr
     ~no_commits_push_count:0 ~context_exhaustion_count:0 ~merge_commit_sha:None
     ~base_contains_merged_siblings:true ~checks_passing ~current_op:None
     ~current_op_state:Patch_agent.Queued ~current_message_id:None ~generation:0
-    ~worktree_path:None ~branch_blocked:false ~llm_session_id:None
-    ~automerge_enabled ~automerge_deadline ~automerge_inflight:false
-    ~review_requested_for_oid ~review_request_inflight ~automerge_failure_count
-    ~delivered_ci_run_ids:[] ()
+    ~worktree_path:None ~branch_blocked ~llm_session_id:None ~automerge_enabled
+    ~automerge_deadline ~automerge_inflight:false ~review_requested_for_oid
+    ~review_request_inflight ~automerge_failure_count ~delivered_ci_run_ids:[]
+    ()
   |> fun agent ->
   let agent =
     if has_conflict then Onton_core_test_support.Conflict_fixture.agent agent
@@ -1962,11 +1963,11 @@ let () =
         && not agent.Patch_agent.automerge_inflight)
   in
 
-  let pending_patch_4_automerge_dequeue_on_lost_approval =
+  let pending_patch_4_dequeue_on_github_review =
     Test.make
       ~name:
-        "patch_controller: Patch 4 enqueued PR that lost approval is dequeued"
-      QCheck2.Gen.unit (fun () ->
+        "patch_controller: Patch 4 queued PR with GitHub changes requested is \
+         dequeued" QCheck2.Gen.unit (fun () ->
         let pid = Patch_id.of_string "mq-dequeue" in
         let branch = Branch.of_string "feat/mq-dequeue" in
         let patch = make_patch pid branch in
@@ -1978,6 +1979,7 @@ let () =
             ~queue:[ Operation_kind.Review_comments ]
             ~base_branch:(Some main) ~is_draft:false ~pr_body_delivered:true
             ~start_attempts_without_pr:0 ~merge_ready:false ~checks_passing:true
+            ~review_decision:(Some "CHANGES_REQUESTED")
             ~merge_queue_required:true ~merge_queue_entry:(Some entry)
             ~automerge_enabled:true ~automerge_deadline:0.0 ()
         in
@@ -1999,8 +2001,8 @@ let () =
                     ~main_branch:main ~entry_id:entry.id
                 with
               | [ reason ] ->
-                  String.is_substring reason ~substring:"approval lost"
-                  && String.is_substring reason ~substring:"merge_ready=false"
+                  String.equal reason
+                    "GitHub review decision: CHANGES_REQUESTED"
               | _ -> false)
             && (Orchestrator.agent orch pid).Patch_agent.automerge_inflight
         | [ Patch_controller.Git_integrate _ ] | [] | _ :: _ :: _ -> false)
@@ -2151,21 +2153,17 @@ let () =
                   Patch_controller.dequeue_merge_queue_reasons agent
                     ~main_branch:main ~entry_id:entry.id
                 with
-              | [ check; approval ] ->
-                  String.equal check "CI check ci (failure)"
-                  && String.is_substring approval
-                       ~substring:"checks_passing=false"
+              | [ check ] -> String.equal check "CI check ci (failure)"
               | _ -> false)
             && (Orchestrator.agent orch pid).Patch_agent.automerge_inflight
         | [ Patch_controller.Git_integrate _ ] | [] | _ :: _ :: _ -> false)
   in
 
-  let pending_patch_4_conflict_alarm_dequeues =
+  let pending_patch_4_local_conflict_retains_entry =
     Test.make
       ~name:
-        "patch_controller: queued PR with conflict alarm dequeues from merge \
-         queue"
-      QCheck2.Gen.unit (fun () ->
+        "patch_controller: queued PR with local conflict retains its merge \
+         queue entry" QCheck2.Gen.unit (fun () ->
         let pid = Patch_id.of_string "mq-conflict" in
         let branch = Branch.of_string "feat/mq-conflict" in
         let patch = make_patch pid branch in
@@ -2181,24 +2179,75 @@ let () =
             ~automerge_enabled:true ()
         in
         let orch = make_orch patch agent in
-        let orch, decisions =
-          Patch_controller.reconcile_automerge orch ~now:1.0
+        let _, decisions = Patch_controller.reconcile_automerge orch ~now:1.0 in
+        List.is_empty decisions
+        && not
+             (Patch_controller.should_dequeue_merge_queue agent
+                ~main_branch:main ~entry_id:entry.Pr_state.id))
+  in
+
+  let merge_queue_retains_internal_states =
+    Test.make
+      ~name:"patch_controller: internal state cannot revoke GitHub queue entry"
+      ~count:200
+      QCheck2.Gen.(tup4 bool bool bool bool)
+      (fun (busy, blocked, intervention, merge_ready) ->
+        let pid = Patch_id.of_string "mq-internal" in
+        let branch = Branch.of_string "feat/mq-internal" in
+        let entry = merge_queue_entry "MQE_internal" in
+        let agent =
+          make_agent ~patch_id:pid ~branch ~busy ~branch_blocked:blocked
+            ~session_fallback:
+              (if intervention then Patch_agent.Given_up
+               else Patch_agent.Fresh_available)
+            ~pr_status:(Patch_pr_status.Present (Pr_number.of_int 409))
+            ~merged:false
+            ~queue:[ Operation_kind.Review_comments ]
+            ~base_branch:(Some (Branch.of_string "other-base"))
+            ~is_draft:false ~pr_body_delivered:false
+            ~start_attempts_without_pr:0 ~merge_ready ~checks_passing:true
+            ~merge_queue_required:true ~merge_queue_entry:(Some entry)
+            ~automerge_enabled:true ()
         in
-        match decisions with
-        | [
-         Patch_controller.Github_merge
-           { merge_patch_id; merge_pr_number; action };
-        ] ->
-            Patch_id.equal merge_patch_id pid
-            && Pr_number.equal merge_pr_number pr_number
-            && Patch_controller.equal_merge_action action
-                 (Patch_controller.Dequeue entry.Pr_state.id)
-            && List.mem
-                 (Patch_controller.dequeue_merge_queue_reasons agent
-                    ~main_branch:main ~entry_id:entry.id)
-                 "merge conflict" ~equal:String.equal
-            && (Orchestrator.agent orch pid).Patch_agent.automerge_inflight
-        | [ Patch_controller.Git_integrate _ ] | [] | _ :: _ :: _ -> false)
+        let _, decisions =
+          Patch_controller.reconcile_automerge
+            (make_orch (make_patch pid branch) agent)
+            ~now:1.0
+        in
+        List.is_empty decisions
+        && List.is_empty
+             (Patch_controller.dequeue_merge_queue_reasons agent
+                ~main_branch:main ~entry_id:entry.Pr_state.id))
+  in
+
+  let merge_queue_retains_intervention_with_forge_alarm =
+    Test.make ~name:"patch_controller: intervention always retains queued entry"
+      QCheck2.Gen.unit (fun () ->
+        let pid = Patch_id.of_string "mq-intervention" in
+        let branch = Branch.of_string "feat/mq-intervention" in
+        let entry =
+          merge_queue_entry "MQE_intervention" ~state:Pr_state.Mq_unmergeable
+        in
+        let agent =
+          make_agent ~patch_id:pid ~branch
+            ~session_fallback:Patch_agent.Given_up
+            ~pr_status:(Patch_pr_status.Present (Pr_number.of_int 410))
+            ~merged:false ~queue:[] ~base_branch:(Some main) ~is_draft:true
+            ~pr_body_delivered:true ~start_attempts_without_pr:0
+            ~review_decision:(Some "CHANGES_REQUESTED")
+            ~merge_queue_required:true ~merge_queue_entry:(Some entry)
+            ~automerge_enabled:true ()
+        in
+        let _, decisions =
+          Patch_controller.reconcile_automerge
+            (make_orch (make_patch pid branch) agent)
+            ~now:1.0
+        in
+        Patch_agent.needs_intervention agent
+        && List.is_empty decisions
+        && not
+             (Patch_controller.should_dequeue_merge_queue agent
+                ~main_branch:main ~entry_id:entry.Pr_state.id))
   in
 
   (* A direct-merge patch that is approval-ready in every respect but reads
@@ -2461,12 +2510,14 @@ let () =
       pending_patch_4_merge_queue_entered_clears_timer;
       pending_patch_4_merge_queue_dequeued_restarts_timer;
       pending_patch_4_unapproved_not_enqueued;
-      pending_patch_4_automerge_dequeue_on_lost_approval;
+      pending_patch_4_dequeue_on_github_review;
       pending_patch_4_transient_unknown_does_not_dequeue;
       pending_patch_4_dequeue_respects_failure_cap;
       pending_patch_4_unmergeable_dequeues;
       pending_patch_4_visible_ci_failure_dequeues;
-      pending_patch_4_conflict_alarm_dequeues;
+      pending_patch_4_local_conflict_retains_entry;
+      merge_queue_retains_internal_states;
+      merge_queue_retains_intervention_with_forge_alarm;
       prop_missing_adhoc_does_not_crash_reconcile;
       prop_apply_poll_lifts_missing_to_present;
       prop_child_of_missing_parent_not_startable;

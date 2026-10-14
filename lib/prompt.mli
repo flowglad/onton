@@ -76,6 +76,11 @@ val render_patch_layer_of_gameplan :
     by [Patch_controller.plan_action_for_patch]), so the files exist by the time
     the layer is first read. *)
 
+val render_publication_feedback :
+  publication:Gameplan_publication.t -> string -> string
+(** Wrap each publication feedback turn with gameplan authoring and validation
+    instructions, including when resuming a session. *)
+
 val render_session_context :
   project_name:string ->
   ?pr_number:Pr_number.t ->
