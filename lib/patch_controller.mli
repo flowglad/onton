@@ -43,7 +43,7 @@ val reconcile_patch :
 
 val apply_poll_result :
   ?previous_conflict:bool ->
-  ?merge_queue_ejection_confirmed:bool ->
+  ?merge_queue_removal_checks:Ci_check.t list ->
   ?confirmed_remote_head:string ->
   Orchestrator.t ->
   Patch_id.t ->
@@ -53,12 +53,10 @@ val apply_poll_result :
     orchestrator, log entries, and whether the patch became newly branch-
     blocked in this step. This is the controller-owned pure poll ingestion step.
 
-    [merge_queue_ejection_confirmed] is the poller's verdict on a merge-queue
-    ejection (default [false]): [true] when the removal event confirmed a real
-    merge-group check failure — or the confirming fetch errored, erring toward
-    surfacing it — and [false] for a conflict-driven ejection, which is left to
-    surface through normal [Merge_conflict] handling. Consulted only when the PR
-    actually left the queue while green and mergeable; ignored otherwise. *)
+    [merge_queue_removal_checks] is a successful removal lookup: nonempty checks
+    retain CI repair evidence, an empty list resolves a non-CI removal. An
+    absent result retains the unresolved ejection and blocks automerge for later
+    retry. Ingestion does not depend on head readiness. *)
 
 val apply_replacement_pr :
   Orchestrator.t ->

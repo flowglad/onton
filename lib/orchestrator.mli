@@ -460,3 +460,6 @@ val message_of_action : Patch_agent.t -> action -> patch_agent_message
 
 val record_session_completion :
   t -> Patch_id.t -> Session_result.completion -> t
+
+val set_merge_queue_ejection :
+  t -> Patch_id.t -> Merge_queue_decision.pending option -> t

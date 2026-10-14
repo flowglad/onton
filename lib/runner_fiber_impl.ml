@@ -2037,16 +2037,25 @@ module Make (Forge : Forge.S) (W : Worktree.S) (Env : Runner_env.S) = struct
                                     Base.List.filter agent.Patch_agent.ci_checks
                                       ~f:Ci_check.is_merge_queue_failure
                                   in
-                                  (* The synthetic placeholder only tells the
-                                         agent "merge queue failed". When it is
-                                         present, fetch the real failing checks
-                                         from the removal event's [beforeCommit]
-                                         (the merge-group commit GitHub ran) and
-                                         prefer them; fall back to the
-                                         placeholder on empty/error. *)
+                                  (* Prefer retained removal evidence: a later
+                                     timeline event must not replace the checks
+                                     this repair was scheduled to address. Legacy
+                                     placeholders still use the lookup fallback. *)
+                                  let retained_checks =
+                                    Runtime.read runtime (fun snap ->
+                                        (Orchestrator.agent
+                                           snap.Runtime.orchestrator patch_id)
+                                          .Patch_agent.merge_queue_ejection)
+                                    |> Merge_queue_decision.failed_checks
+                                  in
                                   let merge_queue_checks =
-                                    if Base.List.is_empty synthetic_checks then
-                                      []
+                                    if not (Base.List.is_empty retained_checks)
+                                    then (
+                                      ci_merge_queue_removal_checks :=
+                                        retained_checks;
+                                      synthetic_checks @ retained_checks)
+                                    else if Base.List.is_empty synthetic_checks
+                                    then []
                                     else
                                       match pr_number with
                                       | Some pr_num -> (

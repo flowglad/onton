@@ -1,28 +1,52 @@
 (* @archlint.module interface
    @archlint.domain merge-queue-decision *)
 
-type application = { poll_result : Poller.t; merge_queue_ejected : bool }
+type pending = private
+  | Awaiting_removal of {
+      entry : Pr_state.merge_queue_entry;
+      head_oid : string option;
+    }
+  | Failed of { head_oid : string option; checks : Types.Ci_check.t list }
+[@@deriving show, eq, sexp_of, compare, yojson]
+
+type application = {
+  poll_result : Poller.t;
+  merge_queue_ejected : bool;
+  pending : pending option;
+}
 [@@deriving show, eq]
 
-val should_treat_ejection_as_ci_failure :
+val queue_entry_disappeared :
   previous_entry:Pr_state.merge_queue_entry option -> Poller.t -> bool
-(** True when a PR left the merge queue since the previous poll while its own
-    head checks are still green and it still looks mergeable. This is the
-    {e candidate} condition for a hidden merge-group check failure; it is also
-    satisfied by a conflict-driven ejection, so it only gates whether the
-    confirming removal-event fetch is worth doing — it does not, by itself,
-    decide that a CI failure occurred. *)
+(** Detect disappearance of an observed queue entry, independently of readiness.
+    The removal lookup distinguishes check failures from other removals. *)
+
+val should_fetch :
+  pending:pending option ->
+  previous_entry:Pr_state.merge_queue_entry option ->
+  Poller.t ->
+  bool
+(** Retry unresolved removal lookups even after the live queue entry is gone. *)
+
+val failed_checks : pending option -> Types.Ci_check.t list
+
+val repair_completed : pending option -> pending option
+(** A successfully completed CI delivery consumes confirmed failure evidence.
+    Unresolved removal lookups still require ingestion. *)
 
 val apply :
+  ?pending:pending option ->
+  ?previous_head_oid:string option ->
+  ?removal_checks:Types.Ci_check.t list ->
   previous_entry:Pr_state.merge_queue_entry option ->
-  ejection_confirmed:bool ->
   Poller.t ->
   application
-(** Rewrite [poll_result] into a synthetic CI failure (enqueue [Ci], mark not
-    merge-ready, append the merge-queue placeholder check) only when
-    [should_treat_ejection_as_ci_failure] holds {e and} [~ejection_confirmed] is
-    true. [ejection_confirmed] is supplied by the effectful poller from the
-    removal event's merge-group rollup: [true] for a real check failure (or an
-    errored fetch, erring toward surfacing it), [false] for a conflict-driven
-    ejection. When not confirmed, [poll_result] is returned unchanged and the
-    conflict is left to surface through normal [Merge_conflict] handling. *)
+(** No lookup result retains unresolved state. An empty successful lookup
+    resolves a non-CI removal; failures remain available for repair until a
+    different head is observed or CI repair completes successfully. Terminal PRs
+    clear the state. *)
+
+val removal_processed : body:string -> checks:Types.Ci_check.t list -> bool
+(** Whether the removal response and resolved checks supply enough evidence to
+    finish ingestion. Missing events and failed-check reasons without checks
+    retry. *)

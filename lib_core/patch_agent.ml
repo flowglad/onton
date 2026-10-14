@@ -57,6 +57,7 @@ type t = {
           and after [clear_pr]. *)
   merge_queue_required : bool;
   merge_queue_entry : Pr_state.merge_queue_entry option;
+  merge_queue_ejection : Merge_queue_decision.pending option;
   native_stack : bool;
   native_stack_absent_polls : int;
   merge_commit_sha : string option;
@@ -299,6 +300,7 @@ let create ~branch ?(max_ci_failures = default_max_ci_failures) patch_id =
     mergeability_unknown = false;
     merge_queue_required = false;
     merge_queue_entry = None;
+    merge_queue_ejection = None;
     native_stack = false;
     native_stack_absent_polls = 0;
     merge_commit_sha = None;
@@ -361,6 +363,7 @@ let create_adhoc ~complexity ~patch_id ~branch ~pr_number ~max_ci_failures =
     mergeability_unknown = false;
     merge_queue_required = false;
     merge_queue_entry = None;
+    merge_queue_ejection = None;
     native_stack = false;
     native_stack_absent_polls = 0;
     merge_commit_sha = None;
@@ -555,6 +558,9 @@ let set_mergeability_unknown t v = { t with mergeability_unknown = v }
 let set_merge_queue_required t v = { t with merge_queue_required = v }
 let set_merge_queue_entry t merge_queue_entry = { t with merge_queue_entry }
 
+let set_merge_queue_ejection t merge_queue_ejection =
+  { t with merge_queue_ejection }
+
 let set_native_stack t observed =
   if observed then { t with native_stack = true; native_stack_absent_polls = 0 }
   else if (not t.native_stack) || t.native_stack_absent_polls >= 1 then
@@ -617,6 +623,7 @@ let worktree_state t =
 let is_approved_modulo_merge_ready t ~main_branch =
   is_pr_present t
   && forge_revision_pair_confirmed t
+  && Option.is_none t.merge_queue_ejection
   && (not t.busy)
   && (not (has_conflict t))
   && (not (Branch_reconcile.is_unsettled t.branch_reconcile))
@@ -771,17 +778,17 @@ let restore ?(session_completion = None)
     ?(wontdo_reason = None) ~human_messages ~inflight_human_messages ~ci_checks
     ~merge_ready ?(head_oid = None) ?(review_decision = None)
     ?(unresolved_comment_count = 0) ~mergeability_unknown ~merge_queue_required
-    ~merge_queue_entry ?(native_stack = false) ?(native_stack_absent_polls = 0)
-    ~merge_commit_sha ~base_contains_merged_siblings ~is_draft
-    ~pr_body_delivered ?(pr_body_refresh_pending = false)
-    ?(pr_body_refresh_version = 0) ~pr_body_artifact_miss_count
-    ?(review_unresolved_cycle_count = 0) ~start_attempts_without_pr
-    ~no_commits_push_count ~context_exhaustion_count ~checks_passing ~current_op
-    ~current_op_state ~current_message_id ~generation ~worktree_path
-    ~branch_blocked ~llm_session_id ~automerge_enabled ~automerge_deadline
-    ~automerge_inflight ?(review_requested_for_oid = None)
-    ?(review_request_inflight = false) ~automerge_failure_count
-    ~delivered_ci_run_ids () =
+    ~merge_queue_entry ?(merge_queue_ejection = None) ?(native_stack = false)
+    ?(native_stack_absent_polls = 0) ~merge_commit_sha
+    ~base_contains_merged_siblings ~is_draft ~pr_body_delivered
+    ?(pr_body_refresh_pending = false) ?(pr_body_refresh_version = 0)
+    ~pr_body_artifact_miss_count ?(review_unresolved_cycle_count = 0)
+    ~start_attempts_without_pr ~no_commits_push_count ~context_exhaustion_count
+    ~checks_passing ~current_op ~current_op_state ~current_message_id
+    ~generation ~worktree_path ~branch_blocked ~llm_session_id
+    ~automerge_enabled ~automerge_deadline ~automerge_inflight
+    ?(review_requested_for_oid = None) ?(review_request_inflight = false)
+    ~automerge_failure_count ~delivered_ci_run_ids () =
   {
     branch_reconcile;
     session_completion;
@@ -811,6 +818,7 @@ let restore ?(session_completion = None)
     mergeability_unknown;
     merge_queue_required;
     merge_queue_entry;
+    merge_queue_ejection;
     native_stack;
     native_stack_absent_polls;
     merge_commit_sha;
@@ -865,6 +873,9 @@ let set_pr_number t pr_number =
         is_draft = true;
         merge_ready = false;
         head_oid = None;
+        merge_queue_ejection = None;
+        merge_queue_entry = None;
+        merge_queue_required = false;
         review_decision = None;
         unresolved_comment_count = 0;
         mergeability_unknown = false;
@@ -887,6 +898,9 @@ let clear_pr t =
   {
     t with
     pr_status = Patch_pr_status.clear_for_recreate t.pr_status;
+    merge_queue_ejection = None;
+    merge_queue_entry = None;
+    merge_queue_required = false;
     is_draft = false;
     merge_ready = false;
     head_oid = None;
