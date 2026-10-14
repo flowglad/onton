@@ -462,10 +462,10 @@ let prop_removal_classification =
       in
       (match Merge_queue_decision.removal_evidence ~body:"{}" with
         | Missing -> true
-        | Non_failure | Needs_checks -> false)
+        | Non_failure | Needs_checks | Unknown_reason -> false)
       && (match classify "The merge commit has conflicts." with
         | Non_failure -> true
-        | Missing | Needs_checks -> false)
+        | Missing | Needs_checks | Unknown_reason -> false)
       && List.for_all
            [
              "failed_checks";
@@ -474,7 +474,24 @@ let prop_removal_classification =
            ] ~f:(fun reason ->
              match classify reason with
              | Needs_checks -> true
-             | Missing | Non_failure -> false))
+             | Missing | Non_failure | Unknown_reason -> false))
+
+let prop_unknown_removal_reason =
+  QCheck2.Test.make
+    ~name:"MQD unfamiliar reasons stay unresolved even with failures" ~count:200
+    gen_string (fun suffix ->
+      let body =
+        Printf.sprintf
+          {|{"data":{"repository":{"pullRequest":{"timelineItems":{"nodes":[{"reason":%S}]}}}}}|}
+          ("unfamiliar queue reason " ^ suffix)
+      in
+      (match Merge_queue_decision.removal_evidence ~body with
+        | Unknown_reason -> true
+        | Missing | Non_failure | Needs_checks -> false)
+      && (not
+            (Merge_queue_decision.removal_processed ~body
+               ~checks:[ failing_check ]))
+      && not (Merge_queue_decision.removal_processed ~body ~checks:[]))
 
 let prop_removal_totality =
   QCheck2.Test.make ~name:"MQD removal evidence parser is total" ~count:1000
@@ -508,6 +525,7 @@ let prop_removal_boundaries =
 let () =
   List.iter
     [
+      prop_unknown_removal_reason;
       prop_failed_checks;
       prop_removal_classification;
       prop_repair_evidence;

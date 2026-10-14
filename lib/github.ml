@@ -1708,6 +1708,8 @@ let resolve_merge_queue_removal_checks ~fetch_checks ~fetch_actions resp_str =
       match Merge_queue_decision.removal_evidence ~body:resp_str with
       | Missing ->
           Error (Json_parse_error "Merge queue removal event is unavailable")
+      | Unknown_reason ->
+          Error (Json_parse_error "Merge queue removal reason is unrecognized")
       | Non_failure -> Ok []
       | Needs_checks -> (
           let result =
@@ -2567,6 +2569,33 @@ let pagination_test_rollup ~more ~cursor checks =
 let pagination_test_page ~more ~cursor checks =
   Printf.sprintf {|{"data":{"repository":{"object":{"statusCheckRollup":%s}}}}|}
     (pagination_test_rollup ~more ~cursor checks)
+
+let%test_unit "unknown removal reason with failing rollup remains retryable" =
+  let body =
+    Printf.sprintf
+      {|{"data":{"repository":{"pullRequest":{"timelineItems":{"nodes":[{
+       "reason":"A new queue policy removed this entry.",
+       "beforeCommit":{"oid":"merge-group","statusCheckRollup":%s}
+    }]}}}}}|}
+      (pagination_test_rollup ~more:false ~cursor:None
+         [ pagination_test_check 321 "FAILURE" ])
+  in
+  (match parse_merge_queue_removal_response body with
+  | Ok [ check ] -> assert (Types.Ci_check.is_failure check)
+  | Ok _ | Error _ -> failwith "fixture must contain a failing rollup");
+  let result =
+    resolve_merge_queue_removal_checks body
+      ~fetch_checks:(fun ~oid:_ ->
+        failwith "unknown reason must not fetch checks")
+      ~fetch_actions:(fun () ->
+        failwith "unknown reason must not fetch Actions")
+  in
+  match result with
+  | Error (Json_parse_error message) ->
+      assert (String.equal message "Merge queue removal reason is unrecognized")
+  | Ok _ | Error (Graphql_error _ | Http_error _ | Timeout _ | Transport_error _)
+    ->
+      failwith "unknown reason must remain unresolved despite failing checks"
 
 let pagination_test_removal ~fetch_page ~fetch_actions =
   let response =

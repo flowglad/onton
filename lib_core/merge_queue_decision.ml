@@ -118,7 +118,7 @@ let apply ?(pending = None) ?(previous_head_oid = None) ?removal_checks
   | None | Some (Awaiting_removal _) ->
       { pending; poll_result; merge_queue_ejected = false }
 
-type removal_evidence = Missing | Non_failure | Needs_checks
+type removal_evidence = Missing | Non_failure | Needs_checks | Unknown_reason
 
 let removal_evidence ~body =
   match Json.of_string body with
@@ -136,14 +136,17 @@ let removal_evidence ~body =
       | None | Some `Null -> Missing
       | Some event -> (
           match Json.string_field "reason" event with
-          | Some reason when not (String.is_empty reason) ->
-              if String.is_substring (String.lowercase reason) ~substring:"fail"
-              then Needs_checks
-              else Non_failure
+          | Some reason when not (String.is_empty reason) -> (
+              match String.lowercase reason with
+              | "the merge commit has conflicts." -> Non_failure
+              | "failed_checks"
+              | "the merge commit failed required status checks." ->
+                  Needs_checks
+              | _ -> Unknown_reason)
           | None | Some _ -> Needs_checks))
 
 let removal_processed ~body ~checks =
   match removal_evidence ~body with
-  | Missing -> false
+  | Missing | Unknown_reason -> false
   | Non_failure -> true
   | Needs_checks -> not (List.is_empty checks)

@@ -58,11 +58,12 @@ val apply :
 
 val removal_processed : body:string -> checks:Types.Ci_check.t list -> bool
 (** Whether the removal response and resolved checks supply enough evidence to
-    finish ingestion. Missing events and failed-check reasons without checks
-    retry. *)
+    finish ingestion. Unknown reasons, missing events and failed-check reasons
+    without checks retry. *)
 
-type removal_evidence = Missing | Non_failure | Needs_checks
+type removal_evidence = Missing | Non_failure | Needs_checks | Unknown_reason
 
 val removal_evidence : body:string -> removal_evidence
 (** Classify the removal event before requesting additional checks. Known
-    non-failure removals must not inherit failures from older Actions runs. *)
+    non-failure removals must not inherit failures from older Actions runs.
+    Unrecognized nonempty reasons remain unresolved regardless of checks. *)
