@@ -449,7 +449,12 @@ let runner_without_backend ?(repair = false) ?(feedback = false)
                               assert (Base.String.is_substring prompt ~substring))
                             [
                               "write-gameplan";
+                              "For v3 plans only";
                               "scripts/validate.py";
+                              "For retained v2 or unversioned plans";
+                              "validator and schema from that plan's version";
+                              "when the plan changed";
+                              "may end without a commit";
                               "gameplans/demo/gameplan.yaml";
                               "Clarify the plan";
                             ];

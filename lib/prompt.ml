@@ -675,17 +675,20 @@ let render_publication_feedback ~publication turn =
      Use the write-gameplan skill: locate and read its SKILL.md and the \
      applicable schema before editing. Use the installed skill, or the \
      repository's skills/write-gameplan/SKILL.md when available. Run its \
-     scripts/format_yaml.py where applicable, then run `python3 \
+     scripts/format_yaml.py where applicable. For v3 plans only, run `python3 \
      <write-gameplan-skill-dir>/scripts/validate.py %s` from the repository \
-     root on the updated file. Follow the skill's version-specific validation \
-     guidance for legacy plans; do not silently migrate formats. Fix \
+     root on the reviewed file. For retained v2 or unversioned plans, use the \
+     validator and schema from that plan's version and Onton's \
+     backward-compatible parser for admission checks; the current validator \
+     validates v3 authoring only. Do not silently migrate formats. Fix \
      validation failures and warnings before committing. If the skill, \
      validator, or required tooling is unavailable, report the blocker instead \
      of claiming validation passed. Record the validation command and result \
      in your response.\n\n\
-     Commit the reviewed gameplan updates locally. The supervisor publishes \
-     them; do not run git push. The runtime's loaded execution plan remains \
-     unchanged during this publication review.\n\n\
+     Commit reviewed gameplan changes locally when the plan changed; a review \
+     that validates the plan and decides no update is needed may end without a \
+     commit. The supervisor publishes them; do not run git push. The runtime's \
+     loaded execution plan remains unchanged during this publication review.\n\n\
      %s"
     (Gameplan_publication.path publication)
     (Stdlib.Filename.quote (Gameplan_publication.path publication))

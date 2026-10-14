@@ -2220,21 +2220,42 @@ let () =
                 ~main_branch:main ~entry_id:entry.Pr_state.id))
   in
 
-  let merge_queue_retains_intervention_with_forge_alarm =
-    Test.make ~name:"patch_controller: intervention always retains queued entry"
-      QCheck2.Gen.unit (fun () ->
+  let merge_queue_dequeues_intervention_with_forge_alarm =
+    Test.make
+      ~name:"patch_controller: GitHub alarms dequeue even during intervention"
+      ~count:100
+      QCheck2.Gen.(int_range 0 3)
+      (fun alarm ->
         let pid = Patch_id.of_string "mq-intervention" in
         let branch = Branch.of_string "feat/mq-intervention" in
         let entry =
-          merge_queue_entry "MQE_intervention" ~state:Pr_state.Mq_unmergeable
+          merge_queue_entry "MQE_intervention"
+            ~state:
+              (if alarm = 0 then Pr_state.Mq_unmergeable else Pr_state.Mq_queued)
+        in
+        let failing_check =
+          Ci_check.
+            {
+              name = "ci";
+              conclusion = "failure";
+              details_url = None;
+              description = None;
+              started_at = None;
+              app_id = None;
+              check_suite_id = None;
+              id = Some 410;
+            }
         in
         let agent =
           make_agent ~patch_id:pid ~branch
             ~session_fallback:Patch_agent.Given_up
             ~pr_status:(Patch_pr_status.Present (Pr_number.of_int 410))
-            ~merged:false ~queue:[] ~base_branch:(Some main) ~is_draft:true
-            ~pr_body_delivered:true ~start_attempts_without_pr:0
-            ~review_decision:(Some "CHANGES_REQUESTED")
+            ~merged:false ~queue:[] ~base_branch:(Some main)
+            ~is_draft:(alarm = 1) ~pr_body_delivered:true
+            ~start_attempts_without_pr:0
+            ~review_decision:
+              (if alarm = 2 then Some "CHANGES_REQUESTED" else None)
+            ~ci_checks:(if alarm = 3 then [ failing_check ] else [])
             ~merge_queue_required:true ~merge_queue_entry:(Some entry)
             ~automerge_enabled:true ()
         in
@@ -2244,10 +2265,16 @@ let () =
             ~now:1.0
         in
         Patch_agent.needs_intervention agent
-        && List.is_empty decisions
+        && (match decisions with
+          | [ Patch_controller.Github_merge { action; _ } ] ->
+              Patch_controller.equal_merge_action action
+                (Patch_controller.Dequeue entry.id)
+          | [ Patch_controller.Git_integrate _ ] | [] | _ :: _ :: _ -> false)
+        && Patch_controller.should_dequeue_merge_queue agent ~main_branch:main
+             ~entry_id:entry.Pr_state.id
         && not
              (Patch_controller.should_dequeue_merge_queue agent
-                ~main_branch:main ~entry_id:entry.Pr_state.id))
+                ~main_branch:main ~entry_id:"different-entry"))
   in
 
   (* A direct-merge patch that is approval-ready in every respect but reads
@@ -2517,7 +2544,7 @@ let () =
       pending_patch_4_visible_ci_failure_dequeues;
       pending_patch_4_local_conflict_retains_entry;
       merge_queue_retains_internal_states;
-      merge_queue_retains_intervention_with_forge_alarm;
+      merge_queue_dequeues_intervention_with_forge_alarm;
       prop_missing_adhoc_does_not_crash_reconcile;
       prop_apply_poll_lifts_missing_to_present;
       prop_child_of_missing_parent_not_startable;
