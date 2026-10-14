@@ -198,9 +198,10 @@ val should_dequeue_merge_queue :
   Patch_agent.t -> main_branch:Branch.t -> entry_id:string -> bool
 (** [true] when an already-enqueued PR should be removed from GitHub's merge
     queue. Only explicit GitHub queue, conflict, check, draft or review evidence
-    can justify removal. Internal scheduling readiness cannot. A patch needing
-    intervention is always retained. The runner uses the same predicate as
-    [reconcile_automerge] for its pre-flight recheck. *)
+    can justify removal. Internal scheduling readiness cannot. Intervention
+    alone does not dequeue; explicit GitHub alarms still apply during
+    intervention. The runner uses the same predicate as [reconcile_automerge]
+    for its pre-flight recheck. *)
 
 val dequeue_merge_queue_reasons :
   Patch_agent.t -> main_branch:Branch.t -> entry_id:string -> string list
