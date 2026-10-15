@@ -325,8 +325,8 @@ let test_activity_log_projects_owner_intervention () =
   in
   if
     not
-      (observed Display_status.Pending Display_status.Needs_help
-      && observed Display_status.Needs_help Display_status.Pending)
+      (observed Display_status.Checking_branch Display_status.Needs_help
+      && observed Display_status.Needs_help Display_status.Checking_branch)
   then fail "activity log disagrees with owner intervention/resume"
 
 let test_pre_migration_events_jsonl_loads () =

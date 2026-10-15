@@ -786,12 +786,13 @@ let () =
   check "root becoming idle clears waiting and enables integration"
     ((not (Patch_controller.is_waiting_for_integration_root idle (id 3)))
     && Patch_controller.is_integration_candidate idle (id 3)
-    && Tui.equal_display_status (view idle 3).Tui.status Tui.Approved_idle);
+    && Tui.equal_display_status (view idle 3).Tui.status
+         Tui.Ready_for_integration);
   let not_green = Orchestrator.set_checks_passing waiting (id 3) false in
   check "pending CI does not blame integration root"
     ((not (Patch_controller.is_waiting_for_integration_root not_green (id 3)))
-    && Tui.equal_display_status (view not_green 3).Tui.status
-         Tui.Awaiting_feedback);
+    && Tui.equal_display_status (view not_green 3).Tui.status Tui.Waiting_for_ci
+    );
   let queued = Orchestrator.enqueue waiting (id 3) Operation_kind.Ci in
   check "queued child work takes precedence"
     (Tui.equal_display_status (view queued 3).Tui.status Tui.Ci_queued);

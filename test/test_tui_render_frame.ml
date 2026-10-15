@@ -650,3 +650,26 @@ let[@warning "-42"] () =
                 failwith ("missing diagnostic: " ^ expected));
           assert (
             Bool.equal (line_contains lines "Retry at: 105") (not permanent))))
+
+let () =
+  List.iter
+    Tui.
+      [
+        (Tui.Checking_branch, "checking-branch");
+        (Rebasing, "rebasing");
+        (Publishing, "publishing");
+        (Verifying_publication, "verifying-publication");
+        (Waiting_to_retry, "waiting-to-retry");
+        (Waiting_for_ci, "waiting-for-ci");
+        (Waiting_for_review, "waiting-for-review");
+        (Waiting_for_forge, "confirming-revisions");
+        (Approved_idle, "ready-to-merge");
+        (Ready_for_integration, "ready-to-integrate");
+      ]
+    ~f:(fun (status, expected) ->
+      let pv = { (make_view ~id:"1" ~title:"current work") with Tui.status } in
+      let lines = plain_lines (render ~width:120 [ pv ]) in
+      assert (line_contains lines expected);
+      assert (line_contains lines "current work");
+      List.iter lines ~f:(fun line ->
+          assert (Onton.Term.visible_length line <= 120)))
