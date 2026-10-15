@@ -35,6 +35,24 @@ type display_status = Display_status.t =
   | Waiting_for_integration_root
   | Blocked_by_dep
   | Pending
+  | Human_queued
+  | Conflict_queued
+  | Pr_body_queued
+  | Rebase_queued
+  | Waiting_for_ci
+  | Waiting_for_review
+  | Waiting_for_forge
+  | Ci_failed
+  | Conflict
+  | Draft
+  | Ready_for_integration
+  | Reconciling
+  | Checking_branch
+  | Verifying_publication
+  | Integrating
+  | Repairing_branch
+  | Publishing
+  | Waiting_to_retry
 [@@deriving show, eq, sexp_of, compare, yojson]
 
 type status_display = { label : string; color : string }
@@ -45,7 +63,7 @@ let label = function
   | Wontdo -> "wont-do"
   | Needs_help -> "needs-help"
   | In_merge_queue -> "in-merge-queue"
-  | Approved_idle -> "approved"
+  | Approved_idle -> "ready-to-merge"
   | Approved_running -> "approved-running"
   | Fixing_ci -> "fixing-ci"
   | Addressing_review -> "addressing-review"
@@ -64,7 +82,25 @@ let label = function
   | Awaiting_feedback -> "awaiting-feedback"
   | Waiting_for_integration_root -> "waiting-for-integration-root"
   | Blocked_by_dep -> "blocked-by-dep"
-  | Pending -> "pending"
+  | Pending -> "not-started"
+  | Human_queued -> "message-queued"
+  | Conflict_queued -> "conflict-queued"
+  | Pr_body_queued -> "pr-body-queued"
+  | Rebase_queued -> "branch-check-queued"
+  | Waiting_for_ci -> "waiting-for-ci"
+  | Waiting_for_review -> "waiting-for-review"
+  | Waiting_for_forge -> "confirming-revisions"
+  | Ci_failed -> "ci-failed"
+  | Conflict -> "conflict"
+  | Draft -> "draft"
+  | Ready_for_integration -> "ready-to-integrate"
+  | Reconciling -> "reconciling"
+  | Checking_branch -> "checking-branch"
+  | Verifying_publication -> "verifying-publication"
+  | Integrating -> "integrating"
+  | Repairing_branch -> "repairing-branch"
+  | Publishing -> "publishing"
+  | Waiting_to_retry -> "waiting-to-retry"
 
 let color = function
   | Merged -> Term.Sgr.fg_green
@@ -90,6 +126,16 @@ let color = function
   | Awaiting_feedback | Waiting_for_integration_root -> Term.Sgr.fg_blue
   | Blocked_by_dep -> Term.Sgr.fg_blue
   | Pending -> Term.Sgr.fg_default
+  | Human_queued | Conflict_queued | Pr_body_queued | Rebase_queued | Ci_failed
+  | Conflict ->
+      Term.Sgr.fg_yellow
+  | Waiting_for_ci | Waiting_for_review | Waiting_for_forge | Draft
+  | Waiting_to_retry ->
+      Term.Sgr.fg_blue
+  | Ready_for_integration -> Term.Sgr.fg_green
+  | Reconciling | Publishing | Checking_branch | Verifying_publication
+  | Integrating | Repairing_branch ->
+      Term.Sgr.fg_cyan
 
 let to_status_display status = { label = label status; color = color status }
 
@@ -102,7 +148,7 @@ let styled_label status =
     [current_op] should be [Some op] when the patch is busy — it determines
     which specific "running" status to show. When [is_busy] is true but
     [current_op] is [None] (e.g. during startup before the first operation is
-    tracked), we fall back to [Starting] or [Rebasing] based on whether a PR
+    tracked), we fall back to [Starting] or [Updating] based on whether a PR
     exists. *)
 let derive_display_status = Display_status.derive
 
@@ -181,6 +227,16 @@ let status_style = function
   | Awaiting_feedback | Waiting_for_integration_root -> [ Term.Sgr.fg_blue ]
   | Blocked_by_dep -> [ Term.Sgr.fg_blue ]
   | Pending -> [ Term.Sgr.dim ]
+  | Human_queued | Conflict_queued | Pr_body_queued | Rebase_queued | Ci_failed
+  | Conflict ->
+      [ Term.Sgr.fg_yellow ]
+  | Waiting_for_ci | Waiting_for_review | Waiting_for_forge | Draft
+  | Waiting_to_retry ->
+      [ Term.Sgr.fg_blue ]
+  | Ready_for_integration -> [ Term.Sgr.fg_green ]
+  | Reconciling | Publishing | Checking_branch | Verifying_publication
+  | Integrating | Repairing_branch ->
+      [ Term.Sgr.fg_cyan; Term.Sgr.bold ]
 
 let status_indicator = function
   | Merged -> "✓"
@@ -198,6 +254,15 @@ let status_indicator = function
   | Awaiting_feedback | Waiting_for_integration_root -> "◎"
   | Blocked_by_dep -> "◎"
   | Pending -> "·"
+  | Human_queued | Conflict_queued | Pr_body_queued | Rebase_queued
+  | Waiting_for_ci | Waiting_for_review | Waiting_for_forge | Draft
+  | Waiting_to_retry ->
+      "◎"
+  | Ci_failed | Conflict -> "!"
+  | Ready_for_integration -> "✓"
+  | Reconciling | Publishing | Checking_branch | Verifying_publication
+  | Integrating | Repairing_branch ->
+      "↻"
 
 (** {1 Status messages} *)
 
@@ -427,79 +492,15 @@ let patch_view_of_agent ~execution_mode (agent : Patch_agent.t)
   in
   let current_op = agent.Patch_agent.current_op in
   let needs_intervention = display_needs_intervention agent in
-  let ctx =
-    ( State.Patch_ctx.empty
-    |> State.Patch_ctx.set_merged ~patch_id ~value:agent.merged
-    |> State.Patch_ctx.set_wontdo ~patch_id
-         ~value:(Option.is_some agent.wontdo_reason)
-    |> State.Patch_ctx.set_needs_intervention ~patch_id
-         ~value:needs_intervention
-    |> State.Patch_ctx.set_busy ~patch_id ~value:agent.busy
-    |> State.Patch_ctx.set_has_pr ~patch_id
-         ~value:
-           (Patch_agent.has_pr agent
-           || Execution_mode.branch_only_published execution_mode agent)
-    |> State.Patch_ctx.set_approved ~patch_id
-         ~value:(Patch_agent.is_approved agent ~main_branch)
-    |> State.Patch_ctx.set_enqueued ~patch_id
-         ~value:(Option.is_some agent.merge_queue_entry)
-    |> State.Patch_ctx.set_ci_failure_count ~patch_id
-         ~count:agent.ci_failure_count
-    |> fun ctx ->
-      match agent.base_branch with
-      | Some branch -> State.Patch_ctx.set_base_branch ctx ~patch_id ~branch
-      | None -> ctx )
-    |> fun ctx ->
-    List.fold agent.queue ~init:ctx ~f:(fun acc kind ->
-        State.Patch_ctx.set_queued acc ~patch_id ~kind ~value:true)
-  in
-  let status = derive_display_status ctx ~patch_id ~current_op ~main_branch in
+  let status = Display_status.of_agent ~execution_mode ~main_branch agent in
   let dep_ids =
     List.map (Graph.deps graph patch_id) ~f:(fun dep_id ->
         let dep_status =
           match Map.find agents_by_id dep_id with
           | Some dep_agent ->
-              let dep_main_branch = terminal_branch_of dep_id in
-              let dep_op = dep_agent.Patch_agent.current_op in
-              let dep_needs_intervention =
-                display_needs_intervention dep_agent
-              in
-              let dep_ctx =
-                ( State.Patch_ctx.empty
-                |> State.Patch_ctx.set_merged ~patch_id:dep_id
-                     ~value:dep_agent.merged
-                |> State.Patch_ctx.set_wontdo ~patch_id:dep_id
-                     ~value:(Option.is_some dep_agent.wontdo_reason)
-                |> State.Patch_ctx.set_needs_intervention ~patch_id:dep_id
-                     ~value:dep_needs_intervention
-                |> State.Patch_ctx.set_busy ~patch_id:dep_id
-                     ~value:dep_agent.busy
-                |> State.Patch_ctx.set_has_pr ~patch_id:dep_id
-                     ~value:
-                       (Patch_agent.has_pr dep_agent
-                       || Execution_mode.branch_only_published execution_mode
-                            dep_agent)
-                |> State.Patch_ctx.set_approved ~patch_id:dep_id
-                     ~value:
-                       (Patch_agent.is_approved dep_agent
-                          ~main_branch:dep_main_branch)
-                |> State.Patch_ctx.set_enqueued ~patch_id:dep_id
-                     ~value:(Option.is_some dep_agent.merge_queue_entry)
-                |> State.Patch_ctx.set_ci_failure_count ~patch_id:dep_id
-                     ~count:dep_agent.ci_failure_count
-                |> fun ctx ->
-                  match dep_agent.base_branch with
-                  | Some branch ->
-                      State.Patch_ctx.set_base_branch ctx ~patch_id:dep_id
-                        ~branch
-                  | None -> ctx )
-                |> fun ctx ->
-                List.fold dep_agent.queue ~init:ctx ~f:(fun acc kind ->
-                    State.Patch_ctx.set_queued acc ~patch_id:dep_id ~kind
-                      ~value:true)
-              in
-              derive_display_status dep_ctx ~patch_id:dep_id ~current_op:dep_op
-                ~main_branch:dep_main_branch
+              Display_status.of_agent ~execution_mode
+                ~main_branch:(terminal_branch_of dep_id)
+                dep_agent
           | None -> Pending
         in
         (dep_id, dep_status))
@@ -576,11 +577,18 @@ let render_merge_queue_badge = function
              (merge_queue_badge_label entry.state)
              entry.position)
 
-let is_running_status = function
+let status_supports_queued_indicator ~has_current_op = function
   | Fixing_ci | Addressing_review | Addressing_findings | Resolving_conflict
   | Responding_to_human | Writing_pr_body | Cleaning_worktree | Rebasing
   | Starting | Updating | Approved_running ->
       true
+  | Reconciling | Publishing | Checking_branch | Verifying_publication
+  | Integrating | Repairing_branch | Waiting_to_retry ->
+      has_current_op
+  | Human_queued | Conflict_queued | Pr_body_queued | Rebase_queued
+  | Waiting_for_ci | Waiting_for_review | Waiting_for_forge | Ci_failed
+  | Conflict | Draft | Ready_for_integration ->
+      false
   | Merged | Wontdo | Needs_help | In_merge_queue | Approved_idle | Ci_queued
   | Review_queued | Findings_queued | Cleanup_queued | Awaiting_feedback
   | Waiting_for_integration_root | Blocked_by_dep | Pending ->
@@ -642,7 +650,9 @@ let short_op_name = function
   | Operation_kind.Rebase -> "rebase"
 
 let pv_queued (pv : patch_view) =
-  is_running_status pv.status
+  status_supports_queued_indicator
+    ~has_current_op:(Option.is_some pv.current_op)
+    pv.status
   && Patch_agent.equal_op_state pv.current_op_state Patch_agent.Queued
 
 (** Compact automerge indicator for the overview row. Empty when the patch is
@@ -1440,7 +1450,7 @@ let views_of_orchestrator ~(orchestrator : Orchestrator.t)
       in
       let pv =
         if Patch_controller.is_integration_candidate orchestrator agent.patch_id
-        then { pv with status = Approved_idle }
+        then { pv with status = Ready_for_integration }
         else if
           Patch_controller.is_waiting_for_integration_root orchestrator
             agent.patch_id

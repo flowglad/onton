@@ -6,9 +6,8 @@ open Onton_core
 
 (** Property tests for {!Display_status} — totality + priority dominance.
 
-    The 17 inline [%test] blocks in [display_status.ml] hand-pick one example
-    per status. These properties cover the unbounded cross-product of state
-    flags + current_op, asserting:
+    Cover state-flag precedence, live-agent feedback, and owner-command
+    lifecycles (including no-op reconciliation and checkpoint restoration):
 
     - {!Display_status.derive} is total (never raises) for any combination.
     - The priority ladder dominates: e.g. [Merged] beats every other flag, and
@@ -28,6 +27,8 @@ let gen_op =
   oneof_list
     [
       None;
+      Some Types.Operation_kind.Uncommitted_changes;
+      Some Findings;
       Some Types.Operation_kind.Ci;
       Some Review_comments;
       Some Merge_conflict;
@@ -146,26 +147,25 @@ let prop_needs_help_beats_approved =
 let prop_enqueued_beats_approved =
   QCheck2.Test.make
     ~name:
-      "enqueued + not merged + not needs_intervention ⇒ In_merge_queue even \
-       when approved + busy + ..."
+      "enqueued + not merged + not needs_intervention ⇒ In_merge_queue when \
+       idle, even when approved + queued + ..."
     ~count:500
     QCheck2.Gen.(pair gen_ctx gen_op)
     (fun (ctx, current_op) ->
-      (* In_merge_queue sits below merged/needs_intervention and above
-         approved/busy/queued — pin the two that dominate it to false. *)
+      (* Terminal states and active work precede merge queue membership. *)
       let ctx = State.Patch_ctx.set_merged ctx ~patch_id ~value:false in
       let ctx = State.Patch_ctx.set_wontdo ctx ~patch_id ~value:false in
       let ctx =
         State.Patch_ctx.set_needs_intervention ctx ~patch_id ~value:false
       in
+      let ctx = State.Patch_ctx.set_busy ctx ~patch_id ~value:false in
       let ctx = State.Patch_ctx.set_enqueued ctx ~patch_id ~value:true in
       Display_status.equal In_merge_queue
         (Display_status.derive ctx ~patch_id ~current_op ~main_branch))
 
 let prop_approved_busy_is_running =
-  QCheck2.Test.make
-    ~name:"approved + busy ⇒ Approved_running regardless of current_op"
-    ~count:500 gen_op (fun current_op ->
+  QCheck2.Test.make ~name:"approval cannot hide active work" ~count:500 gen_op
+    (fun current_op ->
       let ctx =
         ( ( ( ( State.Patch_ctx.empty |> fun c ->
                 State.Patch_ctx.set_merged c ~patch_id ~value:false )
@@ -175,7 +175,10 @@ let prop_approved_busy_is_running =
         |> fun c -> State.Patch_ctx.set_approved c ~patch_id ~value:true )
         |> fun c -> State.Patch_ctx.set_busy c ~patch_id ~value:true
       in
-      Display_status.equal Approved_running
+      Display_status.equal
+        (Display_status.derive
+           (State.Patch_ctx.set_approved ctx ~patch_id ~value:false)
+           ~patch_id ~current_op ~main_branch)
         (Display_status.derive ctx ~patch_id ~current_op ~main_branch))
 
 let prop_pending_when_no_pr =
@@ -242,6 +245,24 @@ let gen_status : Display_status.t QCheck2.Gen.t =
         Waiting_for_integration_root;
         Blocked_by_dep;
         Pending;
+        Human_queued;
+        Conflict_queued;
+        Pr_body_queued;
+        Rebase_queued;
+        Waiting_for_ci;
+        Waiting_for_review;
+        Waiting_for_forge;
+        Ci_failed;
+        Conflict;
+        Draft;
+        Ready_for_integration;
+        Reconciling;
+        Checking_branch;
+        Verifying_publication;
+        Integrating;
+        Repairing_branch;
+        Publishing;
+        Waiting_to_retry;
       ]
 
 (* [yojson_of_t] then [t_of_yojson] round-trips every status value. *)
@@ -258,9 +279,243 @@ let prop_public_surface_is_linked =
       ignore Display_status.t_of_yojson;
       true)
 
+module B = Branch_reconcile
+module R = Onton_core_test_support.Replay_fixture
+module Forge = Onton_core_test_support.Forge_fixture
+
+let agent () =
+  Patch_agent.create ~branch:(Types.Branch.of_string "patch") patch_id
+  |> fun a ->
+  Patch_agent.set_pr_number a (Types.Pr_number.of_int 7) |> fun a ->
+  Patch_agent.set_base_branch a main_branch
+
+let status a =
+  Display_status.of_agent ~execution_mode:Execution_mode.mainline ~main_branch a
+
+let prop_owner_command_lifecycle =
+  QCheck2.Test.make
+    ~name:
+      "inspection, actual replay, publication and confirmation have distinct \
+       statuses across restart"
+    ~count:200
+    QCheck2.Gen.(pair bool (int_range 1 1000))
+    (fun (noop, n) ->
+      try
+        let source = R.commit n and target = R.commit (n + 1000) in
+        let candidate = if noop then source else R.commit (n + 2000) in
+        let initial = R.step B.empty (B.Materialized (B.New_branch source)) in
+        let requested = R.request ~name:"display" initial in
+        let pinned =
+          R.observe ~source ~target ~boundary:(Recorded source) ~noop requested
+        in
+        let integrating = R.reply pinned B.Pinned in
+        let publishing =
+          if noop then integrating
+          else R.reply integrating (B.Integrated candidate)
+        in
+        let confirming =
+          if noop then publishing else R.reply publishing B.Published
+        in
+        let settled =
+          R.reply confirming
+            (B.Remote { sha = Some candidate; topology = Equal })
+        in
+        let cases =
+          [
+            (requested, Some Display_status.Checking_branch);
+            (pinned, Some Checking_branch);
+            ( integrating,
+              Some (if noop then Verifying_publication else Rebasing) );
+            ( publishing,
+              Some (if noop then Verifying_publication else Publishing) );
+            (confirming, Some Verifying_publication);
+            (settled, None);
+          ]
+        in
+        List.for_all cases ~f:(fun (owner, expected) ->
+            List.for_all
+              [ owner; R.restore owner ]
+              ~f:(fun owner ->
+                Option.equal Display_status.equal
+                  (Display_status.reconciliation_status owner)
+                  expected))
+      with _ -> false)
+
+let prop_retry_wait =
+  QCheck2.Test.make
+    ~name:"retry backoff and resumed Git inspection have distinct statuses"
+    ~count:100
+    QCheck2.Gen.(int_range 1 1000)
+    (fun n ->
+      try
+        let initial =
+          R.step B.empty (B.Materialized (B.New_branch (R.commit n)))
+        in
+        let requested = R.request ~name:"retry-display" initial in
+        let waiting =
+          R.reply requested
+            (B.Retryable
+               { reason = "transport_unavailable"; retry_after = None })
+        in
+        let waiting = R.restore waiting in
+        let resumed =
+          match B.wake_event ~at:100000. waiting with
+          | Some event -> R.step waiting event
+          | None -> waiting
+        in
+        Option.equal Display_status.equal
+          (Display_status.reconciliation_status waiting)
+          (Some Waiting_to_retry)
+        && Option.equal Display_status.equal
+             (Display_status.reconciliation_status resumed)
+             (Some Checking_branch)
+      with _ -> false)
+
+let prop_live_inspection =
+  QCheck2.Test.make
+    ~name:"a scheduled rebase that only verifies Git displays checking-branch"
+    ~count:100 QCheck2.Gen.bool (fun noop ->
+      try
+        let a = agent () in
+        let intent =
+          B.{ base = "main"; policy = Rewrite; purpose = Reconcile_base }
+        in
+        let a = Patch_agent.enqueue a Types.Operation_kind.Rebase in
+        let a = Patch_agent.rebase a ~base_branch:main_branch in
+        let a, _ = Patch_agent.reconcile_branch a (B.Request intent) in
+        let source = R.commit 1 and target = R.commit 2 in
+        let check a = Display_status.equal (status a) Checking_branch in
+        let before = check a in
+        let event =
+          Onton_core_test_support.Publication_fixture.completion
+            ~state:(fun a -> a.Patch_agent.branch_reconcile)
+            a
+            (B.Observed (R.observation ~source ~target ~boundary:Plain ~noop))
+        in
+        let a, _ = Patch_agent.reconcile_branch a event in
+        before && check a
+      with _ -> false)
+
+let prop_live_feedback =
+  QCheck2.Test.make
+    ~name:
+      "live statuses distinguish revision confirmation, CI, review, draft and \
+       merge readiness" ~count:100 QCheck2.Gen.unit (fun () ->
+      try
+        let raw = agent () in
+        let confirmed = Forge.readiness_agent raw in
+        let green = Patch_agent.set_checks_passing confirmed true in
+        let review =
+          Patch_agent.set_review_decision green (Some "REVIEW_REQUIRED")
+        in
+        let draft = Patch_agent.set_is_draft green true in
+        let ready =
+          Patch_agent.set_is_draft green false |> fun a ->
+          Patch_agent.set_merge_ready a true
+        in
+        List.for_all
+          [
+            (raw, Display_status.Waiting_for_forge);
+            (confirmed, Waiting_for_ci);
+            (review, Waiting_for_review);
+            (draft, Draft);
+            (ready, Approved_idle);
+          ]
+          ~f:(fun (a, expected) -> Display_status.equal (status a) expected)
+        && Display_status.equal
+             (status
+                (Patch_agent.set_head_oid ready (Some (String.make 40 'c'))))
+             Waiting_for_forge
+      with _ -> false)
+
+let prop_queued_repairs_before_dependency =
+  QCheck2.Test.make
+    ~name:"every queued operation remains visible on a dependency base"
+    ~count:200
+    QCheck2.Gen.(
+      oneof_list
+        [
+          ( Types.Operation_kind.Uncommitted_changes,
+            Display_status.Cleanup_queued );
+          (Rebase, Rebase_queued);
+          (Human, Human_queued);
+          (Merge_conflict, Conflict_queued);
+          (Ci, Ci_queued);
+          (Review_comments, Review_queued);
+          (Findings, Findings_queued);
+          (Pr_body, Pr_body_queued);
+        ])
+    (fun (kind, expected) ->
+      try
+        let a =
+          agent () |> fun a ->
+          Patch_agent.set_base_branch a (Types.Branch.of_string "dependency")
+          |> fun a -> Patch_agent.enqueue a kind
+        in
+        let intent =
+          B.{ base = "main"; policy = Rewrite; purpose = Reconcile_base }
+        in
+        let waiting, _ = Patch_agent.reconcile_branch a (B.Request intent) in
+        let event =
+          Onton_core_test_support.Publication_fixture.completion
+            ~state:(fun a -> a.Patch_agent.branch_reconcile)
+            waiting
+            (B.Retryable
+               { reason = "transport_unavailable"; retry_after = None })
+        in
+        let waiting, _ = Patch_agent.reconcile_branch waiting event in
+        Display_status.equal (status a) expected
+        && Display_status.equal (status waiting) expected
+      with _ -> false)
+
+let prop_queue_priority =
+  QCheck2.Test.make
+    ~name:"cleanup and rebase precede human and CI work in the displayed queue"
+    ~count:300
+    QCheck2.Gen.(
+      list
+        (oneof_list
+           [
+             Types.Operation_kind.Ci;
+             Human;
+             Review_comments;
+             Findings;
+             Pr_body;
+             Merge_conflict;
+           ]))
+    (fun rest ->
+      try
+        let a = List.fold rest ~init:(agent ()) ~f:Patch_agent.enqueue in
+        let rebase = Patch_agent.enqueue a Rebase in
+        let cleanup = Patch_agent.enqueue rebase Uncommitted_changes in
+        Display_status.equal (status rebase) Rebase_queued
+        && Display_status.equal (status cleanup) Cleanup_queued
+      with _ -> false)
+
+let prop_feedback_total =
+  QCheck2.Test.make
+    ~name:"feedback classification is total for arbitrary review metadata"
+    ~count:500
+    QCheck2.Gen.(pair string int)
+    (fun (review, unresolved_comment_count) ->
+      try
+        ignore
+          (Display_status.feedback_status ~confirmed:true ~has_conflict:false
+             ~checks_passing:true ~ci_checks:[] ~review_decision:(Some review)
+             ~unresolved_comment_count ~is_draft:false);
+        true
+      with _ -> false)
+
 let () =
   let suite =
     [
+      prop_owner_command_lifecycle;
+      prop_retry_wait;
+      prop_live_inspection;
+      prop_live_feedback;
+      prop_queued_repairs_before_dependency;
+      prop_queue_priority;
+      prop_feedback_total;
       prop_total;
       prop_merged_dominates;
       prop_wontdo_dominates;

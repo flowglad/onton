@@ -4,13 +4,9 @@
 open Base
 open Types
 
-(** Pure derivation of a patch's user-facing display status from its
-    [State.Patch_ctx] entry plus the currently-running operation kind and the
-    project's main branch.
-
-    Used by the TUI to render the status column and by [Activity_log] to record
-    transitions. The full effect of "rendering" stays in [Tui]; this module just
-    decides which status applies. *)
+(** Pure projection of agent activity, reconciliation commands, and waiting
+    reasons. The TUI supplies live agents; historical telemetry can supply a
+    reduced [State.Patch_ctx] plus its captured reconciliation owner. *)
 
 type t =
   | Merged
@@ -37,6 +33,24 @@ type t =
   | Waiting_for_integration_root
   | Blocked_by_dep
   | Pending
+  | Human_queued
+  | Conflict_queued
+  | Pr_body_queued
+  | Rebase_queued
+  | Waiting_for_ci
+  | Waiting_for_review
+  | Waiting_for_forge
+  | Ci_failed
+  | Conflict
+  | Draft
+  | Ready_for_integration
+  | Reconciling
+  | Checking_branch
+  | Verifying_publication
+  | Integrating
+  | Repairing_branch
+  | Publishing
+  | Waiting_to_retry
 [@@deriving show, eq, sexp_of, compare, yojson]
 
 (** Migration-aware deserializer: the removed [Awaiting_ci]/[Awaiting_review]
@@ -53,25 +67,78 @@ let t_of_yojson json =
       Awaiting_feedback
   | json -> derived_t_of_yojson json
 
-(** A patch is "on main" if its tracked base branch equals the main branch, or
-    if no base is tracked (the default before any rebase has happened). When
-    [current_op] is [None] (e.g. during startup before the first operation is
-    tracked), we fall back to [Starting] or [Rebasing] based on whether a PR
-    exists. *)
 let is_on_main ctx ~patch_id ~main_branch =
   match State.Patch_ctx.base_branch ctx ~patch_id with
   | Some b -> Branch.equal b main_branch
   | None -> true
 
-let derive (ctx : State.Patch_ctx.t) ~patch_id
-    ~(current_op : Operation_kind.t option) ~(main_branch : Branch.t) =
+(** Feedback facts are interpreted only after active and queued work. A passing
+    CI flag is the poller's complete, pagination-aware verdict. *)
+let feedback_status ~confirmed ~has_conflict ~checks_passing ~ci_checks
+    ~review_decision ~unresolved_comment_count ~is_draft =
+  if not confirmed then Waiting_for_forge
+  else if has_conflict then Conflict
+  else if List.exists ci_checks ~f:Ci_check.is_failure then Ci_failed
+  else if not checks_passing then Waiting_for_ci
+  else if
+    Pr_state.review_blocking review_decision || unresolved_comment_count > 0
+  then Waiting_for_review
+  else if is_draft then Draft
+  else Awaiting_feedback
+
+(** The scheduled operation is an intent, not evidence of a Git mutation.
+    Display the owner's current command so inspection cannot look like rebase.
+*)
+let reconciliation_status owner =
+  if not (Branch_reconcile.is_unsettled owner) then None
+  else
+    Some
+      (match Branch_reconcile.pending owner with
+      | Some
+          {
+            kind =
+              Observe | Inspect | Verify_recovery | Plan_remote_replay _ | Pin _;
+            _;
+          } ->
+          Checking_branch
+      | Some { kind = Integrate { policy = Rewrite; _ }; _ } -> Rebasing
+      | Some
+          {
+            kind =
+              ( Integrate { policy = Preserve_ancestry; _ }
+              | Checkout_remote _ | Commit_merge _ | Continue _ );
+            _;
+          } ->
+          Integrating
+      | Some { kind = Publish _; _ } -> Publishing
+      | Some { kind = Confirm _; _ } -> Verifying_publication
+      | None -> (
+          match Branch_reconcile.phase owner with
+          | Some (Waiting _) -> Waiting_to_retry
+          | Some Publishing -> Publishing
+          | Some Confirming -> Verifying_publication
+          | Some (Repairing _) -> Repairing_branch
+          | Some (Intervention _) -> Needs_help
+          | Some Preparing -> Checking_branch
+          | Some Integrating -> Integrating
+          | Some (Recovering | Settled) | None -> Reconciling))
+
+let queued_status = function
+  | Operation_kind.Uncommitted_changes -> Cleanup_queued
+  | Rebase -> Rebase_queued
+  | Human -> Human_queued
+  | Merge_conflict -> Conflict_queued
+  | Ci -> Ci_queued
+  | Review_comments -> Review_queued
+  | Findings -> Findings_queued
+  | Pr_body -> Pr_body_queued
+
+let derive ?(feedback = Awaiting_feedback) ?reconciliation
+    (ctx : State.Patch_ctx.t) ~patch_id ~(current_op : Operation_kind.t option)
+    ~(main_branch : Branch.t) =
   if State.Patch_ctx.is_merged ctx ~patch_id then Merged
   else if State.Patch_ctx.is_wontdo ctx ~patch_id then Wontdo
   else if State.Patch_ctx.needs_intervention ctx ~patch_id then Needs_help
-  else if State.Patch_ctx.is_enqueued ctx ~patch_id then In_merge_queue
-  else if State.Patch_ctx.is_approved ctx ~patch_id then
-    if State.Patch_ctx.is_busy ctx ~patch_id then Approved_running
-    else Approved_idle
   else if State.Patch_ctx.is_busy ctx ~patch_id then
     match current_op with
     | Some Uncommitted_changes -> Cleaning_worktree
@@ -81,20 +148,92 @@ let derive (ctx : State.Patch_ctx.t) ~patch_id
     | Some Merge_conflict -> Resolving_conflict
     | Some Human -> Responding_to_human
     | Some Pr_body -> Writing_pr_body
-    | Some Rebase -> Rebasing
+    | Some Rebase -> Option.value reconciliation ~default:Checking_branch
     | None ->
-        if State.Patch_ctx.has_pr ctx ~patch_id then Updating else Starting
-  else if State.Patch_ctx.has_pr ctx ~patch_id then
-    if not (is_on_main ctx ~patch_id ~main_branch) then Blocked_by_dep
-    else if State.Patch_ctx.is_queued ctx ~patch_id ~kind:Uncommitted_changes
-    then Cleanup_queued
-    else if State.Patch_ctx.is_queued ctx ~patch_id ~kind:Ci then Ci_queued
-    else if State.Patch_ctx.is_queued ctx ~patch_id ~kind:Review_comments then
-      Review_queued
-    else if State.Patch_ctx.is_queued ctx ~patch_id ~kind:Findings then
-      Findings_queued
-    else Awaiting_feedback
-  else Pending
+        Option.value reconciliation
+          ~default:
+            (if State.Patch_ctx.has_pr ctx ~patch_id then Updating else Starting)
+  else
+    match reconciliation with
+    | Some status when not (equal status Waiting_to_retry) -> status
+    | Some _ | None -> (
+        if State.Patch_ctx.is_enqueued ctx ~patch_id then In_merge_queue
+        else
+          let queued =
+            List.filter
+              Operation_kind.
+                [
+                  Uncommitted_changes;
+                  Rebase;
+                  Human;
+                  Merge_conflict;
+                  Ci;
+                  Review_comments;
+                  Findings;
+                  Pr_body;
+                ]
+              ~f:(fun kind -> State.Patch_ctx.is_queued ctx ~patch_id ~kind)
+            |> List.min_elt ~compare:(fun a b ->
+                Int.compare (Priority.priority a) (Priority.priority b))
+          in
+          match queued with
+          | Some kind -> queued_status kind
+          | None when Option.equal equal reconciliation (Some Waiting_to_retry)
+            ->
+              Waiting_to_retry
+          | None ->
+              if State.Patch_ctx.is_approved ctx ~patch_id then Approved_idle
+              else if State.Patch_ctx.has_pr ctx ~patch_id then
+                if not (is_on_main ctx ~patch_id ~main_branch) then
+                  Blocked_by_dep
+                else feedback
+              else Pending)
+
+(** Use the agent's authoritative predicates rather than reconstructing
+    readiness from a subset of flags in each rendering consumer. *)
+let of_agent ~execution_mode ~main_branch (agent : Patch_agent.t) =
+  let patch_id = agent.patch_id in
+  let has_change =
+    Patch_agent.has_pr agent
+    || Execution_mode.branch_only_published execution_mode agent
+  in
+  let ctx =
+    State.Patch_ctx.empty
+    |> State.Patch_ctx.set_merged ~patch_id ~value:agent.merged
+    |> State.Patch_ctx.set_wontdo ~patch_id
+         ~value:(Option.is_some agent.wontdo_reason)
+    |> State.Patch_ctx.set_needs_intervention ~patch_id
+         ~value:(Patch_agent.needs_intervention agent || agent.branch_blocked)
+    |> State.Patch_ctx.set_busy ~patch_id ~value:agent.busy
+    |> State.Patch_ctx.set_has_pr ~patch_id ~value:has_change
+    |> State.Patch_ctx.set_approved ~patch_id
+         ~value:(Patch_agent.is_approved agent ~main_branch)
+    |> State.Patch_ctx.set_enqueued ~patch_id
+         ~value:(Option.is_some agent.merge_queue_entry)
+  in
+  let ctx =
+    match agent.base_branch with
+    | Some branch -> State.Patch_ctx.set_base_branch ctx ~patch_id ~branch
+    | None -> ctx
+  in
+  let ctx =
+    List.fold agent.queue ~init:ctx ~f:(fun ctx kind ->
+        State.Patch_ctx.set_queued ctx ~patch_id ~kind ~value:true)
+  in
+  let feedback =
+    feedback_status
+      ~confirmed:
+        ((not (Patch_agent.has_pr agent))
+        || Patch_agent.forge_revision_pair_confirmed agent)
+      ~has_conflict:(Patch_agent.has_conflict agent)
+      ~checks_passing:agent.checks_passing ~ci_checks:agent.ci_checks
+      ~review_decision:agent.review_decision
+      ~unresolved_comment_count:agent.unresolved_comment_count
+      ~is_draft:agent.is_draft
+  in
+  derive ~feedback
+    ?reconciliation:(reconciliation_status agent.branch_reconcile)
+    ctx ~patch_id ~current_op:agent.current_op ~main_branch
 
 let%test "merged takes priority over everything" =
   let ctx =
@@ -164,25 +303,25 @@ let%test "approved idle" =
     (derive ctx ~patch_id:(Patch_id.of_string "1") ~current_op:None
        ~main_branch:(Branch.of_string "main"))
 
-let%test "approved running" =
+let%test "active operation takes priority over approval" =
   let ctx =
     State.Patch_ctx.empty
     |> State.Patch_ctx.set_approved ~patch_id:(Patch_id.of_string "1")
          ~value:true
     |> State.Patch_ctx.set_busy ~patch_id:(Patch_id.of_string "1") ~value:true
   in
-  equal Approved_running
+  equal Checking_branch
     (derive ctx ~patch_id:(Patch_id.of_string "1") ~current_op:(Some Rebase)
        ~main_branch:(Branch.of_string "main"))
 
-let%test "approved running ignores current_op" =
+let%test "busy without an operation shows starting" =
   let ctx =
     State.Patch_ctx.empty
     |> State.Patch_ctx.set_approved ~patch_id:(Patch_id.of_string "1")
          ~value:true
     |> State.Patch_ctx.set_busy ~patch_id:(Patch_id.of_string "1") ~value:true
   in
-  equal Approved_running
+  equal Starting
     (derive ctx ~patch_id:(Patch_id.of_string "1") ~current_op:None
        ~main_branch:(Branch.of_string "main"))
 
@@ -237,7 +376,7 @@ let%test "busy with rebase op" =
     State.Patch_ctx.empty
     |> State.Patch_ctx.set_busy ~patch_id:(Patch_id.of_string "1") ~value:true
   in
-  equal Rebasing
+  equal Checking_branch
     (derive ctx ~patch_id:(Patch_id.of_string "1") ~current_op:(Some Rebase)
        ~main_branch:(Branch.of_string "main"))
 

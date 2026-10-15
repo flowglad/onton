@@ -693,6 +693,24 @@ let all_display_statuses : Onton.Tui.display_status list =
     | Waiting_for_integration_root -> Waiting_for_integration_root
     | Blocked_by_dep -> Blocked_by_dep
     | Pending -> Pending
+    | Human_queued -> Human_queued
+    | Conflict_queued -> Conflict_queued
+    | Pr_body_queued -> Pr_body_queued
+    | Rebase_queued -> Rebase_queued
+    | Waiting_for_ci -> Waiting_for_ci
+    | Waiting_for_review -> Waiting_for_review
+    | Waiting_for_forge -> Waiting_for_forge
+    | Ci_failed -> Ci_failed
+    | Conflict -> Conflict
+    | Draft -> Draft
+    | Ready_for_integration -> Ready_for_integration
+    | Reconciling -> Reconciling
+    | Checking_branch -> Checking_branch
+    | Verifying_publication -> Verifying_publication
+    | Integrating -> Integrating
+    | Repairing_branch -> Repairing_branch
+    | Publishing -> Publishing
+    | Waiting_to_retry -> Waiting_to_retry
   in
   List.map ~f:id
     [
@@ -720,6 +738,24 @@ let all_display_statuses : Onton.Tui.display_status list =
       Waiting_for_integration_root;
       Blocked_by_dep;
       Pending;
+      Human_queued;
+      Conflict_queued;
+      Pr_body_queued;
+      Rebase_queued;
+      Waiting_for_ci;
+      Waiting_for_review;
+      Waiting_for_forge;
+      Ci_failed;
+      Conflict;
+      Draft;
+      Ready_for_integration;
+      Reconciling;
+      Checking_branch;
+      Verifying_publication;
+      Integrating;
+      Repairing_branch;
+      Publishing;
+      Waiting_to_retry;
     ]
 
 let gen_display_status = QCheck2.Gen.oneof_list all_display_statuses

@@ -34,6 +34,24 @@ type display_status = Display_status.t =
   | Waiting_for_integration_root
   | Blocked_by_dep
   | Pending
+  | Human_queued
+  | Conflict_queued
+  | Pr_body_queued
+  | Rebase_queued
+  | Waiting_for_ci
+  | Waiting_for_review
+  | Waiting_for_forge
+  | Ci_failed
+  | Conflict
+  | Draft
+  | Ready_for_integration
+  | Reconciling
+  | Checking_branch
+  | Verifying_publication
+  | Integrating
+  | Repairing_branch
+  | Publishing
+  | Waiting_to_retry
 [@@deriving show, eq, sexp_of, compare, yojson]
 
 type status_display [@@deriving show, eq, sexp_of, compare]
@@ -57,6 +75,8 @@ type status_msg = {
 val msg_expired : now:float -> status_msg -> bool
 
 val derive_display_status :
+  ?feedback:display_status ->
+  ?reconciliation:display_status ->
   State.Patch_ctx.t ->
   patch_id:Patch_id.t ->
   current_op:Operation_kind.t option ->

@@ -135,8 +135,13 @@ let display_status_of_agent_json ~main_branch json =
       ~f:(fun ctx kind ->
         State.Patch_ctx.set_queued ctx ~patch_id ~kind ~value:true)
   in
-  Display_status.derive ctx ~patch_id ~current_op:(current_op_member fields)
-    ~main_branch
+  let reconciliation =
+    Option.bind (member fields "branch_reconcile") ~f:(fun checkpoint ->
+        Result.ok (Branch_reconcile.decode checkpoint))
+    |> Option.bind ~f:Display_status.reconciliation_status
+  in
+  Display_status.derive ?reconciliation ctx ~patch_id
+    ~current_op:(current_op_member fields) ~main_branch
 
 let%test "branch_blocked activity-log agent renders needs-help" =
   let patch_id = "patch-1" in
