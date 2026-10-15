@@ -155,8 +155,8 @@ let derive ?(feedback = Awaiting_feedback) ?reconciliation
             (if State.Patch_ctx.has_pr ctx ~patch_id then Updating else Starting)
   else
     match reconciliation with
-    | Some status -> status
-    | None -> (
+    | Some status when not (equal status Waiting_to_retry) -> status
+    | Some _ | None -> (
         if State.Patch_ctx.is_enqueued ctx ~patch_id then In_merge_queue
         else
           let queued =
@@ -178,6 +178,9 @@ let derive ?(feedback = Awaiting_feedback) ?reconciliation
           in
           match queued with
           | Some kind -> queued_status kind
+          | None when Option.equal equal reconciliation (Some Waiting_to_retry)
+            ->
+              Waiting_to_retry
           | None ->
               if State.Patch_ctx.is_approved ctx ~patch_id then Approved_idle
               else if State.Patch_ctx.has_pr ctx ~patch_id then

@@ -665,6 +665,8 @@ let () =
         (Waiting_for_forge, "confirming-revisions");
         (Approved_idle, "ready-to-merge");
         (Ready_for_integration, "ready-to-integrate");
+        (Integrating, "integrating");
+        (Repairing_branch, "repairing-branch");
       ]
     ~f:(fun (status, expected) ->
       let pv = { (make_view ~id:"1" ~title:"current work") with Tui.status } in
@@ -673,3 +675,40 @@ let () =
       assert (line_contains lines "current work");
       List.iter lines ~f:(fun line ->
           assert (Onton.Term.visible_length line <= 120)))
+
+let () =
+  List.iter
+    Tui.
+      [
+        Checking_branch;
+        Reconciling;
+        Publishing;
+        Verifying_publication;
+        Integrating;
+        Repairing_branch;
+        Waiting_to_retry;
+      ]
+    ~f:(fun status ->
+      List.iter [ None; Some Operation_kind.Rebase ] ~f:(fun current_op ->
+          List.iter
+            Onton_core.Patch_agent.[ Queued; Running ]
+            ~f:(fun current_op_state ->
+              let pv =
+                {
+                  (make_view ~id:"1" ~title:"branch work") with
+                  Tui.status;
+                  current_op;
+                  current_op_state;
+                }
+              in
+              List.iter [ Tui.List_view; Tui.Detail_view pv.Tui.patch_id ]
+                ~f:(fun view_mode ->
+                  let lines =
+                    plain_lines (render ~width:160 ~view_mode [ pv ])
+                  in
+                  assert (
+                    Bool.equal
+                      (line_contains lines "(queued)")
+                      (Option.is_some current_op
+                      && Onton_core.Patch_agent.equal_op_state current_op_state
+                           Onton_core.Patch_agent.Queued))))))

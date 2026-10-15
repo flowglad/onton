@@ -452,7 +452,20 @@ let prop_queued_repairs_before_dependency =
           Patch_agent.set_base_branch a (Types.Branch.of_string "dependency")
           |> fun a -> Patch_agent.enqueue a kind
         in
+        let intent =
+          B.{ base = "main"; policy = Rewrite; purpose = Reconcile_base }
+        in
+        let waiting, _ = Patch_agent.reconcile_branch a (B.Request intent) in
+        let event =
+          Onton_core_test_support.Publication_fixture.completion
+            ~state:(fun a -> a.Patch_agent.branch_reconcile)
+            waiting
+            (B.Retryable
+               { reason = "transport_unavailable"; retry_after = None })
+        in
+        let waiting, _ = Patch_agent.reconcile_branch waiting event in
         Display_status.equal (status a) expected
+        && Display_status.equal (status waiting) expected
       with _ -> false)
 
 let prop_queue_priority =

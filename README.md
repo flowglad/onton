@@ -952,13 +952,21 @@ use the scheduler's priority order, including on dependency branches.
 
 | Status | Meaning |
 | --- | --- |
+| `merged` / `wont-do` | Terminal outcome: merged or explicitly abandoned. |
+| `needs-help` | Intervention is required before work can continue. |
+| `in-merge-queue` | The PR is in the forge merge queue. |
+| `starting` / `updating` | An implementation session is starting or updating an existing change. |
+| `approved-running` | A historical status for approved work with an active session. |
+| `reconciling` | Branch reconciliation is unsettled without a more specific command to display. |
+| `conflict` | The confirmed revision pair has an unresolved conflict. |
+| `awaiting-feedback` | Available evidence does not identify a more specific wait. |
 | `checking-branch` | Inspecting Git history or validating a checkout; a rebase may prove unnecessary. |
 | `rebasing` / `integrating` | Git replay or integration is pending or executing. |
 | `repairing-branch` | Reconciliation needs agent diagnosis or repair. |
 | `publishing` / `verifying-publication` | Pushing a captured revision or confirming the remote result. |
 | `waiting-to-retry` | Reconciliation is in retry backoff; details show the reason. |
-| `fixing-ci`, `addressing-review`, etc. | The agent is handling the named operation. `(queued)` means it is waiting for execution capacity. |
-| `ci-queued`, `branch-check-queued`, etc. | The named operation is next in the patch's queue. |
+| `fixing-ci`, `addressing-review`, `addressing-findings`, `resolving-conflict`, `responding-to-human`, `writing-pr-body`, `cleaning-worktree` | The agent is handling the named operation. `(queued)` means it is waiting for execution capacity. |
+| `ci-queued`, `review-queued`, `findings-queued`, `cleanup-queued`, `message-queued`, `conflict-queued`, `pr-body-queued`, `branch-check-queued` | The named operation is next in the patch's queue. |
 | `confirming-revisions` | GitHub's current PR head/base pair has not been confirmed against Git. |
 | `waiting-for-ci` / `ci-failed` | Checks are incomplete or the current checks failed. |
 | `waiting-for-review` / `draft` | Review requirements remain, or the PR is still a draft. |

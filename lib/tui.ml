@@ -577,17 +577,17 @@ let render_merge_queue_badge = function
              (merge_queue_badge_label entry.state)
              entry.position)
 
-let is_running_status = function
+let status_supports_queued_indicator ~has_current_op = function
   | Fixing_ci | Addressing_review | Addressing_findings | Resolving_conflict
   | Responding_to_human | Writing_pr_body | Cleaning_worktree | Rebasing
   | Starting | Updating | Approved_running ->
       true
   | Reconciling | Publishing | Checking_branch | Verifying_publication
-  | Integrating | Repairing_branch ->
-      false
+  | Integrating | Repairing_branch | Waiting_to_retry ->
+      has_current_op
   | Human_queued | Conflict_queued | Pr_body_queued | Rebase_queued
   | Waiting_for_ci | Waiting_for_review | Waiting_for_forge | Ci_failed
-  | Conflict | Draft | Ready_for_integration | Waiting_to_retry ->
+  | Conflict | Draft | Ready_for_integration ->
       false
   | Merged | Wontdo | Needs_help | In_merge_queue | Approved_idle | Ci_queued
   | Review_queued | Findings_queued | Cleanup_queued | Awaiting_feedback
@@ -650,7 +650,9 @@ let short_op_name = function
   | Operation_kind.Rebase -> "rebase"
 
 let pv_queued (pv : patch_view) =
-  is_running_status pv.status
+  status_supports_queued_indicator
+    ~has_current_op:(Option.is_some pv.current_op)
+    pv.status
   && Patch_agent.equal_op_state pv.current_op_state Patch_agent.Queued
 
 (** Compact automerge indicator for the overview row. Empty when the patch is
