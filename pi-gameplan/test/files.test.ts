@@ -1,7 +1,9 @@
 import { execFileSync } from "node:child_process";
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { mkdtemp, mkdir, open, readFile, realpath, readdir, rename, rm, symlink, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, open, readFile, realpath, readdir, rename, rm, stat, chmod, symlink, writeFile } from "node:fs/promises";
+import { fileURLToPath } from "node:url";
+import { pythonCommand } from "../src/validator.js";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { commitGameplan, readGameplanSnapshot, resolveGameplanWrite } from "../src/files.js";
@@ -80,16 +82,18 @@ test("atomic commits preserve the old document when replacement writes fail", as
     const path = join(dir, "plan.yaml");
     await writeFile(path, "original");
     const admission = await resolveGameplanWrite(dir, ".", "plan.yaml");
-    const helper = new URL("../src/commit_gameplan.py", import.meta.url).pathname;
+    const helper = fileURLToPath(new URL("../src/commit_gameplan.py", import.meta.url));
+    const wrapper = join(dir, "limit child %.py");
+    await writeFile(wrapper, "import resource, signal, runpy, sys\nresource.setrlimit(resource.RLIMIT_FSIZE, (1024, 1024))\nsignal.signal(signal.SIGXFSZ, signal.SIG_IGN)\nrunpy.run_path(sys.argv[1], run_name='__main__')\n");
+    const [command = "python3", ...prefix] = pythonCommand();
     // Exercise the real helper with an OS-enforced file-size limit: a partial temporary
     // write raises EFBIG, just as a failed disk write would. No production fault hooks.
-    assert.throws(() => execFileSync("python3", ["-c",
-      "import resource, signal, runpy, sys; resource.setrlimit(resource.RLIMIT_FSIZE, (1024, 1024)); signal.signal(signal.SIGXFSZ, signal.SIG_IGN); runpy.run_path(sys.argv[1], run_name='__main__')", helper], {
+    assert.throws(() => execFileSync(command, [...prefix, wrapper, helper], {
       input: JSON.stringify({ ...admission, name: "plan.yaml", text: "x".repeat(8192), expected: Buffer.from("original").toString("base64") }),
-      timeout: 5000, stdio: ["pipe", "pipe", "pipe"],
+      timeout: 120_000, stdio: ["pipe", "pipe", "pipe"],
     }), /File too large/);
     assert.equal(await readFile(path, "utf8"), "original");
-    assert.deepEqual(await readdir(dir), ["plan.yaml"]);
+    assert.deepEqual((await readdir(dir)).sort(), ["limit child %.py", "plan.yaml"]);
   } finally { await rm(dir, { recursive: true, force: true }); }
 });
 
@@ -114,4 +118,27 @@ test("replacement of the admitted directory cannot redirect a commit", async () 
       assert.equal(await readFile(join(dir, "gameplans", "plan.yaml"), "utf8"), "original");
     } finally { await rm(dir, { recursive: true, force: true }); }
   }
+});
+
+
+test("new documents use the child umask and replacement preserves existing permissions", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "gameplan-mode-"));
+  try {
+    const helper = fileURLToPath(new URL("../src/commit_gameplan.py", import.meta.url));
+    const wrapper = join(dir, "mode child %.py");
+    await writeFile(wrapper, "import os, runpy, sys\nos.umask(int(sys.argv[2], 8))\nrunpy.run_path(sys.argv[1], run_name='__main__')\n");
+    const [command = "python3", ...prefix] = pythonCommand();
+    for (const [mask, mode] of [["022", 0o644], ["027", 0o640], ["077", 0o600]] as const) {
+      const name = `plan-${mask}.yaml`;
+      const admission = await resolveGameplanWrite(dir, ".", name);
+      execFileSync(command, [...prefix, wrapper, helper, mask], {
+        input: JSON.stringify({ ...admission, name, text: "original", expected: null }),
+        timeout: 120_000, stdio: ["pipe", "pipe", "pipe"],
+      });
+      assert.equal((await stat(admission.path)).mode & 0o777, mode);
+      await chmod(admission.path, 0o660);
+      await commitGameplan(admission, "updated", "original");
+      assert.equal((await stat(admission.path)).mode & 0o777, 0o660);
+    }
+  } finally { await rm(dir, { recursive: true, force: true }); }
 });

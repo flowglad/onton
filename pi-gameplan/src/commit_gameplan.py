@@ -26,6 +26,10 @@ def commit(request):
             os.fsync(replacement.fileno())
         expected = request["expected"]
         if expected is None:
+            # Keep staging private, then publish with normal creation permissions.
+            mask = os.umask(0)
+            os.umask(mask)
+            os.chmod(temporary, 0o666 & ~mask, dir_fd=root)
             # Atomic no-clobber publication for a new file.
             os.link(temporary, name, src_dir_fd=root, dst_dir_fd=root, follow_symlinks=False)
         else:
