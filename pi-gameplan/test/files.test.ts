@@ -56,8 +56,15 @@ test("snapshots reject FIFOs, directories, symlinks, oversized files and paths o
     await symlink(join(dir, "outside.yaml"), join(dir, "gameplans", "link.yaml"));
     const large = await open(join(dir, "gameplans", "large.yaml"), "w");
     try { await large.truncate(16 * 1024 * 1024 + 1); } finally { await large.close(); }
-    for (const path of ["gameplans/pipe.yaml", "gameplans/directory.yaml", "gameplans/link.yaml", "gameplans/large.yaml", "outside.yaml"]) {
-      await assert.rejects(readGameplanSnapshot(dir, "gameplans", path));
+    const rejectedSnapshots = [
+      ["gameplans/pipe.yaml", /regular file/],
+      ["gameplans/directory.yaml", /regular file/],
+      ["gameplans/link.yaml", /regular file/],
+      ["gameplans/large.yaml", /oversized/],
+      ["outside.yaml", /Refusing gameplan snapshot/],
+    ] as const;
+    for (const [path, reason] of rejectedSnapshots) {
+      await assert.rejects(readGameplanSnapshot(dir, "gameplans", path), reason);
     }
     const bytes = Buffer.from([0x80, 0xff, 0x00]);
     await writeFile(join(dir, "gameplans", "raw.yaml"), bytes);
