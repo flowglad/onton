@@ -142,3 +142,41 @@ test("new documents use the child umask and replacement preserves existing permi
     }
   } finally { await rm(dir, { recursive: true, force: true }); }
 });
+
+
+test("staging symlink substitution cannot chmod an outside file", async () => {
+  for (const existing of [false, true]) {
+    const dir = await mkdtemp(join(tmpdir(), "gameplan-staging-"));
+    try {
+      const name = "plan.yaml";
+      if (existing) await writeFile(join(dir, name), "original");
+      const outside = join(dir, "outside");
+      await writeFile(outside, "outside");
+      await chmod(outside, 0o600);
+      const admission = await resolveGameplanWrite(dir, ".", name);
+      const helper = fileURLToPath(new URL("../src/commit_gameplan.py", import.meta.url));
+      const wrapper = join(dir, "swap.py");
+      await writeFile(wrapper, `import os, runpy, sys
+original_fsync = os.fsync
+def swap(fd):
+    original_fsync(fd)
+    for name in os.listdir(sys.argv[2]):
+        if name.startswith('.gameplan-'):
+            path = os.path.join(sys.argv[2], name)
+            os.unlink(path)
+            os.symlink(sys.argv[3], path)
+os.fsync = swap
+runpy.run_path(sys.argv[1], run_name='__main__')
+`);
+      const [command = "python3", ...prefix] = pythonCommand();
+      assert.throws(() => execFileSync(command, [...prefix, wrapper, helper, dir, outside], {
+        input: JSON.stringify({ ...admission, name, text: "replacement", expected: existing ? Buffer.from("original").toString("base64") : null }),
+        timeout: 120_000, stdio: ["pipe", "pipe", "pipe"],
+      }), /staging file changed/);
+      assert.equal((await stat(outside)).mode & 0o777, 0o600);
+      assert.equal(await readFile(outside, "utf8"), "outside");
+      if (existing) assert.equal(await readFile(join(dir, name), "utf8"), "original");
+      else await assert.rejects(stat(join(dir, name)), { code: "ENOENT" });
+    } finally { await rm(dir, { recursive: true, force: true }); }
+  }
+});
