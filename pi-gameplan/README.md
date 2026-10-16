@@ -181,3 +181,6 @@ npm test                                  # unit tests; validator integration ru
 The configured gameplan directory may be a symlink; its canonical directory is the write
 root. Gameplan tool writes reject file symlinks, including links within that root. Tool writes
 accept only direct `.yaml` or `.yml` children.
+
+Finalization snapshots hash raw file bytes and accept only regular gameplan files up to
+16 MiB. Invalid, missing, or oversized snapshot files clear the finalized marker.

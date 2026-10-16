@@ -15,6 +15,7 @@ async function fixture(run: (f: {
   ctx: ExtensionToolContext;
   path: string;
   saved: { gameplanPath?: string; finalizedPath?: string }[];
+  restore: (data: unknown) => Promise<unknown>;
   emit: (event: string, input?: unknown) => Promise<unknown>;
   onConfirm: (fn: (index: number) => Promise<boolean>) => void;
   onExec: (fn: (command: string, args: string[]) => Promise<void>) => void;
@@ -32,6 +33,7 @@ async function fixture(run: (f: {
   let confirm = async (_index: number) => true;
   let exec = async (_command: string, _args: string[]) => {};
   let dialogs = 0;
+  let entries: unknown[] = [];
   const api = {
     registerTool: (tool: { name: string; execute: (...args: any[]) => Promise<unknown> }) => tools.set(tool.name, tool),
     registerFlag: () => {}, registerCommand: () => {},
@@ -45,7 +47,7 @@ async function fixture(run: (f: {
   } as unknown as ExtensionAPI;
   const ctx = {
     cwd: dir, hasUI: true,
-    sessionManager: { getBranch: () => [] },
+    sessionManager: { getBranch: () => entries },
     ui: { notify: () => {}, setStatus: () => {}, theme: { fg: (_color: string, value: string) => value },
       confirm: () => confirm(++dialogs) },
   } as unknown as ExtensionToolContext;
@@ -55,6 +57,10 @@ async function fixture(run: (f: {
     await run({
       call: (name, params) => tools.get(name)!.execute("test", params, undefined, undefined, ctx),
       ctx, path, saved,
+      restore: async (data) => {
+        entries = [{ type: "custom", customType: "gameplan-mode", data }];
+        return events.get("session_start")!({}, ctx);
+      },
       emit: async (event, input = {}) => events.get(event)?.(input, ctx),
       onConfirm: (fn) => { confirm = fn; }, onExec: (fn) => { exec = fn; },
     });
@@ -178,4 +184,35 @@ test("tool writes and detected hand edits clear finalization", async () => {
       assert.equal(saved.at(-1)!.finalizedPath, undefined, change);
     });
   }
+});
+
+
+test("restored disallowed finalized paths are invalidated during startup", async () => {
+  await fixture(async ({ restore, saved }) => {
+    await restore({ enabled: true, gameplanDir: "gameplans", decisions: [], finalizedPath: "/outside/large.yaml", finalizedDigest: "fake" });
+    assert.equal(saved.at(-1)!.finalizedPath, undefined);
+  });
+});
+
+test("finalization snapshots distinguish byte sequences with identical UTF-8 decoding", async () => {
+  await fixture(async ({ call, path, saved, emit }) => {
+    const prefix = Buffer.from((await readFile(path, "utf8")) + "\n# byte: ");
+    const original = Buffer.concat([prefix, Buffer.from([0x80, 0x0a])]);
+    const changed = Buffer.concat([prefix, Buffer.from([0x81, 0x0a])]);
+    assert.equal(original.toString("utf8"), changed.toString("utf8"));
+    await writeFile(path, original);
+    await call("gameplan_finalize", { path });
+    await emit("tool_result");
+    assert.equal(saved.at(-1)!.finalizedPath, path);
+    // The formatter writes UTF-8, so its replacement character and an invalid byte still
+    // decode identically. A raw-byte digest must distinguish them.
+    const finalized = await readFile(path);
+    const location = finalized.indexOf(Buffer.from("\ufffd"));
+    assert.ok(location >= 0);
+    const replaced = Buffer.concat([finalized.subarray(0, location), Buffer.from([0x81]), finalized.subarray(location + 3)]);
+    assert.equal(finalized.toString("utf8"), replaced.toString("utf8"));
+    await writeFile(path, replaced);
+    await emit("tool_result");
+    assert.equal(saved.at(-1)!.finalizedPath, undefined);
+  });
 });

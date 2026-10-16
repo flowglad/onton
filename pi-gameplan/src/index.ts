@@ -22,7 +22,7 @@ import { Type } from "typebox";
 import { parse as parseYaml } from "yaml";
 import { auditDecisions, type AuditResult } from "./audit.js";
 import { createHash } from "node:crypto";
-import { commitGameplan, resolveGameplanWrite } from "./files.js";
+import { commitGameplan, readGameplanSnapshot, resolveGameplanWrite } from "./files.js";
 import { isGameplanWrite } from "./guard.js";
 import { ASK_USER_TOOL, answerFromAskUser, buildAskUserRequest, fitsAskUser } from "./ask.js";
 import {
@@ -123,8 +123,8 @@ export default function gameplan(pi: ExtensionAPI) {
     pi.appendEntry(CUSTOM_ENTRY_TYPE, state);
   }
 
-  function digest(text: string): string {
-    return createHash("sha256").update(text).digest("hex");
+  function digest(bytes: Buffer): string {
+    return createHash("sha256").update(bytes).digest("hex");
   }
 
   function clearFinalized(ctx: ExtensionContext): void {
@@ -137,8 +137,8 @@ export default function gameplan(pi: ExtensionAPI) {
   async function refreshFinalized(ctx: ExtensionContext): Promise<void> {
     if (!state.finalizedPath) return;
     try {
-      const text = await readFile(resolve(ctx.cwd, state.finalizedPath), "utf8");
-      if (digest(text) !== state.finalizedDigest) clearFinalized(ctx);
+      const bytes = await readGameplanSnapshot(ctx.cwd, state.gameplanDir, state.finalizedPath);
+      if (digest(bytes) !== state.finalizedDigest) clearFinalized(ctx);
     } catch {
       clearFinalized(ctx);
     }
@@ -808,11 +808,12 @@ ${ledger}`,
       if (JSON.stringify(after.audit.constrained) !== JSON.stringify(audit.constrained)) {
         throw new Error("Cannot finalize; constrained decisions changed. Review and approve them again.");
       }
-      const finalText = await readFile(finalPath, "utf8");
+      const finalBytes = await readGameplanSnapshot(ctx.cwd, state.gameplanDir, params.path);
+      const finalText = finalBytes.toString("utf8");
       if (JSON.stringify(parseYaml(finalText)) !== JSON.stringify(parseYaml(approvedText))) {
         throw new Error("Cannot finalize; the document changed after confirmation. Review and finalize again.");
       }
-      state = { ...state, finalizedPath: params.path, finalizedDigest: digest(finalText) };
+      state = { ...state, finalizedPath: params.path, finalizedDigest: digest(finalBytes) };
       persist();
       updateStatus(ctx);
       const abs = resolve(ctx.cwd, params.path);
