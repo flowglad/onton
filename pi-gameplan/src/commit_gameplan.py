@@ -2,6 +2,7 @@
 """Atomic descriptor-relative gameplan publication. Input is one JSON request on stdin."""
 import base64
 import json
+import fcntl
 import os
 import secrets
 import stat
@@ -25,6 +26,9 @@ def commit(request):
         identity = os.fstat(root)
         if (str(identity.st_dev), str(identity.st_ino)) != (request["device"], request["inode"]):
             raise ValueError("Admitted gameplan directory changed before commit")
+        # All tool commits lock the admitted directory, whose inode is stable across
+        # leaf replacement. Hold it through validation, publication and cleanup.
+        fcntl.flock(root, fcntl.LOCK_EX)
         temporary = ".gameplan-" + secrets.token_hex(16)
         fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600, dir_fd=root)
         with os.fdopen(fd, "wb") as replacement:

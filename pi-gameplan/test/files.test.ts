@@ -180,3 +180,81 @@ runpy.run_path(sys.argv[1], run_name='__main__')
     } finally { await rm(dir, { recursive: true, force: true }); }
   }
 });
+
+
+test("overlapping commits serialize validation and publication", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "gameplan-concurrent-"));
+  try {
+    const path = join(dir, "plan.yaml");
+    await writeFile(path, "original");
+    const admission = await resolveGameplanWrite(dir, ".", "plan.yaml");
+    const helper = fileURLToPath(new URL("../src/commit_gameplan.py", import.meta.url));
+    const harness = join(dir, "concurrent.py");
+    await writeFile(harness, `import fcntl, json, multiprocessing, os, runpy, sys
+request = json.load(sys.stdin)
+commit = runpy.run_path(sys.argv[1])['commit']
+context = multiprocessing.get_context('fork')
+def worker(connection, first):
+    try:
+        if first:
+            replace = os.replace
+            def paused_replace(*args, **kwargs):
+                connection.send('ready-to-publish')
+                assert connection.recv() == 'publish'
+                return replace(*args, **kwargs)
+            os.replace = paused_replace
+        else:
+            flock = fcntl.flock
+            def observed_lock(*args):
+                connection.send('attempting-lock')
+                result = flock(*args)
+                connection.send('acquired-lock')
+                return result
+            fcntl.flock = observed_lock
+        commit({**request, 'text': 'first' if first else 'second'})
+        connection.send('committed')
+    except Exception as error:
+        connection.send(str(error))
+def receive(connection):
+    assert connection.poll(10), 'worker timed out'
+    return connection.recv()
+a, child_a = context.Pipe()
+b, child_b = context.Pipe()
+first = context.Process(target=worker, args=(child_a, True))
+second = context.Process(target=worker, args=(child_b, False))
+try:
+    first.start()
+    assert receive(a) == 'ready-to-publish'
+    # Prove a real lock is held after the old content/inode checks and before rename.
+    descriptor = os.open(request['root'], os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        try:
+            fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            pass
+        else:
+            raise AssertionError('publication window is not locked')
+    finally:
+        os.close(descriptor)
+    second.start()
+    assert receive(b) == 'attempting-lock'
+    a.send('publish')
+    assert receive(a) == 'committed'
+    assert receive(b) == 'acquired-lock'
+    assert 'changed before commit' in receive(b)
+finally:
+    for process in (first, second):
+        if process.pid:
+            process.join(5)
+            if process.is_alive():
+                process.terminate()
+                process.join()
+`);
+    const [command = "python3", ...prefix] = pythonCommand();
+    execFileSync(command, [...prefix, harness, helper], {
+      input: JSON.stringify({ ...admission, name: "plan.yaml", expected: Buffer.from("original").toString("base64") }),
+      timeout: 120_000, stdio: ["pipe", "pipe", "pipe"],
+    });
+    assert.equal(await readFile(path, "utf8"), "first");
+  } finally { await rm(dir, { recursive: true, force: true }); }
+});

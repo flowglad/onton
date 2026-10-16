@@ -189,3 +189,7 @@ Gameplan commits prepare a complete replacement in the admitted directory before
 publication. A small Python helper uses descriptor-relative filesystem operations (which
 Node does not expose) and verifies the directory identity captured at admission. It uses
 the same configured Python/uv command as the formatter.
+
+Tool commits serialize on an advisory lock of the admitted directory through validation
+and publication. Other writers must honor that lock to participate in this concurrency
+contract; ordinary editors and shell commands are not locked by gameplan mode.
