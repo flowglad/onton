@@ -1055,6 +1055,35 @@ let[@warning "-4"] tests =
           B.required_revisions B.empty = []
           && B.required_revisions (repeat B.empty repeats) = [ revision ]
         with _ -> false);
+    QCheck2.Test.make ~count:100
+      ~name:
+        "BR legacy captured source requires destination evidence for polling"
+      Gen.(pair bool string)
+      (fun (captured, suffix) ->
+        let state = if captured then prepared () else fst (request ()) in
+        let rec without_destination = function
+          | `Assoc fields ->
+              `Assoc
+                (List.filter_map
+                   (fun (key, value) ->
+                     if key = "destination" || key = "observation_destination"
+                     then None
+                     else Some (key, without_destination value))
+                   fields)
+          | `List values -> `List (List.map without_destination values)
+          | value -> value
+        in
+        match B.decode (without_destination (B.yojson_of_t state)) with
+        | Error _ -> false
+        | Ok restored ->
+            (B.check_observation_destination restored
+               ~observed:(B.Remote_id.of_destination ("changed/" ^ suffix))
+            =
+            if captured then Error "publication_destination_unrecorded"
+            else Ok ())
+            && B.check_observation_destination B.empty
+                 ~observed:observation.destination
+               = Ok ());
     QCheck2.Test.make ~count:200
       ~name:"BR poll confirmation cannot rebind a captured destination"
       Gen.string (fun suffix ->

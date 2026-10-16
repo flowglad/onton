@@ -698,7 +698,11 @@ let publication_destination urls =
 
 let check_observation_destination t ~observed =
   match t.observation_destination with
-  | Unobserved_remote -> Ok ()
+  | Unobserved_remote -> (
+      match t.active with
+      | Some { source = Some _; _ } ->
+          Error "publication_destination_unrecorded"
+      | None | Some { source = None; _ } -> Ok ())
   | Bound_remote expected when Remote_id.equal expected observed -> Ok ()
   | Bound_remote _ -> Error "publication_destination_changed"
   | Reconfirm_remote _ -> Error "publication_destination_unconfirmed"

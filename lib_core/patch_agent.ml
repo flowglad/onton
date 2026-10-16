@@ -640,6 +640,7 @@ let awaiting_manual_merge t ~main_branch =
     (Forge_observation.pending_request
        (Branch_reconcile.forge_observations t.branch_reconcile))
   && (not t.merged) && (not t.automerge_enabled) && is_approved t ~main_branch
+  && Option.is_none t.merge_queue_entry
   && t.checks_passing && List.is_empty t.queue
 
 let should_request_review t ~main_branch =
