@@ -505,9 +505,11 @@ val publication_destination : string list -> (string, string) Stdlib.result
     before mutation rather than treating partial publication as completion. *)
 
 val check_observation_destination :
-  operation -> observed:Remote_id.t -> (unit, string) Result.t
-(** Polling may use only the checkpointed destination. Unlike owned execution,
-    it cannot authorize rebinding during an explicit resume. *)
+  t -> observed:Remote_id.t -> (unit, string) Result.t
+(** Before the first owned observation, polling reads the configured endpoint.
+    Once captured, the owner's checkpointed destination survives operation and
+    checkout lifetimes. Polling cannot rebind it or confirm an explicit resume.
+*)
 
 val check_destination :
   operation -> observed:Remote_id.t -> (unit, string) Stdlib.result

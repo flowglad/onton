@@ -161,14 +161,14 @@ let remote_head_at io ~destination ~branch =
   | exn when Process_tree.has_cancellation exn -> raise exn
   | exn -> Error ("remote observation unavailable: " ^ Exn.to_string exn)
 
-let remote_head ?operation io ~branch =
+let remote_head ?owner io ~branch =
   try
     let destination = destination io in
     let authority =
-      match operation with
+      match owner with
       | None -> Ok ()
-      | Some operation ->
-          Branch_reconcile.check_observation_destination operation
+      | Some owner ->
+          Branch_reconcile.check_observation_destination owner
             ~observed:(Branch_reconcile.Remote_id.of_destination destination)
     in
     match authority with

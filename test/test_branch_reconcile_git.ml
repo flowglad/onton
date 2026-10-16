@@ -408,7 +408,7 @@ let () =
                   check
                     "poll probe accepts the captured endpoint before \
                      configuration changes"
-                    (E.remote_head ?operation:before io ~branch:"patch"
+                    (E.remote_head ~owner:(state runtime) io ~branch:"patch"
                     = Ok None);
                   Git.run_git ~cwd:dir
                     [ "remote"; "set-url"; "--push"; "origin"; replacement ];
@@ -427,7 +427,8 @@ let () =
                   check
                     "poll probe rejects changed destination before reading \
                      replacement"
-                    (E.remote_head ?operation:before watched ~branch:"patch"
+                    (E.remote_head ~owner:(state runtime) watched
+                       ~branch:"patch"
                      = Error "publication_destination_changed"
                     && not !probed);
                   let runtime =
@@ -479,9 +480,7 @@ let () =
                   check
                     "poll probe accepts destination after owned resume \
                      checkpoints it"
-                    (E.remote_head
-                       ?operation:(B.operation (state runtime))
-                       io ~branch:"patch"
+                    (E.remote_head ~owner:(state runtime) io ~branch:"patch"
                     = Ok (Some (sha source)));
                   check
                     "destination resume retains operation and captured source"

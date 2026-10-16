@@ -132,9 +132,7 @@ module Make (Forge : Forge.S) (W : Worktree.S) (Env : Poller_env.S) = struct
         Branch_reconcile_executor.make_io ~process_mgr ~clock ~path:repo_root
       in
       match
-        Branch_reconcile_executor.remote_head
-          ?operation:(Branch_reconcile.operation agent.branch_reconcile)
-          io
+        Branch_reconcile_executor.remote_head ~owner:agent.branch_reconcile io
           ~branch:(Branch.to_string agent.branch)
       with
       | Ok head -> Option.map head ~f:Branch_reconcile.Commit.to_string

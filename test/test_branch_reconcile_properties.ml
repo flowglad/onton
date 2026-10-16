@@ -166,6 +166,44 @@ let fails_recovery state interrupted =
 
 let[@warning "-4"] tests =
   [
+    QCheck2.Test.make ~count:300
+      ~name:"BR verified destination survives checkout inspection and restart"
+      Gen.(list bool)
+      (fun restarts ->
+        try
+          let state = ref (settled ()) in
+          let other = B.Remote_id.of_destination "other-origin" in
+          List.iteri
+            (fun index restart ->
+              state :=
+                fst
+                  (B.step !state
+                     (B.Request
+                        B.
+                          {
+                            base = "main";
+                            policy = Rewrite;
+                            purpose = Provision_checkout (string_of_int index);
+                          }));
+              (if restart then
+                 state :=
+                   match B.decode (B.yojson_of_t !state) with
+                   | Ok s -> s
+                   | Error e -> failwith e);
+              assert (
+                B.check_observation_destination !state
+                  ~observed:observation.destination
+                = Ok ());
+              state := fst (reply !state B.Checkout_ready);
+              assert (
+                B.check_observation_destination !state ~observed:other
+                = Error "publication_destination_changed"))
+            restarts;
+          B.check_observation_destination !state
+            ~observed:observation.destination
+          = Ok ()
+          && B.decode (B.yojson_of_t !state) = Ok !state
+        with _ -> false);
     QCheck2.Test.make ~count:100
       ~name:"BR agent publication rejects every active sequencer"
       Gen.(int_range 0 3)
@@ -903,7 +941,8 @@ let[@warning "-4"] tests =
             | `Assoc fields ->
                 List.concat_map
                   (fun (key, value) ->
-                    if key = "destination" then []
+                    if key = "destination" || key = "observation_destination"
+                    then []
                     else serialized_revisions value)
                   fields
             | `Variant (_, value) ->
@@ -1016,15 +1055,39 @@ let[@warning "-4"] tests =
           B.required_revisions B.empty = []
           && B.required_revisions (repeat B.empty repeats) = [ revision ]
         with _ -> false);
+    QCheck2.Test.make ~count:100
+      ~name:
+        "BR legacy captured source requires destination evidence for polling"
+      Gen.(pair bool string)
+      (fun (captured, suffix) ->
+        let state = if captured then prepared () else fst (request ()) in
+        let rec without_destination = function
+          | `Assoc fields ->
+              `Assoc
+                (List.filter_map
+                   (fun (key, value) ->
+                     if key = "destination" || key = "observation_destination"
+                     then None
+                     else Some (key, without_destination value))
+                   fields)
+          | `List values -> `List (List.map without_destination values)
+          | value -> value
+        in
+        match B.decode (without_destination (B.yojson_of_t state)) with
+        | Error _ -> false
+        | Ok restored ->
+            (B.check_observation_destination restored
+               ~observed:(B.Remote_id.of_destination ("changed/" ^ suffix))
+            =
+            if captured then Error "publication_destination_unrecorded"
+            else Ok ())
+            && B.check_observation_destination B.empty
+                 ~observed:observation.destination
+               = Ok ());
     QCheck2.Test.make ~count:200
       ~name:"BR poll confirmation cannot rebind a captured destination"
       Gen.string (fun suffix ->
         try
-          let operation state =
-            match B.operation state with
-            | Some operation -> operation
-            | None -> failwith "missing fixture operation"
-          in
           let unobserved = fst (request ()) in
           let prepared = prepared () in
           let restored =
@@ -1038,19 +1101,18 @@ let[@warning "-4"] tests =
               (fst (reply restored (B.Needs_diagnosis "test resume")))
           in
           let resumed = fst (B.step stopped B.Resume) in
-          B.check_observation_destination (operation unobserved)
+          B.check_observation_destination unobserved
             ~observed:observation.destination
-          = Error "publication_destination_unconfirmed"
-          && B.check_observation_destination (operation restored)
+          = Ok ()
+          && B.check_observation_destination restored
                ~observed:observation.destination
              = Ok ()
-          && B.check_observation_destination (operation restored)
-               ~observed:other
+          && B.check_observation_destination restored ~observed:other
              = Error "publication_destination_changed"
-          && B.check_observation_destination (operation resumed)
+          && B.check_observation_destination resumed
                ~observed:observation.destination
              = Error "publication_destination_unconfirmed"
-          && B.check_observation_destination (operation resumed) ~observed:other
+          && B.check_observation_destination resumed ~observed:other
              = Error "publication_destination_unconfirmed"
         with _ -> false);
     QCheck2.Test.make

@@ -1357,6 +1357,65 @@ let () =
              (Onton.Persistence.snapshot_to_yojson snap))
           (Some (not merged)))
   in
+  let manual_merge_snapshot =
+    QCheck2.Test.make
+      ~name:"snapshot exports manual merge wait from current readiness"
+      ~count:200
+      QCheck2.Gen.(pair bool bool)
+      (fun (automerge, confirmed) ->
+        let module A = Onton_core.Patch_agent in
+        let main_branch = Branch.of_string "main" in
+        let agent =
+          A.create ~branch:(Branch.of_string "patch") (Patch_id.of_string "1")
+          |> fun a ->
+          A.set_pr_number a (Pr_number.of_int 7) |> fun a ->
+          A.set_base_branch a main_branch |> fun a ->
+          A.set_is_draft a false |> fun a ->
+          A.set_merge_ready a true |> fun a ->
+          A.set_checks_passing a true |> fun a ->
+          A.set_automerge_enabled a automerge
+        in
+        let agent =
+          if confirmed then
+            Onton_core_test_support.Forge_fixture.readiness_agent agent
+          else agent
+        in
+        let gameplan = gameplan_for_agent agent in
+        let initial =
+          Onton.Orchestrator.create ~patches:gameplan.Gameplan.patches
+            ~main_branch
+        in
+        let orchestrator =
+          Onton.Orchestrator.restore
+            ~graph:(Onton.Orchestrator.graph initial)
+            ~agents:(Map.singleton (module Patch_id) agent.patch_id agent)
+            ~outbox:(Map.empty (module Message_id))
+            ~main_branch ()
+        in
+        let snap =
+          {
+            Onton.Runtime.orchestrator;
+            gameplan;
+            activity_log = Onton_core.Activity_log.empty;
+            transcripts = Base.Hashtbl.create (module Patch_id);
+            applied_control_ids = [];
+          }
+        in
+        let check snap =
+          Poly.equal
+            (Onton_core.Json.bool_field "awaiting_manual_merge"
+               (Onton.Persistence.snapshot_to_yojson snap))
+            (Some (confirmed && not automerge))
+        in
+        check snap
+        &&
+        match
+          Onton.Persistence.snapshot_of_yojson
+            (Onton.Persistence.snapshot_to_yojson snap)
+        with
+        | Ok restored -> check restored
+        | Error _ -> false)
+  in
   let malformed_ejection =
     QCheck2.Test.make ~name:"malformed ejection checkpoints fail decoding"
       ~count:100 QCheck2.Gen.string (fun value ->
@@ -1454,6 +1513,7 @@ let () =
         malformed_ejection;
         ejection_roundtrip;
         runnable_snapshot;
+        manual_merge_snapshot;
         intervention_snapshot;
         snapshot_roundtrip;
         metadata_snapshot_roundtrip;

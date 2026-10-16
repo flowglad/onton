@@ -516,6 +516,9 @@ val is_approved : t -> main_branch:Types.Branch.t -> bool
     passing + non-blocking review), not GitHub's [mergeStateStatus]; the merge
     attempt is the final authority on branch-protection specifics. *)
 
+val awaiting_manual_merge : t -> main_branch:Types.Branch.t -> bool
+(** The patch has no remaining work and is ready for an operator to merge. *)
+
 val should_request_review : t -> main_branch:Types.Branch.t -> bool
 
 val increment_ci_failure_count : t -> t

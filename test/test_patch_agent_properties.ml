@@ -9,6 +9,44 @@ let agent id =
 
 let tests =
   [
+    QCheck2.Test.make ~count:400
+      ~name:"manual merge wait requires confirmed readiness and no work"
+      QCheck2.Gen.(int_range 0 10)
+      (fun mutation ->
+        let main = Branch.of_string "main" in
+        let ready =
+          agent "manual" |> fun a ->
+          Patch_agent.set_pr_number a (Pr_number.of_int 7) |> fun a ->
+          Patch_agent.set_base_branch a main |> fun a ->
+          Patch_agent.set_is_draft a false |> fun a ->
+          Patch_agent.set_merge_ready a true |> fun a ->
+          Patch_agent.set_checks_passing a true
+          |> Onton_core_test_support.Forge_fixture.readiness_agent
+        in
+        let current =
+          match mutation with
+          | 0 -> ready
+          | 1 -> Patch_agent.set_automerge_enabled ready true
+          | 2 -> Patch_agent.set_checks_passing ready false
+          | 3 -> Patch_agent.set_merge_ready ready false
+          | 4 -> Patch_agent.set_head_oid ready (Some (String.make 40 'c'))
+          | 5 -> Patch_agent.enqueue ready Operation_kind.Human
+          | 6 -> Patch_agent.set_is_draft ready true
+          | 7 -> Patch_agent.mark_merged ready
+          | 8 -> Patch_agent.set_base_branch ready (Branch.of_string "other")
+          | 9 ->
+              fst
+                (Patch_agent.begin_forge_observation ready
+                   ~request:
+                     (Onton_core_test_support.Forge_fixture.request
+                        "pending-poll"))
+          | _ ->
+              Patch_agent.set_merge_queue_entry ready
+                (Some Pr_state.{ id = "entry"; state = Mq_queued; position = 1 })
+        in
+        Bool.equal
+          (Patch_agent.awaiting_manual_merge current ~main_branch:main)
+          (mutation = 0));
     QCheck2.Test.make ~count:100
       ~name:"base retarget retains each deferred operation purpose and command"
       QCheck2.Gen.(pair (int_range 0 3) bool)
