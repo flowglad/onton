@@ -84,3 +84,20 @@ test("state is rebuilt from the last gameplan-mode entry on the branch and ignor
   assert.deepEqual(fromEntries(entries), newer);
   assert.deepEqual(fromEntries([]), initialState);
 });
+
+
+test("restoration rejects malformed ledger records and duplicate IDs without losing the previous valid entry", () => {
+  const record = resolveDecision(params, { kind: "selected", index: 0 }, now);
+  const valid = recordDecision({ ...initialState, enabled: true }, record);
+  const entry = (data: unknown) => ({ type: "custom", customType: CUSTOM_ENTRY_TYPE, data });
+  const { alternatives: _omitted, ...withoutAlternatives } = record;
+  for (const decisions of [
+    [null], [withoutAlternatives], [{ ...record, alternatives: [null] }],
+    [{ ...record, alternatives: [{ choice: "x" }] }], [{ ...record, kind: "bogus" }],
+    [{ ...record, id: 1 }], [{ ...record, evidence: null }], [record, record],
+  ]) {
+    const malformed = { ...valid, decisions };
+    assert.deepEqual(fromEntries([entry(malformed)]), initialState);
+    assert.deepEqual(fromEntries([entry(valid), entry(malformed)]), valid);
+  }
+});

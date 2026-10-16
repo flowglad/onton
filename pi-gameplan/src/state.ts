@@ -57,6 +57,7 @@ export interface GameplanState {
   gameplanPath?: string;
   /** Set once `gameplan_finalize` succeeds. */
   finalizedPath?: string;
+  finalizedDigest?: string;
 }
 
 export const CUSTOM_ENTRY_TYPE = "gameplan-mode";
@@ -94,7 +95,25 @@ export function fromEntries(entries: readonly { type: string; customType?: strin
 function isGameplanState(value: unknown): value is GameplanState {
   if (typeof value !== "object" || value === null) return false;
   const v = value as Record<string, unknown>;
-  return typeof v.enabled === "boolean" && typeof v.gameplanDir === "string" && Array.isArray(v.decisions);
+  const optionalString = (key: string) => v[key] === undefined || typeof v[key] === "string";
+  if (!(typeof v.enabled === "boolean" && typeof v.gameplanDir === "string"
+    && Array.isArray(v.decisions) && v.decisions.every(isDecisionRecord)
+    && ["gameplanPath", "finalizedPath", "finalizedDigest"].every(optionalString)
+    && (v.toolsBeforeMode === undefined || (Array.isArray(v.toolsBeforeMode) && v.toolsBeforeMode.every((t) => typeof t === "string"))))) return false;
+  return new Set(v.decisions.map((d: DecisionRecord) => d.id)).size === v.decisions.length;
+}
+
+function isDecisionRecord(value: unknown): value is DecisionRecord {
+  if (typeof value !== "object" || value === null) return false;
+  const v = value as Record<string, unknown>;
+  return ["id", "topic", "question", "choice", "evidence", "recordedAt"].every((key) => typeof v[key] === "string")
+    && (v.kind === "engineer_approved" || v.kind === "delegated" || v.kind === "unresolved")
+    && (v.reason === undefined || typeof v.reason === "string")
+    && Array.isArray(v.alternatives) && v.alternatives.every((a: unknown) => {
+      if (typeof a !== "object" || a === null) return false;
+      const option = a as Record<string, unknown>;
+      return typeof option.choice === "string" && typeof option.tradeoffs === "string";
+    });
 }
 
 function quote(text: string): string {

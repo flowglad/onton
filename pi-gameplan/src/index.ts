@@ -11,8 +11,8 @@
  *   agent-asserted `constrained` decisions, formats the file, and records the result.
  */
 
-import { mkdtemp, open, readFile, rm, writeFile } from "node:fs/promises";
-import { constants, existsSync, readFileSync } from "node:fs";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { existsSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { relative, resolve } from "node:path";
@@ -21,7 +21,8 @@ import { Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import { parse as parseYaml } from "yaml";
 import { auditDecisions, type AuditResult } from "./audit.js";
-import { resolveGameplanWrite } from "./files.js";
+import { createHash } from "node:crypto";
+import { commitGameplan, resolveGameplanWrite } from "./files.js";
 import { isGameplanWrite } from "./guard.js";
 import { ASK_USER_TOOL, answerFromAskUser, buildAskUserRequest, fitsAskUser } from "./ask.js";
 import {
@@ -122,6 +123,27 @@ export default function gameplan(pi: ExtensionAPI) {
     pi.appendEntry(CUSTOM_ENTRY_TYPE, state);
   }
 
+  function digest(text: string): string {
+    return createHash("sha256").update(text).digest("hex");
+  }
+
+  function clearFinalized(ctx: ExtensionContext): void {
+    if (!state.finalizedPath) return;
+    state = { ...state, finalizedPath: undefined, finalizedDigest: undefined };
+    persist();
+    updateStatus(ctx);
+  }
+
+  async function refreshFinalized(ctx: ExtensionContext): Promise<void> {
+    if (!state.finalizedPath) return;
+    try {
+      const text = await readFile(resolve(ctx.cwd, state.finalizedPath), "utf8");
+      if (digest(text) !== state.finalizedDigest) clearFinalized(ctx);
+    } catch {
+      clearFinalized(ctx);
+    }
+  }
+
   function updateStatus(ctx: ExtensionContext): void {
     if (!state.enabled) {
       ctx.ui.setStatus("gameplan", undefined);
@@ -183,23 +205,30 @@ export default function gameplan(pi: ExtensionAPI) {
     const existing = existsSync(abs) ? await readFile(abs, "utf8") : undefined;
     const doc = loadGameplanDocument(existing);
     mutate(doc);
-    // Refuse a file symlink even if the leaf changed since the initial path check.
-    const file = await open(abs, constants.O_WRONLY | constants.O_CREAT | constants.O_TRUNC | constants.O_NOFOLLOW, 0o666);
-    try {
-      await file.writeFile(renderDocument(doc), "utf8");
-    } finally {
-      await file.close();
-    }
-    await resolveGameplanWrite(ctx.cwd, state.gameplanDir, path);
-    const formatted = await runFormatter((c, a, o) => pi.exec(c, a, o), skill, python, abs, { cwd: ctx.cwd, signal });
+    const formatted = await formatText(ctx, renderDocument(doc), signal);
+    await commitGameplan(abs, formatted.text, existing);
+    clearFinalized(ctx);
     rememberGameplanPath(path);
     return {
       path,
-      formatting: formatted.ok ? undefined : formatted.error,
+      formatting: formatted.error,
       missing: missingSections(doc, validator().sections),
       unwrittenPatches: unwrittenReferencedPatches(doc),
       patches: patchCount(doc),
     };
+  }
+
+  /** Only a private temporary copy is ever handed to the formatter. */
+  async function formatText(ctx: ExtensionToolContext, text: string, signal: AbortSignal | undefined): Promise<{ text: string; error?: string }> {
+    const dir = await mkdtemp(join(tmpdir(), "pi-gameplan-format-"));
+    try {
+      const path = join(dir, "gameplan.yaml");
+      await writeFile(path, text, "utf8");
+      const result = await runFormatter((c, a, o) => pi.exec(c, a, o), skill, python, path, { cwd: ctx.cwd, signal });
+      return result.ok ? { text: await readFile(path, "utf8") } : { text, error: result.error };
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
   }
 
   function describeWrite(
@@ -242,6 +271,7 @@ export default function gameplan(pi: ExtensionAPI) {
       return ["on", "off", "status", "dir"].filter((v) => v.startsWith(prefix)).map((value) => ({ value, label: value }));
     },
     async handler(args, ctx) {
+      await refreshFinalized(ctx);
       const [action = "", ...rest] = args.trim().split(/\s+/);
       switch (action) {
         case "":
@@ -284,11 +314,17 @@ export default function gameplan(pi: ExtensionAPI) {
   pi.on("tool_call", async (event, ctx) => {
     if (!state.enabled || !WRITE_TOOLS.has(event.toolName)) return;
     const target = String((event.input as { path?: unknown }).path ?? "");
-    if (isGameplanWrite(ctx.cwd, state.gameplanDir, target)) rememberGameplanPath(relative(ctx.cwd, resolve(ctx.cwd, target)));
+    if (isGameplanWrite(ctx.cwd, state.gameplanDir, target)) {
+      if (state.finalizedPath && resolve(ctx.cwd, target) === resolve(ctx.cwd, state.finalizedPath)) clearFinalized(ctx);
+      rememberGameplanPath(relative(ctx.cwd, resolve(ctx.cwd, target)));
+    }
   });
 
+  pi.on("tool_result", async (_event, ctx) => { await refreshFinalized(ctx); });
+
   // Context for every user-started run while the mode is on.
-  pi.on("before_agent_start", async (event) => {
+  pi.on("before_agent_start", async (event, ctx) => {
+    await refreshFinalized(ctx);
     if (!state.enabled || event.messageType !== "user") return;
     const ledger =
       state.decisions.length === 0
@@ -513,7 +549,7 @@ ${ledger}`,
     promptGuidelines: [
       "Write every spec with gameplan_write_spec so pant parses it before it lands.",
       "pant cannot construct, compare, or test membership of a sum-typed value (`A + B`): a rule returning a sum can appear in no proposition, so `decode d in Malformed` and `decode d = m` are type errors. Model an outcome as a domain with one nullary rule per arm (`Outcome. ok => Outcome. invalid => Outcome.`), assert the arms distinct (`ok ~= invalid.`), close the domain (`all x: Outcome | x = ok or x = invalid.`), and constrain the rule with `cond … , true => …` over those values.",
-      "Use check: true for specs with cond case analysis or outcome enums. Put enum assertions after the chapter separator. The default pant bound is 3; an isolated closed two-arm enum needs a separate pant --check --bound 2 run to avoid a domain-size contradiction.",
+      "Use check: true for specs with cond case analysis or outcome enums. Put enum assertions after the chapter separator. The default pant bound is 3; an isolated closed two-arm enum needs an isolated enum-only pant --check --bound 2 run to avoid a domain-size contradiction. This bound limits every domain; a whole-spec bound-2 pass can miss larger counterexamples and must be reported as reduced coverage.",
     ],
     executionMode: "sequential",
     parameters: Type.Object({
@@ -721,8 +757,8 @@ ${ledger}`,
       requireMode();
       if (!ctx.hasUI) throw new Error("gameplan_finalize needs an interactive engineer; no UI is available.");
       const params = { path: resolveGameplanPath(rawParams.path) };
-      rememberGameplanPath(params.path);
       const finalPath = await resolveGameplanWrite(ctx.cwd, state.gameplanDir, params.path);
+      rememberGameplanPath(params.path);
       const approvedText = await readFile(finalPath, "utf8");
       const before = await check(ctx, finalPath, signal);
       const summary = summarize(before);
@@ -758,9 +794,10 @@ ${ledger}`,
       if (await readFile(finalPath, "utf8") !== approvedText) {
         throw new Error("Cannot finalize; the gameplan changed during confirmation. Review it and finalize again.");
       }
-      await resolveGameplanWrite(ctx.cwd, state.gameplanDir, params.path);
-      const formatted = await runFormatter((c, a, o) => pi.exec(c, a, o), skill, python, finalPath, { cwd: ctx.cwd, signal });
-      if (!formatted.ok) throw new Error(`Formatter failed: ${formatted.error}`);
+      const formatted = await formatText(ctx, approvedText, signal);
+      if (formatted.error) throw new Error(`Formatter failed: ${formatted.error}`);
+      await commitGameplan(finalPath, formatted.text, approvedText);
+      clearFinalized(ctx);
       const after = await check(ctx, finalPath, signal);
       const final = summarize(after);
       if (!final.ok) throw new Error(`Validation failed after formatting:\n${final.text}`);
@@ -775,7 +812,7 @@ ${ledger}`,
       if (JSON.stringify(parseYaml(finalText)) !== JSON.stringify(parseYaml(approvedText))) {
         throw new Error("Cannot finalize; the document changed after confirmation. Review and finalize again.");
       }
-      state = { ...state, finalizedPath: params.path };
+      state = { ...state, finalizedPath: params.path, finalizedDigest: digest(finalText) };
       persist();
       updateStatus(ctx);
       const abs = resolve(ctx.cwd, params.path);
@@ -793,6 +830,7 @@ ${ledger}`,
 
   pi.on("session_start", async (_event, ctx) => {
     state = fromEntries(ctx.sessionManager.getBranch());
+    await refreshFinalized(ctx);
     if (pi.getFlag("gameplan") === true && !state.enabled) {
       state = { ...state, enabled: true, toolsBeforeMode: pi.getActiveTools() };
       persist();

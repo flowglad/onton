@@ -15,6 +15,7 @@ async function fixture(run: (f: {
   ctx: ExtensionToolContext;
   path: string;
   saved: { gameplanPath?: string; finalizedPath?: string }[];
+  emit: (event: string, input?: unknown) => Promise<unknown>;
   onConfirm: (fn: (index: number) => Promise<boolean>) => void;
   onExec: (fn: (command: string, args: string[]) => Promise<void>) => void;
 }) => Promise<void>) {
@@ -54,6 +55,7 @@ async function fixture(run: (f: {
     await run({
       call: (name, params) => tools.get(name)!.execute("test", params, undefined, undefined, ctx),
       ctx, path, saved,
+      emit: async (event, input = {}) => events.get(event)?.(input, ctx),
       onConfirm: (fn) => { confirm = fn; }, onExec: (fn) => { exec = fn; },
     });
   } finally { await rm(dir, { recursive: true, force: true }); }
@@ -112,10 +114,12 @@ test("post-format open questions and changed constraints cannot finalize", async
     await fixture(async ({ call, path, saved, onExec }) => {
       onExec(async (_command, args) => {
         if (!args.some((a) => a.endsWith("format_yaml.py"))) return;
-        const doc = parse(await readFile(path, "utf8"));
+        const temporary = args[args.indexOf("--in-place") - 1]!;
+        assert.notEqual(temporary, path);
+        const doc = parse(await readFile(temporary, "utf8"));
         if (mutation === "questions") doc.openQuestions = ["Added during formatting"];
         else doc.architectureDesign.decisions = [{ id: "AD-C", question: "New?", choice: "Yes", resolution: { kind: "constrained", evidence: "New constraint" } }];
-        await writeFile(path, stringify(doc));
+        await writeFile(temporary, stringify(doc));
       });
       await assert.rejects(call("gameplan_finalize", { path }), mutation === "questions" ? /open questions/ : /constrained decisions changed/);
       assert.ok(saved.every((s) => !s.finalizedPath));
@@ -128,4 +132,50 @@ test("an unchanged approved document finalizes", async () => {
     await call("gameplan_finalize", { path });
     assert.equal(saved.at(-1)!.finalizedPath, path);
   });
+});
+
+
+test("formatter-time symlink swaps never overwrite outside files for writes or finalize", async () => {
+  for (const tool of ["gameplan_write", "gameplan_finalize"]) {
+    await fixture(async ({ call, ctx, path, saved, onExec }) => {
+      const outside = join(ctx.cwd, "outside.yaml");
+      await writeFile(outside, "outside must survive");
+      onExec(async (_command, args) => {
+        if (!args.some((a) => a.endsWith("format_yaml.py"))) return;
+        const temporary = args[args.indexOf("--in-place") - 1]!;
+        assert.notEqual(temporary, path);
+        await rm(path);
+        await symlink(outside, path);
+        // Emulate the formatter reopening its input with a symlink-following write.
+        await writeFile(temporary, await readFile(temporary, "utf8"));
+      });
+      await assert.rejects(call(tool, { path, sections: { problemStatement: "Updated" } }), /ELOOP/);
+      assert.equal(await readFile(outside, "utf8"), "outside must survive");
+      assert.ok(saved.every((s) => !s.finalizedPath));
+    });
+  }
+});
+
+test("a refused finalize path does not replace the remembered gameplan", async () => {
+  await fixture(async ({ call, path, saved }) => {
+    await call("gameplan_write", { path, sections: { problemStatement: "Original" } });
+    await assert.rejects(call("gameplan_finalize", { path: "../outside.yaml" }), /Refusing/);
+    assert.equal(saved.at(-1)!.gameplanPath, path);
+  });
+});
+
+test("tool writes and detected hand edits clear finalization", async () => {
+  for (const change of ["tool", "write", "edit", "shell", "external"]) {
+    await fixture(async ({ call, path, saved, emit }) => {
+      await call("gameplan_finalize", { path });
+      assert.equal(saved.at(-1)!.finalizedPath, path);
+      if (change === "tool") await call("gameplan_write", { path, sections: { problemStatement: "Updated" } });
+      else if (change === "write" || change === "edit") await emit("tool_call", { toolName: change, input: { path } });
+      else {
+        await writeFile(path, (await readFile(path, "utf8")) + "\n# hand edit\n");
+        await emit(change === "shell" ? "tool_result" : "before_agent_start", { messageType: "user" });
+      }
+      assert.equal(saved.at(-1)!.finalizedPath, undefined, change);
+    });
+  }
 });

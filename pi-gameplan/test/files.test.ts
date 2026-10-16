@@ -3,7 +3,7 @@ import { test } from "node:test";
 import { mkdtemp, mkdir, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { resolveGameplanWrite } from "../src/files.js";
+import { commitGameplan, resolveGameplanWrite } from "../src/files.js";
 
 test("writes use the canonical configured root and reject file symlinks, including dangling links", async () => {
   const dir = await mkdtemp(join(tmpdir(), "gameplan-path-"));
@@ -26,4 +26,19 @@ test("writes use the canonical configured root and reject file symlinks, includi
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
+});
+
+
+test("descriptor commits create files, replace complete contents and refuse concurrent changes", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "gameplan-commit-"));
+  const path = join(dir, "plan.yaml");
+  try {
+    await commitGameplan(path, "a long original document", undefined);
+    assert.equal(await readFile(path, "utf8"), "a long original document");
+    await commitGameplan(path, "short", "a long original document");
+    assert.equal(await readFile(path, "utf8"), "short");
+    await assert.rejects(commitGameplan(path, "overwrite", "stale"), /changed before commit/);
+    await assert.rejects(commitGameplan(path, "overwrite", undefined), /EEXIST/);
+    assert.equal(await readFile(path, "utf8"), "short");
+  } finally { await rm(dir, { recursive: true, force: true }); }
 });

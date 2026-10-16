@@ -179,5 +179,5 @@ npm test                                  # unit tests; validator integration ru
 ```
 
 The configured gameplan directory may be a symlink; its canonical directory is the write
-root. Gameplan file symlinks are rejected, including links within that root. Tool writes
+root. Gameplan tool writes reject file symlinks, including links within that root. Tool writes
 accept only direct `.yaml` or `.yml` children.
