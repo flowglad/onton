@@ -899,6 +899,16 @@ let snapshot_to_yojson (snap : Runtime.snapshot) =
     [
       ("version", `Int 2);
       ("runnable", `Bool runnable);
+      ( "awaiting_manual_merge",
+        `Bool
+          (let agents = Orchestrator.all_agents snap.orchestrator in
+           (not (List.is_empty agents))
+           && List.exists agents ~f:(fun agent -> not agent.Patch_agent.merged)
+           && List.for_all agents ~f:(fun agent ->
+               agent.Patch_agent.merged
+               || Patch_agent.awaiting_manual_merge agent
+                    ~main_branch:(Orchestrator.main_branch snap.orchestrator)))
+      );
       ("orchestrator", orchestrator_to_yojson snap.orchestrator);
       ("activity_log", activity_log_to_yojson snap.activity_log);
       ("gameplan", Gameplan.yojson_of_t snap.gameplan);

@@ -268,6 +268,7 @@ type publication_identity = { operation_id : int; revision : Commit.t }
 [@@deriving eq, compare, sexp_of, yojson]
 
 type t = {
+  observation_destination : remote_binding; [@yojson.default Unobserved_remote]
   worktree_hook : Worktree_hook.t; [@yojson.default Worktree_hook.empty]
   forge_observations : Forge_observation.history;
       [@yojson.default Forge_observation.empty_history]
@@ -359,6 +360,7 @@ let command_allowed_for_purpose purpose kind =
 
 let empty =
   {
+    observation_destination = Unobserved_remote;
     worktree_hook = Worktree_hook.empty;
     forge_observations = Forge_observation.empty_history;
     legacy_revisions = [];
@@ -582,6 +584,7 @@ let required_revisions t =
         head :: merge captured
   in
   let {
+    observation_destination = _;
     worktree_hook = _;
     forge_observations = _;
     legacy_revisions;
@@ -693,12 +696,12 @@ let publication_destination urls =
   | [] | [ _ ] -> Error "missing_push_destination"
   | _ :: _ :: _ -> Error "multiple_push_destinations"
 
-let check_observation_destination (op : operation) ~observed =
-  match op.destination with
+let check_observation_destination t ~observed =
+  match t.observation_destination with
+  | Unobserved_remote -> Ok ()
   | Bound_remote expected when Remote_id.equal expected observed -> Ok ()
   | Bound_remote _ -> Error "publication_destination_changed"
-  | Unobserved_remote | Reconfirm_remote _ ->
-      Error "publication_destination_unconfirmed"
+  | Reconfirm_remote _ -> Error "publication_destination_unconfirmed"
 
 let check_destination (op : operation) ~observed =
   match op.destination with
@@ -2442,7 +2445,18 @@ let step t event =
     Option.filter next.observed_publication
       ~f:(retains_publication_observation next)
   in
-  ({ next with observed_publication }, effects)
+  (* Checkout inspection has no publication destination. Retain the owner's
+     verified identity across such operations, but explicit reinspection revokes
+     it until the owner confirms the destination again. *)
+  let observation_destination =
+    match next.active with
+    | Some { destination = (Bound_remote _ | Reconfirm_remote _) as binding; _ }
+      ->
+        binding
+    | None | Some { destination = Unobserved_remote; _ } ->
+        next.observation_destination
+  in
+  ({ next with observed_publication; observation_destination }, effects)
 
 let integration_result (op : operation) ~candidate ~target_preserved
     ~source_preserved =
@@ -2736,6 +2750,22 @@ let decode json =
                  | _ -> (key, value)))
     | _ -> json
   in
+  let json =
+    match json with
+    | `Assoc fields
+      when not
+             (List.Assoc.mem fields "observation_destination"
+                ~equal:String.equal) ->
+        let binding =
+          Option.bind (Json.field "active" json) ~f:(Json.field "destination")
+        in
+        `Assoc
+          (( "observation_destination",
+             Option.value binding
+               ~default:(yojson_of_remote_binding Unobserved_remote) )
+          :: fields)
+    | _ -> json
+  in
   let legacy_policy =
     Option.is_none
       (Option.bind (Json.field "active" json)
@@ -2872,6 +2902,14 @@ let decode json =
   let decoded =
     match Json.try_of_yojson t_of_yojson json with
     | Error message -> Error message
+    | Ok t
+      when not
+             (match t.observation_destination with
+             | Unobserved_remote -> true
+             | Bound_remote identity -> Remote_id.valid identity
+             | Reconfirm_remote previous ->
+                 Option.for_all previous ~f:Remote_id.valid) ->
+        Error "invalid observation destination"
     | Ok t -> (
         let t =
           {

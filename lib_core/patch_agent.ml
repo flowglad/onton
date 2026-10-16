@@ -635,6 +635,13 @@ let is_approved_modulo_merge_ready t ~main_branch =
 let is_approved t ~main_branch =
   t.merge_ready && is_approved_modulo_merge_ready t ~main_branch
 
+let awaiting_manual_merge t ~main_branch =
+  Option.is_none
+    (Forge_observation.pending_request
+       (Branch_reconcile.forge_observations t.branch_reconcile))
+  && (not t.merged) && (not t.automerge_enabled) && is_approved t ~main_branch
+  && t.checks_passing && List.is_empty t.queue
+
 let should_request_review t ~main_branch =
   has_pr t
   && forge_revision_pair_confirmed t

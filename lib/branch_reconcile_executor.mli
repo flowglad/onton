@@ -4,14 +4,14 @@
 type io = { git : string list -> int * string * string }
 
 val remote_head :
-  ?operation:Branch_reconcile.operation ->
+  ?owner:Branch_reconcile.t ->
   io ->
   branch:string ->
   (Branch_reconcile.Commit.t option, string) result
 (** Observe the configured push destination directly without changing tracking
-    refs. When an operation is supplied, reject a changed or unconfirmed
-    destination before probing the remote. A missing ref is [Ok None]; a failed
-    probe is [Error]. *)
+    refs. When an owner is supplied, reject changes to its captured destination
+    before probing the remote. A missing ref is [Ok None]; a failed probe is
+    [Error]. *)
 
 val remote_base :
   io -> branch:string -> (Branch_reconcile.Commit.t option, string) result

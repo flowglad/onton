@@ -524,6 +524,11 @@ is unavailable. Once available, simgit's public `list --json` mode
 identifies its checkouts, including `git-checkout` fallback, without an Onton
 ownership record.
 
+The reconciliation owner retains the verified push destination across checkout
+inspection and restart. Provisioning a checkout does not revoke forge head
+confirmation. A changed destination is rejected until owned reinspection confirms
+it; polling cannot rebind it.
+
 Both backends retain Onton's branch/start-point rules, checkout paths, creation
 hooks, and normal Git fetch/rebase/push behavior. Simgit checkouts are persistent
 and use its normal CoW/fallback selection; Onton logs the resulting storage mode.
