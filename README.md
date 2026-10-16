@@ -49,6 +49,11 @@ This symlinks each skill into `~/.claude/skills/` and installs a git
 after branch switches. Running `./scripts/sync-skills.sh` directly has the
 same effect without installing the hook.
 
+For [Pi](https://pi.dev) users, `pi-gameplan/` is an extension that runs the
+write-gameplan skill as a mode: engineer-answered architecture decisions,
+schema-validated writes, pant-checked specs, and a finalize gate. See
+[`pi-gameplan/README.md`](pi-gameplan/README.md).
+
 ## Onton: the orchestrator
 
 Onton parses a structured gameplan, builds a dependency graph, and spawns

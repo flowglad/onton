@@ -1,4 +1,8 @@
 #!/usr/bin/env python3
+# /// script
+# requires-python = ">=3.10"
+# dependencies = ["PyYAML>=6.0", "jsonschema>=4.0", "ruamel.yaml>=0.18,<0.19"]
+# ///
 """Validate a gameplan.
 
 Runs every check enumerated in SKILL.md's Verification section that can be

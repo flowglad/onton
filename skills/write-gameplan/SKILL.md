@@ -1,6 +1,10 @@
 ---
 name: write-gameplan
 description: Create or update a structured YAML gameplan for a codebase change, including owned guarantees, derived patch dependencies, acceptance criteria, and formal per-patch and final-state specs. Use when the user asks for a gameplan, implementation plan, milestone plan, or structured change plan.
+compatibility: Requires Python 3 with scripts/requirements.txt, pant 0.22+, and web fetch/search tools (Claude Code built-ins, or the pi-web-access package in Pi). LSP navigation, subagents, and a structured ask-user tool improve grounding and consultation but are optional.
+metadata:
+  pi-requires: "npm:pi-web-access: fetch_content web_search"
+  pi-recommends: "npm:pi-lens: lsp_navigation ast_grep_search; npm:pi-subagents: subagent; npm:@hank-warren/pi-ask-user-question: ask_user_question"
 ---
 
 # Write Gameplan
@@ -288,8 +292,8 @@ The per-patch `spec` is the **sole source of truth for the behavioral contract**
 
 A spec is complete when, for every rule it introduces or changes, the contract is **total over that rule's input domain**. In Pantagruel:
 
-- **Fallible results are sum types with every arm covered.** If a grounded function can fail, model the result as a sum (`Outcome = Ok + RateLimited + Invalid.`) and constrain the rule into the whole sum — never spec only the success arm. The failure arms must match the real error union you grounded in the code, not a guessed subset.
-- **Case analysis is exhaustive.** Use `cond … , true => …` so the final arm closes coverage; `pant --check` flags a `cond` whose arms miss inputs. Every variant of a grounded enum/sum is handled or explicitly excluded.
+- **Fallible results are outcome enums with every arm covered.** If a grounded function can fail, model the result as a domain with one nullary rule per arm (`Outcome. ok => Outcome. rate-limited => Outcome. invalid => Outcome.`), assert the arms distinct (`ok ~= rate-limited and rate-limited ~= invalid and ok ~= invalid.`), close the domain (`all x: Outcome | x = ok or x = rate-limited or x = invalid.`), and constrain the rule over every arm — never spec only the success arm. Do not use a sum type (`Ok + RateLimited + Invalid`) for this: pant cannot construct, compare, or test membership of a sum-typed value, so no proposition can mention such a rule's result. The failure arms must match the real error union you grounded in the code, not a guessed subset. Put distinctness and closure assertions after the chapter separator (`---`). The installed Pantagruel checker uses the bound as the domain size: an isolated closed two-arm enum needs `--bound 2`; at the default bound 3 its closure is contradictory. The bound applies to every domain, so lowering it for the whole spec can hide counterexamples needing three or more elements. Isolate the enum satisfiability check in a small spec, or explicitly document the reduced coverage of other domains; do not treat a bound-2 pass as evidence of larger-domain correctness.
+- **Case analysis is exhaustive.** Use `cond … , true => …` so the final arm closes coverage; `pant --check` flags a `cond` whose arms miss inputs. Every arm of a grounded enum is handled or explicitly excluded.
 - **Partiality is a written precondition, not an omission.** A rule with no guard asserts totality (`owner d: Document => User.`); if a rule is partial, the guard *is* the precondition (`f x: T, valid? x => …`) — write it so "what must hold of the input" is on the page. A missing guard is a claim of totality; mean it.
 - **Inverse and sibling operations are specified together.** Spec `create` ⇒ say what `update`/`delete` do (or that they are structurally rejected); spec `add` ⇒ `remove`. Declaring one member of an operation family and leaving the rest to the implementer is the single most common omission.
 - **Invariants quantify over the whole domain.** A property that must hold at several sites (every place a secret is logged, every consumer of a changed row) is `all x: Site | …`, not an assertion about one representative — the universal *is* the claim that no site is unhandled.
@@ -601,7 +605,7 @@ YAML validation also checks canonical formatting without rewriting the file. For
 
 It exits 0 on PASS and 1 with explicit error lines on FAIL. Fix every reported error; do not ship a gameplan that has validator failures or WARNs.
 
-Install the Python dependencies with `python3 -m pip install -r scripts/requirements.txt`, and install `pant` so nothing is skipped:
+The scripts carry inline dependency metadata, so `uv run scripts/validate.py <path>` (and `uv run scripts/format_yaml.py ...`) needs no installation. Without `uv`, install the Python dependencies with `python3 -m pip install -r scripts/requirements.txt`. Install `pant` so nothing is skipped:
 - `PyYAML` — required to read YAML gameplans.
 - `ruamel.yaml` — required for YAML formatting and its validation check.
 - `jsonschema` (pip) — enables JSON Schema shape validation. Without it, only semantic checks run.
@@ -699,15 +703,15 @@ We use [Pantagruel](https://github.com/subsetpark/pantagruel) — a language for
 
 - **Language reference**: `https://raw.githubusercontent.com/subsetpark/pantagruel/refs/heads/master/REFERENCE.md` — fetch this for syntax details
 - **Parse validation**: covered by `scripts/validate.py` (see [Verification](#verification)). Bare `pant <file.pant>` type-checks; exit 0 = well-formed; on 0.22, success is silent.
-- **SMT verification (optional)**: `pant --check <file.pant>` runs SMT-based invariant/precondition checks (requires `z3` or `cvc5`). Use this to catch contradictions, unreachable states, and violated invariants — not a replacement for the parse check. Run it whenever a per-patch spec uses `cond` case analysis or sum-type coverage, to confirm the contract is total over its input domain (see [Complete the contract in the spec](#complete-the-contract-in-the-spec)). `--bound N` sets the domain-element bound (default 3); `--solver z3|cvc5` picks a solver. The validator does not run `--check`; invoke it manually when you want SMT coverage.
-- **Module naming**: final-state spec uses `<PROJECT_NAME>` (e.g., `EXTRACT_DECISION`); per-patch specs use `<PROJECT_NAME>_PATCH_<N>`
+- **SMT verification (optional)**: `pant --check <file.pant>` runs SMT-based invariant/precondition checks (requires `z3` or `cvc5`). Use this to catch contradictions, unreachable states, and violated invariants — not a replacement for the parse check. Run it whenever a per-patch spec uses `cond` case analysis or an outcome enum, to confirm the contract is total over its input domain (see [Complete the contract in the spec](#complete-the-contract-in-the-spec)). `--bound N` sets the domain-element bound (default 3); `--solver z3|cvc5` picks a solver. The validator does not run `--check`; invoke it manually when you want SMT coverage.
+- **Module naming**: derive `<PROJECT_NAME>` by uppercasing `projectName` and replacing each run of non-alphanumeric characters with `_` (trim leading/trailing `_`). The final-state spec uses `<PROJECT_NAME>` (e.g., `EXTRACT_PATCH_DECISION` for `extract-patch-decision`); per-patch specs use `<PROJECT_NAME>_PATCH_<N>`
 - **Style**:
   - Progressive disclosure (top-down chapter structure); keep per-patch specs self-contained (redeclare referenced domains/rules rather than importing)
   - **Uppercase** identifiers are domains/types (`Patch`, `Disposition`); **lowercase** identifiers are rules/values (`disposition`, `skip`), optionally suffixed with `?` or `!`
   - Enum-like values are best modelled as nullary lowercase rules returning the domain: `skip => Disposition.` (not `Skip => Disposition.` — uppercase rule names will not parse)
   - Rules with multiple parameters use **comma-separated typed params**, not arrows: `inline-decisions rf: RunnerFiber, p: Patch => Nat0.` (not `rf: RunnerFiber -> Patch => Nat0.`)
   - Every chapter needs at least one declaration in its head before the `---` separator; if a patch introduces no new invariants, redeclare the prior chapter's domains/rules so the module is self-contained
-  - Make contracts total: model fallible results as sum types (`Outcome = Ok + RateLimited.`) and constrain the rule across all arms; close `cond` case analysis with a final `true => …` arm; declare rules total (no guard) unless partiality is intended, where the guard states the precondition. See [Complete the contract in the spec](#complete-the-contract-in-the-spec)
+  - Make contracts total: model fallible results as outcome enums (`Outcome. ok => Outcome. rate-limited => Outcome. ok ~= rate-limited. all x: Outcome | x = ok or x = rate-limited.`) and constrain the rule across all arms — never as sum types, which pant cannot construct or inspect; close `cond` case analysis with a final `true => …` arm; declare rules total (no guard) unless partiality is intended, where the guard states the precondition. See [Complete the contract in the spec](#complete-the-contract-in-the-spec)
 
 ### Using a different spec language
 
