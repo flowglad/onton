@@ -187,7 +187,11 @@ let run_case env ~request_count ~ancestry ~skip =
                   | None ->
                       oracle_errors :=
                         "cannot resolve repository root" :: !oracle_errors);
-                  if not (Int.equal (String.length ancestor) 40) then
+                  if
+                    not
+                      (Int.equal (String.length ancestor) 40
+                      || String.equal ancestor "main")
+                  then
                     oracle_errors :=
                       "malformed fixture merge SHA" :: !oracle_errors;
                   if not (String.equal descendant "b") then
@@ -353,7 +357,7 @@ let run_case env ~request_count ~ancestry ~skip =
                 (Int.equal !ancestor_calls
                    (match ancestry with
                    | Present -> 1
-                   | Absent | Unavailable -> 2));
+                   | Absent | Unavailable -> 4));
               Runtime.read runtime (fun snap ->
                   let orch = snap.Runtime.orchestrator in
                   let child =

@@ -31,9 +31,10 @@ val contains_merged_siblings :
 
     - [true] when the patch's structurally-correct base ([Graph.initial_base])
       is [main] (every merged dep is already a squash commit on main), or when
-      every merged dependency's [merge_sha] is an ancestor of the base branch;
-    - [false] (fail-closed) when any merged dependency's [merge_sha] is unknown
-      ([None]) or is not yet an ancestor of the base branch;
+      every merged dependency's [merge_sha] is an ancestor of the base branch,
+      or the base contains the current terminal branch;
+    - [false] when dependency containment is unknown and the base does not
+      contain the terminal branch; this requests repair through the frontier;
     - [false] when the patch has more than one open dependency (not at the
       last-but-one-merge edge; the value is irrelevant because the patch defers
       on dependency satisfaction anyway, and [Graph.initial_base] is undefined
@@ -76,13 +77,12 @@ val stale_chain_rebase_target :
     redundant rebase of already-fresh layers.
 
     Returns [None] when: [patch_id] is not at the last-but-one-merge edge (no
-    open dep, or more than one); there are no merged deps; a merged dep's
-    [merge_sha] is unknown (fail-closed); the whole chain already contains the
-    squashes; or the chain is interrupted by a layer with more than one open dep
-    (the squash cannot flow past that fan-in until its own merges land —
-    fail-closed, re-derived on a later tick). Whether the returned target is
-    actually rebasable (holds a PR, no [Rebase] already queued) is the caller's
-    concern ([base_rebasable] in the detector). *)
+    open dep, or more than one); there are no merged deps; the whole chain
+    already contains the contributions; or the chain is interrupted by a layer
+    with more than one open dep (the squash cannot flow past that fan-in until
+    its own merges land — fail-closed, re-derived on a later tick). Whether the
+    returned target is actually rebasable (holds a PR, no [Rebase] already
+    queued) is the caller's concern ([base_rebasable] in the detector). *)
 
 val contains_merged_siblings_with_mode :
   mode:Execution_mode.t ->
@@ -92,8 +92,22 @@ val contains_merged_siblings_with_mode :
   merge_sha:(Types.Patch_id.t -> string option) ->
   branch_of:(Types.Patch_id.t -> Types.Branch.t) ->
   main:Types.Branch.t ->
+  agent_of_branch:(Types.Branch.t -> Patch_agent.t option) ->
+  revision_of_branch:(Types.Branch.t -> string option) ->
   ancestor_oracle:(string -> descendant:string -> bool) ->
   bool
+(** Mode-aware containment uses the integration terminal as the content source:
+    main for mainline/publication/root patches, the feature root for
+    descendants. A base equal to the terminal contains all merged dependencies
+    by the mode's merge contract, even when a root rebase has rewritten their
+    original SHAs. An intermediate base must contain either every recorded
+    dependency SHA, the current terminal branch (direct Git ancestry), or an
+    owner integration receipt targeting the current terminal revision. Missing
+    SHAs request repair from the terminal; owner receipts accept completion
+    without requiring the repaired output to preserve the old ancestry.
+    [revision_of_branch] supplies the current terminal revision when it has no
+    patch owner (mainline uses the origin fetch destination). More than one open
+    dependency always returns false. *)
 
 val stale_chain_rebase_target_with_mode :
   mode:Execution_mode.t ->
@@ -103,5 +117,11 @@ val stale_chain_rebase_target_with_mode :
   merge_sha:(Types.Patch_id.t -> string option) ->
   branch_of:(Types.Patch_id.t -> Types.Branch.t) ->
   main:Types.Branch.t ->
+  agent_of_branch:(Types.Branch.t -> Patch_agent.t option) ->
+  revision_of_branch:(Types.Branch.t -> string option) ->
   ancestor_oracle:(string -> descendant:string -> bool) ->
   Types.Patch_id.t option
+(** Uses the same containment predicate as the mode-aware start gate. The
+    frontier stops at the integration terminal; it never demands a rebase of the
+    feature root to recover obsolete descendant commit identities. Intermediate
+    stale layers are repaired from the terminal upward. *)

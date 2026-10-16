@@ -1129,3 +1129,10 @@
  (name test_poll_batch_properties)
  (modules test_poll_batch_properties)
  (libraries onton_core qcheck-core qcheck-core.runner))
+
+(test
+ (name test_base_containment_properties)
+ (modules test_base_containment_properties)
+ (libraries onton_core qcheck-core qcheck-core.runner)
+ (ocamlopt_flags (:standard -w -40-42))
+ (ocamlc_flags (:standard -w -40-42)))

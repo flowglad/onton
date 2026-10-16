@@ -135,6 +135,11 @@ unattended supervisor session. There are two supported transports:
 
 ## Rebase anchor lifecycle
 
+Validation must preserve liveness. Missing or unverifiable evidence must lead to
+an executable repair operation or a repair prompt, never an indefinite gate.
+Accept successful agent repair through the owner's completion contract; do not
+re-gate its result on the old commit identities or ancestry shape it repaired.
+
 `Branch_reconcile` owns reconciliation and pins source/target revisions before
 Git mutations. Rebase boundaries come from Git ancestry. A previous base can be
 used as a hint when Git confirms it is reachable from the source; otherwise

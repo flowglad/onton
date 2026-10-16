@@ -228,14 +228,13 @@ let prop_frontier_none_without_merged_deps =
   Test.make ~name:"BCF-4: no merged deps → None" ~count:1 (Gen.return ())
     (fun () -> eq_target (frontier ~merged:[] ~healed:[] ()) None)
 
-let prop_frontier_fail_closed_missing_sha =
-  Test.make
-    ~name:"BCF-5: merged dep with unknown merge_sha → None (fail-closed)"
+let prop_frontier_repairs_missing_sha =
+  Test.make ~name:"BCF-5: unknown merge SHA requests repair from terminal"
     ~count:1 (Gen.return ()) (fun () ->
       let merge_sha p =
         if Types.Patch_id.equal p (pid "s") then None else merge_sha p
       in
-      eq_target (frontier ~merge_sha ~healed:[] ()) None)
+      eq_target (frontier ~merge_sha ~healed:[] ()) (Some (pid "c1")))
 
 let prop_frontier_none_off_the_edge =
   Test.make ~name:"BCF-6: >1 open dep (not at the edge) → None" ~count:1
@@ -314,17 +313,21 @@ let () =
              let ancestor_oracle = oracle_of contained in
              Bool.equal
                (BC.contains_merged_siblings_with_mode
-                  ~mode:Execution_mode.mainline ~graph:fanin_graph
-                  ~patch_id:(pid "p") ~has_merged ~merge_sha ~branch_of ~main
-                  ~ancestor_oracle)
+                  ~mode:Execution_mode.mainline
+                  ~agent_of_branch:(fun _ -> None)
+                  ~revision_of_branch:(fun _ -> None)
+                  ~graph:fanin_graph ~patch_id:(pid "p") ~has_merged ~merge_sha
+                  ~branch_of ~main ~ancestor_oracle)
                (BC.contains_merged_siblings ~graph:fanin_graph
                   ~patch_id:(pid "p") ~has_merged ~merge_sha ~branch_of ~main
                   ~ancestor_oracle)
              && Option.equal Types.Patch_id.equal
                   (BC.stale_chain_rebase_target_with_mode
-                     ~mode:Execution_mode.mainline ~graph:fanin_graph
-                     ~patch_id:(pid "p") ~has_merged ~merge_sha ~branch_of ~main
-                     ~ancestor_oracle)
+                     ~mode:Execution_mode.mainline
+                     ~agent_of_branch:(fun _ -> None)
+                     ~revision_of_branch:(fun _ -> None)
+                     ~graph:fanin_graph ~patch_id:(pid "p") ~has_merged
+                     ~merge_sha ~branch_of ~main ~ancestor_oracle)
                   (BC.stale_chain_rebase_target ~graph:fanin_graph
                      ~patch_id:(pid "p") ~has_merged ~merge_sha ~branch_of ~main
                      ~ancestor_oracle));
@@ -341,7 +344,7 @@ let () =
          prop_frontier_moves_up_one_layer_per_heal;
          prop_frontier_skips_stale_layers_below_fresh;
          prop_frontier_none_without_merged_deps;
-         prop_frontier_fail_closed_missing_sha;
+         prop_frontier_repairs_missing_sha;
          prop_frontier_none_off_the_edge;
          prop_frontier_fail_closed_on_interrupted_chain;
          prop_frontier_target_is_stale_with_fresh_base;

@@ -3,33 +3,71 @@
 
 open Base
 
+(* Merged contributions belong to the mode's terminal branch. Their original
+   commit identities may disappear when the feature root is rebased. An
+   intermediate base can prove containment either by the recorded commits or
+   by containing the current terminal branch. Owner integration receipts also
+   accept repaired histories without requiring the agent to recreate ancestry.
+   Per-commit proofs remain sufficient after unrelated terminal advances. *)
+let accepted_terminal_integration ~agent_of_branch ~revision_of_branch ~terminal
+    base =
+  match agent_of_branch base with
+  | None -> false
+  | Some base_agent -> (
+      match
+        Branch_reconcile.integrations base_agent.Patch_agent.branch_reconcile
+      with
+      | [] -> false
+      | receipt :: _ ->
+          let terminal_head =
+            match agent_of_branch terminal with
+            | Some agent ->
+                Option.first_some
+                  (Patch_agent.expected_remote_head_oid agent)
+                  agent.Patch_agent.head_oid
+            | None -> revision_of_branch terminal
+          in
+          Option.value_map terminal_head ~default:false ~f:(fun head ->
+              Option.equal String.equal receipt.capture.base_branch
+                (Some (Types.Branch.to_string terminal))
+              && String.equal
+                   (Branch_reconcile.Commit.to_string
+                      receipt.capture.target_revision)
+                   head))
+
+let contains_at_base ~mode ~graph ~patch_id ~has_merged ~merge_sha ~branch_of
+    ~main ~agent_of_branch ~revision_of_branch ~ancestor_oracle base =
+  let terminal = Execution_mode.terminal mode patch_id ~branch_of ~main in
+  if Types.Branch.equal base terminal then true
+  else
+    let descendant = Types.Branch.to_string base in
+    let merged = Graph.deps graph patch_id |> List.filter ~f:has_merged in
+    List.for_all merged ~f:(fun d ->
+        Option.value_map (merge_sha d) ~default:false ~f:(fun sha ->
+            ancestor_oracle sha ~descendant))
+    || accepted_terminal_integration ~agent_of_branch ~revision_of_branch
+         ~terminal base
+    ||
+    match revision_of_branch terminal with
+    | Some revision -> ancestor_oracle revision ~descendant
+    | None ->
+        (not (Types.Branch.equal terminal main))
+        && ancestor_oracle (Types.Branch.to_string terminal) ~descendant
+
 let contains_merged_siblings_with_mode ~mode ~graph ~patch_id ~has_merged
-    ~merge_sha ~branch_of ~main ~ancestor_oracle =
-  match Execution_mode.open_deps mode graph patch_id ~has_merged with
-  | _ :: _ :: _ ->
-      (* Not at the last-but-one-merge edge; the patch is not startable and
-         [initial_base] would raise. Report [false] (irrelevant — the patch
-         defers on [deps_satisfied] anyway). *)
-      false
-  | [] | [ _ ] ->
-      (* A sole open dependency is the direct base. With no open dependencies,
-         the mode chooses main or the integration boundary. *)
-      let base =
-        Option.value
-          (Execution_mode.base mode graph patch_id ~has_merged ~branch_of ~main)
-          ~default:(Execution_mode.terminal mode patch_id ~branch_of ~main)
-      in
-      if Types.Branch.equal base main then true
-      else
-        Graph.deps graph patch_id |> List.filter ~f:has_merged
-        |> List.for_all ~f:(fun d ->
-            match merge_sha d with
-            | None -> false (* fail-closed until the merge SHA is known *)
-            | Some sha ->
-                ancestor_oracle sha ~descendant:(Types.Branch.to_string base))
+    ~merge_sha ~branch_of ~main ~agent_of_branch ~revision_of_branch
+    ~ancestor_oracle =
+  match
+    Execution_mode.base mode graph patch_id ~has_merged ~branch_of ~main
+  with
+  | None -> false
+  | Some base ->
+      contains_at_base ~mode ~graph ~patch_id ~has_merged ~merge_sha ~branch_of
+        ~main ~agent_of_branch ~revision_of_branch ~ancestor_oracle base
 
 let stale_chain_rebase_target_with_mode ~mode ~graph ~patch_id ~has_merged
-    ~merge_sha ~branch_of ~main ~ancestor_oracle =
+    ~merge_sha ~branch_of ~main ~agent_of_branch ~revision_of_branch
+    ~ancestor_oracle =
   match Execution_mode.open_deps mode graph patch_id ~has_merged with
   | [] | _ :: _ :: _ ->
       (* No open dep (base is terminal — nothing to freshen) or not at the
@@ -37,25 +75,15 @@ let stale_chain_rebase_target_with_mode ~mode ~graph ~patch_id ~has_merged
          [sole_open_dep] is undefined). *)
       None
   | [ b ] -> (
-      let merged_dep_shas =
-        Graph.deps graph patch_id |> List.filter ~f:has_merged
-        |> List.map ~f:merge_sha
-      in
-      if
-        List.is_empty merged_dep_shas
-        || List.exists merged_dep_shas ~f:Option.is_none
-      then
-        (* No merged siblings to absorb, or a merge SHA is not yet known —
-           fail closed and create no demand; the cache recompute on a later
-           tick re-derives the target once the SHA lands. *)
-        None
+      let merged = Graph.deps graph patch_id |> List.filter ~f:has_merged in
+      if List.is_empty merged then None
       else
-        let shas = List.filter_opt merged_dep_shas in
-        let contains pid =
-          let branch_s = Types.Branch.to_string (branch_of pid) in
-          List.for_all shas ~f:(fun sha ->
-              ancestor_oracle sha ~descendant:branch_s)
+        let contains_base =
+          contains_at_base ~mode ~graph ~patch_id ~has_merged ~merge_sha
+            ~branch_of ~main ~agent_of_branch ~revision_of_branch
+            ~ancestor_oracle
         in
+        let contains pid = contains_base (branch_of pid) in
         (* Walk [b]'s sole-open-dep chain downward. The frontier is the
            deepest stale layer whose own structural base already contains the
            SHAs — main contains every merged squash by definition, and a layer
@@ -66,32 +94,33 @@ let stale_chain_rebase_target_with_mode ~mode ~graph ~patch_id ~has_merged
            merges land, so NO layer above it is a useful target — rebasing one
            would absorb a base that still lacks the squash, the churn this
            function exists to prevent). *)
-        let rec frontier c =
-          if contains c then `Fresh
+        let rec frontier visited c =
+          if Set.mem visited c then `Blocked
+          else if contains c then `Fresh
           else
             match Execution_mode.open_deps mode graph c ~has_merged with
             | [] ->
                 let terminal =
                   Execution_mode.terminal mode c ~branch_of ~main
                 in
-                if
-                  Types.Branch.equal terminal main
-                  || List.for_all shas ~f:(fun sha ->
-                      ancestor_oracle sha
-                        ~descendant:(Types.Branch.to_string terminal))
-                then `Target c
-                else `Blocked
+                if contains_base terminal then `Target c else `Blocked
             | [ d ] -> (
-                match frontier d with
+                match frontier (Set.add visited c) d with
                 | `Target _ as deeper -> deeper
                 | `Fresh -> `Target c (* [d] is fresh — [c] is the frontier *)
                 | `Blocked -> `Blocked)
             | _ :: _ :: _ -> `Blocked
         in
-        match frontier b with `Target c -> Some c | `Fresh | `Blocked -> None)
+        match frontier (Set.empty (module Types.Patch_id)) b with
+        | `Target c -> Some c
+        | `Fresh | `Blocked -> None)
 
 let contains_merged_siblings =
   contains_merged_siblings_with_mode ~mode:Execution_mode.mainline
+    ~agent_of_branch:(fun _ -> None)
+    ~revision_of_branch:(fun _ -> None)
 
 let stale_chain_rebase_target =
   stale_chain_rebase_target_with_mode ~mode:Execution_mode.mainline
+    ~agent_of_branch:(fun _ -> None)
+    ~revision_of_branch:(fun _ -> None)
