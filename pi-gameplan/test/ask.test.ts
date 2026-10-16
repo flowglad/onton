@@ -20,7 +20,7 @@ test("the request marks the recommendation, carries tradeoffs, and adds a delega
   assert.equal(q.header, "AD-7");
   assert.deepEqual(
     q.options.map((o) => o.label),
-    ["Relational rows in the app database.", "Immutable objects in the artifact bucket. (recommended)", DELEGATE_LABEL],
+    ["1. Relational rows in the app database.", "2. Immutable objects in the artifact bucket. (recommended)", DELEGATE_LABEL],
   );
   assert.equal(q.options[0]!.description, "Queryable; grows the hot table.");
 });
@@ -63,4 +63,16 @@ test("typed answers and unknown labels become free-text choices; declines and er
   assert.deepEqual(answerFromAskUser(params, { error: "no_ui", answers: [] }), { kind: "cancelled" });
   assert.deepEqual(answerFromAskUser(params, { answers: [] }), { kind: "cancelled" });
   assert.deepEqual(answerFromAskUser(params, "garbage"), { kind: "cancelled" });
+});
+
+
+test("duplicate choices still identify the selected option", () => {
+  const duplicate = { ...params, recommendation: 2, options: [
+    { choice: "Same", tradeoffs: "First" },
+    { choice: "Same", tradeoffs: "Second" },
+    { choice: "Different", tradeoffs: "Third" },
+  ] };
+  const labels = buildAskUserRequest(duplicate).questions[0].options;
+  assert.equal(new Set(labels.map((o) => o.label)).size, labels.length);
+  assert.deepEqual(answerFromAskUser(duplicate, { answers: [{ answer: labels[1]!.label }] }), { kind: "selected", index: 1 });
 });

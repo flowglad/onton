@@ -33,10 +33,10 @@ test("group parsing tolerates separators and drops malformed entries", () => {
   assert.deepEqual(parseGroups(3), []);
 });
 
-test("missing or malformed frontmatter yields no requirements", () => {
+test("missing metadata yields no requirements; malformed YAML reports an error", () => {
   assert.deepEqual(parseSkillRequirements("# no frontmatter"), noRequirements);
   assert.deepEqual(parseSkillRequirements("---\nname: x\n---\n"), noRequirements);
-  assert.deepEqual(parseSkillRequirements("---\nname: [\n---\n"), noRequirements);
+  assert.match(parseSkillRequirements("---\nname: [\n---\n").error!, /Invalid SKILL.md frontmatter/);
 });
 
 test("missing groups keep only the unregistered tools and describe the install per package", () => {

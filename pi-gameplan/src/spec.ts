@@ -58,5 +58,5 @@ export function moduleNameFromJson(json: string): string | undefined {
 
 /** Specs are stored as block literals; keep exactly one trailing newline. */
 export function normalizeSpec(spec: string): string {
-  return `${spec.replace(/\s+$/, "")}\n`;
+  return `${spec.trimEnd()}\n`;
 }

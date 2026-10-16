@@ -54,10 +54,16 @@ export function auditDecisions(doc: unknown, ledger: readonly DecisionRecord[]):
     const decision = asRecord(raw);
     if (!decision) continue;
     const id = typeof decision.id === "string" ? decision.id : "<missing id>";
+    if (seen.has(id)) result.errors.push(`${id}: duplicate decision id`);
     seen.add(id);
     const resolution = asRecord(decision.resolution);
     const kind = resolution?.kind;
 
+    const record = ledger.find((d) => d.id === id);
+    if (record && record.kind !== "unresolved" && kind !== "engineer_approved" && kind !== "delegated") {
+      result.errors.push(`${id}: resolution.kind is ${String(kind)} but the engineer's answer recorded ${record.kind}`);
+      continue;
+    }
     if (kind === "constrained") {
       result.constrained.push({
         id,
@@ -69,7 +75,6 @@ export function auditDecisions(doc: unknown, ledger: readonly DecisionRecord[]):
     }
     if (kind !== "engineer_approved" && kind !== "delegated") continue;
 
-    const record = ledger.find((d) => d.id === id);
     if (!record) {
       result.errors.push(
         `${id}: resolution.kind ${kind} is not backed by a gameplan_decide answer; ask the engineer with gameplan_decide`,
@@ -78,6 +83,17 @@ export function auditDecisions(doc: unknown, ledger: readonly DecisionRecord[]):
     }
     if (record.kind !== kind) {
       result.errors.push(`${id}: resolution.kind is ${kind} but the engineer's answer recorded ${record.kind}`);
+    }
+    if (normalize(decision.question) !== normalize(record.question)) {
+      result.errors.push(`${id}: question differs from the engineer's recorded question`);
+    }
+    const alternatives = Array.isArray(decision.alternatives) ? decision.alternatives.map((a) => {
+      const option = asRecord(a);
+      return { choice: normalize(option?.choice), tradeoffs: normalize(option?.tradeoffs) };
+    }) : [];
+    const recordedAlternatives = record.alternatives.map((a) => ({ choice: normalize(a.choice), tradeoffs: normalize(a.tradeoffs) }));
+    if (JSON.stringify(alternatives) !== JSON.stringify(recordedAlternatives)) {
+      result.errors.push(`${id}: alternatives differ from the engineer's recorded options`);
     }
     if (normalize(decision.choice) !== normalize(record.choice)) {
       result.errors.push(`${id}: choice differs from the engineer's answer (${JSON.stringify(record.choice)})`);

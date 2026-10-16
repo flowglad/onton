@@ -30,3 +30,8 @@ test("the module name is read from pant --json and specs end with one newline", 
   assert.equal(normalizeSpec("module X.\n\n\n"), "module X.\n");
   assert.equal(normalizeSpec("module X."), "module X.\n");
 });
+
+
+test("normalization trims long whitespace tails and keeps one newline", () => {
+  assert.equal(normalizeSpec(`module TEST.${" ".repeat(40_000)}\n\t`), "module TEST.\n");
+});

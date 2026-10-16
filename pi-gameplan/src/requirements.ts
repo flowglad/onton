@@ -23,6 +23,7 @@ export interface PackageTools {
 }
 
 export interface SkillRequirements {
+  error?: string;
   required: PackageTools[];
   recommended: PackageTools[];
 }
@@ -38,8 +39,8 @@ export function parseSkillRequirements(skillMd: string): SkillRequirements {
   let frontmatter: unknown;
   try {
     frontmatter = parseYaml(match[1] ?? "");
-  } catch {
-    return noRequirements;
+  } catch (error) {
+    return { ...noRequirements, error: `Invalid SKILL.md frontmatter: ${String(error)}` };
   }
   if (typeof frontmatter !== "object" || frontmatter === null) return noRequirements;
   const metadata = (frontmatter as { metadata?: unknown }).metadata;

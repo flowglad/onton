@@ -162,3 +162,15 @@ test("the example gameplan rebuilt section by section decodes to the same data",
   assert.deepEqual(missingSections(doc, validator.sections), []);
   assert.deepEqual(parseYaml(renderDocument(doc)), example);
 });
+
+
+test("composition uses the recorded question and evidence even when the caller supplies replacements", () => {
+  const input = { id: "AD-1", question: "An unrelated question?", resolution: { evidence: "trust me", rationale: "Fits." } };
+  const composed = composeDecisions({ summary: "s", decisions: [input] }, [approved]);
+  assert.deepEqual(composed.errors, []);
+  const decision = (composed.design as { decisions: { question: string; resolution: { evidence: string } }[] }).decisions[0]!;
+  assert.equal(decision.question, approved.question);
+  assert.equal(decision.resolution.evidence, approved.evidence);
+  const duplicate = composeDecisions({ summary: "s", decisions: [input, input] }, [approved]);
+  assert.deepEqual(duplicate.errors, ["AD-1: duplicate decision id"]);
+});

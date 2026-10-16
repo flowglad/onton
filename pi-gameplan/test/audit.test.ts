@@ -24,7 +24,7 @@ function yamlDecision(overrides: Partial<Record<string, unknown>> = {}, resoluti
     topic: "execution",
     question: "How should it execute?",
     choice: "A durable task.",
-    alternatives: [],
+    alternatives: approved.alternatives,
     resolution: { kind: "engineer_approved", evidence: approved.evidence, rationale: "fits", ...resolution },
     ...overrides,
   };
@@ -46,8 +46,10 @@ test("a resolution matching the ledger passes, tolerating whitespace differences
 
 test("a choice or evidence that differs from the engineer's answer is rejected", () => {
   const changedChoice = auditDecisions(doc([yamlDecision({ choice: "Synchronous." })]), [approved]);
+  assert.equal(changedChoice.errors.length, 1);
   assert.match(changedChoice.errors[0]!, /AD-1: choice differs/);
   const changedEvidence = auditDecisions(doc([yamlDecision({}, { evidence: "Engineer approved in discussion." })]), [approved]);
+  assert.equal(changedEvidence.errors.length, 1);
   assert.match(changedEvidence.errors[0]!, /AD-1: resolution\.evidence must be exactly/);
 });
 
@@ -76,4 +78,26 @@ test("open questions are surfaced and non-mapping documents are rejected", () =>
   assert.deepEqual(auditDecisions(doc([], ["Which flag?"]), []).openQuestions, ["Which flag?"]);
   assert.deepEqual(auditDecisions("nope", []).errors, ["gameplan is not a mapping"]);
   assert.deepEqual(auditDecisions({}, []).errors, []);
+});
+
+
+test("questions, alternatives and unique IDs are bound to the recorded dialog", () => {
+  for (const [change, message] of [
+    [{ question: "Which database?" }, /question differs/],
+    [{ alternatives: [] }, /alternatives differ/],
+    [{ alternatives: [{ choice: "Synchronous.", tradeoffs: "Invented." }] }, /alternatives differ/],
+  ] as const) {
+    const result = auditDecisions(doc([yamlDecision(change)]), [approved]);
+    assert.equal(result.errors.length, 1);
+    assert.match(result.errors[0]!, message);
+  }
+  assert.deepEqual(auditDecisions(doc([yamlDecision(), yamlDecision()]), [approved]).errors, ["AD-1: duplicate decision id"]);
+});
+
+test("answered decisions cannot be downgraded to constrained or unresolved", () => {
+  for (const kind of ["constrained", "unresolved"]) {
+    const result = auditDecisions(doc([yamlDecision({}, { kind })]), [approved]);
+    assert.equal(result.errors.length, 1);
+    assert.match(result.errors[0]!, /engineer's answer recorded engineer_approved/);
+  }
 });

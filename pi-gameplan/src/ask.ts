@@ -32,7 +32,7 @@ export function fitsAskUser(params: DecideParams): boolean {
 /** Build the single-question request. The delegate row is included only when there is room. */
 export function buildAskUserRequest(params: DecideParams): AskUserRequest {
   const options: AskUserOption[] = params.options.map((o, i) => ({
-    label: `${o.choice}${i === params.recommendation ? RECOMMENDED_SUFFIX : ""}`,
+    label: `${i + 1}. ${o.choice}${i === params.recommendation ? RECOMMENDED_SUFFIX : ""}`,
     description: o.tradeoffs,
   }));
   if (options.length < MAX_OPTIONS) {

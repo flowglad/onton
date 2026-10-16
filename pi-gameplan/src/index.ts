@@ -11,16 +11,17 @@
  *   agent-asserted `constrained` decisions, formats the file, and records the result.
  */
 
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
-import { existsSync, readFileSync } from "node:fs";
+import { mkdtemp, open, readFile, rm, writeFile } from "node:fs/promises";
+import { constants, existsSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { join } from "node:path";
 import { relative, resolve } from "node:path";
 import type { ExtensionAPI, ExtensionContext, ExtensionToolContext } from "@earendil-works/pi-coding-agent";
 import { Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import { parse as parseYaml } from "yaml";
 import { auditDecisions, type AuditResult } from "./audit.js";
+import { resolveGameplanWrite } from "./files.js";
 import { isGameplanWrite } from "./guard.js";
 import { ASK_USER_TOOL, answerFromAskUser, buildAskUserRequest, fitsAskUser } from "./ask.js";
 import {
@@ -73,8 +74,8 @@ export default function gameplan(pi: ExtensionAPI) {
   let requirements: SkillRequirements = noRequirements;
   try {
     requirements = parseSkillRequirements(readFileSync(skill.skillMd, "utf8"));
-  } catch {
-    // Reported on session_start by missingSkillFiles.
+  } catch (error) {
+    requirements = { ...noRequirements, error: String(error) };
   }
   let schemaValidator: SchemaValidator | undefined;
   let schemaError: string | undefined;
@@ -102,6 +103,7 @@ export default function gameplan(pi: ExtensionAPI) {
   }
 
   function reportMissingTools(ctx: ExtensionContext): void {
+    if (requirements.error) ctx.ui.notify(`gameplan: cannot read skill requirements: ${requirements.error}`, "warning");
     const required = missingRequired();
     if (required.length > 0) {
       ctx.ui.notify(`gameplan: the write-gameplan skill expects tools that are not registered: ${describeGroups(required)}`, "warning");
@@ -177,13 +179,19 @@ export default function gameplan(pi: ExtensionAPI) {
     if (!isGameplanWrite(ctx.cwd, state.gameplanDir, path)) {
       throw new Error(`Gameplan files live at ${state.gameplanDir}/<project-name>.yaml; refusing to write ${path}`);
     }
-    const abs = resolve(ctx.cwd, path);
+    const abs = await resolveGameplanWrite(ctx.cwd, state.gameplanDir, path);
     const existing = existsSync(abs) ? await readFile(abs, "utf8") : undefined;
     const doc = loadGameplanDocument(existing);
     mutate(doc);
-    await mkdir(dirname(abs), { recursive: true });
-    await writeFile(abs, renderDocument(doc), "utf8");
-    const formatted = await runFormatter((c, a, o) => pi.exec(c, a, o), skill, python, path, { cwd: ctx.cwd, signal });
+    // Refuse a file symlink even if the leaf changed since the initial path check.
+    const file = await open(abs, constants.O_WRONLY | constants.O_CREAT | constants.O_TRUNC | constants.O_NOFOLLOW, 0o666);
+    try {
+      await file.writeFile(renderDocument(doc), "utf8");
+    } finally {
+      await file.close();
+    }
+    await resolveGameplanWrite(ctx.cwd, state.gameplanDir, path);
+    const formatted = await runFormatter((c, a, o) => pi.exec(c, a, o), skill, python, abs, { cwd: ctx.cwd, signal });
     rememberGameplanPath(path);
     return {
       path,
@@ -416,7 +424,6 @@ ${ledger}`,
     async execute(_id, params, signal, _onUpdate, ctx) {
       requireMode();
       const path = resolveGameplanPath(params.path);
-      rememberGameplanPath(path);
       const v = validator();
       const sections: JsonObject = { ...params.sections };
       const errors: string[] = [];
@@ -467,7 +474,6 @@ ${ledger}`,
     async execute(_id, params, signal, _onUpdate, ctx) {
       requireMode();
       const path = resolveGameplanPath(params.path);
-      rememberGameplanPath(path);
       const errors = validator().patch(params.patch);
       if (errors.length > 0) throw new Error(`Nothing written; fix these:\n${errors.map((e) => `- ${e}`).join("\n")}`);
       let outcome: "added" | "replaced" = "added";
@@ -485,10 +491,10 @@ ${ledger}`,
   });
 
   /** Run `pant` on a spec written to a temp file. Returns diagnostics text, or undefined when it passes. */
-  async function runPant(spec: string, name: string, args: string[], cwd: string, signal: AbortSignal | undefined): Promise<{ ok: boolean; output: string }> {
+  async function runPant(spec: string, args: string[], cwd: string, signal: AbortSignal | undefined): Promise<{ ok: boolean; output: string }> {
     const dir = await mkdtemp(join(tmpdir(), "pi-gameplan-spec-"));
     try {
-      const file = join(dir, `${name}.pant`);
+      const file = join(dir, "spec.pant");
       await writeFile(file, spec, "utf8");
       const result = await pi.exec("pant", [...args, file], { cwd, signal, timeout: 120_000 });
       if (result.killed) return { ok: false, output: "pant timed out" };
@@ -506,8 +512,8 @@ ${ledger}`,
     promptSnippet: "Parse a Pantagruel spec with pant and write it into a patch or finalStateSpec",
     promptGuidelines: [
       "Write every spec with gameplan_write_spec so pant parses it before it lands.",
-      "pant cannot construct, compare, or test membership of a sum-typed value (`A + B`): a rule returning a sum can appear in no proposition, so `decode d in Malformed` and `decode d = m` are type errors. Model an outcome as a domain with one nullary rule per arm (`Outcome. ok => Outcome. invalid => Outcome.`), assert the arms distinct (`ok ~= invalid.`), and constrain the rule with `cond … , true => …` over those values.",
-      "Use check: true for specs with cond case analysis or outcome enums: it proves the arms exhaustive and the distinctness invariant consistent.",
+      "pant cannot construct, compare, or test membership of a sum-typed value (`A + B`): a rule returning a sum can appear in no proposition, so `decode d in Malformed` and `decode d = m` are type errors. Model an outcome as a domain with one nullary rule per arm (`Outcome. ok => Outcome. invalid => Outcome.`), assert the arms distinct (`ok ~= invalid.`), close the domain (`all x: Outcome | x = ok or x = invalid.`), and constrain the rule with `cond … , true => …` over those values.",
+      "Use check: true for specs with cond case analysis or outcome enums. Put enum assertions after the chapter separator. The default pant bound is 3; an isolated closed two-arm enum needs a separate pant --check --bound 2 run to avoid a domain-size contradiction.",
     ],
     executionMode: "sequential",
     parameters: Type.Object({
@@ -519,21 +525,19 @@ ${ledger}`,
     async execute(_id, params, signal, _onUpdate, ctx) {
       requireMode();
       const path = resolveGameplanPath(params.path);
-      rememberGameplanPath(path);
       const spec = normalizeSpec(params.spec);
       if (!spec.trim()) throw new Error("spec is empty.");
       const target: SpecTarget = params.patch === undefined ? { kind: "final" } : { kind: "patch", number: String(params.patch) };
-      const name = target.kind === "final" ? "final" : `patch_${target.number}`;
 
-      const parsed = await runPant(spec, name, [], ctx.cwd, signal);
+      const parsed = await runPant(spec, [], ctx.cwd, signal);
       if (!parsed.ok) {
         throw new Error(`Nothing written; pant rejected the spec:\n${describeDiagnostics(spec, parsePantDiagnostics(parsed.output))}`);
       }
       const notes: string[] = [];
-      const json = await runPant(spec, name, ["--json"], ctx.cwd, signal);
+      const json = await runPant(spec, ["--json"], ctx.cwd, signal);
       const moduleName = json.ok ? moduleNameFromJson(json.output) : undefined;
       if (params.check) {
-        const checked = await runPant(spec, name, ["--check"], ctx.cwd, signal);
+        const checked = await runPant(spec, ["--check"], ctx.cwd, signal);
         if (!checked.ok) throw new Error(`Nothing written; pant --check failed:\n${describeDiagnostics(spec, parsePantDiagnostics(checked.output))}`);
         notes.push("SMT check passed.");
       }
@@ -718,7 +722,9 @@ ${ledger}`,
       if (!ctx.hasUI) throw new Error("gameplan_finalize needs an interactive engineer; no UI is available.");
       const params = { path: resolveGameplanPath(rawParams.path) };
       rememberGameplanPath(params.path);
-      const before = await check(ctx, params.path, signal);
+      const finalPath = await resolveGameplanWrite(ctx.cwd, state.gameplanDir, params.path);
+      const approvedText = await readFile(finalPath, "utf8");
+      const before = await check(ctx, finalPath, signal);
       const summary = summarize(before);
       if (!summary.ok) throw new Error(`Cannot finalize; gameplan_check fails:\n${summary.text}`);
       const audit = before.audit;
@@ -749,12 +755,26 @@ ${ledger}`,
       );
       if (!confirmed) throw new Error("Engineer declined to finalize. Ask what should change.");
 
-      const formatted = await runFormatter((c, a, o) => pi.exec(c, a, o), skill, python, params.path, { cwd: ctx.cwd, signal });
+      if (await readFile(finalPath, "utf8") !== approvedText) {
+        throw new Error("Cannot finalize; the gameplan changed during confirmation. Review it and finalize again.");
+      }
+      await resolveGameplanWrite(ctx.cwd, state.gameplanDir, params.path);
+      const formatted = await runFormatter((c, a, o) => pi.exec(c, a, o), skill, python, finalPath, { cwd: ctx.cwd, signal });
       if (!formatted.ok) throw new Error(`Formatter failed: ${formatted.error}`);
-      const after = await check(ctx, params.path, signal);
+      const after = await check(ctx, finalPath, signal);
       const final = summarize(after);
       if (!final.ok) throw new Error(`Validation failed after formatting:\n${final.text}`);
 
+      if (!after.audit || after.audit.openQuestions.length > 0 || state.decisions.some((d) => d.kind === "unresolved")) {
+        throw new Error("Cannot finalize; open questions or unresolved decisions remain after formatting.");
+      }
+      if (JSON.stringify(after.audit.constrained) !== JSON.stringify(audit.constrained)) {
+        throw new Error("Cannot finalize; constrained decisions changed. Review and approve them again.");
+      }
+      const finalText = await readFile(finalPath, "utf8");
+      if (JSON.stringify(parseYaml(finalText)) !== JSON.stringify(parseYaml(approvedText))) {
+        throw new Error("Cannot finalize; the document changed after confirmation. Review and finalize again.");
+      }
       state = { ...state, finalizedPath: params.path };
       persist();
       updateStatus(ctx);

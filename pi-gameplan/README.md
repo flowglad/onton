@@ -28,16 +28,23 @@ this extension owns the rules the skill cannot enforce by prose:
 
 ## Install
 
-From any repository you are planning a change for:
+First install the extension's dependencies in your checkout:
 
 ```sh
-pi -e ~/code-src/onton/pi-gameplan/src/index.ts
+cd /path/to/onton/pi-gameplan
+npm ci
+```
+
+Then, from any repository you are planning a change for:
+
+```sh
+pi -e /path/to/onton/pi-gameplan/src/index.ts
 ```
 
 Or install it globally and `/reload`:
 
 ```sh
-pi install ~/code-src/onton/pi-gameplan
+pi install /path/to/onton/pi-gameplan
 ```
 
 The extension locates the skill as `../skills/write-gameplan` relative to itself. Set
@@ -158,8 +165,9 @@ given on the abandoned branch.
   declarations stay small (`{ section: value }`), so the model reads the schema file as the
   skill already requires rather than paying for it in every request.
 - No third semantic validator. `gameplan_check` shells out to the skill's
-  `scripts/validate.py` and parses its output; the write tools only check shape, and the
-  decision audit is the only check added here.
+  `scripts/validate.py` and parses its output; the write tools validate shape and audit recorded decisions.
+  `gameplan_write_spec` also requires successful `pant` parsing, reports module-name
+  mismatches as warnings, and blocks writes when optional `pant --check` verification fails.
 - No execution handoff. The finalize result prints the `onton --gameplan` command.
 
 ## Develop
@@ -169,3 +177,7 @@ npm install
 npm run check
 npm test                                  # unit tests; validator integration runs when uv is on PATH
 ```
+
+The configured gameplan directory may be a symlink; its canonical directory is the write
+root. Gameplan file symlinks are rejected, including links within that root. Tool writes
+accept only direct `.yaml` or `.yml` children.

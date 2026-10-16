@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # /// script
 # requires-python = ">=3.10"
-# dependencies = ["PyYAML>=6.0", "jsonschema>=4.0", "ruamel.yaml>=0.18,<0.19"]
+# dependencies = ["PyYAML>=6.0", "ruamel.yaml>=0.18,<0.19"]
 # ///
 """Format gameplan YAML without changing its data, comments, or field order.
 

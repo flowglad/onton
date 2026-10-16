@@ -324,7 +324,7 @@ patches:
     testStubsIntroduced:
     testStubsImplemented:
     spec: |
-      module EXTRACT_DECISION_PATCH_1.
+      module EXTRACT_PATCH_DECISION_PATCH_1.
 
       > Patch 1 introduces type declarations only.
       > No behavioral invariants — the contribution is the type structure itself.
@@ -365,7 +365,7 @@ patches:
       - 'disposition: needs_intervention -> Blocked'
     testStubsImplemented:
     spec: |
-      module EXTRACT_DECISION_PATCH_2.
+      module EXTRACT_PATCH_DECISION_PATCH_2.
 
       > Patch 2 introduces test stubs only. No new invariants are
       > declared — stubs are pending markers implemented in Patch 3.
@@ -419,7 +419,7 @@ patches:
       - 'on_ci_failure: count >= 3 -> Cap_reached'
       - 'disposition: needs_intervention -> Blocked'
     spec: |
-      module EXTRACT_DECISION_PATCH_3.
+      module EXTRACT_PATCH_DECISION_PATCH_3.
 
       > Patch 3 implements the pure decision logic.
       > These invariants are derived from the Pantagruel spec.
@@ -476,7 +476,7 @@ patches:
     testStubsIntroduced:
     testStubsImplemented:
     spec: |
-      module EXTRACT_DECISION_PATCH_4.
+      module EXTRACT_PATCH_DECISION_PATCH_4.
 
       > Patch 4 wires the pure decision module into main.ml.
       > The behavioral invariant: main.ml delegates all lifecycle
@@ -528,7 +528,7 @@ mergabilityInsight: >-
   4 changes behavior (wiring).
 
 finalStateSpec: |
-  module EXTRACT_DECISION.
+  module EXTRACT_PATCH_DECISION.
 
   > ══════════════════════════════════════════
   > THE GUARANTEE

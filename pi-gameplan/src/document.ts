@@ -77,7 +77,7 @@ export function createValidator(schema: JsonObject): SchemaValidator {
 
 /**
  * Fill `architectureDesign.decisions` from the ledger. For an answered decision the model
- * supplies only `id` and `rationale` (optionally `topic`/`question`); choice, alternatives, kind
+ * supplies only `id` and `rationale` (optionally `topic`); choice, alternatives, kind
  * and evidence come from the record. Decisions without a record must be `constrained` or
  * `unresolved`. Answered decisions left out are errors, so the file cannot silently drop one.
  */
@@ -88,6 +88,7 @@ export function composeDecisions(design: unknown, ledger: readonly DecisionRecor
   const decisions = design.decisions.map((raw): unknown => {
     if (!isObject(raw) || typeof raw.id !== "string") return raw;
     const id = raw.id;
+    if (seen.has(id)) errors.push(`${id}: duplicate decision id`);
     seen.add(id);
     const record = ledger.find((d) => d.id === id);
     const resolution = isObject(raw.resolution) ? raw.resolution : {};
@@ -99,7 +100,7 @@ export function composeDecisions(design: unknown, ledger: readonly DecisionRecor
       return raw;
     }
     const topic = typeof raw.topic === "string" && raw.topic.trim() ? raw.topic : record.topic;
-    const question = typeof raw.question === "string" && raw.question.trim() ? raw.question : record.question;
+    const question = record.question;
     if (record.kind === "unresolved") {
       return {
         id,

@@ -6,7 +6,7 @@
 
 import { isAbsolute, relative, resolve, sep } from "node:path";
 
-const GAMEPLAN_EXTENSIONS = new Set([".yaml", ".yml", ".json"]);
+const GAMEPLAN_EXTENSIONS = new Set([".yaml", ".yml"]);
 
 /**
  * Whether a path is a gameplan document directly under the configured gameplan directory.
