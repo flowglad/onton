@@ -184,3 +184,8 @@ accept only direct `.yaml` or `.yml` children.
 
 Finalization snapshots hash raw file bytes and accept only regular gameplan files up to
 16 MiB. Invalid, missing, or oversized snapshot files clear the finalized marker.
+
+Gameplan commits prepare a complete replacement in the admitted directory before atomic
+publication. A small Python helper uses descriptor-relative filesystem operations (which
+Node does not expose) and verifies the directory identity captured at admission. It uses
+the same configured Python/uv command as the formatter.

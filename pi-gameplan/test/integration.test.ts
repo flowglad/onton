@@ -155,7 +155,7 @@ test("formatter-time symlink swaps never overwrite outside files for writes or f
         // Emulate the formatter reopening its input with a symlink-following write.
         await writeFile(temporary, await readFile(temporary, "utf8"));
       });
-      await assert.rejects(call(tool, { path, sections: { problemStatement: "Updated" } }), /ELOOP/);
+      await assert.rejects(call(tool, { path, sections: { problemStatement: "Updated" } }), /Too many levels of symbolic links/);
       assert.equal(await readFile(outside, "utf8"), "outside must survive");
       assert.ok(saved.every((s) => !s.finalizedPath));
     });

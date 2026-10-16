@@ -201,12 +201,13 @@ export default function gameplan(pi: ExtensionAPI) {
     if (!isGameplanWrite(ctx.cwd, state.gameplanDir, path)) {
       throw new Error(`Gameplan files live at ${state.gameplanDir}/<project-name>.yaml; refusing to write ${path}`);
     }
-    const abs = await resolveGameplanWrite(ctx.cwd, state.gameplanDir, path);
-    const existing = existsSync(abs) ? await readFile(abs, "utf8") : undefined;
-    const doc = loadGameplanDocument(existing);
+    const admission = await resolveGameplanWrite(ctx.cwd, state.gameplanDir, path);
+    const abs = admission.path;
+    const existing = existsSync(abs) ? await readFile(abs) : undefined;
+    const doc = loadGameplanDocument(existing?.toString("utf8"));
     mutate(doc);
     const formatted = await formatText(ctx, renderDocument(doc), signal);
-    await commitGameplan(abs, formatted.text, existing);
+    await commitGameplan(admission, formatted.text, existing);
     clearFinalized(ctx);
     rememberGameplanPath(path);
     return {
@@ -757,9 +758,11 @@ ${ledger}`,
       requireMode();
       if (!ctx.hasUI) throw new Error("gameplan_finalize needs an interactive engineer; no UI is available.");
       const params = { path: resolveGameplanPath(rawParams.path) };
-      const finalPath = await resolveGameplanWrite(ctx.cwd, state.gameplanDir, params.path);
+      const admission = await resolveGameplanWrite(ctx.cwd, state.gameplanDir, params.path);
+      const finalPath = admission.path;
       rememberGameplanPath(params.path);
-      const approvedText = await readFile(finalPath, "utf8");
+      const approvedBytes = await readFile(finalPath);
+      const approvedText = approvedBytes.toString("utf8");
       const before = await check(ctx, finalPath, signal);
       const summary = summarize(before);
       if (!summary.ok) throw new Error(`Cannot finalize; gameplan_check fails:\n${summary.text}`);
@@ -791,12 +794,12 @@ ${ledger}`,
       );
       if (!confirmed) throw new Error("Engineer declined to finalize. Ask what should change.");
 
-      if (await readFile(finalPath, "utf8") !== approvedText) {
+      if (!(await readFile(finalPath)).equals(approvedBytes)) {
         throw new Error("Cannot finalize; the gameplan changed during confirmation. Review it and finalize again.");
       }
       const formatted = await formatText(ctx, approvedText, signal);
       if (formatted.error) throw new Error(`Formatter failed: ${formatted.error}`);
-      await commitGameplan(finalPath, formatted.text, approvedText);
+      await commitGameplan(admission, formatted.text, approvedBytes);
       clearFinalized(ctx);
       const after = await check(ctx, finalPath, signal);
       const final = summarize(after);
