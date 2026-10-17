@@ -245,9 +245,14 @@ let tests =
               id ~equal:Types.Patch_id.equal
           in
           let revision_of_branch name =
-            if Types.Branch.equal name main then Some target else None
+            if Types.Branch.equal name (branch terminal) then Some target
+            else None
           in
-          let ancestor_oracle _ ~descendant:_ = ancestry in
+          let ancestor_oracle ancestor ~descendant =
+            ancestry
+            && String.equal ancestor target
+            && String.equal descendant "1"
+          in
           let contains =
             Base_containment.contains_merged_siblings_with_mode ~mode ~graph
               ~patch_id:(pid "p") ~has_merged
