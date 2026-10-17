@@ -107,15 +107,15 @@ let bootstrap_one () =
 let make_busy orch _patches gameplan pid kind =
   let orch = Orchestrator.enqueue orch pid kind in
   let orch, _effects, _actions =
-    Patch_controller.tick orch ~project_name:"test-project" ~gameplan
+    Patch_controller.tick ~now:0. orch ~project_name:"test-project" ~gameplan
   in
   assert (Orchestrator.agent orch pid).Patch_agent.busy;
   orch
 
 let accept_only_message orch gameplan =
   let orch, _effects, messages =
-    Patch_controller.plan_tick_messages orch ~project_name:"test-project"
-      ~gameplan
+    Patch_controller.plan_tick_messages ~now:0. orch
+      ~project_name:"test-project" ~gameplan
   in
   match messages with
   | [ msg ] ->
@@ -1595,3 +1595,41 @@ let () =
         Bool.equal
           (Option.is_none agent.Patch_agent.merge_queue_ejection)
           (Orchestrator.equal_respond_outcome outcome Orchestrator.Respond_ok)))
+
+let () =
+  QCheck2.Test.check_exn
+    (QCheck2.Test.make
+       ~name:"orchestrator scheduler writes reject stale PR identity" ~count:200
+       QCheck2.Gen.(int_range 1 10000)
+       (fun pr ->
+         try
+           let module R = Scheduler_recovery in
+           let patches = mk_patches 1 in
+           let t = Orchestrator.create ~main_branch:main ~patches in
+           let id = (List.hd_exn patches).Patch.id in
+           let t = Orchestrator.set_pr_number t id (Pr_number.of_int pr) in
+           let observed =
+             Orchestrator.observe_scheduler t id ~now:0. ~pr_base_update:true
+               ~pr_draft_update:false
+           in
+           let stale =
+             Orchestrator.scheduler_write_failed observed id
+               ~pr_number:(Pr_number.of_int (pr + 1))
+               ~now:1. ~kind:R.Pr_draft
+           in
+           let failed =
+             Orchestrator.scheduler_write_failed stale id
+               ~pr_number:(Pr_number.of_int pr) ~now:1. ~kind:R.Pr_draft
+           in
+           let resolved = Orchestrator.resolve_scheduler failed id R.Pr_draft in
+           Patch_agent.equal
+             (Orchestrator.agent observed id)
+             (Orchestrator.agent stale id)
+           && R.contains
+                (Orchestrator.agent failed id).Patch_agent.scheduler_recovery
+                R.Pr_draft
+           && not
+                (R.contains
+                   (Orchestrator.agent resolved id)
+                     .Patch_agent.scheduler_recovery R.Pr_draft)
+         with _ -> false))

@@ -2210,7 +2210,7 @@ let step_transition t = function
               when match op.candidate_origin with
                    | Capture_agent_repair _ -> true
                    | Deterministic | Accepted_agent_repair _ -> false ->
-                retry t op at reason retry_after
+                retry_observation t op at reason retry_after
             | Retryable { reason; retry_after }, _ ->
                 retry_observation t op at reason retry_after
             | Needs_diagnosis reason, _ -> diagnose t op reason

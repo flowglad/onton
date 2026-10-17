@@ -51,7 +51,8 @@ let () =
       }
   in
   let _orch, _effects, actions =
-    Onton.Patch_controller.tick orch ~project_name:"test-project" ~gameplan
+    Onton.Patch_controller.tick ~now:0. orch ~project_name:"test-project"
+      ~gameplan
   in
   (match actions with
   | [ Onton.Orchestrator.Start (pid, base) ] ->

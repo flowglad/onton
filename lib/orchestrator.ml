@@ -977,6 +977,17 @@ let graph t = t.graph
 let restore ?(promotion_claimed = false) ~graph ~agents ~outbox ~main_branch ()
     =
   let outbox = Map.filter outbox ~f:(fun msg -> Map.mem agents msg.patch_id) in
+  let agents =
+    Map.map agents ~f:(fun a ->
+        let owned =
+          Option.exists a.Patch_agent.current_message_id ~f:(fun id ->
+              Option.exists (Map.find outbox id) ~f:(fun message ->
+                  equal_message_status message.status Acked
+                  && equal_action message.action
+                       (Respond (a.patch_id, Operation_kind.Human))))
+        in
+        Patch_agent.recover_scheduler_owner a ~owned)
+  in
   (* The snapshot's per-agent [max_ci_failures] values are trusted here for
      round-trip identity; [Runtime.create] restamps the whole orchestrator
      with the resolved config value right after restore, so the running cap
@@ -1098,6 +1109,10 @@ type session_result = Session_result.t =
     acceptance. Human-carrying Start messages deliberately remain until
     successful post-PR completion, so every earlier failure restores them. *)
 let complete_failed t patch_id =
+  let t =
+    update_agent t patch_id ~f:(fun a ->
+        Patch_agent.finish_scheduler_repair a ~success:false)
+  in
   let a = agent t patch_id in
   let inflight = a.Patch_agent.inflight_human_messages in
   let t =
@@ -1277,7 +1292,20 @@ type respond_outcome =
           resolution is supervisor-owned. *)
 [@@deriving show, eq, sexp_of]
 
-let apply_respond_outcome t patch_id kind outcome =
+let apply_respond_outcome ?now t patch_id kind outcome =
+  let t =
+    if Operation_kind.equal kind Operation_kind.Human then
+      match outcome with
+      | Respond_ok | Respond_no_commits | Respond_retry_push ->
+          update_agent t patch_id ~f:(fun a ->
+              Patch_agent.finish_scheduler_repair ?now a ~success:true)
+      | Respond_failed | Respond_skip_empty | Respond_pr_body_miss
+      | Respond_review_unresolved ->
+          update_agent t patch_id ~f:(fun a ->
+              Patch_agent.finish_scheduler_repair ?now a ~success:false)
+      | Respond_stale -> t
+    else t
+  in
   let consume_ci_repair t =
     if Operation_kind.equal kind Operation_kind.Ci then
       update_agent t patch_id ~f:(fun agent ->
@@ -1440,3 +1468,19 @@ let reconcile_branch t patch_id event =
 let record_session_completion t patch_id completion =
   update_agent t patch_id ~f:(fun agent ->
       Patch_agent.record_session_completion agent completion)
+
+let observe_scheduler t patch_id ~now ~pr_base_update ~pr_draft_update =
+  update_agent t patch_id ~f:(fun a ->
+      Patch_agent.observe_scheduler a ~now ~pr_base_update ~pr_draft_update)
+
+let scheduler_write_failed t patch_id ~pr_number ~now ~kind =
+  match find_agent t patch_id with
+  | Some a
+    when Option.equal Pr_number.equal (Patch_agent.pr_number a) (Some pr_number)
+    ->
+      update_agent t patch_id ~f:(fun a ->
+          Patch_agent.scheduler_write_failed a ~now ~kind)
+  | Some _ | None -> t
+
+let resolve_scheduler t patch_id kind =
+  update_agent t patch_id ~f:(fun a -> Patch_agent.resolve_scheduler a kind)

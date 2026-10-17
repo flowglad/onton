@@ -420,6 +420,23 @@ let apply_poll_result ?previous_conflict ?merge_queue_removal_checks
     then Orchestrator.enqueue t patch_id Operation_kind.Merge_conflict
     else t
   in
+  let agent = Orchestrator.agent t patch_id in
+  let t =
+    if Patch_agent.forge_revision_pair_confirmed agent then
+      let t =
+        if not agent.is_draft then
+          Orchestrator.resolve_scheduler t patch_id Scheduler_recovery.Pr_draft
+        else t
+      in
+      if
+        Option.equal Branch.equal
+          (expected_base_if_unique t patch_id)
+          base_branch
+        && Option.is_some base_branch
+      then Orchestrator.resolve_scheduler t patch_id Scheduler_recovery.Pr_base
+      else t
+    else t
+  in
   (t, List.rev !logs, newly_blocked)
 
 let apply_replacement_pr t patch_id ~pr_number ~base_branch ~merged =
@@ -527,6 +544,8 @@ let reconcile_pr_settings t patch_id ~allow_draft_flip =
                  flips back. *)
                 if
                   allow_draft_flip && agent.is_draft
+                  && Scheduler_recovery.write_allowed agent.scheduler_recovery
+                       Scheduler_recovery.Pr_draft
                   && (not (native_stack_base_mismatch t patch_id))
                   && ready_for_review t patch_id
                 then
@@ -538,6 +557,8 @@ let reconcile_pr_settings t patch_id ~allow_draft_flip =
                  base. GitHub retargets the remaining stack after a merge. *)
                 if
                   (not agent.Patch_agent.native_stack)
+                  && Scheduler_recovery.write_allowed agent.scheduler_recovery
+                       Scheduler_recovery.Pr_base
                   && not (Branch.equal actual_base expected_base)
                 then
                   effects :=
@@ -654,6 +675,9 @@ let plan_action_for_patch t ~branch_map:_ patch_id =
     Option.is_some agent.wontdo_reason
     || agent.automerge_inflight
     || native_stack_base_mismatch t patch_id
+       && not
+            (List.mem agent.queue Operation_kind.Human
+               ~equal:Operation_kind.equal)
   then None
   else if
     (not
@@ -793,21 +817,47 @@ let plan_actions t ~patches =
   plan_messages t ~patches
   |> List.map ~f:(fun (msg : Orchestrator.patch_agent_message) -> msg.action)
 
-let plan_tick_messages t ~project_name ~gameplan =
+let observe_scheduler t ~now ~gameplan =
+  List.fold (Orchestrator.all_agents t) ~init:t ~f:(fun t agent ->
+      let pr_base_update =
+        (not agent.Patch_agent.native_stack)
+        && Option.value_map (expected_base_if_unique t agent.patch_id)
+             ~default:false ~f:(fun expected ->
+               Option.value_map agent.base_branch ~default:false
+                 ~f:(fun actual -> not (Branch.equal actual expected)))
+      in
+      let pr_draft_update =
+        List.exists gameplan.Gameplan.patches ~f:(fun patch ->
+            Patch_id.equal patch.Patch.id agent.patch_id)
+        && agent.is_draft
+        && (Scheduler_recovery.contains agent.scheduler_recovery
+              Scheduler_recovery.Pr_draft
+           || ready_for_review t agent.patch_id
+              && not (native_stack_base_mismatch t agent.patch_id))
+      in
+      Orchestrator.observe_scheduler t agent.patch_id ~now ~pr_base_update
+        ~pr_draft_update)
+
+let plan_tick_messages ~now t ~project_name ~gameplan =
+  let t = observe_scheduler t ~now ~gameplan in
   let t, effects = reconcile_all t ~project_name ~gameplan in
   let t, messages = reconcile_messages t ~patches:gameplan.Gameplan.patches in
   (t, effects, messages)
 
-let plan_tick t ~project_name ~gameplan =
-  let t, effects, messages = plan_tick_messages t ~project_name ~gameplan in
+let plan_tick ~now t ~project_name ~gameplan =
+  let t, effects, messages =
+    plan_tick_messages ~now t ~project_name ~gameplan
+  in
   let actions =
     List.map messages ~f:(fun (msg : Orchestrator.patch_agent_message) ->
         msg.action)
   in
   (t, effects, actions)
 
-let tick t ~project_name ~gameplan =
-  let t, effects, messages = plan_tick_messages t ~project_name ~gameplan in
+let tick ~now t ~project_name ~gameplan =
+  let t, effects, messages =
+    plan_tick_messages ~now t ~project_name ~gameplan
+  in
   let t, actions =
     List.fold messages ~init:(t, []) ~f:(fun (t, actions) message ->
         let t, action =
@@ -824,11 +874,31 @@ let tick t ~project_name ~gameplan =
   in
   (t, effects, List.rev actions)
 
-let apply_github_effect_success t = function
-  | Set_pr_draft { patch_id; draft; _ } ->
-      Orchestrator.set_is_draft t patch_id draft
-  | Set_pr_base { patch_id; base; _ } ->
-      Orchestrator.set_base_branch t patch_id base
+let apply_github_effect_success t github_effect =
+  let patch_id, pr_number, kind =
+    match github_effect with
+    | Set_pr_draft { patch_id; pr_number; _ } ->
+        (patch_id, pr_number, Scheduler_recovery.Pr_draft)
+    | Set_pr_base { patch_id; pr_number; _ } ->
+        (patch_id, pr_number, Scheduler_recovery.Pr_base)
+  in
+  match Orchestrator.find_agent t patch_id with
+  | Some agent
+    when Option.equal Pr_number.equal
+           (Patch_agent.pr_number agent)
+           (Some pr_number)
+         &&
+         match github_effect with
+         | Set_pr_draft _ -> true
+         | Set_pr_base { base; _ } ->
+             Option.equal Branch.equal
+               (expected_base_if_unique t patch_id)
+               (Some base) -> (
+      let t = Orchestrator.resolve_scheduler t patch_id kind in
+      match github_effect with
+      | Set_pr_draft { draft; _ } -> Orchestrator.set_is_draft t patch_id draft
+      | Set_pr_base { base; _ } -> Orchestrator.set_base_branch t patch_id base)
+  | Some _ | None -> t
 
 let default_automerge_timeout = 120.0
 let automerge_idle_timeout = default_automerge_timeout
@@ -884,41 +954,6 @@ let is_automerge_candidate ?(ignore_inflight = false) (agent : Patch_agent.t)
   && agent.Patch_agent.checks_passing
   && List.is_empty agent.Patch_agent.queue
   && agent.Patch_agent.automerge_failure_count < automerge_max_failures
-
-(** [true] when a patch has momentarily lost [merge_ready] *only* because GitHub
-    is recomputing mergeability ([mergeability_unknown], i.e.
-    [Pr_state.merge_state = Unknown]), while every real precondition for
-    automerge still holds. This is the benign flap caused by the base branch
-    advancing — e.g. a sibling patch merging invalidates mergeability on every
-    other open PR at once, so they all read [Unknown] for a poll or two before
-    settling back to [Mergeable].
-
-    When this holds, [reconcile_automerge] preserves the existing
-    [automerge_deadline] instead of clearing it, so the idle window measures
-    real elapsed wall-clock rather than restarting on every sibling merge. We
-    never *fire* a merge in this state (the decision branches require
-    [merge_ready], which is component-derived and false while mergeability is
-    [Unknown]); the hold only protects a timer that is already armed.
-
-    Keyed on the live mergeability component ([mergeability_unknown]), not
-    GitHub's stale [mergeStateStatus] rollup — that field no longer exists on
-    the agent. Deliberately scoped to the direct-merge path
-    ([merge_queue_entry = None]) and to [Unknown] alone — a real conflict
-    ([has_conflict]), a failing check, new feedback (non-empty queue), or a hit
-    failure cap all fall through to the normal clear. [checks_passing] is
-    required so a genuine CI regression that coincides with an [Unknown] window
-    still resets the timer. *)
-let automerge_transient_hold (agent : Patch_agent.t) ~main_branch =
-  agent.Patch_agent.mergeability_unknown
-  && (not agent.Patch_agent.automerge_inflight)
-  && (not agent.Patch_agent.merged)
-  && agent.Patch_agent.automerge_enabled
-  && (not agent.Patch_agent.native_stack)
-  && Patch_agent.is_approved_modulo_merge_ready agent ~main_branch
-  && agent.Patch_agent.checks_passing
-  && List.is_empty agent.Patch_agent.queue
-  && agent.Patch_agent.automerge_failure_count < automerge_max_failures
-  && Option.is_none agent.Patch_agent.merge_queue_entry
 
 let apply_branch_observation ?confirmed_remote_head t patch_id ~head_sha ~checks
     =
@@ -1169,15 +1204,6 @@ let reconcile_automerge ?(automerge_timeout = default_automerge_timeout) t ~now
         | Some _ | None -> (
             let candidate = is_automerge_candidate agent ~main_branch in
             match (candidate, agent.Patch_agent.automerge_deadline) with
-            | false, Some _ when automerge_transient_hold agent ~main_branch ->
-                (* merge_ready dropped only because GitHub is recomputing
-               mergeability (mergeStateStatus = UNKNOWN) after the base
-               advanced — typically a sibling patch merging. Hold the existing
-               deadline so the idle window keeps counting real elapsed time
-               instead of restarting on every sibling merge. We do not fire
-               here (firing requires merge_ready / CLEAN); the next CLEAN poll
-               re-qualifies the candidate and the preserved deadline elapses. *)
-                (t, decisions)
             | false, Some _ ->
                 (* Feedback arrived, lost approval, CI flipped, or failure cap
                hit: drop the deadline so the next reconcile re-arms a fresh

@@ -4641,13 +4641,14 @@ let[@warning "-4"] trusted_repair_tests =
         with _ -> false);
     QCheck2.Test.make ~count:300
       ~name:
-        "BR completion capture survives duplicate events, probes and restart"
+        "BR completion capture survives bounded probes, diagnosis and restart"
       Gen.(list_size (int_range 0 30) (int_range 0 2))
       (fun actions ->
         try
           let state, token = claim_recovery (recovery ()) in
           let completion = B.Repair_completed { token; at = 100. } in
           let state = fst (B.step state completion) in
+          let remaining_probes = ref 2 in
           let state =
             List.fold_left
               (fun state action ->
@@ -4658,17 +4659,38 @@ let[@warning "-4"] trusted_repair_tests =
                       let duplicate, effects = B.step state completion in
                       assert (B.equal duplicate state && effects = []);
                       duplicate
+                  | _ when !remaining_probes = 0 -> restore state
                   | _ ->
-                      let state =
-                        fst
-                          (reply_raw state
-                             (B.Retryable
-                                {
-                                  reason = "HEAD capture failed";
-                                  retry_after = None;
-                                }))
+                      decr remaining_probes;
+                      let state, effects =
+                        reply_raw state
+                          (B.Retryable
+                             {
+                               reason = "HEAD capture failed";
+                               retry_after = None;
+                             })
                       in
-                      fst (B.step (restore state) (B.Tick 100000.))
+                      let state =
+                        fst (B.step (restore state) (B.Tick 100000.))
+                      in
+                      if is_diagnosis state then
+                        let diagnosis =
+                          match effects with
+                          | [ B.Repair token ] -> token
+                          | []
+                          | (B.Execute _ | B.Start_repair _ | B.Completed _)
+                            :: _
+                          | B.Repair _ :: _ :: _ ->
+                              failwith "missing diagnosis ticket"
+                        in
+                        let state =
+                          fst (B.step state (B.Repair_started diagnosis))
+                        in
+                        fst
+                          (B.step state
+                             (B.Repair_completed
+                                { token = diagnosis; at = 100000. }))
+                      else state
                 in
                 let op = Option.get (B.operation state) in
                 assert (op.candidate_origin = B.Capture_agent_repair token);

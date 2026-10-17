@@ -79,7 +79,8 @@ val has_conflict : t -> bool
 
 val mergeability_unknown : t -> bool
 (** [true] when [merge_state = Unknown] — GitHub is recomputing mergeability.
-    Drives [Patch_controller.automerge_transient_hold]. *)
+    Counts toward approval when checks pass, driving merge readiness; the merge
+    endpoint decides an otherwise approved attempt after the idle window. *)
 
 val poll : was_merged:bool -> Pr_state.t -> t
 (** [poll ~was_merged pr_state] computes the patch state updates from the

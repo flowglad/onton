@@ -223,15 +223,23 @@ let () =
         (fun (pid, br) ->
           let a = with_pr pid br |> fun a -> enqueue a Operation_kind.Rebase in
           equal_disposition (disposition a) Ready_rebase);
-      (* ---- disposition: Rebase + feedback -> Ready_rebase (Rebase wins) ---- *)
-      Test.make ~name:"disposition: Rebase wins over feedback"
+      (* Human repair precedes Rebase; Rebase precedes automatic feedback. *)
+      Test.make
+        ~name:
+          "disposition: Human precedes Rebase; Rebase precedes automatic \
+           feedback"
         Gen.(triple gen_pid gen_branch gen_non_cleanup_feedback_op)
         (fun (pid, br, k) ->
           let a =
             with_pr pid br |> fun a ->
             enqueue a k |> fun a -> enqueue a Operation_kind.Rebase
           in
-          equal_disposition (disposition a) Ready_rebase);
+          let expected =
+            if Operation_kind.equal k Operation_kind.Human then
+              Ready_respond Operation_kind.Human
+            else Ready_rebase
+          in
+          equal_disposition (disposition a) expected);
       Test.make ~name:"disposition: cleanup wins over Rebase"
         Gen.(pair gen_pid gen_branch)
         (fun (pid, br) ->

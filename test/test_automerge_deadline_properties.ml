@@ -19,9 +19,9 @@ open Onton_core.Types
       [reconcile_automerge] treated that transient drop as a loss of approval,
       *cleared* the automerge deadline, and re-armed a fresh window each time —
       so with sibling merges recurring faster than the idle timeout, the
-      countdown reset perpetually and automerge never fired. The fix holds the
-      existing deadline through a transient [UNKNOWN]
-      ([automerge_transient_hold]) instead of resetting it.
+      countdown reset perpetually and automerge never fired. The deadline now
+      survives [UNKNOWN], and once elapsed allows the merge endpoint to decide
+      an attempt when CI and review facts permit it.
 
     - The stale-[BLOCKED] regression (PR #4026, AM-STALE-BLOCK): now that
       [merge_ready] no longer keys off [mergeStateStatus], a patch that is ready
@@ -168,12 +168,14 @@ let pid = Patch_id.of_string "p"
 
 let () =
   let open QCheck2 in
-  (* AM-SAFE: a merge decision is only ever issued for a patch whose
-     [merge_ready] is true. [merge_ready] is the component-derived predicate, so
-     this is independent of GitHub's [mergeStateStatus] — a stale BLOCKED on a
-     ready PR may fire, an UNKNOWN/DIRTY (which forces not-ready) never does. *)
-  let prop_never_fire_unless_clean =
-    Test.make ~name:"automerge AM-SAFE: never fire unless merge_ready"
+  (* AM-SAFE: issued attempts have passing CI and either merge readiness or
+     unknown mergeability without a blocking review. Identity and conflict
+     preconditions are fixed by this fixture, not varied by this property. *)
+  let prop_merge_attempt_requires_inputs =
+    Test.make
+      ~name:
+        "automerge AM-SAFE: attempts require CI and ready or nonblocking \
+         unknown state"
       ~count:2000
       Gen.(
         let* now = float_range 0.0 1_000_000.0 in
@@ -181,19 +183,22 @@ let () =
         return (now, agent))
       (fun (now, agent) ->
         let orch = make_orch [ (pid, agent) ] in
-        let orch', decisions = Patch_controller.reconcile_automerge orch ~now in
+        let _orch', decisions =
+          Patch_controller.reconcile_automerge orch ~now
+        in
         if fired_for decisions pid then
-          (Orchestrator.agent orch' pid).Patch_agent.merge_ready
+          agent.Patch_agent.checks_passing
+          && (agent.merge_ready
+             || agent.mergeability_unknown
+                && not (Pr_state.review_blocking agent.review_decision))
         else true)
   in
 
-  (* AM-HOLD: when [automerge_transient_hold] holds and a deadline is armed,
-     reconcile preserves the deadline byte-for-byte and issues no decision. This
-     is the core of the fix — a sibling-merge-induced UNKNOWN does not reset the
-     counter. *)
-  let prop_transient_hold_preserves_deadline =
+  (* Unknown mergeability preserves the original idle window and leads to an
+     authoritative merge attempt when that window expires. *)
+  let prop_unknown_honors_deadline =
     Test.make
-      ~name:"automerge AM-HOLD: transient UNKNOWN preserves armed deadline"
+      ~name:"automerge UNKNOWN: original deadline leads to a merge attempt"
       ~count:2000
       Gen.(
         let* now = float_range 0.0 1_000_000.0 in
@@ -201,13 +206,17 @@ let () =
         return (now, agent))
       (fun (now, agent) ->
         assume
-          (Patch_controller.automerge_transient_hold agent ~main_branch:main
+          (agent.Patch_agent.mergeability_unknown
+          && Patch_controller.is_automerge_candidate agent ~main_branch:main
           && Option.is_some agent.Patch_agent.automerge_deadline);
         let orch = make_orch [ (pid, agent) ] in
         let orch', decisions = Patch_controller.reconcile_automerge orch ~now in
-        Option.equal Float.equal (deadline_of orch' pid)
-          agent.Patch_agent.automerge_deadline
-        && not (fired_for decisions pid))
+        match agent.Patch_agent.automerge_deadline with
+        | Some deadline when Float.(now >= deadline) -> fired_for decisions pid
+        | Some deadline ->
+            Option.equal Float.equal (deadline_of orch' pid) (Some deadline)
+            && not (fired_for decisions pid)
+        | None -> false)
   in
 
   (* AM-NOARM: a not-[merge_ready] patch never *creates* a deadline. The idle
@@ -225,6 +234,7 @@ let () =
       (fun (now, agent) ->
         assume
           ((not agent.Patch_agent.merge_ready)
+          && (not agent.Patch_agent.mergeability_unknown)
           && Option.is_none agent.Patch_agent.automerge_deadline
           && not agent.Patch_agent.merged);
         let orch = make_orch [ (pid, agent) ] in
@@ -248,9 +258,6 @@ let () =
         assume
           ((not
               (Patch_controller.is_automerge_candidate agent ~main_branch:main))
-          && (not
-                (Patch_controller.automerge_transient_hold agent
-                   ~main_branch:main))
           && (not agent.Patch_agent.automerge_inflight)
           && (not agent.Patch_agent.merged)
           && Option.is_some agent.Patch_agent.automerge_deadline);
@@ -364,18 +371,21 @@ let () =
     let ticks =
       (true, t0) :: List.map rest ~f:(fun (is_clean, dt) -> (is_clean, dt))
     in
-    let _, _, trace =
-      List.fold ticks ~init:(t0, None, [])
-        ~f:(fun (now, deadline, acc) (is_clean, dt) ->
+    let _, _, _, trace =
+      List.fold ticks ~init:(t0, None, false, [])
+        ~f:(fun (now, deadline, finished, acc) (is_clean, dt) ->
           let now = Float.( + ) now dt in
           let orch = make_orch [ (pid, agent_at ~is_clean ~deadline) ] in
           let orch', decisions =
-            Patch_controller.reconcile_automerge orch ~now
+            if finished then (orch, [])
+            else Patch_controller.reconcile_automerge orch ~now
           in
-          let deadline' = deadline_of orch' pid in
+          let fired = fired_for decisions pid in
+          let deadline' = if finished then None else deadline_of orch' pid in
           ( now,
             deadline',
-            (now, is_clean, deadline', fired_for decisions pid) :: acc ))
+            finished || fired,
+            (now, is_clean, deadline', fired) :: acc ))
     in
     List.rev trace
   in
@@ -391,11 +401,15 @@ let () =
         List.length armed <= 1)
   in
   let prop_flap_safe =
-    Test.make ~name:"automerge FLAP-SAFE: fires only on CLEAN ticks" ~count:1500
-      gen_flap_run (fun run ->
+    Test.make
+      ~name:"automerge FLAP-SAFE: honors idle window through provider flaps"
+      ~count:1500 gen_flap_run (fun run ->
         let trace = run_flap run in
-        List.for_all trace ~f:(fun (_, is_clean, _, fired) ->
-            (not fired) || is_clean))
+        let started =
+          match List.hd trace with Some (now, _, _, _) -> now | None -> 0.
+        in
+        List.for_all trace ~f:(fun (now, _, _, fired) ->
+            (not fired) || Float.(now >= started +. timeout)))
   in
   let prop_flap_live =
     Test.make
@@ -530,8 +544,8 @@ let () =
 
   let suite =
     [
-      prop_never_fire_unless_clean;
-      prop_transient_hold_preserves_deadline;
+      prop_merge_attempt_requires_inputs;
+      prop_unknown_honors_deadline;
       prop_no_arm_while_not_clean;
       prop_real_loss_clears_deadline;
       prop_clean_candidate_arms_or_fires;

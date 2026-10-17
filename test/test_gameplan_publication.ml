@@ -44,8 +44,8 @@ let gameplan = get (Gameplan.publish original publication)
 
 let starts runtime =
   Runtime.read runtime (fun snap ->
-      Patch_controller.plan_tick snap.Runtime.orchestrator ~project_name:"demo"
-        ~gameplan:snap.Runtime.gameplan
+      Patch_controller.plan_tick ~now:0. snap.Runtime.orchestrator
+        ~project_name:"demo" ~gameplan:snap.Runtime.gameplan
       |> fun (_, _, actions) ->
       List.filter_map
         (function

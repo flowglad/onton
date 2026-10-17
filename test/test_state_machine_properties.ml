@@ -61,7 +61,7 @@ let apply_command orch patches cmd =
     match cmd with
     | Tick ->
         let orch, _effects, _actions =
-          Patch_controller.tick orch ~project_name:"test-project"
+          Patch_controller.tick ~now:0. orch ~project_name:"test-project"
             ~gameplan:(make_gameplan patches)
         in
         orch
@@ -159,14 +159,14 @@ let () =
               if n = 0 then o
               else
                 let o, _effects, _actions =
-                  Patch_controller.tick o ~project_name:"test-project"
+                  Patch_controller.tick ~now:0. o ~project_name:"test-project"
                     ~gameplan:(make_gameplan patches)
                 in
                 stabilize o (n - 1)
             in
             let stable = stabilize orch (List.length patches + 2) in
             let _, _effects, actions1 =
-              Patch_controller.tick stable ~project_name:"test-project"
+              Patch_controller.tick ~now:0. stable ~project_name:"test-project"
                 ~gameplan:(make_gameplan patches)
             in
             let starts1 =
@@ -202,7 +202,8 @@ let () =
                   if n = 0 then o
                   else
                     let o, _effects, _actions =
-                      Patch_controller.tick o ~project_name:"test-project"
+                      Patch_controller.tick ~now:0. o
+                        ~project_name:"test-project"
                         ~gameplan:(make_gameplan patches)
                     in
                     tick_all o (n - 1)
@@ -219,7 +220,8 @@ let () =
                 let orch = Orchestrator.complete orch pid in
                 let orch = Orchestrator.enqueue orch pid kind in
                 let _, _effects, actions =
-                  Patch_controller.tick orch ~project_name:"test-project"
+                  Patch_controller.tick ~now:0. orch
+                    ~project_name:"test-project"
                     ~gameplan:(make_gameplan patches)
                 in
                 List.exists actions ~f:(function
@@ -251,7 +253,8 @@ let () =
                 let pid = first.Patch.id in
                 let orch = Orchestrator.create ~patches ~main_branch:main in
                 let orch, _effects, _actions =
-                  Patch_controller.tick orch ~project_name:"test-project"
+                  Patch_controller.tick ~now:0. orch
+                    ~project_name:"test-project"
                     ~gameplan:(make_gameplan patches)
                 in
                 let orch =
@@ -264,7 +267,8 @@ let () =
                       Orchestrator.enqueue o pid k)
                 in
                 let _, _effects, actions =
-                  Patch_controller.tick orch ~project_name:"test-project"
+                  Patch_controller.tick ~now:0. orch
+                    ~project_name:"test-project"
                     ~gameplan:(make_gameplan patches)
                 in
                 not
@@ -293,7 +297,8 @@ let () =
                 let pid = first.Patch.id in
                 let orch = Orchestrator.create ~patches ~main_branch:main in
                 let orch, _effects, _actions =
-                  Patch_controller.tick orch ~project_name:"test-project"
+                  Patch_controller.tick ~now:0. orch
+                    ~project_name:"test-project"
                     ~gameplan:(make_gameplan patches)
                 in
                 let orch =
@@ -307,7 +312,8 @@ let () =
                 else
                   let orch = Orchestrator.enqueue orch pid Operation_kind.Ci in
                   let _, _effects, actions =
-                    Patch_controller.tick orch ~project_name:"test-project"
+                    Patch_controller.tick ~now:0. orch
+                      ~project_name:"test-project"
                       ~gameplan:(make_gameplan patches)
                   in
                   let blocked =
@@ -320,7 +326,8 @@ let () =
                   in
                   let orch = Orchestrator.reset_intervention_state orch pid in
                   let _, _effects, actions2 =
-                    Patch_controller.tick orch ~project_name:"test-project"
+                    Patch_controller.tick ~now:0. orch
+                      ~project_name:"test-project"
                       ~gameplan:(make_gameplan patches)
                   in
                   let unblocked =
@@ -351,7 +358,8 @@ let () =
                 let pid = first.Patch.id in
                 let orch = Orchestrator.create ~patches ~main_branch:main in
                 let orch, _effects, _actions =
-                  Patch_controller.tick orch ~project_name:"test-project"
+                  Patch_controller.tick ~now:0. orch
+                    ~project_name:"test-project"
                     ~gameplan:(make_gameplan patches)
                 in
                 let orch =
@@ -369,7 +377,7 @@ let () =
 
 (** P7: Priority ordering — Respond always picks highest-priority operation.
     When multiple operations are enqueued, tick fires the one with lowest
-    priority value (Uncommitted_changes < Rebase < Human < Merge_conflict < Ci <
+    priority value (Uncommitted_changes < Human < Rebase < Merge_conflict < Ci <
     Review_comments). *)
 let () =
   let prop_p7 =
@@ -386,7 +394,8 @@ let () =
                 let pid = first.Patch.id in
                 let orch = Orchestrator.create ~patches ~main_branch:main in
                 let orch, _effects, _actions =
-                  Patch_controller.tick orch ~project_name:"test-project"
+                  Patch_controller.tick ~now:0. orch
+                    ~project_name:"test-project"
                     ~gameplan:(make_gameplan patches)
                 in
                 let orch =
@@ -400,7 +409,8 @@ let () =
                 let agent = Orchestrator.agent orch pid in
                 let expected_hp = Patch_agent.highest_priority agent in
                 let _, _effects, actions =
-                  Patch_controller.tick orch ~project_name:"test-project"
+                  Patch_controller.tick ~now:0. orch
+                    ~project_name:"test-project"
                     ~gameplan:(make_gameplan patches)
                 in
                 let responded_kind =
@@ -436,7 +446,8 @@ let () =
                   if n = 0 then o
                   else
                     let o, _effects, _actions =
-                      Patch_controller.tick o ~project_name:"test-project"
+                      Patch_controller.tick ~now:0. o
+                        ~project_name:"test-project"
                         ~gameplan:(make_gameplan patches)
                     in
                     tick_all o (n - 1)
@@ -450,7 +461,8 @@ let () =
                   Orchestrator.enqueue orch pid Operation_kind.Rebase
                 in
                 let _, _effects, actions =
-                  Patch_controller.tick orch ~project_name:"test-project"
+                  Patch_controller.tick ~now:0. orch
+                    ~project_name:"test-project"
                     ~gameplan:(make_gameplan patches)
                 in
                 List.exists actions ~f:(function

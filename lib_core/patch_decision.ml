@@ -276,7 +276,11 @@ let respond_delivery ~(agent : Patch_agent.t) ~(kind : Operation_kind.t)
       | Operation_kind.Uncommitted_changes -> false
       | Operation_kind.Review_comments -> List.is_empty prefetched_comments
       | Operation_kind.Findings -> List.is_empty prefetched_findings
-      | Operation_kind.Human -> List.is_empty source.human_messages
+      | Operation_kind.Human ->
+          List.is_empty source.human_messages
+          && Option.is_none agent.scheduler_repair
+          && Option.is_none
+               (Scheduler_recovery.pending source.scheduler_recovery)
       | Operation_kind.Ci ->
           (* Freshness is the caller's responsibility: it re-polls GitHub
              and skips delivery before calling us when the failure is
@@ -309,7 +313,16 @@ let respond_delivery ~(agent : Patch_agent.t) ~(kind : Operation_kind.t)
         match kind with
         | Operation_kind.Uncommitted_changes -> Uncommitted_changes_payload
         | Operation_kind.Human ->
-            Human_payload { messages = List.rev source.human_messages }
+            let ticket =
+              Option.first_some agent.scheduler_repair
+                (Scheduler_recovery.pending source.scheduler_recovery)
+            in
+            let repair =
+              Option.to_list
+                (Option.map ticket ~f:(fun ticket ->
+                     Scheduler_recovery.prompt ticket.kind))
+            in
+            Human_payload { messages = repair @ List.rev source.human_messages }
         | Operation_kind.Ci -> Ci_payload { failed_checks = ci_deliverable }
         | Operation_kind.Review_comments ->
             Review_payload { comments = prefetched_comments }

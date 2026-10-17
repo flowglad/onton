@@ -1136,3 +1136,17 @@
  (libraries onton_core qcheck-core qcheck-core.runner)
  (ocamlopt_flags (:standard -w -40-42))
  (ocamlc_flags (:standard -w -40-42)))
+
+(test
+ (name test_scheduler_recovery_properties)
+ (modules test_scheduler_recovery_properties)
+ (libraries onton_core qcheck-core qcheck-core.runner)
+ (ocamlopt_flags (:standard -w -40-42))
+ (ocamlc_flags (:standard -w -40-42)))
+
+(test
+ (name test_scheduler_gate_recovery)
+ (modules test_scheduler_gate_recovery)
+ (libraries onton onton_core onton_core_test_support qcheck-core)
+ (ocamlopt_flags (:standard -w -40-42))
+ (ocamlc_flags (:standard -w -40-42)))

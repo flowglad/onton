@@ -67,3 +67,7 @@ val removal_evidence : body:string -> removal_evidence
 (** Classify the removal event before requesting additional checks. Known
     non-failure removals must not inherit failures from older Actions runs.
     Unrecognized nonempty reasons remain unresolved regardless of checks. *)
+
+val accept_removal_repair : pending option -> pending option
+(** Discharge unknown removal evidence after an accepted scheduler diagnosis.
+    Known failing checks remain owned by the CI repair path. *)

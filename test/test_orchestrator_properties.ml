@@ -61,12 +61,12 @@ let make_gameplan patches =
     }
 
 let tick orch ~patches =
-  Patch_controller.tick orch ~project_name:"test-project"
+  Patch_controller.tick ~now:0. orch ~project_name:"test-project"
     ~gameplan:(make_gameplan patches)
 
 let pending_actions orch ~patches =
   let _orch, _effects, actions =
-    Patch_controller.plan_tick orch ~project_name:"test-project"
+    Patch_controller.plan_tick ~now:0. orch ~project_name:"test-project"
       ~gameplan:(make_gameplan patches)
   in
   actions
@@ -941,7 +941,7 @@ let () =
 
   (* mergeability_unknown is a poll-mirror: after apply_poll_result it equals
      [poll merge_state = Unknown], unconditionally (no hysteresis, unlike
-     has_conflict). This is what [automerge_transient_hold] reads. *)
+     has_conflict). It does not by itself prevent an approved merge attempt. *)
   let prop_poll_mergeability_unknown_mirror =
     Test.make
       ~name:

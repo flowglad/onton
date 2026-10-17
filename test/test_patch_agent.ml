@@ -678,10 +678,13 @@ let () =
           let a = increment_ci_failure_count a in
           let a = increment_ci_failure_count a in
           let a = increment_ci_failure_count a in
-          let a = enqueue a Operation_kind.Human in
           let a = enqueue a Operation_kind.Rebase in
           let a = rebase a ~base_branch:(Branch.of_string "new-base") in
           let a = complete a in
+          let a =
+            add_human_message a "retry CI" |> fun a ->
+            enqueue a Operation_kind.Human
+          in
           not (needs_intervention a));
       (* -- 1 pr_body miss does NOT trigger needs_intervention (boundary) -- *)
       Test.make ~name:"1 pr_body miss no intervention (boundary)" ~count:1

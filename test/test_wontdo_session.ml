@@ -484,7 +484,7 @@ let run_case ?(adopted = false) ?(cancel = false) ?(push_failure = false)
           Option.equal String.equal restored_agent.wontdo_reason
             after.wontdo_reason);
         let stopped, effects, stopped_messages =
-          Patch_controller.plan_tick_messages restored.orchestrator
+          Patch_controller.plan_tick_messages ~now:0. restored.orchestrator
             ~project_name:gameplan.project_name ~gameplan
         in
         assert (List.is_empty effects);
@@ -519,7 +519,7 @@ let run_case ?(adopted = false) ?(cancel = false) ?(push_failure = false)
         assert (Option.is_none reprompted_agent.wontdo_reason);
         assert (not (Onton_core.Patch_agent.needs_intervention reprompted_agent));
         let ready, _, messages =
-          Patch_controller.plan_tick_messages reprompted
+          Patch_controller.plan_tick_messages ~now:0. reprompted
             ~project_name:gameplan.project_name ~gameplan
         in
         let message =

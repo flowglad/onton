@@ -151,7 +151,6 @@ let root_ready t graph ~has_merged ~pending_integrations (a : Patch_agent.t) =
   && Option.is_none a.current_op
   && (not (Patch_agent.needs_intervention a))
   && a.unresolved_comment_count = 0
-  && (not a.mergeability_unknown)
   && Option.is_some a.head_oid
   && Option.is_none (Patch_agent.expected_remote_head_oid a)
   && (not pending_integrations)
