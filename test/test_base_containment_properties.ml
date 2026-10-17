@@ -211,6 +211,63 @@ let repaired_agent ~base ~target ~candidate =
 let tests =
   [
     T.make
+      ~name:
+        "historical repair requires the current base head or Git containment"
+      ~count:300
+      G.(triple bool (int_range 0 2) bool)
+      (fun (mainline, head_state, ancestry) ->
+        try
+          let graph = graph 1 in
+          let mode = if mainline then Execution_mode.mainline else mode graph in
+          let terminal = if mainline then "main" else "root" in
+          let target = String.make 40 'b' in
+          let candidate = String.make 40 'c' in
+          let repaired =
+            repaired_agent ~base:terminal ~target ~candidate |> fun agent ->
+            Patch_agent.set_head_oid agent
+              (match head_state with
+              | 0 -> None
+              | 1 -> Some candidate
+              | _ -> Some (String.make 40 'd'))
+          in
+          let root =
+            Patch_agent.create ~branch:(branch terminal) (pid "root")
+            |> fun agent -> Patch_agent.set_head_oid agent (Some target)
+          in
+          let agent_of_branch name =
+            if Types.Branch.equal name (branch "1") then Some repaired
+            else if Types.Branch.equal name (branch terminal) then Some root
+            else None
+          in
+          let has_merged id =
+            List.mem
+              [ pid "a"; pid "b"; pid "root" ]
+              id ~equal:Types.Patch_id.equal
+          in
+          let revision_of_branch name =
+            if Types.Branch.equal name main then Some target else None
+          in
+          let ancestor_oracle _ ~descendant:_ = ancestry in
+          let contains =
+            Base_containment.contains_merged_siblings_with_mode ~mode ~graph
+              ~patch_id:(pid "p") ~has_merged
+              ~merge_sha:(fun _ -> None)
+              ~branch_of ~main ~agent_of_branch ~revision_of_branch
+              ~ancestor_oracle
+          in
+          let frontier =
+            Base_containment.stale_chain_rebase_target_with_mode ~mode ~graph
+              ~patch_id:(pid "p") ~has_merged
+              ~merge_sha:(fun _ -> None)
+              ~branch_of ~main ~agent_of_branch ~revision_of_branch
+              ~ancestor_oracle
+          in
+          let expected = Int.equal head_state 1 || ancestry in
+          Bool.equal contains expected
+          && Option.equal Types.Patch_id.equal frontier
+               (if expected then None else Some (pid "1"))
+        with _ -> false);
+    T.make
       ~name:"accepted repair targets owner publication while forge head lags"
       ~count:100 G.bool (fun current_target ->
         try

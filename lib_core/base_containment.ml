@@ -33,7 +33,13 @@ let accepted_terminal_integration ~agent_of_branch ~revision_of_branch ~terminal
               && String.equal
                    (Branch_reconcile.Commit.to_string
                       receipt.capture.target_revision)
-                   head))
+                   head
+              && Option.value_map base_agent.Patch_agent.head_oid ~default:false
+                   ~f:(fun base_head ->
+                     String.equal
+                       (Branch_reconcile.Commit.to_string
+                          receipt.integrated_revision)
+                       base_head)))
 
 let contains_at_base ~mode ~graph ~patch_id ~has_merged ~merge_sha ~branch_of
     ~main ~agent_of_branch ~revision_of_branch ~ancestor_oracle base =
