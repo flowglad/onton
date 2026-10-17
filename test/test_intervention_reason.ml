@@ -519,13 +519,21 @@ let () =
 let () =
   QCheck2.Test.check_exn
     (QCheck2.Test.make
-       ~name:"scheduler write recovery preserves scope and resolves explicitly"
+       ~name:
+         "scheduler repairs retain scope through claim, owner loss and \
+          completion"
        ~count:200
        QCheck2.Gen.(pair bool (int_range 1 10000))
        (fun (success, pr) ->
          try
            let module R = Scheduler_recovery in
-           let a = Patch_agent.set_pr_number (agent ()) (Pr_number.of_int pr) in
+           let a =
+             Patch_agent.set_pr_number (agent ()) (Pr_number.of_int pr)
+             |> fun a ->
+             Patch_agent.set_base_branch a (Branch.of_string "main")
+             |> Onton_core_test_support.Forge_fixture.readiness_agent
+             |> fun a -> Patch_agent.set_checks_passing a true
+           in
            let scope = Patch_agent.scheduler_scope a in
            let blocked =
              Patch_agent.scheduler_blocked a ~pr_base_update:true
@@ -534,19 +542,83 @@ let () =
            let failed =
              Patch_agent.scheduler_write_failed a ~now:0. ~kind:R.Pr_base
              |> fun a ->
-             Patch_agent.observe_scheduler a ~now:1000. ~pr_base_update:true
+             Patch_agent.scheduler_write_failed a ~now:1. ~kind:R.Pr_base
+             |> fun a ->
+             Patch_agent.observe_scheduler a ~now:2. ~pr_base_update:true
                ~pr_draft_update:false
            in
-           let finished = Patch_agent.finish_scheduler_repair failed ~success in
-           let recovered =
-             Patch_agent.recover_scheduler_owner finished ~owned:false
-           in
-           let resolved = Patch_agent.resolve_scheduler recovered R.Pr_base in
-           scope.R.pr = Some pr
-           && List.exists (R.equal_kind R.Pr_base) blocked
-           && R.contains failed.Patch_agent.scheduler_recovery R.Pr_base
-           && (not
-                 (R.contains resolved.Patch_agent.scheduler_recovery R.Pr_base))
-           && R.equal_scope scope (Patch_agent.scheduler_scope resolved)
-           && Option.is_none resolved.Patch_agent.scheduler_repair
+           match R.pending failed.Patch_agent.scheduler_recovery with
+           | None -> false
+           | Some ticket ->
+               let running = Patch_agent.respond failed Operation_kind.Human in
+               let retained =
+                 Patch_agent.recover_scheduler_owner running ~owned:true
+               in
+               let recovered =
+                 Patch_agent.recover_scheduler_owner running ~owned:false
+               in
+               let reclaimed =
+                 Patch_agent.respond recovered Operation_kind.Human
+               in
+               let finished =
+                 Patch_agent.finish_scheduler_repair ~now:10. reclaimed ~success
+                 |> Patch_agent.complete
+               in
+               let before_deadline =
+                 Patch_agent.observe_scheduler finished ~now:129.
+                   ~pr_base_update:true ~pr_draft_update:false
+               in
+               let at_deadline =
+                 Patch_agent.observe_scheduler before_deadline ~now:130.
+                   ~pr_base_update:true ~pr_draft_update:false
+               in
+               let resolved =
+                 Patch_agent.resolve_scheduler finished R.Pr_base
+               in
+               scope.R.pr = Some pr
+               && List.exists (R.equal_kind R.Pr_base) blocked
+               && R.equal_kind ticket.R.kind R.Pr_base
+               && running.Patch_agent.busy
+               && Option.equal R.equal_ticket
+                    running.Patch_agent.scheduler_repair (Some ticket)
+               && R.is_running running.Patch_agent.scheduler_recovery ticket
+               && retained.Patch_agent.busy
+               && R.is_running retained.Patch_agent.scheduler_recovery ticket
+               && Option.equal R.equal_ticket
+                    retained.Patch_agent.scheduler_repair (Some ticket)
+               && (not recovered.Patch_agent.busy)
+               && Option.is_none recovered.Patch_agent.current_op
+               && Option.is_none recovered.Patch_agent.scheduler_repair
+               && (not
+                     (R.is_running recovered.Patch_agent.scheduler_recovery
+                        ticket))
+               && Option.equal R.equal_ticket
+                    (R.pending recovered.Patch_agent.scheduler_recovery)
+                    (Some ticket)
+               && R.is_running reclaimed.Patch_agent.scheduler_recovery ticket
+               && (not finished.Patch_agent.busy)
+               && Option.is_none finished.Patch_agent.scheduler_repair
+               && (not
+                     (R.is_running finished.Patch_agent.scheduler_recovery
+                        ticket))
+               && Option.is_none
+                    (R.pending finished.Patch_agent.scheduler_recovery)
+               && Bool.equal
+                    (Option.is_some
+                       (R.attention finished.Patch_agent.scheduler_recovery))
+                    (not success)
+               && Bool.equal
+                    (Option.is_some
+                       (R.attention
+                          before_deadline.Patch_agent.scheduler_recovery))
+                    (not success)
+               && Option.is_none
+                    (R.pending before_deadline.Patch_agent.scheduler_recovery)
+               && Option.is_some
+                    (R.attention at_deadline.Patch_agent.scheduler_recovery)
+               && R.contains finished.Patch_agent.scheduler_recovery R.Pr_base
+               && (not
+                     (R.contains resolved.Patch_agent.scheduler_recovery
+                        R.Pr_base))
+               && R.equal_scope scope (Patch_agent.scheduler_scope resolved)
          with _ -> false))

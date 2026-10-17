@@ -428,11 +428,18 @@ let () =
            let a =
              ready ~pr_number () |> fun a -> Patch_agent.set_native_stack a true
            in
-           let observed =
+           let original =
              Patch_agent.observe_scheduler a ~now:0. ~pr_base_update:false
                ~pr_draft_update:false
-             |> checkpoint
            in
+           let observed = checkpoint original in
+           assert (Option.is_some (R.pending original.scheduler_recovery));
+           assert (
+             R.equal original.scheduler_recovery observed.scheduler_recovery);
+           assert (
+             Option.equal R.equal_ticket
+               (R.pending original.scheduler_recovery)
+               (R.pending observed.scheduler_recovery));
            let due =
              Patch_agent.observe_scheduler observed ~now:1000.
                ~pr_base_update:false ~pr_draft_update:false
@@ -441,6 +448,9 @@ let () =
            | None -> false
            | Some ticket ->
                R.equal_kind ticket.kind R.Native_stack
+               && Option.equal R.equal_ticket
+                    (R.pending observed.scheduler_recovery)
+                    (Some ticket)
                && Option.equal Int.equal ticket.scope.pr (Some pr_number)
                && List.mem due.queue Operation_kind.Human
                     ~equal:Operation_kind.equal
