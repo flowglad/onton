@@ -353,7 +353,7 @@ let run_case env ~request_count ~ancestry ~skip =
                 (Int.equal !ancestor_calls
                    (match ancestry with
                    | Present -> 1
-                   | Absent | Unavailable -> 2));
+                   | Absent | Unavailable -> 4));
               Runtime.read runtime (fun snap ->
                   let orch = snap.Runtime.orchestrator in
                   let child =

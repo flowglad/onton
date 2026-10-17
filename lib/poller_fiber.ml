@@ -695,17 +695,28 @@ module Make (Forge : Forge.S) (W : Worktree.S) (Env : Poller_env.S) = struct
             let orch, reconcile_logs =
               if not reconcile then (orch, [])
               else
-                (* Recompute the base-containment cache for every agent: does each
-             patch's resolved base branch already contain the merge commit
-             ([mergeCommit.oid], whatever the repo's merge method produced) of
-             every *merged* dependency of that patch? This is the only git I/O
-             of the reconcile phase; it is skipped (trivially [true]) for
-             patches based on main or with no merged deps, so the [is_ancestor]
-             calls are limited to fan-in patches mid-merge. Fail-closed to
-             [false] when a dep's merge SHA is not yet recorded — the
-             dependent then defers until [detect_sibling_stale_bases] rebases
-             the base (which also fetches the merge commit into the repo). *)
+                (* The core checks recorded dependency revisions, the mode's
+                   integration terminal, and accepted owner repair receipts.
+                   Missing commit identities request repair from the terminal;
+                   they do not leave an unstarted fan-in waiting for evidence.
+                   Git reads are lazy and shared across this batch. *)
                 let graph = Orchestrator.graph orch in
+                let agents = Orchestrator.all_agents orch in
+                let agents_by_branch =
+                  List.fold agents
+                    ~init:(Map.empty (module String))
+                    ~f:(fun owners (agent : Patch_agent.t) ->
+                      match
+                        Map.add owners
+                          ~key:(Branch.to_string agent.branch)
+                          ~data:agent
+                      with
+                      | `Ok owners -> owners
+                      | `Duplicate -> owners)
+                in
+                let agent_of_branch branch =
+                  Map.find agents_by_branch (Branch.to_string branch)
+                in
                 let has_merged pid =
                   match Orchestrator.find_agent orch pid with
                   | Some a -> a.Patch_agent.merged
@@ -724,6 +735,20 @@ module Make (Forge : Forge.S) (W : Worktree.S) (Env : Poller_env.S) = struct
              [false] rather than aborting the whole reconcile tick (it runs
              under the runtime lock). Cancellation must still propagate. *)
                 let main_root = lazy (W.resolve_main_root ()) in
+                let main_revision =
+                  lazy
+                    (try
+                       W.read_branch_sha ~path:(Lazy.force main_root)
+                         ~ref_name:
+                           ("refs/remotes/origin/" ^ Branch.to_string main)
+                     with
+                    | Eio.Cancel.Cancelled _ as exn -> raise exn
+                    | _ -> None)
+                in
+                let revision_of_branch branch =
+                  if Branch.equal branch main then Lazy.force main_revision
+                  else None
+                in
                 let ancestor_oracle ancestor ~descendant =
                   try
                     W.is_ancestor ~path:(Lazy.force main_root) ~ancestor
@@ -740,13 +765,14 @@ module Make (Forge : Forge.S) (W : Worktree.S) (Env : Poller_env.S) = struct
                by a cancelled tick simply retain a fail-closed/stale cache for
                at most that aborted tick, deferring Start/Rebase until the next
                successful pass. *)
-                  List.fold (Orchestrator.all_agents orch) ~init:orch
+                  List.fold agents ~init:orch
                     ~f:(fun orch (a : Patch_agent.t) ->
                       let contains =
                         Base_containment.contains_merged_siblings_with_mode
                           ~mode:(Orchestrator.execution_mode orch)
                           ~graph ~patch_id:a.Patch_agent.patch_id ~has_merged
-                          ~merge_sha ~branch_of ~main ~ancestor_oracle
+                          ~merge_sha ~branch_of ~main ~agent_of_branch
+                          ~revision_of_branch ~ancestor_oracle
                       in
                       Orchestrator.set_base_contains_merged_siblings orch
                         a.Patch_agent.patch_id contains)
@@ -765,7 +791,8 @@ module Make (Forge : Forge.S) (W : Worktree.S) (Env : Poller_env.S) = struct
                           Base_containment.stale_chain_rebase_target_with_mode
                             ~mode:(Orchestrator.execution_mode orch)
                             ~graph ~patch_id:a.Patch_agent.patch_id ~has_merged
-                            ~merge_sha ~branch_of ~main ~ancestor_oracle
+                            ~merge_sha ~branch_of ~main ~agent_of_branch
+                            ~revision_of_branch ~ancestor_oracle
                       in
                       Reconciler.
                         {
@@ -957,12 +984,27 @@ module Make (Forge : Forge.S) (W : Worktree.S) (Env : Poller_env.S) = struct
                             ~head_sha:observed.head_sha ~checks:observed.checks
                       | None | Some _ -> orch)))
         branch_intents;
-      (* While responses arrive independently, only trivial containment is
-         usable. Fan-in requiring Git stays fail-closed until the batch owner
-         checks the complete current graph. Main/no-merged-dependency cases
-         remain ready without waiting for unrelated network operations. *)
+      (* While responses arrive independently, use terminal identity and
+         accepted owner integrations without Git I/O. Other fan-in cases await
+         the batch owner's ancestry/repair pass over the complete graph. *)
       Runtime.update_orchestrator runtime (fun orch ->
           let graph = Orchestrator.graph orch in
+          let agents = Orchestrator.all_agents orch in
+          let agents_by_branch =
+            List.fold agents
+              ~init:(Map.empty (module String))
+              ~f:(fun owners (agent : Patch_agent.t) ->
+                match
+                  Map.add owners
+                    ~key:(Branch.to_string agent.branch)
+                    ~data:agent
+                with
+                | `Ok owners -> owners
+                | `Duplicate -> owners)
+          in
+          let agent_of_branch branch =
+            Map.find agents_by_branch (Branch.to_string branch)
+          in
           let has_merged pid =
             Option.value_map (Orchestrator.find_agent orch pid) ~default:false
               ~f:(fun a -> a.Patch_agent.merged)
@@ -971,13 +1013,14 @@ module Make (Forge : Forge.S) (W : Worktree.S) (Env : Poller_env.S) = struct
             Option.bind (Orchestrator.find_agent orch pid) ~f:(fun a ->
                 a.Patch_agent.merge_commit_sha)
           in
-          List.fold (Orchestrator.all_agents orch) ~init:orch
-            ~f:(fun orch (a : Patch_agent.t) ->
+          List.fold agents ~init:orch ~f:(fun orch (a : Patch_agent.t) ->
               let contains =
                 Base_containment.contains_merged_siblings_with_mode
                   ~mode:(Orchestrator.execution_mode orch)
                   ~graph ~patch_id:a.patch_id ~has_merged ~merge_sha ~branch_of
-                  ~main ~ancestor_oracle:(fun _ ~descendant:_ -> false)
+                  ~main ~agent_of_branch
+                  ~revision_of_branch:(fun _ -> None)
+                  ~ancestor_oracle:(fun _ ~descendant:_ -> false)
               in
               Orchestrator.set_base_contains_merged_siblings orch a.patch_id
                 contains));
