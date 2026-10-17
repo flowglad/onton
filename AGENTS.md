@@ -137,8 +137,12 @@ unattended supervisor session. There are two supported transports:
 
 Validation must preserve liveness. Missing or unverifiable evidence must lead to
 an executable repair operation or a repair prompt, never an indefinite gate.
-Accept successful agent repair through the owner's completion contract; do not
-re-gate its result on the old commit identities or ancestry shape it repaired.
+Accept successful agent repair through a `Branch_reconcile.integration_receipt`
+with `Agent_reported` evidence, recording the captured target and repaired
+`integrated_revision`; do not re-gate its result on the old commit identities or
+ancestry shape it repaired. This receipt does not itself clear forge conflict
+evidence or override pending-publication rejection of conflicting old heads
+without direct Git confirmation.
 
 `Branch_reconcile` owns reconciliation and pins source/target revisions before
 Git mutations. Rebase boundaries come from Git ancestry. A previous base can be

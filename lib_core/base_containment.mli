@@ -31,10 +31,9 @@ val contains_merged_siblings :
 
     - [true] when the patch's structurally-correct base ([Graph.initial_base])
       is [main] (every merged dep is already a squash commit on main), or when
-      every merged dependency's [merge_sha] is an ancestor of the base branch,
-      or the base contains the current terminal branch;
-    - [false] when dependency containment is unknown and the base does not
-      contain the terminal branch; this requests repair through the frontier;
+      every merged dependency's [merge_sha] is an ancestor of the base branch;
+    - [false] (fail-closed) when any merged dependency's [merge_sha] is unknown
+      ([None]) or is not yet an ancestor of the base branch;
     - [false] when the patch has more than one open dependency (not at the
       last-but-one-merge edge; the value is irrelevant because the patch defers
       on dependency satisfaction anyway, and [Graph.initial_base] is undefined

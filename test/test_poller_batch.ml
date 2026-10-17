@@ -187,11 +187,7 @@ let run_case env ~request_count ~ancestry ~skip =
                   | None ->
                       oracle_errors :=
                         "cannot resolve repository root" :: !oracle_errors);
-                  if
-                    not
-                      (Int.equal (String.length ancestor) 40
-                      || String.equal ancestor "main")
-                  then
+                  if not (Int.equal (String.length ancestor) 40) then
                     oracle_errors :=
                       "malformed fixture merge SHA" :: !oracle_errors;
                   if not (String.equal descendant "b") then
