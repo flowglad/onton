@@ -217,24 +217,26 @@ module Make (Forge : Forge.S) (W : Worktree.S) (Env : Runner_env.S) = struct
                           snap.Runtime.orchestrator id))
               in
               if valid then
-                try
-                  let result =
-                    match github_effect with
-                    | Patch_controller.Set_pr_draft { pr_number; draft; _ } ->
-                        Forge.set_draft ~pr_number ~draft
-                    | Patch_controller.Set_pr_base { pr_number; base; _ } ->
-                        Forge.update_pr_base ~pr_number ~base
-                  in
-                  match result with
-                  | Ok () ->
-                      Runtime.update_orchestrator runtime (fun orch ->
-                          Patch_controller.apply_github_effect_success orch
-                            github_effect);
-                      applied := true
-                  | Error err -> failed (Forge.show_error err)
-                with
-                | Eio.Cancel.Cancelled _ as exn -> raise exn
-                | exn -> failed (Printexc.to_string exn)
+                let result =
+                  try
+                    `Forge
+                      (match github_effect with
+                      | Patch_controller.Set_pr_draft { pr_number; draft; _ } ->
+                          Forge.set_draft ~pr_number ~draft
+                      | Patch_controller.Set_pr_base { pr_number; base; _ } ->
+                          Forge.update_pr_base ~pr_number ~base)
+                  with
+                  | Eio.Cancel.Cancelled _ as exn -> raise exn
+                  | exn -> `Exception (Printexc.to_string exn)
+                in
+                match result with
+                | `Forge (Ok ()) ->
+                    Runtime.update_orchestrator runtime (fun orch ->
+                        Patch_controller.apply_github_effect_success orch
+                          github_effect);
+                    applied := true
+                | `Forge (Error err) -> failed (Forge.show_error err)
+                | `Exception text -> failed text
             in
             if Base.Option.is_some root_promotion then
               Runtime.with_root_write runtime execute

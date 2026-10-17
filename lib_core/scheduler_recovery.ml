@@ -100,20 +100,23 @@ let observe t ~now ~scope ~blocked =
           | None -> { kind; scope; since = now; failures = 0; phase = Waiting }
           | Some e when equal_scope e.scope scope -> e
           | Some e
-            when (not (Option.equal Int.equal e.scope.pr scope.pr))
-                 || not (Option.equal String.equal e.scope.queue scope.queue) ->
+            when equal_phase e.phase Repaired
+                 && Option.equal Int.equal e.scope.pr scope.pr
+                 && Option.equal String.equal e.scope.base scope.base
+                 && Option.equal String.equal e.scope.queue scope.queue
+                 && Option.is_some e.scope.publication
+                 && Option.equal String.equal e.scope.publication scope.head
+                 && Option.is_none scope.publication ->
+              (* Acknowledging the repair's published revision is the same
+                 result, rather than a new external revision to diagnose. *)
+              { e with scope }
+          | Some e
+            when equal_phase e.phase Attention
+                 && Option.equal Int.equal e.scope.pr scope.pr
+                 && Option.equal String.equal e.scope.queue scope.queue ->
+              { e with scope; since = now }
+          | Some _ ->
               { kind; scope; since = now; failures = 0; phase = Waiting }
-          | Some e ->
-              {
-                e with
-                scope;
-                since = now;
-                phase =
-                  (match e.phase with
-                  | Attention -> Attention
-                  | Repaired -> Repaired
-                  | Waiting | Requested _ | Running _ -> Waiting);
-              }
         in
         let e = { e with since = Float.min e.since now } in
         let delay =
@@ -139,16 +142,18 @@ let observe t ~now ~scope ~blocked =
   else { next; now; entries }
 
 let failed t ~now ~scope ~kind =
-  let t =
-    if List.exists t.entries ~f:(fun e -> equal_kind e.kind kind) then t
-    else
-      {
-        t with
-        entries =
-          { kind; scope; since = finite now; failures = 0; phase = Waiting }
-          :: t.entries;
-      }
+  let fresh =
+    { kind; scope; since = finite now; failures = 0; phase = Waiting }
   in
+  let entries =
+    if List.exists t.entries ~f:(fun e -> equal_kind e.kind kind) then
+      List.map t.entries ~f:(fun e ->
+          if equal_kind e.kind kind && not (equal_scope e.scope scope) then
+            fresh
+          else e)
+    else fresh :: t.entries
+  in
+  let t = { t with entries } in
   {
     t with
     entries =
@@ -175,7 +180,7 @@ let claim t ticket =
           | Waiting | Requested _ | Running _ | Repaired | Attention -> e);
   }
 
-let complete ?now t ticket ~success =
+let complete ?now ?scope t ticket ~success =
   if not (is_running t ticket) then t
   else
     let now = Option.value_map now ~default:t.now ~f:finite in
@@ -188,6 +193,7 @@ let complete ?now t ticket ~success =
             | Running current when equal_ticket current ticket ->
                 {
                   e with
+                  scope = Option.value scope ~default:e.scope;
                   since = now;
                   failures = 0;
                   phase = (if success then Repaired else Attention);

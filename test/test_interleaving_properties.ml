@@ -500,7 +500,8 @@ let rec apply_command orch patches cmd =
   | Runner_tick -> (
       try
         let orch, _effects, _actions =
-          Patch_controller.tick orch ~project_name:"test-project" ~gameplan
+          Patch_controller.tick ~now:0. orch ~project_name:"test-project"
+            ~gameplan
         in
         orch
       with Invalid_argument _ -> orch)
@@ -1822,7 +1823,8 @@ let () =
         in
         (* Tick to fire the Merge_conflict — ad-hoc agent becomes busy *)
         let orch, _effects, _actions =
-          Patch_controller.tick orch ~project_name:"test-project" ~gameplan
+          Patch_controller.tick ~now:0. orch ~project_name:"test-project"
+            ~gameplan
         in
         let agent = Orchestrator.agent orch pid in
         if not agent.Patch_agent.busy then
@@ -1833,7 +1835,8 @@ let () =
         let orch = Orchestrator.complete orch pid in
         (* Subsequent tick must not crash *)
         let orch, _effects, _actions =
-          Patch_controller.tick orch ~project_name:"test-project" ~gameplan
+          Patch_controller.tick ~now:0. orch ~project_name:"test-project"
+            ~gameplan
         in
         ignore (drain_and_check orch patches);
         true)
@@ -2070,7 +2073,8 @@ let () =
         let orch = Orchestrator.send_human_message orch pid msg in
         (* Tick fires the action *)
         let orch, _effects, actions =
-          Patch_controller.tick orch ~project_name:"test-project" ~gameplan
+          Patch_controller.tick ~now:0. orch ~project_name:"test-project"
+            ~gameplan
         in
         (* Must have produced Respond(_, Human) *)
         let has_human_respond =
@@ -3490,7 +3494,7 @@ let () =
 let happy_tick orch patches ~pr_counter =
   let gameplan = make_gameplan patches in
   let orch, _effects, _actions =
-    Patch_controller.tick orch ~project_name:"test-project" ~gameplan
+    Patch_controller.tick ~now:0. orch ~project_name:"test-project" ~gameplan
   in
   let orch =
     List.fold (Orchestrator.all_agents orch) ~init:orch
@@ -3608,7 +3612,8 @@ let () =
           let gameplan = make_gameplan patches in
           let tick o =
             let o, _effects, _actions =
-              Patch_controller.tick o ~project_name:"test-project" ~gameplan
+              Patch_controller.tick ~now:0. o ~project_name:"test-project"
+                ~gameplan
             in
             o
           in

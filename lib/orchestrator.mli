@@ -347,9 +347,11 @@ type respond_outcome =
 
 val apply_respond_outcome :
   ?now:float -> t -> Patch_id.t -> Operation_kind.t -> respond_outcome -> t
-(** Apply the outcome of a Respond action fiber. [Respond_ok] -> complete +
-    reset_no_commits_push_count + kind-specific transitions (Merge_conflict ->
-    preserves owner conflict evidence; Review_comments ->
+(** Live Human repair completions must pass their completion clock as [now].
+    Omitting it uses the last scheduler observation time for legacy/offline
+    calls. Apply the outcome of a Respond action fiber. [Respond_ok] -> complete
+    \+ reset_no_commits_push_count + kind-specific transitions (Merge_conflict
+    -> preserves owner conflict evidence; Review_comments ->
     reset_review_unresolved_cycle_count so the cap counts only consecutive
     non-converged cycles; Pr_body -> set_pr_body_delivered +
     reset_pr_body_artifact_miss_count so the cap counts only consecutive

@@ -1154,7 +1154,14 @@ let scheduler_blocked t ~pr_base_update ~pr_draft_update =
   (if forge then [ R.Forge_revision ] else [])
   @ (if
        (not forge) && (not t.checks_passing)
-       && not (List.exists t.ci_checks ~f:Ci_check.is_failure)
+       && (not (List.exists t.ci_checks ~f:Ci_check.is_failure))
+       && not
+            (List.exists t.ci_checks ~f:(fun check ->
+                 List.mem
+                   [
+                     "pending"; "queued"; "in_progress"; "waiting"; "requested";
+                   ]
+                   check.Ci_check.conclusion ~equal:String.equal))
      then [ R.Ci_evidence ]
      else [])
   @ (match t.merge_queue_ejection with
@@ -1205,9 +1212,46 @@ let finish_scheduler_repair ?now t ~success =
   | None -> t
   | Some ticket ->
       let current = scheduler_scope t in
+      let repaired_revision =
+        success
+        && Option.exists t.session_completion ~f:(fun completion ->
+            completion.turn_accepted
+            && Session_result.equal_delivery_mode completion.delivery_mode
+                 Respond
+            && Option.equal Operation_kind.equal completion.kind (Some Human)
+            && Option.is_some t.current_message_id
+            && Option.equal Message_id.equal completion.message_id
+                 t.current_message_id
+            && Option.is_some completion.head
+            && (Option.equal String.equal current.head ticket.scope.head
+               || Option.equal String.equal completion.head current.head)
+            && (Option.equal String.equal current.publication
+                  ticket.scope.publication
+               || Option.equal String.equal completion.head current.publication
+               || Option.is_none current.publication)
+            && List.exists (Branch_reconcile.publications t.branch_reconcile)
+                 ~f:(fun receipt ->
+                   Option.equal String.equal completion.head
+                     (Some
+                        (Branch_reconcile.Commit.to_string
+                           receipt.published_revision))
+                   && Branch_reconcile.equal_purpose
+                        receipt.published_intent.purpose
+                        (Session_result.publication_intent completion
+                           ~base:(Option.value current.base ~default:"")
+                           ~policy:Branch_reconcile.Preserve_ancestry)
+                          .purpose))
+      in
+      let same_context =
+        Option.equal Int.equal ticket.scope.pr current.pr
+        && Option.equal String.equal ticket.scope.base current.base
+        && Option.equal String.equal ticket.scope.queue current.queue
+      in
       let accepted =
         Scheduler_recovery.is_running t.scheduler_recovery ticket
-        && Option.equal Int.equal ticket.scope.pr current.pr
+        && same_context
+        && (Scheduler_recovery.equal_scope ticket.scope current
+           || repaired_revision)
       in
       let merge_queue_ejection =
         if
@@ -1222,8 +1266,13 @@ let finish_scheduler_repair ?now t ~success =
         t with
         scheduler_recovery =
           (if accepted then
-             Scheduler_recovery.complete ?now t.scheduler_recovery ticket
-               ~success
+             Scheduler_recovery.complete ?now ~scope:current
+               t.scheduler_recovery ticket ~success
+           else if Scheduler_recovery.is_running t.scheduler_recovery ticket
+           then
+             (* Supersede only this obsolete execution. The next observation
+                starts the new scope's wait using its actual clock. *)
+             Scheduler_recovery.resolve t.scheduler_recovery ticket.kind
            else t.scheduler_recovery);
         scheduler_repair = None;
         merge_queue_ejection;

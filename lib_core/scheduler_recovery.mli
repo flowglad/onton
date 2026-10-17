@@ -41,7 +41,12 @@ val attention : t -> string option
 val failed : t -> now:float -> scope:scope -> kind:kind -> t
 val is_running : t -> ticket -> bool
 val claim : t -> ticket -> t
-val complete : ?now:float -> t -> ticket -> success:bool -> t
+
+val complete : ?now:float -> ?scope:scope -> t -> ticket -> success:bool -> t
+(** [scope] records the resulting scope of an intentionally revision-changing
+    repair, after the caller has verified that the running turn produced it.
+    Without [now], uses the last observation time; live completions must pass
+    their actual completion time. *)
 
 val recover : t -> running:ticket option -> t
 (** Requeue a claimed repair whose execution owner was lost during restart. *)
@@ -51,6 +56,10 @@ val contains : t -> kind -> bool
 val write_allowed : t -> kind -> bool
 val resume : t -> t
 val yojson_of_t : t -> Yojson.Safe.t
+
 val decode : Yojson.Safe.t -> t
+(** Malformed state resets to [empty], including all repair entries. This total
+    compatibility decoder does not preserve partial or invalid authority. *)
+
 val yojson_of_ticket : ticket -> Yojson.Safe.t
 val decode_ticket : Yojson.Safe.t -> ticket option

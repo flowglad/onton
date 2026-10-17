@@ -488,3 +488,199 @@ let () =
                && (not (String.is_empty (R.label kind)))
                && not (String.is_empty (R.prompt kind))
          with _ -> false))
+
+let () =
+  QCheck2.Test.check_exn
+    (QCheck2.Test.make
+       ~name:"active CI never requests missing-evidence repair after grace"
+       ~count:100
+       QCheck2.Gen.(
+         pair
+           (oneof_list
+              [ "in_progress"; "queued"; "pending"; "waiting"; "requested" ])
+           (int_range 901 100000))
+       (fun (conclusion, elapsed) ->
+         try
+           let check =
+             Ci_check.
+               {
+                 name = "long-running";
+                 conclusion;
+                 details_url = None;
+                 description = None;
+                 started_at = None;
+                 app_id = None;
+                 check_suite_id = None;
+                 id = Some 1;
+               }
+           in
+           let a =
+             ready () |> fun a ->
+             Patch_agent.set_checks_passing a false |> fun a ->
+             Patch_agent.set_ci_checks a [ check ]
+           in
+           let observe a now =
+             Patch_agent.observe_scheduler a ~now ~pr_base_update:false
+               ~pr_draft_update:false
+           in
+           let after = observe (observe a 0.) (Float.of_int elapsed) in
+           (not (R.contains after.scheduler_recovery R.Ci_evidence))
+           && Option.is_none (R.pending after.scheduler_recovery)
+         with _ -> false));
+  QCheck2.Test.check_exn
+    (QCheck2.Test.make
+       ~name:"ad-hoc draft PRs never request gameplan draft repair" ~count:100
+       QCheck2.Gen.(int_range 901 100000)
+       (fun elapsed ->
+         try
+           let adhoc_id = pid "adhoc" in
+           let t =
+             Orchestrator.add_agent
+               (orch (ready ()))
+               ~patch_id:adhoc_id ~branch:(branch "adhoc") ~base_branch:main
+               ~pr_number:(Pr_number.of_int 8)
+           in
+           let adhoc =
+             ready
+               ~patch:
+                 {
+                   (List.hd_exn gp.patches) with
+                   id = adhoc_id;
+                   branch = branch "adhoc";
+                 }
+               ~pr_number:8 ()
+             |> fun a -> Patch_agent.set_is_draft a true
+           in
+           let t =
+             Orchestrator.restore ~graph:(Orchestrator.graph t)
+               ~agents:
+                 (Map.set (Orchestrator.agents_map t) ~key:adhoc_id ~data:adhoc)
+               ~outbox:(Map.empty (module Message_id))
+               ~main_branch:main ()
+           in
+           let t, _, _ = tick t 0. in
+           let t, effects, _ = tick t (Float.of_int elapsed) in
+           let a = Orchestrator.agent t adhoc_id in
+           a.is_draft
+           && (not (R.contains a.scheduler_recovery R.Pr_draft))
+           && not
+                (List.exists effects ~f:(function
+                  | Patch_controller.Set_pr_draft { patch_id; _ } ->
+                      Patch_id.equal patch_id adhoc_id
+                  | Set_pr_base _ -> false))
+         with _ -> false));
+  QCheck2.Test.check_exn
+    (QCheck2.Test.make
+       ~name:"stale PR base writes cannot discharge current repair" ~count:100
+       QCheck2.Gen.(int_range 1 10000)
+       (fun n ->
+         try
+           let a =
+             ready () |> fun a ->
+             Patch_agent.scheduler_write_failed a ~now:0. ~kind:R.Pr_base
+           in
+           let t = orch a in
+           let stale =
+             Patch_controller.apply_github_effect_success t
+               (Set_pr_base
+                  {
+                    patch_id = id;
+                    pr_number = Pr_number.of_int 7;
+                    base = branch ("stale-" ^ Int.to_string n);
+                  })
+           in
+           let current =
+             Patch_controller.apply_github_effect_success stale
+               (Set_pr_base
+                  { patch_id = id; pr_number = Pr_number.of_int 7; base = main })
+           in
+           Patch_agent.equal a (Orchestrator.agent stale id)
+           && not
+                (R.contains (Orchestrator.agent current id).scheduler_recovery
+                   R.Pr_base)
+         with _ -> false));
+  QCheck2.Test.check_exn
+    (QCheck2.Test.make
+       ~name:"busy same-PR scope changes reject old repair completion"
+       ~count:100
+       QCheck2.Gen.(int_range 0 2)
+       (fun change ->
+         try
+           let t, _, _ =
+             tick (orch (Patch_agent.set_native_stack (ready ()) true)) 0.
+           in
+           let _, running = claim t 1000. in
+           let changed =
+             match change with
+             | 0 -> Patch_agent.set_head_oid running (Some (F.sha "external"))
+             | 1 -> Patch_agent.set_base_branch running (branch "external-base")
+             | _ -> F.agent ~candidate:(F.sha "external-publication") running
+           in
+           let finished =
+             Patch_agent.finish_scheduler_repair ~now:1001. changed
+               ~success:true
+             |> Patch_agent.complete
+           in
+           let observed =
+             Patch_agent.observe_scheduler finished ~now:1002.
+               ~pr_base_update:false ~pr_draft_update:false
+           in
+           Option.is_some (R.pending observed.scheduler_recovery)
+           && Option.is_none observed.scheduler_repair
+         with _ -> false));
+  QCheck2.Test.check_exn
+    (QCheck2.Test.make
+       ~name:
+         "repair-produced heads retain accepted completion through forge \
+          acknowledgement" ~count:100 QCheck2.Gen.bool (fun observed_head ->
+         try
+           let t, _, _ =
+             tick (orch (Patch_agent.set_native_stack (ready ()) true)) 0.
+           in
+           let _, running = claim t 1000. in
+           let head = F.sha "intentional-repair" in
+           let completion =
+             Session_result.
+               {
+                 session_uuid = "current-repair";
+                 delivery_mode = Respond;
+                 kind = Some Human;
+                 message_id = running.current_message_id;
+                 result = Session_ok;
+                 head = Some head;
+                 guidance = [];
+                 turn_accepted = true;
+               }
+           in
+           let repaired =
+             F.agent ~candidate:head running |> fun a ->
+             Patch_agent.record_session_completion a completion
+           in
+           let repaired =
+             if observed_head then
+               Patch_agent.set_head_oid repaired (Some head) |> fun a ->
+               Patch_agent.observe_publication_head ~confirmed_remote_head:head
+                 a (Some head)
+             else repaired
+           in
+           let finished =
+             Patch_agent.finish_scheduler_repair ~now:1001. repaired
+               ~success:true
+             |> Patch_agent.complete
+           in
+           let acknowledged =
+             Patch_agent.set_head_oid finished (Some head) |> fun a ->
+             Patch_agent.observe_publication_head ~confirmed_remote_head:head a
+               (Some head)
+           in
+           let observe a now =
+             Patch_agent.observe_scheduler a ~now ~pr_base_update:false
+               ~pr_draft_update:false
+           in
+           let wait = observe acknowledged 1002. in
+           let attention = observe wait 1121. in
+           Option.is_none (R.pending wait.scheduler_recovery)
+           && Option.is_none (R.attention wait.scheduler_recovery)
+           && Option.is_some (R.attention attention.scheduler_recovery)
+           && Option.is_none (R.pending attention.scheduler_recovery)
+         with _ -> false))

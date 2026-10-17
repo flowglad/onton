@@ -47,7 +47,7 @@ let make_gameplan patches =
     numbers so they become eligible for Respond/Rebase actions. *)
 let prepare_with_prs orch patches =
   let orch, _effects, _actions =
-    Patch_controller.tick orch ~project_name:"test-project"
+    Patch_controller.tick ~now:0. orch ~project_name:"test-project"
       ~gameplan:(make_gameplan patches)
   in
   List.fold patches ~init:orch ~f:(fun o (p : Patch.t) ->
@@ -134,7 +134,7 @@ let () =
               let pid = first.Patch.id in
               let orch = Orchestrator.create ~patches ~main_branch:main in
               let orch, _effects, _actions =
-                Patch_controller.tick orch ~project_name:"test-project"
+                Patch_controller.tick ~now:0. orch ~project_name:"test-project"
                   ~gameplan:(make_gameplan patches)
               in
               let orch =

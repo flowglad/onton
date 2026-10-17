@@ -43,8 +43,99 @@ let ticket state kind =
   let state = observe state kind 1000. in
   (state, get (R.pending state))
 
+let replace fields key value =
+  `Assoc ((key, value) :: List.Assoc.remove fields key ~equal:String.equal)
+
+let corrupt_checkpoints () =
+  let state, t = ticket R.empty R.Pr_base in
+  let json = R.yojson_of_t (R.claim state t) in
+  match json with
+  | `Assoc fields -> (
+      let entries = List.Assoc.find_exn fields "entries" ~equal:String.equal in
+      match entries with
+      | `List [ (`Assoc entry as original) ] ->
+          let with_entry entry = replace fields "entries" (`List [ entry ]) in
+          let ticket_json = R.yojson_of_ticket t in
+          let phase ticket =
+            replace entry "phase" (`List [ `String "Running"; ticket ])
+          in
+          let invalid_tickets =
+            match ticket_json with
+            | `Assoc ticket_fields ->
+                [
+                  replace ticket_fields "id" (`Int 0);
+                  replace ticket_fields "id" (`Int (t.id + 1));
+                  replace ticket_fields "kind" (`List [ `String "Pr_draft" ]);
+                  replace ticket_fields "scope"
+                    (match
+                       List.Assoc.find_exn ticket_fields "scope"
+                         ~equal:String.equal
+                     with
+                    | `Assoc scope_fields ->
+                        replace scope_fields "pr" (`Int 999)
+                    | _ -> `Null);
+                ]
+            | _ -> []
+          in
+          [
+            replace fields "next" (`Int 0);
+            replace fields "now" (`Float (-1.));
+            replace fields "now" (`Float Float.nan);
+            replace fields "entries"
+              (`List (List.init 8 ~f:(fun _ -> original)));
+            replace fields "entries" (`List [ original; original ]);
+            with_entry (replace entry "since" (`Float (-1.)));
+            with_entry (replace entry "since" (`Float Float.nan));
+            with_entry (replace entry "failures" (`Int (-1)));
+            with_entry (replace entry "failures" (`Int 3));
+          ]
+          @ List.map invalid_tickets ~f:(fun ticket ->
+              with_entry (phase ticket))
+      | _ -> failwith "expected canonical entry")
+  | _ -> failwith "expected canonical checkpoint"
+
+let prop_scope_changes =
+  T.make ~name:"changed scope gets a fresh grace and rejects stale completion"
+    ~count:500
+    G.(pair kind (int_range 1 10000))
+    (fun (kind, epoch) ->
+      try
+        let state, old = ticket R.empty kind in
+        let state = R.claim state old in
+        let fresh_scope = scope (epoch + 1) in
+        let fresh =
+          R.observe state ~now:10000. ~scope:fresh_scope ~blocked:[ kind ]
+        in
+        let failed = R.failed state ~now:10000. ~scope:fresh_scope ~kind in
+        let observed =
+          R.observe failed ~now:10000. ~scope:fresh_scope ~blocked:[ kind ]
+        in
+        let twice = R.failed failed ~now:10000. ~scope:fresh_scope ~kind in
+        let due =
+          R.observe twice ~now:10000. ~scope:fresh_scope ~blocked:[ kind ]
+        in
+        R.equal fresh (R.complete ~now:10001. fresh old ~success:true)
+        && (Float.(R.grace kind = 0.) || Option.is_none (R.pending fresh))
+        && (Float.(R.grace kind = 0.) || Option.is_none (R.pending observed))
+        && Option.exists (R.pending due) ~f:(fun ticket ->
+            R.equal_scope ticket.scope fresh_scope)
+        && Option.exists
+             (R.pending
+                (R.observe fresh
+                   ~now:(10000. +. deadline kind)
+                   ~scope:fresh_scope ~blocked:[ kind ]))
+             ~f:(fun ticket -> R.equal_scope ticket.scope fresh_scope)
+      with _ -> false)
+
 let tests =
   [
+    prop_scope_changes;
+    T.make ~name:"malformed canonical checkpoints reset all repair authority"
+      ~count:100 G.unit (fun () ->
+        try
+          List.for_all (corrupt_checkpoints ()) ~f:(fun json ->
+              R.equal (R.decode json) R.empty)
+        with _ -> false);
     T.make
       ~name:
         "scheduler recovery: total over malformed checkpoints and arbitrary \
@@ -63,6 +154,8 @@ let tests =
       (fun (json, (kind, now)) ->
         try
           let state = R.decode json in
+          assert (R.equal state R.empty);
+          assert (Option.is_none (R.decode_ticket json));
           let state = observe state kind now in
           ignore (R.decode (R.yojson_of_t state) : R.t);
           ignore (R.decode_ticket json : R.ticket option);
@@ -167,16 +260,37 @@ let tests =
                   | 2 -> (
                       match R.pending state with
                       | None -> (state, last, epoch)
-                      | Some t -> (R.claim state t, Some t, epoch))
+                      | Some t ->
+                          let claimed = R.claim state t in
+                          assert (R.is_running claimed t);
+                          assert (Option.is_none (R.pending claimed));
+                          (claimed, Some t, epoch))
                   | 3 | 4 ->
                       ( Option.value_map last ~default:state ~f:(fun t ->
-                            R.complete ~now state t ~success:(op = 3)),
+                            let completed =
+                              R.complete ~now state t ~success:(op = 3)
+                            in
+                            if R.is_running state t then (
+                              assert (not (R.is_running completed t));
+                              assert (Option.is_none (R.pending completed));
+                              assert (
+                                Bool.equal
+                                  (Option.is_some (R.attention completed))
+                                  (op = 4)))
+                            else assert (R.equal state completed);
+                            completed),
                         last,
                         epoch )
                   | 5 ->
-                      ( R.recover (R.decode (R.yojson_of_t state)) ~running:None,
-                        last,
-                        epoch )
+                      let restored = R.decode (R.yojson_of_t state) in
+                      assert (R.equal restored state);
+                      let recovered = R.recover restored ~running:None in
+                      Option.iter last ~f:(fun ticket ->
+                          if R.is_running state ticket then
+                            assert (
+                              Option.equal R.equal_ticket (R.pending recovered)
+                                (Some ticket)));
+                      (recovered, last, epoch)
                   | 6 ->
                       ( R.failed state ~now ~scope:(scope epoch) ~kind,
                         last,
@@ -185,19 +299,15 @@ let tests =
                 in
                 (state, now, last, epoch))
           in
-          let state =
-            Option.value_map last ~default:state ~f:(fun t ->
-                R.complete ~now state t ~success:true)
+          let scope = scope epoch in
+          let observed = R.observe state ~now ~scope ~blocked:[ kind ] in
+          let due =
+            R.observe observed ~now:(now +. 10000.) ~scope ~blocked:[ kind ]
           in
-          let state = R.recover state ~running:None in
-          let state =
-            R.observe state ~now ~scope:(scope epoch) ~blocked:[ kind ]
-          in
-          let state =
-            R.observe state ~now:(now +. 10000.) ~scope:(scope epoch)
-              ~blocked:[ kind ]
-          in
-          Option.is_some (R.pending state) || Option.is_some (R.attention state)
+          (* No closing recovery/completion may conceal a broken transition. *)
+          Option.is_some (R.pending due)
+          || Option.is_some (R.attention due)
+          || Option.exists last ~f:(R.is_running due)
         with _ -> false);
   ]
 

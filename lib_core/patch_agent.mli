@@ -804,6 +804,13 @@ val observe_scheduler :
   t -> now:float -> pr_base_update:bool -> pr_draft_update:bool -> t
 
 val scheduler_write_failed : t -> now:float -> kind:Scheduler_recovery.kind -> t
+
 val finish_scheduler_repair : ?now:float -> t -> success:bool -> t
+(** Live successful completions must pass their current clock via [now]. When
+    omitted, completion uses the last scheduler observation time (legacy/offline
+    callers); it does not read a clock. Changed scopes require a matching
+    current session completion and owner publication receipt for an intentional
+    new head. *)
+
 val resolve_scheduler : t -> Scheduler_recovery.kind -> t
 val recover_scheduler_owner : t -> owned:bool -> t

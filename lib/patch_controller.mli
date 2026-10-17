@@ -96,32 +96,35 @@ val plan_messages :
     actions become pending messages in the outbox. *)
 
 val plan_tick_messages :
-  ?now:float ->
+  now:float ->
   Orchestrator.t ->
   project_name:string ->
   gameplan:Gameplan.t ->
   Orchestrator.t * github_effect list * Orchestrator.patch_agent_message list
-(** Reconcile durable state, emit missing GitHub effects, and compute durable
-    runnable patch-agent messages for the same snapshot. *)
+(** [now] is the current scheduler clock, in seconds. Reconcile durable state,
+    emit missing GitHub effects, and compute durable runnable patch-agent
+    messages for the same snapshot. *)
 
 val plan_tick :
-  ?now:float ->
+  now:float ->
   Orchestrator.t ->
   project_name:string ->
   gameplan:Gameplan.t ->
   Orchestrator.t * github_effect list * Orchestrator.action list
-(** Reconcile durable state, emit missing GitHub effects, and compute runnable
-    actions for the same snapshot. *)
+(** [now] is the current scheduler clock, in seconds. Reconcile durable state,
+    emit missing GitHub effects, and compute runnable actions for the same
+    snapshot. *)
 
 val tick :
+  now:float ->
   Orchestrator.t ->
   project_name:string ->
   gameplan:Gameplan.t ->
   Orchestrator.t * github_effect list * Orchestrator.action list
-(** Reconcile durable state, emit missing GitHub effects, and accept or resume
-    runnable outbox messages. The returned actions are only those whose message
-    ownership was acquired. Repeated ticks cannot fire an already running
-    action. *)
+(** [now] is the current scheduler clock, in seconds. Reconcile durable state,
+    emit missing GitHub effects, and accept or resume runnable outbox messages.
+    The returned actions are only those whose message ownership was acquired.
+    Repeated ticks cannot fire an already running action. *)
 
 val apply_github_effect_success :
   Orchestrator.t -> github_effect -> Orchestrator.t
@@ -164,11 +167,13 @@ type review_request_decision = {
 
 val is_automerge_candidate :
   ?ignore_inflight:bool -> Patch_agent.t -> main_branch:Branch.t -> bool
-(** Eligible to start a merge attempt: approval, CI, identity and conflict
-    preconditions hold, the queue is empty, and no merge is already in flight.
-    Unknown provider mergeability can be decided by the merge endpoint.
-    [ignore_inflight] is reserved for the executor's recheck while it owns the
-    claim; planners must retain the default to prevent overlapping attempts. *)
+(** Eligible to start a merge attempt: not merged, automerge enabled, outside a
+    GitHub native stack, approval, CI, identity and conflict preconditions hold,
+    the queue is empty, no merge is already in flight, and the consecutive
+    failure count is under [automerge_max_failures]. Unknown provider
+    mergeability can be decided by the merge endpoint. [ignore_inflight] is
+    reserved for the executor's recheck while it owns the claim; planners must
+    retain the default to prevent overlapping attempts. *)
 
 val should_dequeue_merge_queue :
   Patch_agent.t -> main_branch:Branch.t -> entry_id:string -> bool

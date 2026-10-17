@@ -108,8 +108,8 @@ let apply_all_effect_successes orch effects =
 
 let run_controller_cycle ~gameplan orch =
   let orch, effects, actions =
-    Patch_controller.plan_tick orch ~project_name:gameplan.Gameplan.project_name
-      ~gameplan
+    Patch_controller.plan_tick ~now:0. orch
+      ~project_name:gameplan.Gameplan.project_name ~gameplan
   in
   let orch = apply_all_effect_successes orch effects in
   (orch, effects, actions)
@@ -174,10 +174,12 @@ let () =
     Test.make ~name:"patch_controller: plan_tick deterministic" ~count:300
       gen_controller_case (fun (_patch, gameplan, orch) ->
         let orch1, effects1, actions1 =
-          Patch_controller.plan_tick orch ~project_name:"test-project" ~gameplan
+          Patch_controller.plan_tick ~now:0. orch ~project_name:"test-project"
+            ~gameplan
         in
         let orch2, effects2, actions2 =
-          Patch_controller.plan_tick orch ~project_name:"test-project" ~gameplan
+          Patch_controller.plan_tick ~now:0. orch ~project_name:"test-project"
+            ~gameplan
         in
         let action_equal a b =
           match (a, b) with

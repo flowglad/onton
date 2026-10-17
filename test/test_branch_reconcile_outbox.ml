@@ -68,7 +68,7 @@ let poll t n =
           (Branch.of_string (if i % 2 = 0 then "base-a" else "base-b"))
       in
       let t, _, _ =
-        Patch_controller.plan_tick_messages t
+        Patch_controller.plan_tick_messages ~now:0. t
           ~project_name:gameplan.project_name ~gameplan
       in
       t)
@@ -110,8 +110,8 @@ let tests =
               let accepted = ref false in
               let tick t =
                 let next, _, dispatched =
-                  Patch_controller.tick t ~project_name:gameplan.project_name
-                    ~gameplan
+                  Patch_controller.tick ~now:0. t
+                    ~project_name:gameplan.project_name ~gameplan
                 in
                 assert (List.length dispatched = if !accepted then 0 else 1);
                 assert (
@@ -196,7 +196,7 @@ let tests =
           let initial = request initial in
           let original = one_pending initial in
           let tick t =
-            Patch_controller.tick t ~project_name:gameplan.project_name
+            Patch_controller.tick ~now:0. t ~project_name:gameplan.project_name
               ~gameplan
           in
           let running, _, dispatched = tick initial in
@@ -431,7 +431,7 @@ let tests =
               ~init:t
               ~f:(fun t _ ->
                 let t, _, _ =
-                  Patch_controller.plan_tick_messages t
+                  Patch_controller.plan_tick_messages ~now:0. t
                     ~project_name:gameplan.project_name ~gameplan
                 in
                 t)

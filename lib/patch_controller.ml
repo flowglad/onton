@@ -817,7 +817,7 @@ let plan_actions t ~patches =
   plan_messages t ~patches
   |> List.map ~f:(fun (msg : Orchestrator.patch_agent_message) -> msg.action)
 
-let observe_scheduler t ~now =
+let observe_scheduler t ~now ~gameplan =
   List.fold (Orchestrator.all_agents t) ~init:t ~f:(fun t agent ->
       let pr_base_update =
         (not agent.Patch_agent.native_stack)
@@ -827,7 +827,9 @@ let observe_scheduler t ~now =
                  ~f:(fun actual -> not (Branch.equal actual expected)))
       in
       let pr_draft_update =
-        agent.is_draft
+        List.exists gameplan.Gameplan.patches ~f:(fun patch ->
+            Patch_id.equal patch.Patch.id agent.patch_id)
+        && agent.is_draft
         && (Scheduler_recovery.contains agent.scheduler_recovery
               Scheduler_recovery.Pr_draft
            || ready_for_review t agent.patch_id
@@ -836,15 +838,15 @@ let observe_scheduler t ~now =
       Orchestrator.observe_scheduler t agent.patch_id ~now ~pr_base_update
         ~pr_draft_update)
 
-let plan_tick_messages ?(now = 0.) t ~project_name ~gameplan =
-  let t = observe_scheduler t ~now in
+let plan_tick_messages ~now t ~project_name ~gameplan =
+  let t = observe_scheduler t ~now ~gameplan in
   let t, effects = reconcile_all t ~project_name ~gameplan in
   let t, messages = reconcile_messages t ~patches:gameplan.Gameplan.patches in
   (t, effects, messages)
 
-let plan_tick ?now t ~project_name ~gameplan =
+let plan_tick ~now t ~project_name ~gameplan =
   let t, effects, messages =
-    plan_tick_messages ?now t ~project_name ~gameplan
+    plan_tick_messages ~now t ~project_name ~gameplan
   in
   let actions =
     List.map messages ~f:(fun (msg : Orchestrator.patch_agent_message) ->
@@ -852,8 +854,10 @@ let plan_tick ?now t ~project_name ~gameplan =
   in
   (t, effects, actions)
 
-let tick t ~project_name ~gameplan =
-  let t, effects, messages = plan_tick_messages t ~project_name ~gameplan in
+let tick ~now t ~project_name ~gameplan =
+  let t, effects, messages =
+    plan_tick_messages ~now t ~project_name ~gameplan
+  in
   let t, actions =
     List.fold messages ~init:(t, []) ~f:(fun (t, actions) message ->
         let t, action =
@@ -882,7 +886,14 @@ let apply_github_effect_success t github_effect =
   | Some agent
     when Option.equal Pr_number.equal
            (Patch_agent.pr_number agent)
-           (Some pr_number) -> (
+           (Some pr_number)
+         &&
+         match github_effect with
+         | Set_pr_draft _ -> true
+         | Set_pr_base { base; _ } ->
+             Option.equal Branch.equal
+               (expected_base_if_unique t patch_id)
+               (Some base) -> (
       let t = Orchestrator.resolve_scheduler t patch_id kind in
       match github_effect with
       | Set_pr_draft { draft; _ } -> Orchestrator.set_is_draft t patch_id draft

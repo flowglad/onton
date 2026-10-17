@@ -61,12 +61,12 @@ let make_gameplan patches =
     }
 
 let tick orch ~patches =
-  Patch_controller.tick orch ~project_name:"test-project"
+  Patch_controller.tick ~now:0. orch ~project_name:"test-project"
     ~gameplan:(make_gameplan patches)
 
 let pending_actions orch ~patches =
   let _orch, _effects, actions =
-    Patch_controller.plan_tick orch ~project_name:"test-project"
+    Patch_controller.plan_tick ~now:0. orch ~project_name:"test-project"
       ~gameplan:(make_gameplan patches)
   in
   actions

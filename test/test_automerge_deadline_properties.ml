@@ -168,12 +168,13 @@ let pid = Patch_id.of_string "p"
 
 let () =
   let open QCheck2 in
-  (* AM-SAFE: a merge decision is only ever issued for a patch whose
-     [merge_ready] is true. [merge_ready] is the component-derived predicate, so
-     this is independent of GitHub's [mergeStateStatus] — a stale BLOCKED on a
-     ready PR may fire, an UNKNOWN/DIRTY (which forces not-ready) never does. *)
+  (* AM-SAFE: merge attempts require approval, passing CI, confirmed revisions
+     and no conflict. Unknown provider mergeability may reach the merge endpoint
+     after the idle window; known conflicts still prevent an attempt. *)
   let prop_merge_attempt_requires_inputs =
-    Test.make ~name:"automerge AM-SAFE: never fire unless merge_ready"
+    Test.make
+      ~name:
+        "automerge AM-SAFE: attempts require approval, CI and conflict safety"
       ~count:2000
       Gen.(
         let* now = float_range 0.0 1_000_000.0 in

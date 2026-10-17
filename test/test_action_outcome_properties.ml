@@ -107,15 +107,15 @@ let bootstrap_one () =
 let make_busy orch _patches gameplan pid kind =
   let orch = Orchestrator.enqueue orch pid kind in
   let orch, _effects, _actions =
-    Patch_controller.tick orch ~project_name:"test-project" ~gameplan
+    Patch_controller.tick ~now:0. orch ~project_name:"test-project" ~gameplan
   in
   assert (Orchestrator.agent orch pid).Patch_agent.busy;
   orch
 
 let accept_only_message orch gameplan =
   let orch, _effects, messages =
-    Patch_controller.plan_tick_messages orch ~project_name:"test-project"
-      ~gameplan
+    Patch_controller.plan_tick_messages ~now:0. orch
+      ~project_name:"test-project" ~gameplan
   in
   match messages with
   | [ msg ] ->
