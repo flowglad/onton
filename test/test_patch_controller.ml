@@ -2283,7 +2283,7 @@ let () =
      deadline must be PRESERVED (not cleared and re-armed), so the idle window
      measures real elapsed time across sibling merges. Regression test for the
      "every merge resets all the other automerge counters" bug. *)
-  let pending_automerge_transient_unknown_holds_deadline =
+  let pending_automerge_unknown_preserves_idle_window =
     Test.make
       ~name:
         "patch_controller: transient mergeability Unknown holds the automerge \
@@ -2310,14 +2310,13 @@ let () =
         && not agent.Patch_agent.automerge_inflight)
   in
 
-  (* Even when the held deadline has already elapsed, we must NOT fire a merge
-     while mergeability is Unknown — firing requires merge_ready. The deadline is
-     held (not cleared), so the next ready poll fires immediately. *)
-  let pending_automerge_unknown_never_fires_while_indeterminate =
+  (* The merge endpoint resolves unknown mergeability once the idle window
+     elapses and all known preconditions are satisfied. *)
+  let pending_automerge_unknown_attempts_at_deadline =
     Test.make
       ~name:
-        "patch_controller: elapsed deadline does not fire while mergeability \
-         Unknown" QCheck2.Gen.unit (fun () ->
+        "patch_controller: elapsed deadline attempts merge despite \
+         mergeability Unknown" QCheck2.Gen.unit (fun () ->
         let pid = Patch_id.of_string "am-unknown-nofire" in
         let branch = Branch.of_string "feat/am-unknown-nofire" in
         let patch = make_patch pid branch in
@@ -2334,10 +2333,10 @@ let () =
           Patch_controller.reconcile_automerge orch ~now:1.0
         in
         let agent = Orchestrator.agent orch pid in
-        List.is_empty decisions
+        (not (List.is_empty decisions))
         && Option.equal Float.equal agent.Patch_agent.automerge_deadline
              (Some 0.0)
-        && not agent.Patch_agent.automerge_inflight)
+        && agent.Patch_agent.automerge_inflight)
   in
 
   (* A genuine not-ready that is NOT the transient mergeability-Unknown blip
@@ -2529,8 +2528,8 @@ let () =
       review_request_claims_ready_required_pr;
       review_request_inflight_is_not_reclaimed;
       review_request_current_head_is_not_reclaimed;
-      pending_automerge_transient_unknown_holds_deadline;
-      pending_automerge_unknown_never_fires_while_indeterminate;
+      pending_automerge_unknown_preserves_idle_window;
+      pending_automerge_unknown_attempts_at_deadline;
       pending_automerge_blocked_clears_deadline;
       pending_patch_4_automerge_enqueue_action;
       pending_patch_4_automerge_enqueued_idle;

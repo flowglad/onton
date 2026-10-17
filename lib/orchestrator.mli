@@ -346,7 +346,7 @@ type respond_outcome =
 [@@deriving show, eq, sexp_of]
 
 val apply_respond_outcome :
-  t -> Patch_id.t -> Operation_kind.t -> respond_outcome -> t
+  ?now:float -> t -> Patch_id.t -> Operation_kind.t -> respond_outcome -> t
 (** Apply the outcome of a Respond action fiber. [Respond_ok] -> complete +
     reset_no_commits_push_count + kind-specific transitions (Merge_conflict ->
     preserves owner conflict evidence; Review_comments ->
@@ -463,3 +463,21 @@ val record_session_completion :
 
 val set_merge_queue_ejection :
   t -> Patch_id.t -> Merge_queue_decision.pending option -> t
+
+val observe_scheduler :
+  t ->
+  Patch_id.t ->
+  now:float ->
+  pr_base_update:bool ->
+  pr_draft_update:bool ->
+  t
+
+val scheduler_write_failed :
+  t ->
+  Patch_id.t ->
+  pr_number:Pr_number.t ->
+  now:float ->
+  kind:Scheduler_recovery.kind ->
+  t
+
+val resolve_scheduler : t -> Patch_id.t -> Scheduler_recovery.kind -> t

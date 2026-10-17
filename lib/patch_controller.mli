@@ -96,6 +96,7 @@ val plan_messages :
     actions become pending messages in the outbox. *)
 
 val plan_tick_messages :
+  ?now:float ->
   Orchestrator.t ->
   project_name:string ->
   gameplan:Gameplan.t ->
@@ -104,6 +105,7 @@ val plan_tick_messages :
     runnable patch-agent messages for the same snapshot. *)
 
 val plan_tick :
+  ?now:float ->
   Orchestrator.t ->
   project_name:string ->
   gameplan:Gameplan.t ->
@@ -162,35 +164,11 @@ type review_request_decision = {
 
 val is_automerge_candidate :
   ?ignore_inflight:bool -> Patch_agent.t -> main_branch:Branch.t -> bool
-(** A patch is a candidate to START a new automerge call when it is not already
-    merged, no merge is currently in flight, automerge is enabled, the PR is
-    approved, outside a GitHub native stack, CI is passing, the queue is empty,
-    and the consecutive failure count is under [automerge_max_failures]. Any
-    queued feedback (Review_comments, Human, Ci, Merge_conflict, Pr_body) resets
-    the deadline.
-
-    [?ignore_inflight] defaults to [false]; the default answers the
-    concurrency-safe question ("is this patch eligible to start a new merge
-    call?"). The only legitimate use of [~ignore_inflight:true] is the executor
-    re-check in [reconcile_and_execute_automerge], which runs while holding
-    [automerge_inflight = true] and needs the predicate to return [true] so long
-    as the underlying candidacy still holds. Do not pass [~ignore_inflight:true]
-    from any other caller — doing so opens the door to overlapping merge calls.
-*)
-
-val automerge_transient_hold : Patch_agent.t -> main_branch:Branch.t -> bool
-(** [true] when a direct-merge patch has lost [merge_ready] *only* because
-    GitHub is transiently recomputing mergeability ([mergeability_unknown], i.e.
-    [Pr_state.merge_state = Unknown]) while every other automerge precondition
-    still holds. This is the benign flap a sibling merge causes: advancing the
-    base invalidates mergeability on every other open PR at once, so they read
-    [Unknown] for a poll or two before settling back to [Mergeable].
-    [reconcile_automerge] preserves the existing deadline in this state instead
-    of clearing it, so the idle window measures real elapsed time rather than
-    restarting on every sibling merge. Scoped to the direct-merge path
-    ([merge_queue_entry = None]) and to [Unknown] alone — a conflict, failing
-    checks, queued feedback, or a hit failure cap all fall through to the normal
-    clear. *)
+(** Eligible to start a merge attempt: approval, CI, identity and conflict
+    preconditions hold, the queue is empty, and no merge is already in flight.
+    Unknown provider mergeability can be decided by the merge endpoint.
+    [ignore_inflight] is reserved for the executor's recheck while it owns the
+    claim; planners must retain the default to prevent overlapping attempts. *)
 
 val should_dequeue_merge_queue :
   Patch_agent.t -> main_branch:Branch.t -> entry_id:string -> bool
@@ -218,11 +196,8 @@ val reconcile_automerge :
       transitions. A Git integration conflict clears the claim and queues
       conflict repair without calling either automerge result function.
     - candidate + no deadline → set deadline at [now +. automerge_timeout].
-    - not candidate + deadline, but [automerge_transient_hold] → preserve the
-      deadline unchanged and emit no decision (GitHub is recomputing
-      mergeability after the base advanced; the idle window keeps counting).
-    - not candidate + deadline (and not a transient hold) → clear deadline
-      (feedback arrived, CI flipped, automerge disabled, or failure cap hit).
+    - not candidate + deadline → clear deadline (feedback arrived, CI flipped,
+      automerge disabled, or failure cap hit).
     - candidate + deadline elapsed → atomically mark the agent
       [automerge_inflight = true] and include in decisions list. The caller MUST
       clear the inflight flag on every exit path. The executor calls

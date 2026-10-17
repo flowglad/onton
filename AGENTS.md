@@ -133,6 +133,19 @@ unattended supervisor session. There are two supported transports:
   authenticated for HTTPS pushes to github.com, run `gh auth setup-git` once
   to install gh's credential helper into your global git config.
 
+## Scheduler recovery
+
+`Scheduler_recovery` owns bounded waits and repair tickets for missing forge/CI
+observations, unresolved queue removals, unsupported native stacks, and failed
+PR metadata or merge writes. Its tickets and accepted completions survive
+checkpoints. A lost execution owner requeues the ticket; stale completion cannot
+discharge a new PR or queue removal. Persistent blockage after an accepted repair
+becomes explicit operator attention rather than another automatic repair loop.
+Human guidance takes priority over queued rebases. Unknown mergeability alone
+does not prevent an otherwise approved merge attempt after the idle window;
+GitHub decides the attempt. Repair completion never invents CI, review, conflict,
+or revision evidence.
+
 ## Rebase anchor lifecycle
 
 Validation must preserve liveness. Missing or unverifiable evidence must lead to

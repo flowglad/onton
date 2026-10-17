@@ -229,6 +229,10 @@ let patch_agent_to_yojson (a : Patch_agent.t) =
             `String s) );
       ("unresolved_comment_count", `Int a.unresolved_comment_count);
       ("mergeability_unknown", `Bool a.mergeability_unknown);
+      ("scheduler_recovery", Scheduler_recovery.yojson_of_t a.scheduler_recovery);
+      ( "scheduler_repair",
+        Option.value_map a.scheduler_repair ~default:`Null
+          ~f:Scheduler_recovery.yojson_of_ticket );
       ("native_stack", `Bool a.native_stack);
       ("native_stack_absent_polls", `Int a.native_stack_absent_polls);
       ("is_draft", `Bool a.is_draft);
@@ -347,6 +351,10 @@ let patch_agent_of_yojson ?(snapshot_version = 1) ~main_branch ~gameplan json =
   in
   Ok
     ( Patch_agent.restore ~session_completion ~branch_reconcile
+        ~scheduler_recovery:
+          (Scheduler_recovery.decode (member "scheduler_recovery" json))
+        ~scheduler_repair:
+          (Scheduler_recovery.decode_ticket (member "scheduler_repair" json))
         ~patch_id:(Patch_id.of_string (string_member "patch_id" json))
         ~branch:
           (let pid = string_member "patch_id" json in

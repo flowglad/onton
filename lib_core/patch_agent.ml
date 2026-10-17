@@ -20,6 +20,8 @@ type pr_body_refresh = { version : int; pending : bool }
 type t = {
   branch_reconcile : Branch_reconcile.t;
   session_completion : Session_result.completion option;
+  scheduler_recovery : Scheduler_recovery.t;
+  scheduler_repair : Scheduler_recovery.ticket option;
   patch_id : Patch_id.t;
   branch : Branch.t;
   pr_status : Patch_pr_status.t;
@@ -46,15 +48,9 @@ type t = {
   review_decision : string option;
   unresolved_comment_count : int;
   mergeability_unknown : bool;
-      (** Poll-mirror of [Pr_state.merge_state = Unknown]: GitHub is currently
-          recomputing the test-merge (e.g. a sibling patch merged and advanced
-          the base). Set every poll like [merge_ready]/[checks_passing], with no
-          hysteresis. [reconcile_automerge] reads it via
-          [Patch_controller.automerge_transient_hold] to *hold* the automerge
-          idle timer through the recompute blip instead of resetting it.
-          Replaces the former [merge_state_status] string — the hold no longer
-          reads GitHub's [mergeStateStatus] at all. [false] until first polled
-          and after [clear_pr]. *)
+      (** The provider has not resolved mergeability. Once CI, review, identity,
+          and conflict preconditions hold, the merge endpoint decides the
+          attempt; unknown mergeability does not suspend the idle timer. *)
   merge_queue_required : bool;
   merge_queue_entry : Pr_state.merge_queue_entry option;
   merge_queue_ejection : Merge_queue_decision.pending option;
@@ -243,18 +239,26 @@ let intervention_reason t =
      message, and reconciliation dispatches the same action forever. *)
   let human_pending =
     List.mem t.queue Operation_kind.Human ~equal:Operation_kind.equal
-    || not (List.is_empty t.inflight_human_messages)
+    || (not (List.is_empty t.inflight_human_messages))
+    || Option.is_some t.scheduler_repair
   in
-  intervention_reason_of_fields ~branch_reconcile:t.branch_reconcile
-    ~merged:t.merged ~has_pr:(has_pr t) ~is_pr_missing:(is_pr_missing t)
-    ~session_given_up:(equal_session_fallback t.session_fallback Given_up)
-    ~wontdo_reason:t.wontdo_reason ~human_pending
-    ~ci_failure_count:t.ci_failure_count ~max_ci_failures:t.max_ci_failures
-    ~start_attempts_without_pr:t.start_attempts_without_pr
-    ~no_commits_push_count:t.no_commits_push_count
-    ~context_exhaustion_count:t.context_exhaustion_count
-    ~pr_body_artifact_miss_count:t.pr_body_artifact_miss_count
-    ~review_unresolved_cycle_count:t.review_unresolved_cycle_count
+  let existing =
+    intervention_reason_of_fields ~branch_reconcile:t.branch_reconcile
+      ~merged:t.merged ~has_pr:(has_pr t) ~is_pr_missing:(is_pr_missing t)
+      ~session_given_up:(equal_session_fallback t.session_fallback Given_up)
+      ~wontdo_reason:t.wontdo_reason ~human_pending
+      ~ci_failure_count:t.ci_failure_count ~max_ci_failures:t.max_ci_failures
+      ~start_attempts_without_pr:t.start_attempts_without_pr
+      ~no_commits_push_count:t.no_commits_push_count
+      ~context_exhaustion_count:t.context_exhaustion_count
+      ~pr_body_artifact_miss_count:t.pr_body_artifact_miss_count
+      ~review_unresolved_cycle_count:t.review_unresolved_cycle_count
+  in
+  match existing with
+  | Some _ -> existing
+  | None ->
+      if human_pending then None
+      else Scheduler_recovery.attention t.scheduler_recovery
 
 let needs_intervention t = Option.is_some (intervention_reason t)
 
@@ -274,6 +278,8 @@ let create ~branch ?(max_ci_failures = default_max_ci_failures) patch_id =
   {
     branch_reconcile = Branch_reconcile.empty;
     session_completion = None;
+    scheduler_recovery = Scheduler_recovery.empty;
+    scheduler_repair = None;
     patch_id;
     branch;
     pr_status = Patch_pr_status.Absent;
@@ -337,6 +343,8 @@ let create_adhoc ~complexity ~patch_id ~branch ~pr_number ~max_ci_failures =
   {
     branch_reconcile = Branch_reconcile.empty;
     session_completion = None;
+    scheduler_recovery = Scheduler_recovery.empty;
+    scheduler_repair = None;
     patch_id;
     branch;
     pr_status = Patch_pr_status.Present pr_number;
@@ -397,7 +405,12 @@ let create_adhoc ~complexity ~patch_id ~branch ~pr_number ~max_ci_failures =
   }
 
 let highest_priority t =
-  List.min_elt t.queue ~compare:(fun a b ->
+  let queue =
+    if equal_session_fallback t.session_fallback Given_up then
+      List.filter t.queue ~f:(Operation_kind.equal Operation_kind.Rebase)
+    else t.queue
+  in
+  List.min_elt queue ~compare:(fun a b ->
       Int.compare (Priority.priority a) (Priority.priority b))
 
 let enqueue t k =
@@ -411,7 +424,11 @@ let enqueue t k =
 let mark_merged t = { t with merged = true }
 
 let add_human_message t msg =
-  { t with human_messages = msg :: t.human_messages }
+  {
+    t with
+    human_messages = msg :: t.human_messages;
+    scheduler_recovery = Scheduler_recovery.resume t.scheduler_recovery;
+  }
 
 let add_human_messages t msgs =
   { t with human_messages = List.append t.human_messages msgs }
@@ -614,12 +631,9 @@ let worktree_state t =
   | None -> Unmaterialized
   | Some path -> Materialized path
 
-(* Every approval precondition *except* [merge_ready] (the component-derived
-   readiness, [Pr_state.merge_ready_of]). Factored out so [reconcile_automerge]
-   can recognize a patch that is fully approval-ready and is only missing
-   readiness because GitHub is transiently recomputing mergeability (mergeable
-   reads [Unknown], surfaced as [mergeStateStatus = UNKNOWN]) — see
-   [Patch_controller.automerge_transient_hold]. *)
+(* Shared known preconditions for merge attempts, including identity and
+   retained conflict/publication evidence. The endpoint resolves unknown
+   provider mergeability without weakening these preconditions. *)
 let is_approved_modulo_merge_ready t ~main_branch =
   is_pr_present t
   && forge_revision_pair_confirmed t
@@ -633,7 +647,10 @@ let is_approved_modulo_merge_ready t ~main_branch =
   && Option.equal Branch.equal t.base_branch (Some main_branch)
 
 let is_approved t ~main_branch =
-  t.merge_ready && is_approved_modulo_merge_ready t ~main_branch
+  (t.merge_ready
+  || t.mergeability_unknown && t.checks_passing
+     && not (Pr_state.review_blocking t.review_decision))
+  && is_approved_modulo_merge_ready t ~main_branch
 
 let awaiting_manual_merge t ~main_branch =
   Option.is_none
@@ -649,7 +666,6 @@ let should_request_review t ~main_branch =
   && (not (has_conflict t))
   && (not (Branch_reconcile.is_unsettled t.branch_reconcile))
   && Option.is_none (Branch_reconcile.unobserved_publication t.branch_reconcile)
-  && (not t.mergeability_unknown)
   && t.checks_passing
   && t.unresolved_comment_count = 0
   && (not t.is_draft) && (not t.busy)
@@ -766,6 +782,8 @@ let reset_intervention_state t =
   {
     t with
     branch_reconcile;
+    scheduler_recovery = Scheduler_recovery.empty;
+    scheduler_repair = None;
     session_fallback = Fresh_available;
     wontdo_reason = None;
     ci_failure_count = 0;
@@ -778,7 +796,8 @@ let reset_intervention_state t =
 
 let reset_busy t = if not t.busy then t else { t with busy = false }
 
-let restore ?(session_completion = None)
+let restore ?(scheduler_recovery = Scheduler_recovery.empty)
+    ?(scheduler_repair = None) ?(session_completion = None)
     ?(branch_reconcile = Branch_reconcile.empty) ~patch_id ~branch ~pr_status
     ?(complexity = None) ~has_session ~busy ~merged ~queue ~satisfies ~changed
     ~base_branch ~notified_base_branch ~ci_failure_count
@@ -797,9 +816,22 @@ let restore ?(session_completion = None)
     ~automerge_enabled ~automerge_deadline ~automerge_inflight
     ?(review_requested_for_oid = None) ?(review_request_inflight = false)
     ~automerge_failure_count ~delivered_ci_run_ids () =
+  let scheduler_repair =
+    Option.filter scheduler_repair ~f:(fun ticket ->
+        busy
+        && Option.equal Operation_kind.equal current_op
+             (Some Operation_kind.Human)
+        && Option.is_some current_message_id
+        && Scheduler_recovery.is_running scheduler_recovery ticket)
+  in
+  let scheduler_recovery =
+    Scheduler_recovery.recover scheduler_recovery ~running:scheduler_repair
+  in
   {
     branch_reconcile;
     session_completion;
+    scheduler_recovery;
+    scheduler_repair;
     patch_id;
     branch;
     pr_status;
@@ -1052,8 +1084,17 @@ let respond t k =
      [Orchestrator.apply_respond_outcome] on [Respond_ok] for Ci, so the
      counter only reflects CI fix attempts that actually delivered a payload
      (i.e. had at least one failure conclusion) and ran to completion. *)
+  let scheduler_repair =
+    if is_human then Scheduler_recovery.pending t.scheduler_recovery else None
+  in
+  let scheduler_recovery =
+    Option.value_map scheduler_repair ~default:t.scheduler_recovery
+      ~f:(Scheduler_recovery.claim t.scheduler_recovery)
+  in
   {
     t with
+    scheduler_repair;
+    scheduler_recovery;
     has_session = true;
     busy = true;
     current_op = Some k;
@@ -1075,14 +1116,125 @@ let respond t k =
 let complete t =
   if not t.busy then t
   else
+    let scheduler_recovery =
+      Option.value_map t.scheduler_repair ~default:t.scheduler_recovery
+        ~f:(fun ticket ->
+          Scheduler_recovery.complete t.scheduler_recovery ticket ~success:false)
+    in
     {
       t with
+      scheduler_recovery;
+      scheduler_repair = None;
       busy = false;
       current_op = None;
       current_op_state = Queued;
       current_message_id = None;
       inflight_human_messages = [];
     }
+
+let scheduler_scope t : Scheduler_recovery.scope =
+  {
+    head = t.head_oid;
+    base = Option.map t.base_branch ~f:Branch.to_string;
+    pr = Option.map (pr_number t) ~f:Pr_number.to_int;
+    publication = expected_remote_head_oid t;
+    queue =
+      (match t.merge_queue_ejection with
+      | Some (Merge_queue_decision.Awaiting_removal { entry; _ }) ->
+          Some entry.id
+      | None | Some (Merge_queue_decision.Failed _) -> None);
+  }
+
+let scheduler_blocked t ~pr_base_update ~pr_draft_update =
+  let module R = Scheduler_recovery in
+  let forge =
+    (is_pr_present t && not (forge_revision_pair_confirmed t))
+    || Option.is_some (expected_remote_head_oid t)
+  in
+  (if forge then [ R.Forge_revision ] else [])
+  @ (if
+       (not forge) && (not t.checks_passing)
+       && not (List.exists t.ci_checks ~f:Ci_check.is_failure)
+     then [ R.Ci_evidence ]
+     else [])
+  @ (match t.merge_queue_ejection with
+    | Some (Merge_queue_decision.Awaiting_removal _) -> [ R.Queue_removal ]
+    | None | Some (Merge_queue_decision.Failed _) -> [])
+  @ (if t.native_stack then [ R.Native_stack ] else [])
+  @ (if pr_base_update || R.contains t.scheduler_recovery R.Pr_base then
+       [ R.Pr_base ]
+     else [])
+  @ (if pr_draft_update || R.contains t.scheduler_recovery R.Pr_draft then
+       [ R.Pr_draft ]
+     else [])
+  @
+  if t.automerge_enabled && t.automerge_failure_count >= 3 then
+    [ R.Merge_attempt ]
+  else []
+
+let observe_scheduler t ~now ~pr_base_update ~pr_draft_update =
+  if
+    t.busy || t.merged
+    || Branch_reconcile.is_unsettled t.branch_reconcile
+    || not (is_pr_present t || branch_published t)
+  then t
+  else
+    let scheduler_recovery =
+      Scheduler_recovery.observe t.scheduler_recovery ~now
+        ~scope:(scheduler_scope t)
+        ~blocked:(scheduler_blocked t ~pr_base_update ~pr_draft_update)
+    in
+    let t = { t with scheduler_recovery } in
+    if
+      Option.is_some (Scheduler_recovery.pending scheduler_recovery)
+      && (Option.is_none (Scheduler_recovery.attention scheduler_recovery)
+         || not (List.is_empty t.human_messages))
+    then enqueue t Operation_kind.Human
+    else t
+
+let scheduler_write_failed t ~now ~kind =
+  {
+    t with
+    scheduler_recovery =
+      Scheduler_recovery.failed t.scheduler_recovery ~now
+        ~scope:(scheduler_scope t) ~kind;
+  }
+
+let finish_scheduler_repair ?now t ~success =
+  match t.scheduler_repair with
+  | None -> t
+  | Some ticket ->
+      let current = scheduler_scope t in
+      let accepted =
+        Scheduler_recovery.is_running t.scheduler_recovery ticket
+        && Option.equal Int.equal ticket.scope.pr current.pr
+      in
+      let merge_queue_ejection =
+        if
+          accepted && success
+          && Option.equal String.equal ticket.scope.queue current.queue
+          && Scheduler_recovery.equal_kind ticket.kind
+               Scheduler_recovery.Queue_removal
+        then Merge_queue_decision.accept_removal_repair t.merge_queue_ejection
+        else t.merge_queue_ejection
+      in
+      {
+        t with
+        scheduler_recovery =
+          (if accepted then
+             Scheduler_recovery.complete ?now t.scheduler_recovery ticket
+               ~success
+           else t.scheduler_recovery);
+        scheduler_repair = None;
+        merge_queue_ejection;
+        automerge_failure_count =
+          (if
+             accepted && success
+             && Scheduler_recovery.equal_kind ticket.kind
+                  Scheduler_recovery.Merge_attempt
+           then 0
+           else t.automerge_failure_count);
+      }
 
 (* -- Tests for session failure recovery -- *)
 
@@ -1243,3 +1395,31 @@ let migrate_legacy_branch_state ?(revision = `Null) ~main_branch ~owner_missing
                 (Option.value t.base_branch ~default:main_branch))
        else owner);
   }
+
+let resolve_scheduler t kind =
+  {
+    t with
+    scheduler_recovery = Scheduler_recovery.resolve t.scheduler_recovery kind;
+  }
+
+let recover_scheduler_owner t ~owned =
+  let running = if owned then t.scheduler_repair else None in
+  let scheduler_recovery =
+    Scheduler_recovery.recover t.scheduler_recovery ~running
+  in
+  let lost = (not owned) && Option.is_some t.scheduler_repair in
+  let t =
+    {
+      t with
+      scheduler_recovery;
+      scheduler_repair = running;
+      busy = (if lost then false else t.busy);
+      current_op = (if lost then None else t.current_op);
+      current_message_id = (if lost then None else t.current_message_id);
+    }
+  in
+  if
+    Option.is_some (Scheduler_recovery.pending scheduler_recovery)
+    && Option.is_none (Scheduler_recovery.attention scheduler_recovery)
+  then enqueue t Operation_kind.Human
+  else t

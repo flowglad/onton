@@ -24,6 +24,8 @@ type pr_body_refresh = private { version : int; pending : bool }
 type t = private {
   branch_reconcile : Branch_reconcile.t;
   session_completion : Session_result.completion option;
+  scheduler_recovery : Scheduler_recovery.t;
+  scheduler_repair : Scheduler_recovery.ticket option;
   patch_id : Types.Patch_id.t;
   branch : Types.Branch.t;
   pr_status : Patch_pr_status.t;
@@ -65,13 +67,9 @@ type t = private {
   review_decision : string option;
   unresolved_comment_count : int;
   mergeability_unknown : bool;
-      (** Poll-mirror of [Pr_state.merge_state = Unknown] (GitHub recomputing
-          the test-merge, e.g. after a sibling merge advanced the base). Set
-          every poll, no hysteresis. [reconcile_automerge] reads it via
-          [Patch_controller.automerge_transient_hold] to hold the automerge idle
-          timer through the recompute blip. Replaces the former
-          [merge_state_status] string. [false] until first polled / after
-          [clear_pr]. *)
+      (** The provider has not resolved mergeability. Once CI, review, identity,
+          and conflict preconditions hold, the merge endpoint decides the
+          attempt; unknown mergeability does not suspend the idle timer. *)
   merge_queue_required : bool;
   merge_queue_entry : Pr_state.merge_queue_entry option;
   merge_queue_ejection : Merge_queue_decision.pending option;
@@ -680,6 +678,8 @@ val mark_pr_missing : t -> t
     wrapper). *)
 
 val restore :
+  ?scheduler_recovery:Scheduler_recovery.t ->
+  ?scheduler_repair:Scheduler_recovery.ticket option ->
   ?session_completion:Session_result.completion option ->
   ?branch_reconcile:Branch_reconcile.t ->
   patch_id:Types.Patch_id.t ->
@@ -791,3 +791,19 @@ val migrate_legacy_branch_state :
     session/worktree/provenance and unrelated intervention state. Existing work
     starts with observation; obsolete branch counters and pending-push
     expectations do not authorize execution or permanently block it. *)
+
+val scheduler_scope : t -> Scheduler_recovery.scope
+
+val scheduler_blocked :
+  t ->
+  pr_base_update:bool ->
+  pr_draft_update:bool ->
+  Scheduler_recovery.kind list
+
+val observe_scheduler :
+  t -> now:float -> pr_base_update:bool -> pr_draft_update:bool -> t
+
+val scheduler_write_failed : t -> now:float -> kind:Scheduler_recovery.kind -> t
+val finish_scheduler_repair : ?now:float -> t -> success:bool -> t
+val resolve_scheduler : t -> Scheduler_recovery.kind -> t
+val recover_scheduler_owner : t -> owned:bool -> t

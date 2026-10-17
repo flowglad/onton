@@ -369,7 +369,7 @@ let () =
 
 (** P7: Priority ordering — Respond always picks highest-priority operation.
     When multiple operations are enqueued, tick fires the one with lowest
-    priority value (Uncommitted_changes < Rebase < Human < Merge_conflict < Ci <
+    priority value (Uncommitted_changes < Human < Rebase < Merge_conflict < Ci <
     Review_comments). *)
 let () =
   let prop_p7 =

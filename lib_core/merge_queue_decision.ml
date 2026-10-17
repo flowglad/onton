@@ -54,6 +54,10 @@ let repair_completed = function
   | Some (Failed _) -> None
   | (None | Some (Awaiting_removal _)) as pending -> pending
 
+let accept_removal_repair = function
+  | Some (Awaiting_removal _) -> None
+  | (None | Some (Failed _)) as pending -> pending
+
 let apply ?(pending = None) ?(previous_head_oid = None) ?removal_checks
     ~previous_entry (poll_result : Poller.t) =
   let pending =

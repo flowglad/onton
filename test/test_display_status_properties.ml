@@ -470,7 +470,9 @@ let prop_queued_repairs_before_dependency =
 
 let prop_queue_priority =
   QCheck2.Test.make
-    ~name:"cleanup and rebase precede human and CI work in the displayed queue"
+    ~name:
+      "displayed queue orders cleanup, Human repair, then rebase before \
+       automatic feedback"
     ~count:300
     QCheck2.Gen.(
       list
@@ -488,7 +490,14 @@ let prop_queue_priority =
         let a = List.fold rest ~init:(agent ()) ~f:Patch_agent.enqueue in
         let rebase = Patch_agent.enqueue a Rebase in
         let cleanup = Patch_agent.enqueue rebase Uncommitted_changes in
-        Display_status.equal (status rebase) Rebase_queued
+        let expected =
+          if
+            List.mem rest Types.Operation_kind.Human
+              ~equal:Types.Operation_kind.equal
+          then Display_status.Human_queued
+          else Display_status.Rebase_queued
+        in
+        Display_status.equal (status rebase) expected
         && Display_status.equal (status cleanup) Cleanup_queued
       with _ -> false)
 

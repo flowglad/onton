@@ -8,8 +8,8 @@ module Ok = Operation_kind
 let priority (k : Ok.t) : int =
   match k with
   | Ok.Uncommitted_changes -> 0
-  | Ok.Rebase -> 1
-  | Ok.Human -> 2
+  | Ok.Rebase -> 2
+  | Ok.Human -> 1
   | Ok.Merge_conflict -> 3
   | Ok.Ci -> 4
   | Ok.Review_comments -> 5
@@ -58,9 +58,9 @@ let highest_priority (q : t) (k : Ok.t) : bool =
 let%test_module "Priority" =
   (module struct
     let%test "priority ordering" =
-      priority Ok.Uncommitted_changes < priority Ok.Rebase
-      && priority Ok.Rebase < priority Ok.Human
-      && priority Ok.Human < priority Ok.Merge_conflict
+      priority Ok.Uncommitted_changes < priority Ok.Human
+      && priority Ok.Human < priority Ok.Rebase
+      && priority Ok.Rebase < priority Ok.Merge_conflict
       && priority Ok.Merge_conflict < priority Ok.Ci
       && priority Ok.Ci < priority Ok.Review_comments
 
@@ -87,9 +87,9 @@ let%test_module "Priority" =
       let second = Option.bind first ~f:(fun (_, r) -> dequeue_highest r) in
       let third = Option.bind second ~f:(fun (_, r) -> dequeue_highest r) in
       Option.value_map first ~default:false ~f:(fun (k, _) ->
-          Ok.equal k Ok.Rebase)
-      && Option.value_map second ~default:false ~f:(fun (k, _) ->
           Ok.equal k Ok.Human)
+      && Option.value_map second ~default:false ~f:(fun (k, _) ->
+          Ok.equal k Ok.Rebase)
       && Option.value_map third ~default:false ~f:(fun (k, rest) ->
           Ok.equal k Ok.Review_comments && is_empty rest)
 

@@ -186,6 +186,20 @@ module Make (Forge : Forge.S) (W : Worktree.S) (Env : Runner_env.S) = struct
           | Patch_controller.Set_pr_draft _ | Patch_controller.Set_pr_base _ ->
               None
         in
+        let failed text =
+          let patch_id, pr_number, kind =
+            match github_effect with
+            | Patch_controller.Set_pr_base { patch_id; pr_number; _ } ->
+                (patch_id, pr_number, Scheduler_recovery.Pr_base)
+            | Patch_controller.Set_pr_draft { patch_id; pr_number; _ } ->
+                (patch_id, pr_number, Scheduler_recovery.Pr_draft)
+          in
+          Runtime.update_orchestrator runtime (fun orch ->
+              Orchestrator.scheduler_write_failed orch patch_id ~pr_number
+                ~now:(Eio.Time.now Env.clock) ~kind);
+          Runtime_logging.log_event runtime ~patch_id
+            (label ^ " failed: " ^ text)
+        in
         let applied = ref false in
         Fun.protect
           ~finally:(fun () ->
@@ -217,14 +231,10 @@ module Make (Forge : Forge.S) (W : Worktree.S) (Env : Runner_env.S) = struct
                           Patch_controller.apply_github_effect_success orch
                             github_effect);
                       applied := true
-                  | Error err ->
-                      Printf.eprintf "%s failed: %s\n%!" label
-                        (Forge.show_error err)
+                  | Error err -> failed (Forge.show_error err)
                 with
                 | Eio.Cancel.Cancelled _ as exn -> raise exn
-                | exn ->
-                    Printf.eprintf "%s crashed: %s\n%!" label
-                      (Printexc.to_string exn)
+                | exn -> failed (Printexc.to_string exn)
             in
             if Base.Option.is_some root_promotion then
               Runtime.with_root_write runtime execute
@@ -1202,7 +1212,8 @@ module Make (Forge : Forge.S) (W : Worktree.S) (Env : Runner_env.S) = struct
       let lifecycle_effects, messages, pre_fire_agents =
         Runtime.update_orchestrator_returning runtime (fun orch ->
             let orch, effects, messages =
-              Patch_controller.plan_tick_messages orch ~project_name ~gameplan
+              Patch_controller.plan_tick_messages ~now:(Eio.Time.now clock) orch
+                ~project_name ~gameplan
             in
             let pre_fire_agents =
               Base.List.filter_map messages
@@ -3018,8 +3029,9 @@ module Make (Forge : Forge.S) (W : Worktree.S) (Env : Runner_env.S) = struct
                           | Orchestrator.Respond_review_unresolved
                           | Orchestrator.Respond_ok ->
                               update_if_current (fun orch ->
-                                  Orchestrator.apply_respond_outcome orch
-                                    patch_id kind respond_outcome)
+                                  Orchestrator.apply_respond_outcome
+                                    ~now:(Eio.Time.now Env.clock) orch patch_id
+                                    kind respond_outcome)
                         in
                         (* A session can be superseded after delivery begins.
                            Treat an outcome that no longer owns the message as

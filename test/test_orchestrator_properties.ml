@@ -941,7 +941,7 @@ let () =
 
   (* mergeability_unknown is a poll-mirror: after apply_poll_result it equals
      [poll merge_state = Unknown], unconditionally (no hysteresis, unlike
-     has_conflict). This is what [automerge_transient_hold] reads. *)
+     has_conflict). It does not by itself prevent an approved merge attempt. *)
   let prop_poll_mergeability_unknown_mirror =
     Test.make
       ~name:
