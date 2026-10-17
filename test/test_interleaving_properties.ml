@@ -88,7 +88,7 @@ type force_reason_kind = Cancelled_k | Unexpected_k
 type command =
   | Apply_poll of { patch_idx : int; poll_kind : poll_kind }
   | Reconcile
-  | Runner_tick
+  | Runner_tick of int
   | Complete of int
   | Apply_session_result of { patch_idx : int; result : session_result_kind }
   | Apply_rebase_result of { patch_idx : int; result : rebase_result_kind }
@@ -160,7 +160,7 @@ let show_command = function
   | Apply_poll { patch_idx; poll_kind } ->
       Printf.sprintf "Apply_poll(%d, %s)" patch_idx (show_poll_kind poll_kind)
   | Reconcile -> "Reconcile"
-  | Runner_tick -> "Runner_tick"
+  | Runner_tick elapsed -> Printf.sprintf "Runner_tick(+%ds)" elapsed
   | Complete i -> Printf.sprintf "Complete(%d)" i
   | Apply_session_result { patch_idx; result } ->
       Printf.sprintf "Apply_session_result(%d, %s)" patch_idx
@@ -296,7 +296,9 @@ let gen_command ~n =
           (fun i pk -> Apply_poll { patch_idx = i; poll_kind = pk })
           gen_idx gen_poll_kind;
         pure Reconcile;
-        pure Runner_tick;
+        map
+          (fun elapsed -> Runner_tick elapsed)
+          (oneof_list [ 0; 1; 119; 120; 121; 899; 900; 901; 10000 ]);
         map (fun i -> Complete i) gen_idx;
         map2
           (fun i r -> Apply_session_result { patch_idx = i; result = r })
@@ -339,7 +341,9 @@ let gen_atomic_command ~n =
         map2
           (fun i pk -> Atomic_poll_reconcile { patch_idx = i; poll_kind = pk })
           gen_idx gen_poll_kind;
-        pure Runner_tick;
+        map
+          (fun elapsed -> Runner_tick elapsed)
+          (oneof_list [ 0; 1; 119; 120; 121; 899; 900; 901; 10000 ]);
         map (fun i -> Complete i) gen_idx;
         map2
           (fun i r -> Apply_session_result { patch_idx = i; result = r })
@@ -460,7 +464,7 @@ let poll_params_of_kind = function
   | Poll_checks_passing -> (false, false, false, true, false)
   | Poll_review_comments -> (false, false, false, true, true)
 
-let rec apply_command orch patches cmd =
+let rec apply_command ?(now = 0.) orch patches cmd =
   let gameplan = make_gameplan patches in
   let branch_of = extended_branch_of patches in
   match cmd with
@@ -497,11 +501,10 @@ let rec apply_command orch patches cmd =
           ~gameplan
       in
       orch
-  | Runner_tick -> (
+  | Runner_tick _ -> (
       try
         let orch, _effects, _actions =
-          Patch_controller.tick ~now:0. orch ~project_name:"test-project"
-            ~gameplan
+          Patch_controller.tick ~now orch ~project_name:"test-project" ~gameplan
         in
         orch
       with Invalid_argument _ -> orch)
@@ -552,9 +555,9 @@ let rec apply_command orch patches cmd =
       Orchestrator.reset_intervention_state orch pid
   | Atomic_poll_reconcile { patch_idx; poll_kind } ->
       let orch =
-        apply_command orch patches (Apply_poll { patch_idx; poll_kind })
+        apply_command ~now orch patches (Apply_poll { patch_idx; poll_kind })
       in
-      apply_command orch patches Reconcile
+      apply_command ~now orch patches Reconcile
   | Apply_conflict_rebase_result { patch_idx; result } -> (
       let pid = resolve_pid patches patch_idx in
       match Orchestrator.find_agent orch pid with
@@ -706,7 +709,7 @@ type poll_log_info = {
     poll_log_info is Some when the command was an Apply_poll, carrying the agent
     state before the poll, the poll_kind, and the resulting logs. *)
 
-let rec apply_command_with_logs orch patches cmd =
+let rec apply_command_with_logs ?(now = 0.) orch patches cmd =
   match cmd with
   | Apply_poll { patch_idx; poll_kind } -> (
       let pid = resolve_pid patches patch_idx in
@@ -739,17 +742,17 @@ let rec apply_command_with_logs orch patches cmd =
           with Invalid_argument _ -> (orch, None)))
   | Atomic_poll_reconcile { patch_idx; poll_kind } ->
       let orch, info =
-        apply_command_with_logs orch patches
+        apply_command_with_logs ~now orch patches
           (Apply_poll { patch_idx; poll_kind })
       in
-      let orch = apply_command orch patches Reconcile in
+      let orch = apply_command ~now orch patches Reconcile in
       (orch, info)
-  | Reconcile | Runner_tick | Complete _ | Apply_session_result _
+  | Reconcile | Runner_tick _ | Complete _ | Apply_session_result _
   | Apply_rebase_result _ | Send_human_message _ | Reset_intervention _
   | Apply_conflict_rebase_result _ | Apply_publication_result _ | Add_adhoc _
   | Remove_adhoc _ | Discover_pr _ | Apply_sync_outcome _ | Force_complete _
   | Mark_pr_missing_adhoc _ | Rediscover_replacement_adhoc _ ->
-      (apply_command orch patches cmd, None)
+      (apply_command ~now orch patches cmd, None)
 
 (* ========== Log invariant checks ========== *)
 
@@ -1140,12 +1143,12 @@ let check_sync_outcome_invariants ~patches ~prev_agents ~curr_orch cmd =
                          a.Patch_agent.pr_body_delivered
                          prev.Patch_agent.pr_body_artifact_miss_count
                          a.Patch_agent.pr_body_artifact_miss_count)))
-  | Apply_poll _ | Reconcile | Runner_tick | Complete _ | Apply_session_result _
-  | Apply_rebase_result _ | Send_human_message _ | Reset_intervention _
-  | Atomic_poll_reconcile _ | Apply_conflict_rebase_result _
-  | Apply_publication_result _ | Add_adhoc _ | Remove_adhoc _ | Discover_pr _
-  | Force_complete _ | Mark_pr_missing_adhoc _ | Rediscover_replacement_adhoc _
-    ->
+  | Apply_poll _ | Reconcile | Runner_tick _ | Complete _
+  | Apply_session_result _ | Apply_rebase_result _ | Send_human_message _
+  | Reset_intervention _ | Atomic_poll_reconcile _
+  | Apply_conflict_rebase_result _ | Apply_publication_result _ | Add_adhoc _
+  | Remove_adhoc _ | Discover_pr _ | Force_complete _ | Mark_pr_missing_adhoc _
+  | Rediscover_replacement_adhoc _ ->
       ()
 
 (* ========== Combined check ========== *)
@@ -1196,7 +1199,7 @@ let check_all_invariants orch patches ~prev_agents ~prev_merged ~curr_merged
 let delivered_pid_of_cmd cmd patches =
   match cmd with
   | Complete patch_idx -> Some (resolve_pid patches patch_idx)
-  | Apply_poll _ | Reconcile | Runner_tick | Apply_session_result _
+  | Apply_poll _ | Reconcile | Runner_tick _ | Apply_session_result _
   | Apply_rebase_result _ | Send_human_message _ | Reset_intervention _
   | Atomic_poll_reconcile _ | Apply_conflict_rebase_result _
   | Apply_publication_result _ | Add_adhoc _ | Remove_adhoc _ | Discover_pr _
@@ -1207,7 +1210,7 @@ let delivered_pid_of_cmd cmd patches =
 let removed_pids_of_cmd cmd prev_removed =
   match cmd with
   | Remove_adhoc i -> Set.add prev_removed (adhoc_pid i)
-  | Add_adhoc _ | Apply_poll _ | Reconcile | Runner_tick | Complete _
+  | Add_adhoc _ | Apply_poll _ | Reconcile | Runner_tick _ | Complete _
   | Apply_session_result _ | Apply_rebase_result _ | Send_human_message _
   | Reset_intervention _ | Atomic_poll_reconcile _
   | Apply_conflict_rebase_result _ | Apply_publication_result _ | Discover_pr _
@@ -1216,18 +1219,36 @@ let removed_pids_of_cmd cmd prev_removed =
       prev_removed
 
 let run_sequence ?(debug = false) orch patches cmds =
-  let final, _final_merged, _final_merged_logged, _final_removed, _final_agents
-      =
+  let ( final,
+        _final_merged,
+        _final_merged_logged,
+        _final_removed,
+        _final_agents,
+        _final_now ) =
     List.fold cmds
       ~init:
         ( orch,
           merged_set_of orch,
           Set.empty (module Patch_id),
           Set.empty (module Patch_id),
-          Orchestrator.agents_map orch )
-      ~f:(fun (o, prev_merged, merged_logged, removed_pids, prev_agents) cmd ->
+          Orchestrator.agents_map orch,
+          0. )
+      ~f:(fun
+          (o, prev_merged, merged_logged, removed_pids, prev_agents, now) cmd ->
+        let now =
+          match cmd with
+          | Runner_tick elapsed -> now +. Float.of_int (Int.max 0 elapsed)
+          | Apply_poll _ | Reconcile | Complete _ | Apply_session_result _
+          | Apply_rebase_result _ | Send_human_message _ | Reset_intervention _
+          | Atomic_poll_reconcile _ | Apply_conflict_rebase_result _
+          | Apply_publication_result _ | Add_adhoc _ | Remove_adhoc _
+          | Discover_pr _ | Mark_pr_missing_adhoc _
+          | Rediscover_replacement_adhoc _ | Apply_sync_outcome _
+          | Force_complete _ ->
+              now
+        in
         if debug then Stdlib.Printf.eprintf "  CMD: %s\n%!" (show_command cmd);
-        let o, log_info = apply_command_with_logs o patches cmd in
+        let o, log_info = apply_command_with_logs ~now o patches cmd in
         let removed_pids = removed_pids_of_cmd cmd removed_pids in
         (* Re-adding an adhoc patch resets its lifecycle — clear merge log. *)
         let merged_logged =
@@ -1235,7 +1256,7 @@ let run_sequence ?(debug = false) orch patches cmds =
           | Add_adhoc i | Rediscover_replacement_adhoc i ->
               Set.remove merged_logged (adhoc_pid i)
           | Mark_pr_missing_adhoc _ | Remove_adhoc _ | Apply_poll _ | Reconcile
-          | Runner_tick | Complete _ | Apply_session_result _
+          | Runner_tick _ | Complete _ | Apply_session_result _
           | Apply_rebase_result _ | Send_human_message _ | Reset_intervention _
           | Atomic_poll_reconcile _ | Apply_conflict_rebase_result _
           | Apply_publication_result _ | Discover_pr _ | Apply_sync_outcome _
@@ -1264,7 +1285,7 @@ let run_sequence ?(debug = false) orch patches cmds =
           | None -> merged_logged
         in
         let curr_agents = Orchestrator.agents_map o in
-        (o, curr_merged, merged_logged, removed_pids, curr_agents))
+        (o, curr_merged, merged_logged, removed_pids, curr_agents, now))
   in
   final
 
@@ -3676,3 +3697,54 @@ let () =
   in
   QCheck2.Test.check_exn prop_ng3;
   Stdlib.print_endline "NG-3 passed"
+
+let () =
+  QCheck2.Test.check_exn
+    (QCheck2.Test.make
+       ~name:"runner interleavings accumulate time through the repair deadline"
+       ~count:200
+       QCheck2.Gen.(int_range 1 119)
+       (fun first ->
+         try
+           let module R = Scheduler_recovery in
+           let module F = Onton_core_test_support.Publication_fixture in
+           let patches = mk_patches 1 in
+           let patch = List.hd_exn patches in
+           let a =
+             Patch_agent.create ~branch:patch.branch patch.id
+             |> F.reconciled_agent ~base:main
+             |> fun a ->
+             Patch_agent.set_pr_number a (Pr_number.of_int 1) |> fun a ->
+             Patch_agent.set_base_branch a main |> fun a ->
+             Patch_agent.set_is_draft a false |> fun a ->
+             Patch_agent.set_pr_body_delivered a true |> fun a ->
+             Patch_agent.set_checks_passing a true
+             |> Onton_core_test_support.Forge_fixture.readiness_agent
+           in
+           let initial =
+             Orchestrator.restore ~graph:(Graph.of_patches patches)
+               ~agents:(Map.singleton (module Patch_id) patch.id a)
+               ~outbox:(Map.empty (module Message_id))
+               ~main_branch:main ()
+             |> fun t ->
+             Orchestrator.scheduler_write_failed t patch.id
+               ~pr_number:(Pr_number.of_int 1) ~now:0. ~kind:R.Pr_draft
+           in
+           let prefix =
+             [ Runner_tick 0; Runner_tick first; Runner_tick (119 - first) ]
+           in
+           let before = run_sequence initial patches prefix in
+           let after =
+             run_sequence initial patches (prefix @ [ Runner_tick 1 ])
+           in
+           let before = Orchestrator.agent before patch.id in
+           let after = Orchestrator.agent after patch.id in
+           R.write_allowed before.Patch_agent.scheduler_recovery R.Pr_draft
+           && Option.is_none before.scheduler_repair
+           && (not
+                 (R.write_allowed after.Patch_agent.scheduler_recovery
+                    R.Pr_draft))
+           && Option.exists after.scheduler_repair ~f:(fun ticket ->
+               R.equal_kind ticket.R.kind R.Pr_draft
+               && R.is_running after.scheduler_recovery ticket)
+         with _ -> false))

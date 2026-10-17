@@ -43,8 +43,10 @@ val is_running : t -> ticket -> bool
 val claim : t -> ticket -> t
 
 val complete : ?now:float -> ?scope:scope -> t -> ticket -> success:bool -> t
-(** [scope] records the resulting scope of an intentionally revision-changing
-    repair, after the caller has verified that the running turn produced it.
+(** [scope] records the completion's context after the caller verifies
+    ownership. Successful revision-changing repair requires evidence that the
+    running turn produced it; execution failure may instead escalate to operator
+    attention in its current context without granting successful repair credit.
     Without [now], uses the last observation time; live completions must pass
     their actual completion time. *)
 

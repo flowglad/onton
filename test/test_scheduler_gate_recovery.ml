@@ -611,10 +611,11 @@ let () =
          with _ -> false));
   QCheck2.Test.check_exn
     (QCheck2.Test.make
-       ~name:"busy same-PR scope changes reject old repair completion"
+       ~name:
+         "revision completion credit and failure attention respect PR context"
        ~count:100
-       QCheck2.Gen.(int_range 0 2)
-       (fun change ->
+       QCheck2.Gen.(pair (int_range 0 3) bool)
+       (fun (change, success) ->
          try
            let t, _, _ =
              tick (orch (Patch_agent.set_native_stack (ready ()) true)) 0.
@@ -624,18 +625,26 @@ let () =
              match change with
              | 0 -> Patch_agent.set_head_oid running (Some (F.sha "external"))
              | 1 -> Patch_agent.set_base_branch running (branch "external-base")
-             | _ -> F.agent ~candidate:(F.sha "external-publication") running
+             | 2 -> F.agent ~candidate:(F.sha "external-publication") running
+             | _ -> Patch_agent.set_pr_number running (Pr_number.of_int 8)
            in
            let finished =
-             Patch_agent.finish_scheduler_repair ~now:1001. changed
-               ~success:true
+             Patch_agent.finish_scheduler_repair ~now:1001. changed ~success
              |> Patch_agent.complete
            in
            let observed =
              Patch_agent.observe_scheduler finished ~now:1002.
                ~pr_base_update:false ~pr_draft_update:false
            in
-           Option.is_some (R.pending observed.scheduler_recovery)
+           (if change = 3 then
+              Option.is_none (R.attention observed.scheduler_recovery)
+              && not (R.contains observed.scheduler_recovery R.Native_stack)
+            else if success || change = 1 then
+              Option.is_some (R.pending observed.scheduler_recovery)
+              && Option.is_none (R.attention observed.scheduler_recovery)
+            else
+              Option.is_some (R.attention observed.scheduler_recovery)
+              && Option.is_none (R.pending observed.scheduler_recovery))
            && Option.is_none observed.scheduler_repair
          with _ -> false));
   QCheck2.Test.check_exn
@@ -693,4 +702,97 @@ let () =
            && Option.is_none (R.attention wait.scheduler_recovery)
            && Option.is_some (R.attention attention.scheduler_recovery)
            && Option.is_none (R.pending attention.scheduler_recovery)
+         with _ -> false))
+
+let () =
+  QCheck2.Test.check_exn
+    (QCheck2.Test.make
+       ~name:
+         "active checks exempt only their own conclusions from evidence repair"
+       ~count:200
+       QCheck2.Gen.(
+         pair
+           (oneof_list [ "pending"; "in_progress"; "queued" ])
+           (int_range 901 100000))
+       (fun (active, elapsed) ->
+         try
+           let check id conclusion =
+             Ci_check.
+               {
+                 name = Int.to_string id;
+                 conclusion;
+                 details_url = None;
+                 description = None;
+                 started_at = None;
+                 app_id = None;
+                 check_suite_id = None;
+                 id = Some id;
+               }
+           in
+           let observed checks =
+             let a =
+               ready () |> fun a ->
+               Patch_agent.set_checks_passing a false |> fun a ->
+               Patch_agent.set_ci_checks a checks
+             in
+             let observe a now =
+               Patch_agent.observe_scheduler a ~now ~pr_base_update:false
+                 ~pr_draft_update:false
+             in
+             observe (observe a 0.) (Float.of_int elapsed)
+           in
+           List.for_all
+             [
+               ([ check 1 active ], false);
+               ([ check 1 active; check 2 "success" ], false);
+               ([ check 1 active; check 2 "unrecognized" ], true);
+               ([ check 2 "unrecognized"; check 1 active ], true);
+               ([ check 2 "unrecognized" ], true);
+               ([], true);
+               ([ check 2 "success" ], true);
+             ]
+             ~f:(fun (checks, expected) ->
+               let a = observed checks in
+               Bool.equal
+                 (R.contains a.scheduler_recovery R.Ci_evidence)
+                 expected
+               && Bool.equal
+                    (Option.is_some (R.pending a.scheduler_recovery))
+                    expected)
+         with _ -> false))
+
+let () =
+  QCheck2.Test.check_exn
+    (QCheck2.Test.make
+       ~name:"failed repair after a head change stops automatic retry"
+       ~count:100
+       QCheck2.Gen.(int_range 1002 1000000)
+       (fun later ->
+         try
+           let t, _, _ =
+             tick (orch (Patch_agent.set_is_draft (ready ()) true)) 0.
+           in
+           let _, running = claim t 1000. in
+           let changed =
+             Patch_agent.set_head_oid running
+               (Some (F.sha "repair-changed-head"))
+           in
+           let finished =
+             Patch_agent.finish_scheduler_repair ~now:1001. changed
+               ~success:false
+             |> Patch_agent.complete
+           in
+           let observed =
+             Patch_agent.observe_scheduler finished ~now:(Float.of_int later)
+               ~pr_base_update:false ~pr_draft_update:true
+           in
+           Option.is_some (R.attention finished.scheduler_recovery)
+           && Option.is_some (R.attention observed.scheduler_recovery)
+           && (not (R.write_allowed observed.scheduler_recovery R.Pr_draft))
+           && (not
+                 (List.mem observed.queue Operation_kind.Human
+                    ~equal:Operation_kind.equal))
+           && Option.is_none observed.scheduler_repair
+           && (not observed.busy)
+           && List.equal Ci_check.equal observed.ci_checks changed.ci_checks
          with _ -> false))

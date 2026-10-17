@@ -1155,13 +1155,19 @@ let scheduler_blocked t ~pr_base_update ~pr_draft_update =
   @ (if
        (not forge) && (not t.checks_passing)
        && (not (List.exists t.ci_checks ~f:Ci_check.is_failure))
-       && not
-            (List.exists t.ci_checks ~f:(fun check ->
-                 List.mem
-                   [
-                     "pending"; "queued"; "in_progress"; "waiting"; "requested";
-                   ]
-                   check.Ci_check.conclusion ~equal:String.equal))
+       && (List.for_all t.ci_checks ~f:Ci_check.is_success
+          || List.exists t.ci_checks ~f:(fun check ->
+              (not (Ci_check.is_success check))
+              && not
+                   (List.mem
+                      [
+                        "pending";
+                        "queued";
+                        "in_progress";
+                        "waiting";
+                        "requested";
+                      ]
+                      check.Ci_check.conclusion ~equal:String.equal)))
      then [ R.Ci_evidence ]
      else [])
   @ (match t.merge_queue_ejection with
@@ -1250,8 +1256,12 @@ let finish_scheduler_repair ?now t ~success =
       let accepted =
         Scheduler_recovery.is_running t.scheduler_recovery ticket
         && same_context
-        && (Scheduler_recovery.equal_scope ticket.scope current
+        && ((not success)
+           || Scheduler_recovery.equal_scope ticket.scope current
            || repaired_revision)
+        (* A failed owned turn needs operator attention even if its work changed
+           the revision. This records execution failure, not successful repair
+           credit, and cannot finish a different PR/base/queue or newer ticket. *)
       in
       let merge_queue_ejection =
         if

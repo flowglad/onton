@@ -168,13 +168,14 @@ let pid = Patch_id.of_string "p"
 
 let () =
   let open QCheck2 in
-  (* AM-SAFE: merge attempts require approval, passing CI, confirmed revisions
-     and no conflict. Unknown provider mergeability may reach the merge endpoint
-     after the idle window; known conflicts still prevent an attempt. *)
+  (* AM-SAFE: issued attempts have passing CI and either merge readiness or
+     unknown mergeability without a blocking review. Identity and conflict
+     preconditions are fixed by this fixture, not varied by this property. *)
   let prop_merge_attempt_requires_inputs =
     Test.make
       ~name:
-        "automerge AM-SAFE: attempts require approval, CI and conflict safety"
+        "automerge AM-SAFE: attempts require CI and ready or nonblocking \
+         unknown state"
       ~count:2000
       Gen.(
         let* now = float_range 0.0 1_000_000.0 in

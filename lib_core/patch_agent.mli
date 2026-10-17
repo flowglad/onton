@@ -808,9 +808,11 @@ val scheduler_write_failed : t -> now:float -> kind:Scheduler_recovery.kind -> t
 val finish_scheduler_repair : ?now:float -> t -> success:bool -> t
 (** Live successful completions must pass their current clock via [now]. When
     omitted, completion uses the last scheduler observation time (legacy/offline
-    callers); it does not read a clock. Changed scopes require a matching
-    current session completion and owner publication receipt for an intentional
-    new head. *)
+    callers); it does not read a clock. Successful completion on changed scopes
+    requires a matching current session completion and owner publication receipt
+    for an intentional new head. A failed running execution escalates within an
+    unchanged PR/base/queue context even if the revision changed; it grants no
+    successful repair credit or forge evidence. *)
 
 val resolve_scheduler : t -> Scheduler_recovery.kind -> t
 val recover_scheduler_owner : t -> owned:bool -> t
