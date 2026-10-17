@@ -502,13 +502,13 @@ let () =
 let () =
   QCheck2.Test.check_exn
     (QCheck2.Test.make
-       ~name:"active CI never requests missing-evidence repair after grace"
+       ~name:"active CI gets a full grace before requesting evidence repair"
        ~count:100
        QCheck2.Gen.(
          pair
            (oneof_list
               [ "in_progress"; "queued"; "pending"; "waiting"; "requested" ])
-           (int_range 901 100000))
+           (int_range 0 899))
        (fun (conclusion, elapsed) ->
          try
            let check =
@@ -534,7 +534,7 @@ let () =
                ~pr_draft_update:false
            in
            let after = observe (observe a 0.) (Float.of_int elapsed) in
-           (not (R.contains after.scheduler_recovery R.Ci_evidence))
+           R.contains after.scheduler_recovery R.Ci_evidence
            && Option.is_none (R.pending after.scheduler_recovery)
          with _ -> false));
   QCheck2.Test.check_exn
@@ -707,8 +707,7 @@ let () =
 let () =
   QCheck2.Test.check_exn
     (QCheck2.Test.make
-       ~name:
-         "active checks exempt only their own conclusions from evidence repair"
+       ~name:"all stalled nonpassing CI reaches bounded evidence repair"
        ~count:200
        QCheck2.Gen.(
          pair
@@ -743,8 +742,8 @@ let () =
            in
            List.for_all
              [
-               ([ check 1 active ], false);
-               ([ check 1 active; check 2 "success" ], false);
+               ([ check 1 active ], true);
+               ([ check 1 active; check 2 "success" ], true);
                ([ check 1 active; check 2 "unrecognized" ], true);
                ([ check 2 "unrecognized"; check 1 active ], true);
                ([ check 2 "unrecognized" ], true);
@@ -795,4 +794,137 @@ let () =
            && Option.is_none observed.scheduler_repair
            && (not observed.busy)
            && List.equal Ci_check.equal observed.ci_checks changed.ci_checks
+         with _ -> false))
+
+let active_check ?(id = 1) ?(conclusion = "in_progress") ?started_at () =
+  Ci_check.
+    {
+      name = "active";
+      conclusion;
+      details_url = None;
+      description = None;
+      started_at;
+      app_id = None;
+      check_suite_id = Some 10;
+      id = Some id;
+    }
+
+let observe_ci a now checks =
+  Patch_agent.set_checks_passing a false |> fun a ->
+  Patch_agent.set_ci_checks a checks |> fun a ->
+  Patch_agent.observe_scheduler a ~now ~pr_base_update:false
+    ~pr_draft_update:false
+
+let () =
+  QCheck2.Test.check_exn
+    (QCheck2.Test.make
+       ~name:
+         "unchanged active-only CI reaches repair at 900 seconds across restart"
+       ~count:200
+       QCheck2.Gen.(
+         pair
+           (oneof_list
+              [ "in_progress"; "pending"; "queued"; "waiting"; "requested" ])
+           (oneof_list [ None; Some "invalid"; Some "2000-01-01T00:00:00Z" ]))
+       (fun (conclusion, started_at) ->
+         try
+           let checks = [ active_check ~conclusion ?started_at () ] in
+           let initial = observe_ci (ready ()) 0. checks in
+           let before = observe_ci initial 899. checks |> checkpoint in
+           let due = observe_ci before 900. checks in
+           Option.is_none (R.pending before.scheduler_recovery)
+           && Option.exists (R.pending due.scheduler_recovery) ~f:(fun ticket ->
+               R.equal_kind ticket.kind R.Ci_evidence)
+           && List.mem due.queue Operation_kind.Human
+                ~equal:Operation_kind.equal
+         with _ -> false));
+  QCheck2.Test.check_exn
+    (QCheck2.Test.make
+       ~name:
+         "observable active CI progress renews grace, then stagnation expires"
+       ~count:200
+       QCheck2.Gen.(int_range 0 3)
+       (fun mode ->
+         try
+           let check step =
+             match mode with
+             | 0 -> active_check ~id:(step + 1) ()
+             | 1 ->
+                 active_check
+                   ~conclusion:(if step = 0 then "queued" else "in_progress")
+                   ()
+             | 2 ->
+                 active_check
+                   ~started_at:(if step = 0 then "old-start" else "new-start")
+                   ()
+             | _ ->
+                 active_check
+                   ~conclusion:(if step = 0 then "in_progress" else "success")
+                   ()
+           in
+           let initial = observe_ci (ready ()) 0. [ check 0 ] in
+           let progress = observe_ci initial 800. [ check 1 ] |> checkpoint in
+           let before = observe_ci progress 1699. [ check 1 ] in
+           let after = observe_ci before 1700. [ check 1 ] in
+           Option.is_none (R.pending before.scheduler_recovery)
+           && Option.exists (R.pending after.scheduler_recovery)
+                ~f:(fun ticket -> R.equal_kind ticket.kind R.Ci_evidence)
+         with _ -> false));
+  QCheck2.Test.check_exn
+    (QCheck2.Test.make
+       ~name:"CI polling noise and ordering do not renew the active wait"
+       ~count:100 QCheck2.Gen.bool (fun reverse ->
+         try
+           let active = active_check () in
+           let passed =
+             {
+               active with
+               Ci_check.name = "passed";
+               id = Some 2;
+               conclusion = "success";
+             }
+           in
+           let initial = observe_ci (ready ()) 0. [ active; passed ] in
+           let state =
+             List.fold (List.range 1 10) ~init:initial ~f:(fun a step ->
+                 let noisy =
+                   {
+                     active with
+                     Ci_check.description = Some (Int.to_string step);
+                     details_url = Some ("url-" ^ Int.to_string step);
+                   }
+                 in
+                 let checks =
+                   if reverse then [ passed; noisy ]
+                   else [ noisy; passed; noisy ]
+                 in
+                 observe_ci a (Float.of_int (step * 100)) checks |> checkpoint)
+           in
+           Option.exists (R.pending state.scheduler_recovery) ~f:(fun ticket ->
+               R.equal_kind ticket.kind R.Ci_evidence)
+         with _ -> false));
+  QCheck2.Test.check_exn
+    (QCheck2.Test.make
+       ~name:"active progress cannot conceal another check's unknown conclusion"
+       ~count:100 QCheck2.Gen.bool (fun reverse ->
+         try
+           let unknown =
+             {
+               (active_check ()) with
+               Ci_check.name = "unknown";
+               id = Some 100;
+               conclusion = "unrecognized";
+             }
+           in
+           let checks step =
+             let active = active_check ~id:(step + 1) () in
+             if reverse then [ unknown; active ] else [ active; unknown ]
+           in
+           let initial = observe_ci (ready ()) 0. (checks 0) in
+           let state =
+             List.fold (List.range 1 10) ~init:initial ~f:(fun a step ->
+                 observe_ci a (Float.of_int (step * 100)) (checks step))
+           in
+           Option.exists (R.pending state.scheduler_recovery) ~f:(fun ticket ->
+               R.equal_kind ticket.kind R.Ci_evidence)
          with _ -> false))

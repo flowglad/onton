@@ -38,6 +38,7 @@ type entry = {
   scope : scope;
   since : float;
   failures : int;
+  progress : string option; [@yojson.default None]
   phase : phase;
 }
 [@@deriving eq, compare, sexp_of, yojson]
@@ -89,7 +90,41 @@ let attention t =
          ^ "; send repair guidance to retry")
       else None)
 
-let observe t ~now ~scope ~blocked =
+(* Track provider-visible run progress, not poll frequency or mutable links and
+   descriptions. Unknown conclusions never get a renewed grace from another job.
+   The observed interval also covers missing/malformed provider timestamps. *)
+let ci_progress checks =
+  let active check =
+    List.mem
+      [ "pending"; "queued"; "in_progress"; "waiting"; "requested" ]
+      check.Types.Ci_check.conclusion ~equal:String.equal
+  in
+  if
+    (not (List.is_empty checks))
+    && List.for_all checks ~f:(fun check ->
+        active check || Types.Ci_check.is_success check)
+  then
+    let progress =
+      List.map checks ~f:(fun check ->
+          ( check.Types.Ci_check.name,
+            check.Types.Ci_check.id,
+            check.Types.Ci_check.check_suite_id,
+            check.Types.Ci_check.conclusion,
+            check.Types.Ci_check.started_at ))
+      |> List.dedup_and_sort
+           ~compare:
+             [%compare:
+               string * int option * int option * string * string option]
+    in
+    Some
+      (Sexp.to_string
+         ([%sexp_of:
+            (string * int option * int option * string * string option) list]
+            progress))
+  else None
+
+let observe ?(ci_checks = []) t ~now ~scope ~blocked =
+  let ci_progress = ci_progress ci_checks in
   let now = finite now in
   let kinds = List.dedup_and_sort blocked ~compare:compare_kind in
   let entries, next =
@@ -97,7 +132,15 @@ let observe t ~now ~scope ~blocked =
         let prior = List.find t.entries ~f:(fun e -> equal_kind e.kind kind) in
         let e =
           match prior with
-          | None -> { kind; scope; since = now; failures = 0; phase = Waiting }
+          | None ->
+              {
+                kind;
+                scope;
+                since = now;
+                failures = 0;
+                progress = None;
+                phase = Waiting;
+              }
           | Some e when equal_scope e.scope scope -> e
           | Some e
             when equal_phase e.phase Repaired
@@ -116,7 +159,33 @@ let observe t ~now ~scope ~blocked =
                  && Option.equal String.equal e.scope.queue scope.queue ->
               { e with scope; since = now }
           | Some _ ->
-              { kind; scope; since = now; failures = 0; phase = Waiting }
+              {
+                kind;
+                scope;
+                since = now;
+                failures = 0;
+                progress = None;
+                phase = Waiting;
+              }
+        in
+        let e =
+          if equal_kind kind Ci_evidence then
+            let advanced =
+              Option.is_some ci_progress
+              && not (Option.equal String.equal e.progress ci_progress)
+            in
+            let since =
+              match e.phase with
+              | (Waiting | Repaired) when advanced -> now
+              | Waiting | Requested _ | Running _ | Repaired | Attention ->
+                  e.since
+            in
+            {
+              e with
+              since;
+              progress = Option.first_some ci_progress e.progress;
+            }
+          else e
         in
         let e = { e with since = Float.min e.since now } in
         let delay =
@@ -143,7 +212,14 @@ let observe t ~now ~scope ~blocked =
 
 let failed t ~now ~scope ~kind =
   let fresh =
-    { kind; scope; since = finite now; failures = 0; phase = Waiting }
+    {
+      kind;
+      scope;
+      since = finite now;
+      failures = 0;
+      progress = None;
+      phase = Waiting;
+    }
   in
   let entries =
     if List.exists t.entries ~f:(fun e -> equal_kind e.kind kind) then

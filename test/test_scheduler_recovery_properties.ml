@@ -127,8 +127,154 @@ let prop_scope_changes =
              ~f:(fun ticket -> R.equal_scope ticket.scope fresh_scope)
       with _ -> false)
 
+let active_check id =
+  Types.Ci_check.
+    {
+      name = "ci";
+      id = Some id;
+      conclusion = "in_progress";
+      started_at = None;
+      details_url = None;
+      description = None;
+      app_id = None;
+      check_suite_id = None;
+    }
+
+let prop_ci_progress_interleavings =
+  T.make ~name:"CI progress renews only unrequested waits across checkpoints"
+    ~count:1000
+    G.(list (triple (int_range 0 1000) bool bool))
+    (fun steps ->
+      try
+        let observe state now marker =
+          R.observe
+            ~ci_checks:[ active_check marker ]
+            state ~now ~scope:(scope 1) ~blocked:[ R.Ci_evidence ]
+        in
+        let initial = observe R.empty 0. 0 in
+        let _, _, _, _, _, valid =
+          List.fold steps ~init:(initial, 0., 0., 0, false, true)
+            ~f:(fun
+                (state, now, last_progress, marker, requested, valid)
+                (elapsed, advance, checkpoint)
+              ->
+              let now = now +. Float.of_int elapsed in
+              let marker = if advance then marker + 1 else marker in
+              let last_progress =
+                if advance && not requested then now else last_progress
+              in
+              let expected =
+                requested || Float.(now -. last_progress >= 900.)
+              in
+              let state =
+                if checkpoint then R.decode (R.yojson_of_t state) else state
+              in
+              let state = observe state now marker in
+              ( state,
+                now,
+                last_progress,
+                marker,
+                expected,
+                valid
+                && Bool.equal (Option.is_some (R.pending state)) expected
+                && Option.is_none (R.attention state) ))
+        in
+        valid
+      with _ -> false)
+
+let prop_ci_repaired_progress =
+  T.make
+    ~name:"CI repair progress preserves completion and eventually escalates"
+    ~count:200
+    G.(int_range 1001 2000)
+    (fun progressed_at ->
+      try
+        let observe state now marker =
+          R.observe
+            ~ci_checks:[ active_check marker ]
+            state ~now ~scope:(scope 1) ~blocked:[ R.Ci_evidence ]
+        in
+        let initial = observe R.empty 0. 1 in
+        let due = observe initial 900. 1 in
+        let ticket = get (R.pending due) in
+        let repaired =
+          R.complete ~now:1000. (R.claim due ticket) ticket ~success:true
+        in
+        let progressed_at = Float.of_int progressed_at in
+        let progressing = observe repaired progressed_at 2 in
+        let restored = R.decode (R.yojson_of_t progressing) in
+        let before = observe restored (progressed_at +. 899.) 2 in
+        let after = observe before (progressed_at +. 900.) 2 in
+        Option.is_none (R.pending before)
+        && Option.is_none (R.attention before)
+        && Option.is_none (R.pending after)
+        && Option.is_some (R.attention after)
+      with _ -> false)
+
+let prop_legacy_ci_checkpoint =
+  T.make
+    ~name:
+      "legacy checkpoints retain CI ticket authority without progress metadata"
+    ~count:200
+    G.(int_range 0 4)
+    (fun phase ->
+      try
+        let observed =
+          R.observe
+            ~ci_checks:[ active_check 1 ]
+            R.empty ~now:0. ~scope:(scope 1) ~blocked:[ R.Ci_evidence ]
+        in
+        let due =
+          R.observe
+            ~ci_checks:[ active_check 1 ]
+            observed ~now:900. ~scope:(scope 1) ~blocked:[ R.Ci_evidence ]
+        in
+        let ticket = get (R.pending due) in
+        let running = R.claim due ticket in
+        let state =
+          match phase with
+          | 0 -> observed
+          | 1 -> due
+          | 2 -> running
+          | 3 -> R.complete ~now:1000. running ticket ~success:true
+          | _ -> R.complete ~now:1000. running ticket ~success:false
+        in
+        let legacy =
+          match R.yojson_of_t state with
+          | `Assoc fields ->
+              let entries =
+                List.Assoc.find_exn fields "entries" ~equal:String.equal
+              in
+              let entries =
+                match entries with
+                | `List entries ->
+                    `List
+                      (List.map entries ~f:(function
+                        | `Assoc fields ->
+                            `Assoc
+                              (List.Assoc.remove fields "progress"
+                                 ~equal:String.equal)
+                        | other -> other))
+                | other -> other
+              in
+              replace fields "entries" entries
+          | other -> other
+        in
+        let restored = R.decode legacy in
+        R.contains restored R.Ci_evidence
+        && Option.equal R.equal_ticket (R.pending state) (R.pending restored)
+        && Option.equal String.equal (R.attention state) (R.attention restored)
+        && Bool.equal (R.is_running state ticket) (R.is_running restored ticket)
+        && Bool.equal
+             (R.write_allowed state R.Ci_evidence)
+             (R.write_allowed restored R.Ci_evidence)
+      with _ -> false)
+
 let tests =
   [
+    prop_legacy_ci_checkpoint;
+    prop_ci_progress_interleavings;
+    prop_ci_repaired_progress;
     prop_scope_changes;
     T.make ~name:"malformed canonical checkpoints reset all repair authority"
       ~count:100 G.unit (fun () ->

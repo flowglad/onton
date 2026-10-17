@@ -1154,20 +1154,7 @@ let scheduler_blocked t ~pr_base_update ~pr_draft_update =
   (if forge then [ R.Forge_revision ] else [])
   @ (if
        (not forge) && (not t.checks_passing)
-       && (not (List.exists t.ci_checks ~f:Ci_check.is_failure))
-       && (List.for_all t.ci_checks ~f:Ci_check.is_success
-          || List.exists t.ci_checks ~f:(fun check ->
-              (not (Ci_check.is_success check))
-              && not
-                   (List.mem
-                      [
-                        "pending";
-                        "queued";
-                        "in_progress";
-                        "waiting";
-                        "requested";
-                      ]
-                      check.Ci_check.conclusion ~equal:String.equal)))
+       && not (List.exists t.ci_checks ~f:Ci_check.is_failure)
      then [ R.Ci_evidence ]
      else [])
   @ (match t.merge_queue_ejection with
@@ -1193,8 +1180,8 @@ let observe_scheduler t ~now ~pr_base_update ~pr_draft_update =
   then t
   else
     let scheduler_recovery =
-      Scheduler_recovery.observe t.scheduler_recovery ~now
-        ~scope:(scheduler_scope t)
+      Scheduler_recovery.observe ~ci_checks:t.ci_checks t.scheduler_recovery
+        ~now ~scope:(scheduler_scope t)
         ~blocked:(scheduler_blocked t ~pr_base_update ~pr_draft_update)
     in
     let t = { t with scheduler_recovery } in
