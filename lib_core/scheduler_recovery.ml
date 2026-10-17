@@ -171,7 +171,7 @@ let observe ?(ci_checks = []) t ~now ~scope ~blocked =
         let e =
           if equal_kind kind Ci_evidence then
             let advanced =
-              Option.is_some ci_progress
+              Option.is_some e.progress && Option.is_some ci_progress
               && not (Option.equal String.equal e.progress ci_progress)
             in
             let since =

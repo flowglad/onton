@@ -261,7 +261,32 @@ let prop_legacy_ci_checkpoint =
           | other -> other
         in
         let restored = R.decode legacy in
-        R.contains restored R.Ci_evidence
+        let observe state now =
+          R.observe
+            ~ci_checks:[ active_check 1 ]
+            state ~now ~scope:(scope 1) ~blocked:[ R.Ci_evidence ]
+        in
+        let deadline_preserved =
+          match phase with
+          | 0 | 3 ->
+              let deadline = if phase = 0 then 900. else 1900. in
+              let initialized = observe restored (deadline -. 1.) in
+              let initialized = R.decode (R.yojson_of_t initialized) in
+              let expired = observe initialized deadline in
+              let overdue = observe restored (deadline +. 1000.) in
+              Option.is_none (R.pending initialized)
+              && Option.is_none (R.attention initialized)
+              &&
+              if phase = 0 then
+                Option.is_some (R.pending expired)
+                && Option.is_some (R.pending overdue)
+              else
+                Option.is_some (R.attention expired)
+                && Option.is_some (R.attention overdue)
+          | _ -> true
+        in
+        deadline_preserved
+        && R.contains restored R.Ci_evidence
         && Option.equal R.equal_ticket (R.pending state) (R.pending restored)
         && Option.equal String.equal (R.attention state) (R.attention restored)
         && Bool.equal (R.is_running state ticket) (R.is_running restored ticket)

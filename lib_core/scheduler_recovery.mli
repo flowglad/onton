@@ -42,10 +42,12 @@ val observe :
     Accepted repair completion gets a bounded observation window, then an
     explicit operator repair prompt. Changed scopes reject stale completions.
     Changes to [ci_checks] run identity, status, or start timestamp renew the CI
-    grace while waiting or observing an accepted repair. Check ordering and
-    presentation metadata do not renew it; unknown conclusions cannot get fresh
-    grace from another active check. Requested/running repairs and operator
-    attention remain sticky. Progress and deadlines are checkpointed. *)
+    grace while waiting or observing an accepted repair. The first progress
+    marker initializes tracking without renewing an existing deadline. Check
+    ordering and presentation metadata do not renew it; unknown conclusions
+    cannot get fresh grace from another active check. Requested/running repairs
+    and operator attention remain sticky. Progress and deadlines are
+    checkpointed. *)
 
 val pending : t -> ticket option
 val attention : t -> string option
