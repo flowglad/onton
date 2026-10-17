@@ -541,3 +541,23 @@ let () =
       prop_idempotent;
       prop_interleaving_threaded_prior_state;
     ] ~f:(fun test -> QCheck2.Test.check_exn test)
+
+let () =
+  QCheck2.Test.check_exn
+    (QCheck2.Test.make
+       ~name:
+         "accepted removal diagnosis clears unknowns and retains CI failures"
+       ~count:200 QCheck2.Gen.bool (fun confirmed ->
+         let pending =
+           (Merge_queue_decision.apply ~previous_entry:(Some previous_entry)
+              ?removal_checks:
+                (if confirmed then Some [ failing_check ] else None)
+              base_ejection_poll)
+             .pending
+         in
+         let accepted = Merge_queue_decision.accept_removal_repair pending in
+         (if confirmed then
+            Option.equal Merge_queue_decision.equal_pending pending accepted
+          else Option.is_none accepted)
+         && Option.equal Merge_queue_decision.equal_pending accepted
+              (Merge_queue_decision.accept_removal_repair accepted)))

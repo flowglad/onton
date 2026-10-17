@@ -515,3 +515,38 @@ let () =
            && Patch_agent.equal initial
                 (Patch_agent.set_merge_queue_ejection updated None)
          with _ -> false))
+
+let () =
+  QCheck2.Test.check_exn
+    (QCheck2.Test.make
+       ~name:"scheduler write recovery preserves scope and resolves explicitly"
+       ~count:200
+       QCheck2.Gen.(pair bool (int_range 1 10000))
+       (fun (success, pr) ->
+         try
+           let module R = Scheduler_recovery in
+           let a = Patch_agent.set_pr_number (agent ()) (Pr_number.of_int pr) in
+           let scope = Patch_agent.scheduler_scope a in
+           let blocked =
+             Patch_agent.scheduler_blocked a ~pr_base_update:true
+               ~pr_draft_update:false
+           in
+           let failed =
+             Patch_agent.scheduler_write_failed a ~now:0. ~kind:R.Pr_base
+             |> fun a ->
+             Patch_agent.observe_scheduler a ~now:1000. ~pr_base_update:true
+               ~pr_draft_update:false
+           in
+           let finished = Patch_agent.finish_scheduler_repair failed ~success in
+           let recovered =
+             Patch_agent.recover_scheduler_owner finished ~owned:false
+           in
+           let resolved = Patch_agent.resolve_scheduler recovered R.Pr_base in
+           scope.R.pr = Some pr
+           && List.exists (R.equal_kind R.Pr_base) blocked
+           && R.contains failed.Patch_agent.scheduler_recovery R.Pr_base
+           && (not
+                 (R.contains resolved.Patch_agent.scheduler_recovery R.Pr_base))
+           && R.equal_scope scope (Patch_agent.scheduler_scope resolved)
+           && Option.is_none resolved.Patch_agent.scheduler_repair
+         with _ -> false))

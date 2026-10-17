@@ -416,3 +416,75 @@ let () =
       failwith "capture did not request diagnosis");
   Stdlib.Printf.printf
     "completed repair capture: two read failures request diagnosis: OK\n%!"
+
+let () =
+  QCheck2.Test.check_exn
+    (QCheck2.Test.make
+       ~name:"scheduler waits survive checkpoint and become executable repairs"
+       ~count:100
+       QCheck2.Gen.(int_range 1 10000)
+       (fun pr_number ->
+         try
+           let a =
+             ready ~pr_number () |> fun a -> Patch_agent.set_native_stack a true
+           in
+           let observed =
+             Patch_agent.observe_scheduler a ~now:0. ~pr_base_update:false
+               ~pr_draft_update:false
+             |> checkpoint
+           in
+           let due =
+             Patch_agent.observe_scheduler observed ~now:1000.
+               ~pr_base_update:false ~pr_draft_update:false
+           in
+           match R.pending due.scheduler_recovery with
+           | None -> false
+           | Some ticket ->
+               R.equal_kind ticket.kind R.Native_stack
+               && Option.equal Int.equal ticket.scope.pr (Some pr_number)
+               && List.mem due.queue Operation_kind.Human
+                    ~equal:Operation_kind.equal
+         with _ -> false))
+
+let () =
+  QCheck2.Test.check_exn
+    (QCheck2.Test.make
+       ~name:
+         "checkpointed scheduler tickets retain lifecycle and write authority"
+       ~count:100
+       QCheck2.Gen.(int_range 1 10000)
+       (fun pr ->
+         try
+           let scope = Patch_agent.scheduler_scope (ready ~pr_number:pr ()) in
+           let kind = R.Pr_draft in
+           let observed = R.observe R.empty ~now:0. ~scope ~blocked:[ kind ] in
+           let failed = R.failed observed ~now:1. ~scope ~kind in
+           let due =
+             R.observe failed ~now:(R.grace kind +. 1.) ~scope ~blocked:[ kind ]
+           in
+           match R.pending due with
+           | None -> false
+           | Some ticket ->
+               let decoded = R.decode_ticket (R.yojson_of_ticket ticket) in
+               let running = R.claim (R.decode (R.yojson_of_t due)) ticket in
+               let recovered = R.recover running ~running:None in
+               let completed =
+                 R.complete ~now:1000. running ticket ~success:true
+               in
+               let attention =
+                 R.observe completed ~now:10000. ~scope ~blocked:[ kind ]
+               in
+               let resumed = R.resume attention in
+               let resolved = R.resolve resumed kind in
+               Option.equal R.equal_ticket decoded (Some ticket)
+               && R.is_running running ticket
+               && Option.equal R.equal_ticket (R.pending recovered)
+                    (Some ticket)
+               && (not (R.write_allowed due kind))
+               && Option.is_some (R.attention attention)
+               && Option.is_none (R.attention resumed)
+               && R.contains completed kind
+               && (not (R.contains resolved kind))
+               && (not (String.is_empty (R.label kind)))
+               && not (String.is_empty (R.prompt kind))
+         with _ -> false))
