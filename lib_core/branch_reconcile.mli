@@ -18,13 +18,26 @@ module Remote_id : sig
   *)
 end
 
-type materialization = New_branch of Commit.t | Adopted_branch of Commit.t
+type materialization =
+  | New_branch of Commit.t
+      (** Creation evidence without a named base, including legacy receipts. *)
+  | New_branch_from of { base_branch : string; revision : Commit.t }
+  | Adopted_branch of Commit.t
 [@@deriving eq, compare, sexp_of]
 
 type remote_binding [@@deriving eq, compare, sexp_of]
 
 val materialization_head : materialization -> Commit.t
 val materialization_boundary : materialization -> Commit.t option
+
+val name_creation_base :
+  materialization ->
+  base_branch:string ->
+  revision:Commit.t option ->
+  materialization
+(** Bind a new branch's creation receipt to the named base only when its exact
+    creation revision matches the captured start point. Adopted and previously
+    named receipts are unchanged. *)
 
 type policy = Rewrite | Preserve_ancestry [@@deriving eq, compare, sexp_of]
 
@@ -425,6 +438,16 @@ val ancestry_requirements : operation -> Commit.t list
 
 val observation_boundaries : operation -> boundary list
 val materialization : t -> materialization option
+
+val integrated_base : t -> string option
+(** Latest named integration base. Creation alone cannot complete queued
+    integration work. *)
+
+val established_base : t -> string option
+(** Latest named integration base, falling back to the named creation base. This
+    records the base relationship for scheduling, not current ancestry, conflict
+    resolution, or publication authority. *)
+
 val publications : t -> publication_receipt list
 val publication_identity : publication_receipt -> publication_identity
 

@@ -27,14 +27,27 @@ type remote_binding =
   | Reconfirm_remote of Remote_id.t option
 [@@deriving eq, compare, sexp_of, yojson]
 
-type materialization = New_branch of Commit.t | Adopted_branch of Commit.t
+type materialization =
+  | New_branch of Commit.t
+  | New_branch_from of { base_branch : string; revision : Commit.t }
+  | Adopted_branch of Commit.t
 [@@deriving eq, compare, sexp_of, yojson]
 
-let materialization_head = function New_branch sha | Adopted_branch sha -> sha
+let materialization_head = function
+  | New_branch sha | Adopted_branch sha -> sha
+  | New_branch_from { revision; _ } -> revision
 
 let materialization_boundary = function
-  | New_branch sha -> Some sha
+  | New_branch sha | New_branch_from { revision = sha; _ } -> Some sha
   | Adopted_branch _ -> None
+
+let name_creation_base receipt ~base_branch ~revision =
+  match receipt with
+  | New_branch head
+    when (not (String.is_empty base_branch))
+         && Option.equal Commit.equal revision (Some head) ->
+      New_branch_from { base_branch; revision = head }
+  | New_branch _ | New_branch_from _ | Adopted_branch _ -> receipt
 
 type policy = Rewrite | Preserve_ancestry
 [@@deriving eq, compare, sexp_of, yojson]
@@ -446,6 +459,17 @@ let unobserved_publication t =
       not
         (Option.equal equal_publication_identity t.observed_publication
            (Some (publication_identity receipt))))
+
+let integrated_base t =
+  List.find_map t.integrations ~f:(fun receipt -> receipt.capture.base_branch)
+
+let established_base t =
+  match integrated_base t with
+  | Some _ as base -> base
+  | None -> (
+      match t.materialized with
+      | Some (New_branch_from { base_branch; _ }) -> Some base_branch
+      | None | Some (New_branch _ | Adopted_branch _) -> None)
 
 let integrations t = t.integrations
 let remote_integrations t = t.remote_integrations
@@ -3019,7 +3043,12 @@ let decode json =
           || (not (List.for_all t.legacy_revisions ~f:valid_commit))
           || (not
                 (Option.for_all t.materialized ~f:(fun m ->
-                     valid_commit (materialization_head m))))
+                     valid_commit (materialization_head m)
+                     &&
+                     match m with
+                     | New_branch_from { base_branch; _ } ->
+                         not (String.is_empty base_branch)
+                     | New_branch _ | Adopted_branch _ -> true)))
           || (not (Option.for_all t.desired ~f:valid_intent))
           || (not
                 (List.for_all t.publications

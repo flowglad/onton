@@ -90,13 +90,20 @@ module Make (W : Worktree.S) (Env : ENV) : S = struct
         (Orchestrator.agent snap.Runtime.orchestrator patch_id)
           .Patch_agent.branch_reconcile)
 
-  let checkpoint_provenance ~patch_id ~path ~branch =
+  let checkpoint_provenance ?creation_base ~patch_id ~path ~branch () =
     if Option.is_none (Branch_reconcile.materialization (owner_state ~patch_id))
     then
       match W.materialization ~path ~project_name:Env.project_name ~branch with
       | Error message -> raise (Provenance_unavailable message)
       | Ok None -> ()
       | Ok (Some receipt) ->
+          let receipt =
+            match creation_base with
+            | None -> receipt
+            | Some (base_branch, revision) ->
+                Branch_reconcile.name_creation_base receipt ~base_branch
+                  ~revision
+          in
           checkpoint_event ~patch_id (Branch_reconcile.Materialized receipt)
 
   let hook_decision ~patch_id ~path ~branch =
@@ -183,7 +190,7 @@ module Make (W : Worktree.S) (Env : ENV) : S = struct
     | Worktree_hook.Stop reason -> raise (Hook_unavailable reason)
     | Worktree_hook.Ready | Worktree_hook.Run _ -> ());
     if is_ready ~path ~branch:br then (
-      checkpoint_provenance ~patch_id ~path ~branch:br;
+      checkpoint_provenance ~patch_id ~path ~branch:br ();
       ensure_hook ~patch_id ~path ~branch:br;
       Runtime.update_orchestrator runtime (fun orch ->
           Orchestrator.set_worktree_path orch patch_id path);
@@ -215,7 +222,7 @@ module Make (W : Worktree.S) (Env : ENV) : S = struct
       in
       match live_existing with
       | Some existing ->
-          checkpoint_provenance ~patch_id ~path:existing ~branch:br;
+          checkpoint_provenance ~patch_id ~path:existing ~branch:br ();
           ensure_hook ~patch_id ~path:existing ~branch:br;
           log_event runtime ~patch_id
             (Printf.sprintf "Found existing worktree for branch at %s" existing);
@@ -278,8 +285,9 @@ module Make (W : Worktree.S) (Env : ENV) : S = struct
                worktree writes locally first; origin lags until push), so no
                fetch is attempted: {!Start_point_plan.base_start_point} encodes
                the asymmetry, and on fetch/resolve failure it falls back
-               fail-open to the local ref with the freshen-rebase detectors as
-               the backstop, exactly the pre-fetch behavior.
+               to the local ref. The creation receipt records that actual
+               start point; subsequent integration follows the normal rebase
+               and conflict triggers.
 
                This deliberately shares [Env.fetch_mutex] with the branch fetch
                above (and the rest of the runtime's fetch traffic). Git updates
@@ -335,6 +343,15 @@ module Make (W : Worktree.S) (Env : ENV) : S = struct
             log_event runtime ~patch_id
               (Printf.sprintf "Creating worktree at %s" path);
             plan_hook ~patch_id ~path ~branch:br;
+            (* Match the actual creation receipt against this captured start
+               point. A moving ref or a retry using an older pinned intent must
+               not acquire the current base name by assumption. *)
+            let creation_revision =
+              Option.bind
+                (W.read_branch_sha ~path:(W.resolve_main_root ())
+                   ~ref_name:(Start_point_plan.base_start_point_ref start_point))
+                ~f:Branch_reconcile.Commit.make
+            in
             let create_outcome =
               match
                 Eio.Mutex.use_ro worktree_mutex (fun () ->
@@ -382,7 +399,8 @@ module Make (W : Worktree.S) (Env : ENV) : S = struct
                a refusal after provisioning has already succeeded. *)
             match created with
             | true ->
-                checkpoint_provenance ~patch_id ~path ~branch:br;
+                checkpoint_provenance ~creation_base:(base, creation_revision)
+                  ~patch_id ~path ~branch:br ();
                 Runtime.update_orchestrator runtime (fun orch ->
                     Orchestrator.set_worktree_path orch patch_id path);
                 ensure_hook ~patch_id ~path ~branch:br;
@@ -402,7 +420,7 @@ module Make (W : Worktree.S) (Env : ENV) : S = struct
                     match W.find_for_branch br with
                     | Some existing when is_ready ~path:existing ~branch:br ->
                         checkpoint_provenance ~patch_id ~path:existing
-                          ~branch:br;
+                          ~branch:br ();
                         ensure_hook ~patch_id ~path:existing ~branch:br;
                         log_event runtime ~patch_id
                           (Printf.sprintf

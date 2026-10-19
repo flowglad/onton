@@ -361,10 +361,11 @@ val set_notified_base_branch : t -> Types.Branch.t -> t
 (** Record that the agent session has been informed of this base branch. *)
 
 val branch_rebased_onto : t -> Types.Branch.t option
-(** Base of the newest owner integration receipt with base context. Contributor
-    receipts are skipped. This is historical evidence: it does not prove that an
-    externally changed head still includes the base. Start, base retargeting and
-    legacy base-name snapshots cannot manufacture this evidence. *)
+(** Base of the newest owner integration receipt with base context, or the named
+    creation base when no such integration exists. Contributor receipts are
+    skipped. This is historical evidence: it does not prove that an externally
+    changed head still includes the base. Start, base retargeting and legacy
+    base-name snapshots cannot manufacture this evidence. *)
 
 val base_branch_changed : t -> bool
 (** [true] when [base_branch] differs from [notified_base_branch], meaning the
