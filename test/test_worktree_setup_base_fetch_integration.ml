@@ -325,28 +325,27 @@ let run_ensure ?cancel_stage ?materialization_error ?(fail_checkpoint = false)
       | Worktree_setup.Path p ->
           if fail_checkpoint then !check_hook ();
           let original = git_capture ~dir:p [ "rev-parse"; "HEAD" ] in
-          (if not fail_checkpoint then
-             let state =
-               Runtime.read Env.runtime (fun snap ->
-                   (Orchestrator.agent snap.Runtime.orchestrator pid)
-                     .Patch_agent.branch_reconcile)
-             in
-             match Branch_reconcile.materialization state with
-             | Some (Branch_reconcile.New_branch_from { base_branch; revision })
-               ->
-                 assert_string "creation retains semantic base name" base_ref
-                   base_branch;
-                 assert_string "creation retains actual start commit" original
-                   (Branch_reconcile.Commit.to_string revision);
-                 assert_string "creation establishes scheduler base" base_ref
-                   (Option.value
-                      (Branch_reconcile.established_base state)
-                      ~default:"")
-             | Some
-                 ( Branch_reconcile.New_branch _
-                 | Branch_reconcile.Adopted_branch _ )
-             | None ->
-                 failwith "fresh creation omitted its named base");
+          (let state =
+             Runtime.read Env.runtime (fun snap ->
+                 (Orchestrator.agent snap.Runtime.orchestrator pid)
+                   .Patch_agent.branch_reconcile)
+           in
+           match Branch_reconcile.materialization state with
+           | Some (Branch_reconcile.New_branch_from { base_branch; revision })
+             ->
+               assert_string "creation retains semantic base name" base_ref
+                 base_branch;
+               assert_string "creation retains actual start commit" original
+                 (Branch_reconcile.Commit.to_string revision);
+               assert_string "creation establishes scheduler base" base_ref
+                 (Option.value
+                    (Branch_reconcile.established_base state)
+                    ~default:"")
+           | Some
+               ( Branch_reconcile.New_branch _
+               | Branch_reconcile.Adopted_branch _ )
+           | None ->
+               failwith "fresh creation omitted its named base");
           let moved =
             git_capture ~dir:managed_dir
               [

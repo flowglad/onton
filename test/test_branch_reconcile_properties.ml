@@ -4960,6 +4960,55 @@ let creation_base_tests =
         with _ -> false);
     QCheck2.Test.make ~count:200
       ~name:
+        "BR newest unnamed integration overrides creation and older \
+         integration bases"
+      Gen.(pair bool bool)
+      (fun (older_integration, restart) ->
+        try
+          let state =
+            fst
+              (B.step (settled ())
+                 (B.Materialized
+                    (B.New_branch_from
+                       { base_branch = "old-base"; revision = source })))
+          in
+          let replace_field name value = function
+            | `Assoc fields ->
+                `Assoc
+                  (List.map
+                     (fun (key, old) ->
+                       (key, if key = name then value else old))
+                     fields)
+            | _ -> failwith "expected checkpoint object"
+          in
+          let checkpoint = B.yojson_of_t state in
+          let receipt =
+            match Json.field "integrations" checkpoint with
+            | Some (`List [ receipt ]) -> receipt
+            | _ -> failwith "expected named integration receipt"
+          in
+          let capture = Option.get (Json.field "capture" receipt) in
+          let unnamed =
+            replace_field "capture"
+              (replace_field "base_branch" `Null capture)
+              receipt
+          in
+          let receipts =
+            if older_integration then [ unnamed; receipt ] else [ unnamed ]
+          in
+          let state =
+            Result.get_ok
+              (B.decode
+                 (replace_field "integrations" (`List receipts) checkpoint))
+          in
+          let state = if restart then restore state else state in
+          (List.length (B.integrations state)
+          = if older_integration then 2 else 1)
+          && B.integrated_base state = None
+          && B.established_base state = None
+        with _ -> false);
+    QCheck2.Test.make ~count:200
+      ~name:
         "BR publication preserves creation base without integrating newer main"
       Gen.bool (fun restart ->
         try

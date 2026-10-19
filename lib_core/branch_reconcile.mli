@@ -440,13 +440,14 @@ val observation_boundaries : operation -> boundary list
 val materialization : t -> materialization option
 
 val integrated_base : t -> string option
-(** Latest named integration base. Creation alone cannot complete queued
-    integration work. *)
+(** Base of the newest integration receipt, including an unnamed base. Creation
+    alone cannot complete queued integration work. *)
 
 val established_base : t -> string option
-(** Latest named integration base, falling back to the named creation base. This
-    records the base relationship for scheduling, not current ancestry, conflict
-    resolution, or publication authority. *)
+(** Base of the newest integration receipt, falling back to the named creation
+    base only when there are no integration receipts. This records the base
+    relationship for scheduling, not current ancestry, conflict resolution, or
+    publication authority. *)
 
 val publications : t -> publication_receipt list
 val publication_identity : publication_receipt -> publication_identity

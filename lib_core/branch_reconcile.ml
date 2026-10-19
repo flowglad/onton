@@ -461,12 +461,13 @@ let unobserved_publication t =
            (Some (publication_identity receipt))))
 
 let integrated_base t =
-  List.find_map t.integrations ~f:(fun receipt -> receipt.capture.base_branch)
+  Option.bind (List.hd t.integrations) ~f:(fun receipt ->
+      receipt.capture.base_branch)
 
 let established_base t =
-  match integrated_base t with
-  | Some _ as base -> base
-  | None -> (
+  match t.integrations with
+  | receipt :: _ -> receipt.capture.base_branch
+  | [] -> (
       match t.materialized with
       | Some (New_branch_from { base_branch; _ }) -> Some base_branch
       | None | Some (New_branch _ | Adopted_branch _) -> None)
