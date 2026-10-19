@@ -89,13 +89,14 @@ let detect_rebases graph views ~newly_merged =
       | _ -> None)
 
 (** Detect agents whose local branch is rebased onto something other than
-    [base_branch]. [branch_rebased_onto] comes from owner integration receipts.
-    A published branch without such evidence also requires reconciliation. If
-    [base_branch] has since moved — typically because a dep branch was merged
-    and deleted on GitHub, causing GitHub to auto-retarget the PR to [main], and
-    the poller then refreshed [base_branch] to match — the local branch still
-    carries the old dep's commits in its history and needs a rebase even though
-    [base_branch] already equals the structurally-correct base.
+    [base_branch]. [branch_rebased_onto] comes from owner creation or
+    integration receipts. A published branch without such evidence also requires
+    reconciliation. If [base_branch] has since moved — typically because a dep
+    branch was merged and deleted on GitHub, causing GitHub to auto-retarget the
+    PR to [main], and the poller then refreshed [base_branch] to match — the
+    local branch still carries the old dep's commits in its history and needs a
+    rebase even though [base_branch] already equals the structurally-correct
+    base.
 
     This is the case [detect_stale_bases] misses: there, the structural check
     [base_branch vs initial_base] both read [main] and agreed, so no rebase was

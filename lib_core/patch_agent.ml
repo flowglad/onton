@@ -160,10 +160,9 @@ let has_conflict t =
   Branch_reconcile.has_conflict t.branch_reconcile ~scope:(forge_scope t)
 
 let branch_rebased_onto t =
-  List.find_map (Branch_reconcile.integrations t.branch_reconcile)
-    ~f:(fun receipt ->
-      Option.map receipt.Branch_reconcile.capture.base_branch
-        ~f:Branch.of_string)
+  Option.map
+    (Branch_reconcile.established_base t.branch_reconcile)
+    ~f:Branch.of_string
 
 let branch_published t =
   not (List.is_empty (Branch_reconcile.publications t.branch_reconcile))
@@ -1356,9 +1355,10 @@ let reconcile_branch t event =
     if
       obligation_unpublished
       && (not (Branch_reconcile.is_unsettled branch_reconcile))
-      && Option.equal Branch.equal
-           (branch_rebased_onto { t with branch_reconcile })
-           t.base_branch
+      && Option.exists t.base_branch ~f:(fun base ->
+          Option.equal String.equal
+            (Branch_reconcile.integrated_base branch_reconcile)
+            (Some (Branch.to_string base)))
     then
       List.filter t.queue ~f:(fun kind ->
           not (Operation_kind.equal kind Operation_kind.Rebase))

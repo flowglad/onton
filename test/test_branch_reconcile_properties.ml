@@ -4786,9 +4786,269 @@ let[@warning "-4"] trusted_repair_tests =
         with _ -> false);
   ]
 
+let creation_base_tests =
+  let materialization kind =
+    match kind with
+    | 0 -> B.New_branch source
+    | 1 -> B.Adopted_branch source
+    | _ -> B.New_branch_from { base_branch = "original"; revision = source }
+  in
+  [
+    QCheck2.Test.make ~count:500
+      ~name:
+        "BR creation base binding is total and requires the exact start \
+         revision"
+      Gen.(triple string (option bool) (int_range 0 2))
+      (fun (base_branch, same_revision, kind) ->
+        let receipt = materialization kind in
+        let revision =
+          Option.map (fun same -> if same then source else target) same_revision
+        in
+        let named = B.name_creation_base receipt ~base_branch ~revision in
+        let expected =
+          if kind = 0 && base_branch <> "" && same_revision = Some true then
+            B.New_branch_from { base_branch; revision = source }
+          else receipt
+        in
+        B.equal_materialization named expected
+        && B.Commit.equal (B.materialization_head named) source
+        && B.materialization_boundary named = B.materialization_boundary receipt
+        && B.equal_materialization named
+             (B.name_creation_base named ~base_branch:"changed"
+                ~revision:(Some target)));
+    QCheck2.Test.make ~count:200
+      ~name:
+        "BR named creation survives restart and duplicate materialization \
+         without publication authority" Gen.bool (fun restart ->
+        try
+          let receipt =
+            B.New_branch_from { base_branch = "main"; revision = source }
+          in
+          let state, effects = B.step B.empty (B.Materialized receipt) in
+          let state = if restart then restore state else state in
+          let duplicate, duplicate_effects =
+            B.step state
+              (B.Materialized
+                 (B.New_branch_from { base_branch = "other"; revision = target }))
+          in
+          B.established_base state = Some "main"
+          && B.equal state duplicate && effects = [] && duplicate_effects = []
+          && B.integrations state = []
+          && B.publications state = []
+          && B.publication_status state = `Pending
+          && B.pending state = None
+        with _ -> false);
+    QCheck2.Test.make ~count:300
+      ~name:
+        "BR created branches avoid missing-base rebases while adoption legacy \
+         and retargeting still reconcile"
+      Gen.(triple (int_range 0 2) bool bool)
+      (fun (kind, retarget, restart) ->
+        try
+          let receipt =
+            match kind with
+            | 0 -> B.New_branch_from { base_branch = "main"; revision = source }
+            | 1 -> B.Adopted_branch source
+            | _ -> B.New_branch source
+          in
+          let state = fst (B.step B.empty (B.Materialized receipt)) in
+          let state = if restart then restore state else state in
+          let id = Types.Patch_id.of_string "1" in
+          let base_branch =
+            Types.Branch.of_string (if retarget then "other" else "main")
+          in
+          let agent =
+            Patch_agent.create ~branch:(Types.Branch.of_string "patch") id
+          in
+          let agent =
+            fst
+              (Patch_agent.reconcile_branch agent
+                 (B.Materialized (Option.get (B.materialization state))))
+          in
+          let agent = Patch_agent.set_base_branch agent base_branch in
+          let agent =
+            Patch_agent.set_head_oid agent (Some (B.Commit.to_string candidate))
+          in
+          let view =
+            Reconciler.
+              {
+                id;
+                has_pr = true;
+                merged = false;
+                busy = false;
+                needs_intervention = false;
+                branch_blocked = false;
+                in_merge_queue = false;
+                queue = [];
+                base_branch;
+                branch_rebased_onto = Patch_agent.branch_rebased_onto agent;
+                base_contains_merged_siblings = true;
+                sibling_rebase_target = None;
+              }
+          in
+          match Reconciler.detect_notified_base_drift [ view ] with
+          | [] -> kind = 0 && not retarget
+          | [ Reconciler.Enqueue_rebase patch_id ] ->
+              (kind <> 0 || retarget) && Types.Patch_id.equal patch_id id
+          | [ (Reconciler.Mark_merged _ | Reconciler.Start_operation _) ]
+          | _ :: _ :: _ ->
+              false
+        with _ -> false);
+    QCheck2.Test.make ~count:200
+      ~name:
+        "BR publishing a created branch preserves already queued rebase work"
+      Gen.(pair bool bool)
+      (fun (named, base_present) ->
+        try
+          let agent =
+            Patch_agent.create
+              ~branch:(Types.Branch.of_string "patch")
+              (Types.Patch_id.of_string "1")
+          in
+          let agent =
+            if base_present then
+              Patch_agent.set_base_branch agent (Types.Branch.of_string "main")
+            else agent
+          in
+          let step agent event =
+            fst (Patch_agent.reconcile_branch agent event)
+          in
+          let receipt =
+            if named then
+              B.New_branch_from { base_branch = "main"; revision = target }
+            else B.New_branch target
+          in
+          let agent = step agent (B.Materialized receipt) in
+          let agent = Patch_agent.enqueue agent Types.Operation_kind.Rebase in
+          let agent =
+            step agent
+              (B.Request { intent with purpose = B.Publish_revision source })
+          in
+          let reply agent result =
+            let command =
+              Option.get (B.pending agent.Patch_agent.branch_reconcile)
+            in
+            step agent (B.Result { token = command.token; at = 100.; result })
+          in
+          let agent =
+            reply agent
+              (B.Observed
+                 { observation with target = source; target_included = true })
+          in
+          let agent = reply agent B.Pinned in
+          let agent = reply agent B.Published in
+          let agent =
+            reply agent (B.Remote { sha = Some source; topology = Equal })
+          in
+          B.publication_status agent.branch_reconcile = `Published
+          && agent.queue = [ Types.Operation_kind.Rebase ]
+        with _ -> false);
+    QCheck2.Test.make ~count:200
+      ~name:
+        "BR integration base takes precedence over creation base across restart"
+      Gen.bool (fun restart ->
+        try
+          let state =
+            fst
+              (B.step (settled ())
+                 (B.Materialized
+                    (B.New_branch_from
+                       { base_branch = "old-base"; revision = source })))
+          in
+          let state = if restart then restore state else state in
+          B.established_base state = Some "main"
+        with _ -> false);
+    QCheck2.Test.make ~count:200
+      ~name:
+        "BR newest unnamed integration overrides creation and older \
+         integration bases"
+      Gen.(pair bool bool)
+      (fun (older_integration, restart) ->
+        try
+          let state =
+            fst
+              (B.step (settled ())
+                 (B.Materialized
+                    (B.New_branch_from
+                       { base_branch = "old-base"; revision = source })))
+          in
+          let replace_field name value = function
+            | `Assoc fields ->
+                `Assoc
+                  (List.map
+                     (fun (key, old) ->
+                       (key, if key = name then value else old))
+                     fields)
+            | _ -> failwith "expected checkpoint object"
+          in
+          let checkpoint = B.yojson_of_t state in
+          let receipt =
+            match Json.field "integrations" checkpoint with
+            | Some (`List [ receipt ]) -> receipt
+            | _ -> failwith "expected named integration receipt"
+          in
+          let capture = Option.get (Json.field "capture" receipt) in
+          let unnamed =
+            replace_field "capture"
+              (replace_field "base_branch" `Null capture)
+              receipt
+          in
+          let receipts =
+            if older_integration then [ unnamed; receipt ] else [ unnamed ]
+          in
+          let state =
+            Result.get_ok
+              (B.decode
+                 (replace_field "integrations" (`List receipts) checkpoint))
+          in
+          let state = if restart then restore state else state in
+          (List.length (B.integrations state)
+          = if older_integration then 2 else 1)
+          && B.integrated_base state = None
+          && B.established_base state = None
+        with _ -> false);
+    QCheck2.Test.make ~count:200
+      ~name:
+        "BR publication preserves creation base without integrating newer main"
+      Gen.bool (fun restart ->
+        try
+          let state =
+            fst
+              (B.step B.empty
+                 (B.Materialized
+                    (B.New_branch_from
+                       { base_branch = "main"; revision = target })))
+          in
+          let state =
+            fst
+              (B.step state
+                 (B.Request { intent with purpose = B.Publish_revision source }))
+          in
+          let state =
+            fst
+              (reply state
+                 (B.Observed
+                    { observation with target = source; target_included = true }))
+          in
+          let state = fst (reply state B.Pinned) in
+          let command = Option.get (B.pending state) in
+          assert (
+            command.kind
+            = B.Publish { candidate = source; expected = Some source });
+          let state = if restart then restore state else state in
+          let state = fst (reply state B.Published) in
+          let state =
+            fst (reply state (B.Remote { sha = Some source; topology = Equal }))
+          in
+          B.established_base state = Some "main"
+          && B.integrations state = []
+          && B.publication_status state = `Published
+        with _ -> false);
+  ]
+
 let () =
   QCheck_base_runner.run_tests_main
-    (trusted_repair_tests @ tests @ tracking_tests
+    (creation_base_tests @ trusted_repair_tests @ tests @ tracking_tests
    @ publication_observation_tests @ initial_remote_integration_tests
    @ preservation_policy_tests @ preservation_checkpoint_tests
    @ legacy_retention_tests @ m2_upgrade_tests @ forge_history_tests)

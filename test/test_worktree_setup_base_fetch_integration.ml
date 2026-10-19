@@ -325,6 +325,27 @@ let run_ensure ?cancel_stage ?materialization_error ?(fail_checkpoint = false)
       | Worktree_setup.Path p ->
           if fail_checkpoint then !check_hook ();
           let original = git_capture ~dir:p [ "rev-parse"; "HEAD" ] in
+          (let state =
+             Runtime.read Env.runtime (fun snap ->
+                 (Orchestrator.agent snap.Runtime.orchestrator pid)
+                   .Patch_agent.branch_reconcile)
+           in
+           match Branch_reconcile.materialization state with
+           | Some (Branch_reconcile.New_branch_from { base_branch; revision })
+             ->
+               assert_string "creation retains semantic base name" base_ref
+                 base_branch;
+               assert_string "creation retains actual start commit" original
+                 (Branch_reconcile.Commit.to_string revision);
+               assert_string "creation establishes scheduler base" base_ref
+                 (Option.value
+                    (Branch_reconcile.established_base state)
+                    ~default:"")
+           | Some
+               ( Branch_reconcile.New_branch _
+               | Branch_reconcile.Adopted_branch _ )
+           | None ->
+               failwith "fresh creation omitted its named base");
           let moved =
             git_capture ~dir:managed_dir
               [
@@ -475,9 +496,8 @@ let scenario_dep_base_local_canonical env =
     local_dep_tip head;
   Stdlib.print_endline "  dep_base_local_canonical: OK"
 
-(** Origin is unreachable: the main-base fetch fails and the cut proceeds
-    fail-open from the local main ref (the pre-fetch behavior, with the
-    freshen-rebase detectors as backstop). *)
+(** Origin is unreachable: the main-base fetch fails and the cut proceeds from
+    the local main ref and records that actual creation revision. *)
 let scenario_fetch_failure_falls_back env =
   with_temp_dir @@ fun root ->
   let origin_dir = Stdlib.Filename.concat root "origin" in
@@ -1327,7 +1347,7 @@ let scenario_adopted_publication env policy history =
   | Some (B.Adopted_branch head)
     when String.equal (B.Commit.to_string head) local ->
       ()
-  | Some (B.Adopted_branch _ | B.New_branch _) | None ->
+  | Some (B.Adopted_branch _ | B.New_branch _ | B.New_branch_from _) | None ->
       failwith "adoption fabricated a replay boundary");
   if not (List.is_empty (B.publications (state ()))) then
     failwith "provisioning granted publication authority";
@@ -1498,7 +1518,11 @@ let scenario_receipt_recovery env =
       assert_string "recovered new-branch boundary"
         (git_capture ~dir:wt [ "rev-parse"; "HEAD" ])
         (Branch_reconcile.Commit.to_string head)
-  | Ok (Some (Branch_reconcile.Adopted_branch _)) | Ok None | Error _ ->
+  | Ok
+      (Some
+         (Branch_reconcile.Adopted_branch _ | Branch_reconcile.New_branch_from _))
+  | Ok None
+  | Error _ ->
       failwith "creation intent did not recover its receipt");
   Stdlib.print_endline "  receipt_recovery: OK"
 
