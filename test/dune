@@ -896,6 +896,83 @@
    (run %{test}))))
 
 (test
+ (name test_branch_reconcile_git_transport)
+ (modules test_branch_reconcile_git_transport)
+ (flags (:standard -w -40-42))
+ (libraries onton onton_core onton_test_support eio_main unix)
+ (deps (package onton))
+ (action
+  (setenv ONTON_SETSID_EXEC
+   %{bin:onton-setsid-exec}
+   (run %{test}))))
+
+(test
+ (name test_branch_reconcile_git_capture)
+ (modules test_branch_reconcile_git_capture)
+ (flags (:standard -w -40-42))
+ (libraries onton onton_core onton_test_support eio_main unix)
+ (deps (package onton))
+ (action
+  (setenv ONTON_SETSID_EXEC
+   %{bin:onton-setsid-exec}
+   (run %{test}))))
+
+(test
+ (name test_branch_reconcile_git_interruptions)
+ (modules test_branch_reconcile_git_interruptions)
+ (flags (:standard -w -40-42))
+ (libraries onton onton_core onton_test_support eio_main unix)
+ (deps (package onton))
+ (action
+  (setenv ONTON_SETSID_EXEC
+   %{bin:onton-setsid-exec}
+   (run %{test}))))
+
+(test
+ (name test_branch_reconcile_git_ancestry)
+ (modules test_branch_reconcile_git_ancestry)
+ (flags (:standard -w -40-42))
+ (libraries onton onton_core onton_test_support eio_main unix)
+ (deps (package onton))
+ (action
+  (setenv ONTON_SETSID_EXEC
+   %{bin:onton-setsid-exec}
+   (run %{test}))))
+
+(test
+ (name test_branch_reconcile_git_publication)
+ (modules test_branch_reconcile_git_publication)
+ (flags (:standard -w -40-42))
+ (libraries onton onton_core onton_test_support eio_main unix)
+ (deps (package onton))
+ (action
+  (setenv ONTON_SETSID_EXEC
+   %{bin:onton-setsid-exec}
+   (run %{test}))))
+
+(test
+ (name test_branch_reconcile_git_repair)
+ (modules test_branch_reconcile_git_repair)
+ (flags (:standard -w -40-42))
+ (libraries onton onton_core onton_test_support eio_main unix)
+ (deps (package onton))
+ (action
+  (setenv ONTON_SETSID_EXEC
+   %{bin:onton-setsid-exec}
+   (run %{test}))))
+
+(test
+ (name test_branch_reconcile_git_checkpoint)
+ (modules test_branch_reconcile_git_checkpoint)
+ (flags (:standard -w -40-42))
+ (libraries onton onton_core onton_test_support eio_main unix)
+ (deps (package onton))
+ (action
+  (setenv ONTON_SETSID_EXEC
+   %{bin:onton-setsid-exec}
+   (run %{test}))))
+
+(test
  (name test_branch_remote_entrypoints)
  (modules test_branch_remote_entrypoints)
  (flags (:standard -w -40-42))

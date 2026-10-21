@@ -19,13 +19,16 @@ let raw_reflog entries = String.concat ~sep:"\n" entries ^ "\n"
 let nul_paths paths =
   if List.is_empty paths then "" else String.concat ~sep:"\000" paths ^ "\000"
 
+(* Bound both dimensions: [list string] multiplies two heavy-tailed size
+   distributions and spends minutes allocating shrink trees. Large collections
+   and long paths have separate deterministic coverage below. *)
 let paths_gen =
   Gen.(
-    list
+    list_size (int_range 0 30)
       (map
          (fun s ->
            "path" ^ String.filter s ~f:(fun c -> not (Char.equal c '\000')))
-         string))
+         (string_size (int_range 0 80))))
 
 type operation =
   | Rebase
@@ -247,6 +250,20 @@ let properties =
              ~local_deleted_paths:
                (if local_deletes then nul_paths paths else ""))
           (target_deletes && local_deletes));
+    Test.make ~name:"large path collections and long paths preserve semantics"
+      ~count:1 Gen.unit (fun () ->
+        let check paths =
+          let encoded = nul_paths paths in
+          Rewrite_lineage.changes_preserved ~remote_changed_paths:encoded
+            ~local_changed_paths:encoded ~target_deleted_paths:encoded
+            ~local_deleted_paths:encoded
+          && not
+               (Rewrite_lineage.changes_preserved ~remote_changed_paths:encoded
+                  ~local_changed_paths:encoded ~target_deleted_paths:encoded
+                  ~local_deleted_paths:"")
+        in
+        check (List.init 1000 ~f:(fun i -> Printf.sprintf "path/%d" i))
+        && check [ String.make 10000 'x' ]);
     Test.make ~name:"malformed path lists fail closed" ~count:1 Gen.unit
       (fun () ->
         List.for_all [ "path"; "\000"; "path\000\000" ] ~f:(fun malformed ->

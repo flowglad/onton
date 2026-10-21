@@ -587,6 +587,27 @@ dune exec bin/main.exe -- --gameplan path/to/gameplan.yaml
 dune fmt            # auto-format via ocamlformat
 ```
 
+Git/checkpoint acceptance tests are split across `test_branch_reconcile_git`
+and the `_transport`, `_capture`, `_interruptions`, `_ancestry`, `_publication`,
+`_repair`, and `_checkpoint` executables. Each suite and matrix case prints
+`[start]`, `[pass]`, or `[fail]` with elapsed seconds, so slow or failed cases can
+be identified without rerunning the entire suite. All existing matrix cases are
+retained; the interruption suite deliberately exercises every checkpoint cut.
+
+`dune runtest` selects the freshly built process supervisor automatically. When
+running a Git acceptance executable directly, select that supervisor explicitly
+rather than an older installed `onton-setsid-exec`:
+
+```sh
+dune build bin/setsid_exec/main.exe
+ONTON_SETSID_EXEC="$PWD/_build/default/bin/setsid_exec/main.exe" \
+  dune exec test/test_push_timeout_integration.exe
+```
+
+Property generators should bound nested collection and string sizes. Keep
+large-input coverage in explicit, bounded cases rather than multiplying default
+QCheck list/string size distributions.
+
 Local builds report `dev`. The release workflow writes its triggering tag into
 the static version module before compiling.
 
