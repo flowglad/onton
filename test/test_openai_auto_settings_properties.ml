@@ -15,7 +15,8 @@ let ladder =
       option (oneof [ int; oneof_list [ 1; 2; 3; 0; -1; min_int; max_int ] ]))
     (fun complexity ->
       let model, effort = expected complexity in
-      Openai_auto_settings.auto_model ~complexity = Some model
+      Openai_auto_settings.settings ~complexity = (model, effort)
+      && Openai_auto_settings.auto_model ~complexity = Some model
       && Openai_auto_settings.auto_effort ~complexity = Some effort)
 
 let backend_agreement =
