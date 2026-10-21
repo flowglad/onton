@@ -51,11 +51,12 @@ let plain_lines frame =
   |> List.map ~f:Onton.Term.strip_ansi
 
 let render ?(width = 80) ?(height = 24) ?(view_mode = Tui.List_view)
-    ?(activity = []) ?(project_name = "demo") ?(backend_name = "claude") views =
+    ?show_activity ?(activity = []) ?(project_name = "demo")
+    ?(backend_name = "claude") views =
   Tui.render_frame ~width ~height ~selected:0 ~scroll_offset:0 ~view_mode
     ~activity ~project_name ~backend_name ~version:"test-version"
     ~show_help:false ~show_checks:false ~checks_scroll:0 ~show_manage:false
-    ~now:0.0 views
+    ~now:0.0 ?show_activity views
 
 let one_view = [ make_view ~id:"1" ~title:"first patch" ]
 
@@ -126,8 +127,59 @@ let test_no_summary_row () =
   assert (not (line_contains lines "merged │"));
   assert (not (line_contains lines "1/1 merged"))
 
+let test_activity_hidden_at_startup () =
+  let state = Tui_state.create () in
+  assert (not !(state.show_activity));
+  let frame = render ~activity:four_activity_entries one_view in
+  let lines = plain_lines frame in
+  assert (not (line_contains lines "Activity"));
+  assert (not (line_contains lines "event 0"));
+  assert (line_contains lines "a:activity");
+  let hidden =
+    render ~show_activity:false ~activity:four_activity_entries one_view
+  in
+  assert (String.equal (Tui.frame_to_string hidden) (Tui.frame_to_string frame))
+
+let test_activity_multiline_entries_fit_rows () =
+  let activity =
+    [
+      Tui.Event
+        {
+          patch_id = Some "1";
+          message = "first line\nsecond line\r\ntab\t" ^ String.make 500 'x';
+          timestamp = 0.0;
+        };
+      Tui.Transition
+        {
+          patch_id = "1";
+          from_label = "pending";
+          to_status = Tui.Pending;
+          to_label = "pending";
+          action = "first line\n" ^ String.make 500 'x';
+          timestamp = 0.0;
+        };
+    ]
+  in
+  let lines =
+    render ~width:60 ~show_activity:true ~activity one_view |> plain_lines
+  in
+  let rows =
+    List.filter lines ~f:(fun line ->
+        String.is_substring line ~substring:"first line")
+  in
+  assert (List.length rows = 2);
+  assert (
+    List.for_all rows ~f:(fun row ->
+        Onton.Term.visible_length row < 60
+        && (not (String.contains row '\r'))
+        && not (String.contains row '\t')));
+  assert (List.length lines <= 24)
+
 let test_list_view_shows_activity_when_room () =
-  let frame = render ~height:24 ~activity:four_activity_entries one_view in
+  let frame =
+    render ~show_activity:true ~height:24 ~activity:four_activity_entries
+      one_view
+  in
   let lines = plain_lines frame in
   assert (line_contains lines "Activity");
   assert (line_contains lines "event 0");
@@ -136,7 +188,10 @@ let test_list_view_shows_activity_when_room () =
 let test_list_view_collapses_activity_when_tight () =
   (* Height that fits header + some patch rows + footer but not the full
      activity block. Activity must collapse, patches must remain. *)
-  let frame = render ~height:12 ~activity:four_activity_entries many_views in
+  let frame =
+    render ~show_activity:true ~height:12 ~activity:four_activity_entries
+      many_views
+  in
   let lines = plain_lines frame in
   assert (line_contains lines "Patches");
   assert (Tui.patch_count frame >= 1);
@@ -147,7 +202,10 @@ let test_list_view_collapses_activity_when_tight () =
 let test_list_view_patches_survive_activity_at_short_height () =
   (* The patch block must keep at least one row at a typical short tmux
      pane height; activity must be the first thing to disappear. *)
-  let frame = render ~height:14 ~activity:four_activity_entries many_views in
+  let frame =
+    render ~show_activity:true ~height:14 ~activity:four_activity_entries
+      many_views
+  in
   assert (Tui.patch_count frame >= 1);
   let lines = plain_lines frame in
   assert (not (line_contains lines "event 0"))
@@ -155,7 +213,10 @@ let test_list_view_patches_survive_activity_at_short_height () =
 let test_list_view_activity_squeezed_partial () =
   (* At a height where activity barely fits, it should be truncated rather
      than steal from patches. *)
-  let frame = render ~height:18 ~activity:four_activity_entries many_views in
+  let frame =
+    render ~show_activity:true ~height:18 ~activity:four_activity_entries
+      many_views
+  in
   assert (Tui.patch_count frame >= 1);
   let lines = plain_lines frame in
   (* Activity is partially visible: at least one entry shown but not all
@@ -194,7 +255,9 @@ let test_timeline_view_no_summary () =
   assert (line_contains lines "something happened")
 
 let test_patches_render_above_activity () =
-  let frame = render ~activity:one_activity_entry many_views in
+  let frame =
+    render ~show_activity:true ~activity:one_activity_entry many_views
+  in
   let lines = plain_lines frame in
   let patches_idx =
     find_index lines ~f:(String.is_substring ~substring:"Patches")
@@ -347,6 +410,8 @@ let () =
   test_header_has_project_and_backend ();
   test_header_truncates_when_too_narrow ();
   test_no_summary_row ();
+  test_activity_hidden_at_startup ();
+  test_activity_multiline_entries_fit_rows ();
   test_list_view_shows_activity_when_room ();
   test_list_view_collapses_activity_when_tight ();
   test_list_view_patches_survive_activity_at_short_height ();

@@ -34,6 +34,11 @@ let () =
   (* All keys that should be Help *)
   assert (Tui_input.equal_command (Tui_input.of_key (Term_key.Char 'h')) Help);
   assert (Tui_input.equal_command (Tui_input.of_key (Term_key.Char '?')) Help);
+  assert (
+    Tui_input.equal_command
+      (Tui_input.of_key (Term_key.Char 'a'))
+      Toggle_activity);
+  assert (Tui_input.apply_move ~count ~selected:5 Toggle_activity = 5);
   (* Non-navigation commands don't change selection *)
   let s = Tui_input.apply_move ~count ~selected:5 Tui_input.Noop in
   assert (s = 5);
@@ -49,6 +54,7 @@ let () =
         Tui_input.Scroll_top;
         Tui_input.Scroll_bottom;
         Tui_input.Noop;
+        Tui_input.Toggle_activity;
       ]
   in
   let selection_stays_in_valid_range =

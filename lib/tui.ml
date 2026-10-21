@@ -782,7 +782,7 @@ let format_activity_ts ts =
       Printf.sprintf "%02d:%02d:%02d" tm.Unix.tm_hour tm.Unix.tm_min
         tm.Unix.tm_sec
 
-let render_activity (entries : activity_entry list) =
+let render_activity ~width (entries : activity_entry list) =
   if List.is_empty entries then []
   else
     let header = Term.styled [ Term.Sgr.bold ] " Activity" in
@@ -809,7 +809,11 @@ let render_activity (entries : activity_entry list) =
                 prefix
                 (Term.styled [ Term.Sgr.dim ] message))
     in
-    header :: lines
+    header
+    :: List.map lines ~f:(fun line ->
+        line
+        |> String.map ~f:(function '\n' | '\r' | '\t' -> ' ' | c -> c)
+        |> Term.fit_width (Int.max 0 (width - 1)))
 
 (** Deduplicate CI checks by name, keeping the most recent result by
     [started_at]. ISO 8601 timestamps sort lexicographically. Original
@@ -1168,8 +1172,8 @@ let render_footer ~width ~view_mode ?prompt_line () =
         match view_mode with
         | List_view ->
             Term.styled [ Term.Sgr.dim ]
-              " q:quit  ↑/↓:navigate  enter:detail  +:add change  w:worktree  \
-               -:remove  m:manage  o:open browser  h:help"
+              " q:quit  ↑/↓:navigate  enter:detail  a:activity  +:add change  \
+               w:worktree  -:remove  m:manage  o:open browser  h:help"
         | Detail_view _ ->
             Term.styled [ Term.Sgr.dim ]
               " q:quit  esc/backspace:back  enter:message  c:checks  m:manage  \
@@ -1206,6 +1210,7 @@ let render_help_overlay ~width ~height ~version =
           "-/x       Remove selected patch";
           "m         Manage patch";
           "o         Open change in browser";
+          "a         Toggle activity (hidden at startup)";
           "t         Toggle timeline";
           "q         Quit";
         ] );
@@ -1505,8 +1510,9 @@ let views_of_orchestrator ~(orchestrator : Orchestrator.t)
 
 let render_frame ~width ~height ~selected ~scroll_offset ~view_mode
     ~(activity : activity_entry list) ~project_name ~backend_name ~version
-    ~show_help ~show_checks ~checks_scroll ~show_manage ~now ?(transcript = "")
-    ?status_msg ?prompt_line ?dep_select (views : patch_view list) =
+    ~show_help ~show_checks ~checks_scroll ~show_manage ~now
+    ?(show_activity = false) ?(transcript = "") ?status_msg ?prompt_line
+    ?dep_select (views : patch_view list) =
   let views = sort_views views in
   let no_patches =
     {
@@ -1678,9 +1684,12 @@ let render_frame ~width ~height ~selected ~scroll_offset ~view_mode
               height - lines_before_activity - lines_after_activity
             in
             let activity_lines =
-              if List.is_empty activity || activity_budget < 3 then []
+              if
+                (not show_activity) || List.is_empty activity
+                || activity_budget < 3
+              then []
               else
-                let raw = render_activity activity in
+                let raw = render_activity ~width activity in
                 let max_raw = activity_budget - 1 in
                 "" :: List.take raw (Int.min (List.length raw) max_raw)
             in
