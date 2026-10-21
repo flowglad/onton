@@ -16,8 +16,10 @@ let is_auto_model = function
 let effort_is_supported = Repo_config.effort_is_supported
 
 let auto_effort ~backend ~model ~complexity =
-  if String.equal backend "codex" && is_auto_model model then
-    Codex_event_parser.auto_effort ~complexity
+  if
+    (String.equal backend "codex" || String.equal backend "pi")
+    && is_auto_model model
+  then Openai_auto_settings.auto_effort ~complexity
   else None
 
 let inherited_effort ~backend ~model ~complexity ~default_effort =
@@ -139,7 +141,7 @@ let%test "resolve_auto: leaves None unchanged" =
   let out = resolve_auto dec ~auto_model ~complexity:(Some 2) in
   Option.is_none out.model
 
-let%test "Codex auto routes select Sol with tier-specific effort" =
+let%test "Codex auto routes select Luna/Sol with tier-specific effort" =
   let decide complexity =
     decide ~repo_config:Repo_config.empty ~default_backend:"codex"
       ~effective_model:(Some "auto") ~complexity
@@ -149,11 +151,11 @@ let%test "Codex auto routes select Sol with tier-specific effort" =
   let tier2 = decide (Some 2) in
   let tier3 = decide (Some 3) in
   let fallback = decide None in
-  Option.equal String.equal tier2.model (Some "gpt-6-sol")
-  && Option.equal String.equal tier2.effort (Some "low")
-  && Option.equal String.equal tier3.model (Some "gpt-6-sol")
+  Option.equal String.equal tier2.model (Some "gpt-6-luna")
+  && Option.equal String.equal tier2.effort (Some "xhigh")
+  && Option.equal String.equal tier3.model (Some "gpt-6.1-sol")
   && Option.equal String.equal tier3.effort (Some "medium")
-  && Option.equal String.equal fallback.model (Some "gpt-6-sol")
+  && Option.equal String.equal fallback.model (Some "gpt-6.1-sol")
   && Option.equal String.equal fallback.effort (Some "medium")
 
 let%test "Codex auto effort respects configured and route overrides" =

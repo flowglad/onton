@@ -133,16 +133,8 @@ let parse_event (line : string) : Types.Stream_event.t list =
     (parse_event_with_cost_tracking ~model:None ~budget_cap_nano_usd:None
        ~cost_state:Codex_cost.initial_cost_state line)
 
-type auto_settings = { model : string; effort : string option }
-
-let auto_settings ~complexity =
-  match complexity with
-  | Some 1 -> { model = "gpt-6-luna"; effort = None }
-  | Some 2 -> { model = "gpt-6-sol"; effort = Some "low" }
-  | Some _ | None -> { model = "gpt-6-sol"; effort = Some "medium" }
-
-let auto_model ~complexity = Some (auto_settings ~complexity).model
-let auto_effort ~complexity = (auto_settings ~complexity).effort
+let auto_model = Openai_auto_settings.auto_model
+let auto_effort = Openai_auto_settings.auto_effort
 
 let%test "build_args fresh (no resume, no model)" =
   let args =

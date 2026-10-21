@@ -44,16 +44,14 @@ let codex_auto_settings_select_tier =
     ~count:200
     QCheck2.Gen.(option (int_range (-5) 10))
     (fun complexity ->
-      let open Codex_event_parser in
-      let settings = Codex_event_parser.auto_settings ~complexity in
+      let model = Codex_event_parser.auto_model ~complexity in
       let expected_model, expected_effort =
         match complexity with
-        | Some 1 -> ("gpt-6-luna", None)
-        | Some 2 -> ("gpt-6-sol", Some "low")
-        | Some _ | None -> ("gpt-6-sol", Some "medium")
+        | Some 1 -> ("gpt-6-luna", Some "medium")
+        | Some 2 -> ("gpt-6-luna", Some "xhigh")
+        | Some _ | None -> ("gpt-6.1-sol", Some "medium")
       in
-      String.equal settings.model expected_model
-      && Option.equal String.equal settings.effort expected_effort
+      Option.equal String.equal model (Some expected_model)
       && Option.equal String.equal
            (Codex_event_parser.auto_effort ~complexity)
            expected_effort)

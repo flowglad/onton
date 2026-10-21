@@ -289,6 +289,11 @@
  (libraries onton_core qcheck-core))
 
 (test
+ (name test_openai_auto_settings_properties)
+ (modules test_openai_auto_settings_properties)
+ (libraries onton_core qcheck-core))
+
+(test
  (name test_pi_event_parser_properties)
  (modules test_pi_event_parser_properties)
  (libraries onton_core qcheck-core))

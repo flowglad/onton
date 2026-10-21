@@ -44,6 +44,7 @@ let effort_support =
   [
     ("codex", [ "minimal"; "low"; "medium"; "high"; "xhigh" ]);
     ("claude", [ "low"; "medium"; "high"; "xhigh"; "max" ]);
+    ("pi", [ "off"; "minimal"; "low"; "medium"; "high"; "xhigh"; "max" ]);
   ]
 
 let supported_efforts ~backend =

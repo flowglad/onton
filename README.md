@@ -839,8 +839,10 @@ different levels in one invocation: `onton --model auto +123:2 +456:3`.
 inherits `default.effort`; the literal `"default"` explicitly lets the selected
 model use its provider default. Codex supports `minimal`, `low`, `medium`,
 `high`, and `xhigh`; Claude supports `low`, `medium`, `high`, `xhigh`, and
-`max`. Onton rejects effort overrides for other backends and values unsupported
-by the selected provider.
+`max`. Pi supports `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, and
+`max`, forwarded as `--thinking` (Pi clamps the level to the selected model's
+capabilities). Onton rejects effort overrides for other backends and values
+unsupported by the selected backend.
 
 Top-level `extras` is an optional object for additional backend configuration.
 Onton flattens nested keys into `key=value` entries. Codex passes each entry as
@@ -852,11 +854,16 @@ segments containing characters other than letters, digits, underscores, and
 hyphens are rejected. Use `default.effort` or route effort instead of
 `extras.model_reasoning_effort`.
 
-For Codex, the built-in ladder maps complexity 1 to `gpt-6-luna` with the
-provider's default effort, complexity 2 to `gpt-6-sol` with `low` effort, and
-complexity 3 to `gpt-6-sol` with `medium` effort. Missing or out-of-range
-complexity selects Sol with `medium` effort. An explicit `default.effort` or
-route effort overrides the built-in effort.
+For Codex and Pi, `--model auto` uses the same built-in ladder:
+
+| Complexity | Model | Effort |
+|------------|-------|--------|
+| 1 | `gpt-6-luna` | `medium` |
+| 2 | `gpt-6-luna` | `xhigh` |
+| 3, missing, or out of range | `gpt-6.1-sol` | `medium` |
+
+An explicit `default.effort` or route effort overrides the built-in effort.
+Configured complexity routes still take precedence over the built-in ladder.
 
 ### Supported models
 
@@ -869,7 +876,7 @@ need reproducibility. The names below are accurate as of September 2026 —
 | Backend | Common model names | Source of truth |
 |---------|-------------------|-----------------|
 | `claude` | `opus`, `sonnet`, `haiku` (unpinned aliases); `claude-opus-4-7`, `claude-sonnet-4-6`, `claude-haiku-4-5` (pinned) | [Anthropic models](https://docs.anthropic.com/en/docs/about-claude/models) |
-| `codex` | `gpt-6-luna`, `gpt-6-sol`; `gpt-5.6-terra` remains available when explicitly selected | [OpenAI models](https://developers.openai.com/api/docs/models), [Codex CLI README](https://github.com/openai/codex) |
+| `codex` | `gpt-6-luna`, `gpt-6.1-sol`; `gpt-5.6-terra` remains available when explicitly selected | [OpenAI models](https://developers.openai.com/api/docs/models), [Codex CLI README](https://github.com/openai/codex) |
 | `gemini` | `gemini-2.5-pro`, `gemini-2.5-flash` | [Gemini API models](https://ai.google.dev/gemini-api/docs/models) |
 | `opencode` | Provider-prefixed, e.g. `anthropic/claude-sonnet-4-5`, `openai/gpt-5` | [OpenCode docs](https://opencode.ai/docs) |
 | `pi` | Run `pi --help` for the current list | Pi CLI |
