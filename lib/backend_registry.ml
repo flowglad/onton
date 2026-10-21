@@ -42,7 +42,8 @@ let make_factory ~(process_mgr : Eio_unix.Process.mgr_ty Eio.Resource.t) ~clock
         ~setsid_exec
   | "opencode" ->
       Opencode_backend.create ~model ~process_mgr ~clock ~timeout ~setsid_exec
-  | "pi" -> Pi_backend.create ~model ~process_mgr ~clock ~timeout ~setsid_exec
+  | "pi" ->
+      Pi_backend.create ~model ~effort ~process_mgr ~clock ~timeout ~setsid_exec
   | "gemini" ->
       Gemini_backend.create ~model ~process_mgr ~clock ~timeout ~setsid_exec
   | other ->

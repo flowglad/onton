@@ -6,7 +6,7 @@ open Base
 (** Pure NDJSON event parser + CLI-arg builder for [pi --mode json]. The
     effectful streaming driver lives in [Pi_backend.run_streaming]. *)
 
-let build_args ~model ~cwd_path ~patch_id ~prompt ~resume_session =
+let build_args ~model ~effort ~cwd_path ~patch_id ~prompt ~resume_session =
   let session_dir = cwd_path ^ "/.pi-sessions/" ^ patch_id in
   let base = [ "pi"; "-p"; prompt; "--mode"; "json" ] in
   let model_args =
@@ -19,8 +19,11 @@ let build_args ~model ~cwd_path ~patch_id ~prompt ~resume_session =
     | Some session_id -> [ "--resume"; session_id ]
     | None -> []
   in
+  let effort_args =
+    match effort with Some level -> [ "--thinking"; level ] | None -> []
+  in
   let session_args = [ "--session-dir"; session_dir ] in
-  base @ model_args @ resume_args @ session_args
+  base @ model_args @ effort_args @ resume_args @ session_args
 
 let parse_event (line : string) : Types.Stream_event.t list =
   match Yojson.Safe.from_string line with
@@ -59,14 +62,13 @@ let parse_event (line : string) : Types.Stream_event.t list =
           ]
       | _ -> [])
 
-let auto_model ~complexity =
-  ignore complexity;
-  None
+let auto_model = Openai_auto_settings.auto_model
+let auto_effort = Openai_auto_settings.auto_effort
 
 let%test "build_args without continue (no model)" =
   let args =
-    build_args ~model:None ~cwd_path:"/tmp/work" ~patch_id:"patch-1"
-      ~prompt:"do stuff" ~resume_session:None
+    build_args ~model:None ~effort:None ~cwd_path:"/tmp/work"
+      ~patch_id:"patch-1" ~prompt:"do stuff" ~resume_session:None
   in
   List.equal String.equal args
     [
@@ -81,8 +83,8 @@ let%test "build_args without continue (no model)" =
 
 let%test "build_args with model" =
   let args =
-    build_args ~model:(Some "pi-3") ~cwd_path:"/tmp/work" ~patch_id:"patch-1"
-      ~prompt:"do stuff" ~resume_session:None
+    build_args ~model:(Some "pi-3") ~effort:None ~cwd_path:"/tmp/work"
+      ~patch_id:"patch-1" ~prompt:"do stuff" ~resume_session:None
   in
   List.equal String.equal args
     [
@@ -99,8 +101,8 @@ let%test "build_args with model" =
 
 let%test "build_args with continue" =
   let args =
-    build_args ~model:None ~cwd_path:"/tmp/work" ~patch_id:"patch-1"
-      ~prompt:"do stuff" ~resume_session:(Some "x")
+    build_args ~model:None ~effort:None ~cwd_path:"/tmp/work"
+      ~patch_id:"patch-1" ~prompt:"do stuff" ~resume_session:(Some "x")
   in
   List.equal String.equal args
     [

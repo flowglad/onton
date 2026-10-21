@@ -45,9 +45,9 @@ val decide :
       complexity): result is
       [{ backend = default_backend; model = Some "auto"; effort = ... }]. The
       downstream backend will see [Some "auto"] and apply its own hardcoded
-      model ladder via [Llm_backend.resolve_auto_model]. For Codex, the decision
-      also supplies its built-in tier effort unless [default.effort] overrides
-      it.
+      model ladder via [Llm_backend.resolve_auto_model]. For Codex and Pi, the
+      decision also supplies its built-in tier effort unless [default.effort]
+      overrides it.
 
     The function never raises and is total over all inputs. *)
 
@@ -79,8 +79,8 @@ val is_auto_model : string option -> bool
 
 val effort_is_supported : backend:string -> string -> bool
 (** Whether [backend] supports the concrete reasoning-effort value. Only the
-    native Claude and Codex backends accept effort overrides; unsupported
-    backends and unknown levels return [false]. *)
+    Claude, Codex, and Pi backends accept effort overrides; unsupported backends
+    and unknown levels return [false]. *)
 
 type unsupported_effort = {
   unsupported_backend : string;

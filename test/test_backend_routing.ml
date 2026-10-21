@@ -150,7 +150,7 @@ let effort_support_matches_provider_contract =
         [
           pair string string;
           pair
-            (oneof_list [ "codex"; "claude"; "gemini" ])
+            (oneof_list [ "codex"; "claude"; "pi"; "gemini" ])
             (oneof_list
                [
                  "minimal";
@@ -173,6 +173,10 @@ let effort_support_matches_provider_contract =
         | "codex" ->
             List.mem
               [ "minimal"; "low"; "medium"; "high"; "xhigh" ]
+              effort ~equal:String.equal
+        | "pi" ->
+            List.mem
+              [ "off"; "minimal"; "low"; "medium"; "high"; "xhigh"; "max" ]
               effort ~equal:String.equal
         | "claude" ->
             List.mem
@@ -203,9 +207,9 @@ let codex_auto_tiers_pass_model_and_effort_to_cli =
       let tier3 = args (Some 3) in
       let fallback = args None in
       List.mem tier1 "gpt-6-luna" ~equal:String.equal
-      && (not (List.mem tier1 "-c" ~equal:String.equal))
-      && List.mem tier2 "gpt-6-sol" ~equal:String.equal
-      && List.mem tier2 "model_reasoning_effort=\"low\"" ~equal:String.equal
+      && List.mem tier1 "model_reasoning_effort=\"medium\"" ~equal:String.equal
+      && List.mem tier2 "gpt-6-luna" ~equal:String.equal
+      && List.mem tier2 "model_reasoning_effort=\"xhigh\"" ~equal:String.equal
       && List.mem tier3 "gpt-6-sol" ~equal:String.equal
       && List.mem tier3 "model_reasoning_effort=\"medium\"" ~equal:String.equal
       && List.mem fallback "gpt-6-sol" ~equal:String.equal

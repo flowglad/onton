@@ -587,6 +587,27 @@ dune exec bin/main.exe -- --gameplan path/to/gameplan.yaml
 dune fmt            # auto-format via ocamlformat
 ```
 
+Git/checkpoint acceptance tests are split across `test_branch_reconcile_git`
+and the `_transport`, `_capture`, `_interruptions`, `_ancestry`, `_publication`,
+`_repair`, and `_checkpoint` executables. Each suite and matrix case prints
+`[start]`, `[pass]`, or `[fail]` with elapsed seconds, so slow or failed cases can
+be identified without rerunning the entire suite. All existing matrix cases are
+retained; the interruption suite deliberately exercises every checkpoint cut.
+
+`dune runtest` selects the freshly built process supervisor automatically. When
+running a Git acceptance executable directly, select that supervisor explicitly
+rather than an older installed `onton-setsid-exec`:
+
+```sh
+dune build bin/setsid_exec/main.exe
+ONTON_SETSID_EXEC="$PWD/_build/default/bin/setsid_exec/main.exe" \
+  dune exec test/test_push_timeout_integration.exe
+```
+
+Property generators should bound nested collection and string sizes. Keep
+large-input coverage in explicit, bounded cases rather than multiplying default
+QCheck list/string size distributions.
+
 Local builds report `dev`. The release workflow writes its triggering tag into
 the static version module before compiling.
 
@@ -839,8 +860,10 @@ different levels in one invocation: `onton --model auto +123:2 +456:3`.
 inherits `default.effort`; the literal `"default"` explicitly lets the selected
 model use its provider default. Codex supports `minimal`, `low`, `medium`,
 `high`, and `xhigh`; Claude supports `low`, `medium`, `high`, `xhigh`, and
-`max`. Onton rejects effort overrides for other backends and values unsupported
-by the selected provider.
+`max`. Pi supports `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, and
+`max`, forwarded as `--thinking` (Pi clamps the level to the selected model's
+capabilities). Onton rejects effort overrides for other backends and values
+unsupported by the selected backend.
 
 Top-level `extras` is an optional object for additional backend configuration.
 Onton flattens nested keys into `key=value` entries. Codex passes each entry as
@@ -852,11 +875,16 @@ segments containing characters other than letters, digits, underscores, and
 hyphens are rejected. Use `default.effort` or route effort instead of
 `extras.model_reasoning_effort`.
 
-For Codex, the built-in ladder maps complexity 1 to `gpt-6-luna` with the
-provider's default effort, complexity 2 to `gpt-6-sol` with `low` effort, and
-complexity 3 to `gpt-6-sol` with `medium` effort. Missing or out-of-range
-complexity selects Sol with `medium` effort. An explicit `default.effort` or
-route effort overrides the built-in effort.
+For Codex and Pi, `--model auto` uses the same built-in ladder:
+
+| Complexity | Model | Effort |
+|------------|-------|--------|
+| 1 | `gpt-6-luna` | `medium` |
+| 2 | `gpt-6-luna` | `xhigh` |
+| 3, missing, or out of range | `gpt-6-sol` | `medium` |
+
+An explicit `default.effort` or route effort overrides the built-in effort.
+Configured complexity routes still take precedence over the built-in ladder.
 
 ### Supported models
 

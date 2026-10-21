@@ -15,6 +15,62 @@ let write_script path contents =
     (fun () -> Stdlib.output_string oc ("#!/bin/sh\nset -eu\n" ^ contents));
   Unix.chmod path 0o755
 
+(* Phase entry and cancellation have different budgets. In particular, a
+   completed publication must not leave the marker waiter running forever. *)
+let await_phase ~clock ~timeout ~finished ~started ~describe =
+  match
+    Eio.Time.with_timeout clock timeout (fun () ->
+        while not (started ()) do
+          if !finished then
+            failwith
+              ("publication completed before blocked phase: " ^ describe ());
+          Eio.Time.sleep clock 0.01
+        done;
+        Ok ())
+  with
+  | Ok () -> ()
+  | Error `Timeout -> failwith ("phase entry timed out: " ^ describe ())
+
+let expire_phase ~real_clock ~mock_clock ~timeout ~finished ~describe =
+  match
+    Eio.Time.with_timeout real_clock timeout (fun () ->
+        let elapsed = ref 120.0 in
+        while not !finished do
+          Eio_mock.Clock.set_time mock_clock !elapsed;
+          Eio.Time.sleep real_clock 0.01;
+          elapsed := !elapsed +. 0.1
+        done;
+        Ok ())
+  with
+  | Ok () -> ()
+  | Error `Timeout ->
+      failwith ("blocked command cancellation timed out: " ^ describe ())
+
+let check_phase_waiters env =
+  let clock = Eio.Stdenv.clock env in
+  let expect_failure prefix f =
+    match f () with
+    | () -> failwith ("expected waiter failure: " ^ prefix)
+    | exception Failure message when String.is_prefix message ~prefix -> ()
+  in
+  expect_failure "publication completed before blocked phase" (fun () ->
+      await_phase ~clock ~timeout:1.0 ~finished:(ref true)
+        ~started:(fun () -> false)
+        ~describe:(fun () -> "early completion"));
+  expect_failure "phase entry timed out" (fun () ->
+      await_phase ~clock ~timeout:0.02 ~finished:(ref false)
+        ~started:(fun () -> false)
+        ~describe:(fun () -> "missing marker"));
+  expect_failure "blocked command cancellation timed out" (fun () ->
+      expire_phase ~real_clock:clock ~mock_clock:(Eio_mock.Clock.make ())
+        ~timeout:0.02 ~finished:(ref false) ~describe:(fun () ->
+          "stuck cancellation"));
+  await_phase ~clock ~timeout:1.0 ~finished:(ref false)
+    ~started:(fun () -> true)
+    ~describe:(fun () -> "already entered");
+  Stdlib.print_endline
+    "phase waiter early-completion and watchdog regressions: OK"
+
 let scenario env stage =
   Git_env.with_temp_repo @@ fun repo ->
   let git = Git_env.run_git ~cwd:repo in
@@ -88,21 +144,34 @@ let scenario env stage =
       ~process_mgr:(Eio.Stdenv.process_mgr env)
       ~path:repo
   in
+  let last_command = ref "not started" in
+  let last_result = ref "no result" in
+  let describe () =
+    Printf.sprintf "%s; last command: %s; last result: %s" stage !last_command
+      !last_result
+  in
   let io =
     E.
       {
         git =
           (fun args ->
-            match args with
-            | command :: rest
-              when String.equal command
-                     (if String.equal stage "observation" then "ls-remote"
-                      else "fetch")
-                   && not (String.equal stage "push") ->
-                real.git (command :: ("--upload-pack=" ^ upload_pack) :: rest)
-            | "push" :: rest when String.equal stage "push" ->
-                real.git ("push" :: ("--receive-pack=" ^ receive_pack) :: rest)
-            | _ -> real.git args);
+            last_command := String.concat ~sep:" " args;
+            last_result := "running";
+            let result =
+              match args with
+              | command :: rest
+                when String.equal command
+                       (if String.equal stage "observation" then "ls-remote"
+                        else "fetch")
+                     && not (String.equal stage "push") ->
+                  real.git (command :: ("--upload-pack=" ^ upload_pack) :: rest)
+              | "push" :: rest when String.equal stage "push" ->
+                  real.git ("push" :: ("--receive-pack=" ^ receive_pack) :: rest)
+              | _ -> real.git args
+            in
+            let code, _, stderr = result in
+            last_result := Printf.sprintf "exit %d: %s" code stderr;
+            result);
       }
   in
   let intent =
@@ -179,28 +248,23 @@ let scenario env stage =
   in
   let outcome =
     Stdlib.Fun.protect ~finally:cleanup (fun () ->
-        Eio.Time.with_timeout_exn (Eio.Stdenv.clock env) 10.0 (fun () ->
-            let finished = ref false in
-            let _, outcome =
-              Eio.Fiber.pair
-                (fun () ->
-                  (* Expire the publication deadline only after real Git has
-                     reached the selected phase, independent of machine speed. *)
-                  while not (Stdlib.Sys.file_exists marker) do
-                    Eio.Time.sleep (Eio.Stdenv.clock env) 0.01
-                  done;
-                  let elapsed = ref 120.0 in
-                  while not !finished do
-                    Eio_mock.Clock.set_time clock !elapsed;
-                    Eio.Time.sleep (Eio.Stdenv.clock env) 0.01;
-                    elapsed := !elapsed +. 0.1
-                  done)
-                (fun () ->
-                  Stdlib.Fun.protect
-                    ~finally:(fun () -> finished := true)
-                    publish)
-            in
-            outcome))
+        let finished = ref false in
+        let real_clock = Eio.Stdenv.clock env in
+        let _, outcome =
+          Eio.Fiber.pair
+            (fun () ->
+              (* Allow setup under parallel suite load without charging it to
+                 the cancellation watchdog. The marker proves the real Git
+                 transport has entered the selected blocked phase. *)
+              await_phase ~clock:real_clock ~timeout:60.0 ~finished
+                ~started:(fun () -> Stdlib.Sys.file_exists marker)
+                ~describe;
+              expire_phase ~real_clock ~mock_clock:clock ~timeout:10.0 ~finished
+                ~describe)
+            (fun () ->
+              Stdlib.Fun.protect ~finally:(fun () -> finished := true) publish)
+        in
+        outcome)
   in
   (match B.phase outcome with
   | Some (B.Waiting { reason; _ })
@@ -227,7 +291,15 @@ let scenario env stage =
       ~process_mgr:(Eio.Stdenv.process_mgr env)
       ~path:repo
   in
-  let retried = drive real 100 (fst (B.step outcome B.Recover)) in
+  let retried =
+    match
+      Eio.Time.with_timeout (Eio.Stdenv.clock env) 60.0 (fun () ->
+          Ok (drive real 100 (fst (B.step outcome B.Recover))))
+    with
+    | Ok retried -> retried
+    | Error `Timeout ->
+        failwith (stage ^ ": real-clock publication retry timed out")
+  in
   if Option.is_some !repair_token then
     failwith "transport recovery bypassed deterministic remote integration";
   List.iter
@@ -250,4 +322,7 @@ let scenario env stage =
 
 let () =
   Eio_main.run @@ fun env ->
-  List.iter [ "observation"; "fetch"; "push" ] ~f:(scenario env)
+  check_phase_waiters env;
+  List.iter [ "observation"; "fetch"; "push" ] ~f:(fun stage ->
+      Onton_test_support.Branch_reconcile_git_fixture.timed
+        ~name:("push-timeout/" ^ stage) (fun () -> scenario env stage))
