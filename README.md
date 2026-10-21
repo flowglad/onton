@@ -881,7 +881,7 @@ For Codex and Pi, `--model auto` uses the same built-in ladder:
 |------------|-------|--------|
 | 1 | `gpt-6-luna` | `medium` |
 | 2 | `gpt-6-luna` | `xhigh` |
-| 3, missing, or out of range | `gpt-6.1-sol` | `medium` |
+| 3, missing, or out of range | `gpt-6-sol` | `medium` |
 
 An explicit `default.effort` or route effort overrides the built-in effort.
 Configured complexity routes still take precedence over the built-in ladder.
@@ -897,7 +897,7 @@ need reproducibility. The names below are accurate as of September 2026 —
 | Backend | Common model names | Source of truth |
 |---------|-------------------|-----------------|
 | `claude` | `opus`, `sonnet`, `haiku` (unpinned aliases); `claude-opus-4-7`, `claude-sonnet-4-6`, `claude-haiku-4-5` (pinned) | [Anthropic models](https://docs.anthropic.com/en/docs/about-claude/models) |
-| `codex` | `gpt-6-luna`, `gpt-6.1-sol`; `gpt-5.6-terra` remains available when explicitly selected | [OpenAI models](https://developers.openai.com/api/docs/models), [Codex CLI README](https://github.com/openai/codex) |
+| `codex` | `gpt-6-luna`, `gpt-6-sol`; `gpt-5.6-terra` remains available when explicitly selected | [OpenAI models](https://developers.openai.com/api/docs/models), [Codex CLI README](https://github.com/openai/codex) |
 | `gemini` | `gemini-2.5-pro`, `gemini-2.5-flash` | [Gemini API models](https://ai.google.dev/gemini-api/docs/models) |
 | `opencode` | Provider-prefixed, e.g. `anthropic/claude-sonnet-4-5`, `openai/gpt-5` | [OpenCode docs](https://opencode.ai/docs) |
 | `pi` | Run `pi --help` for the current list | Pi CLI |

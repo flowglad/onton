@@ -49,7 +49,7 @@ let codex_auto_settings_select_tier =
         match complexity with
         | Some 1 -> ("gpt-6-luna", Some "medium")
         | Some 2 -> ("gpt-6-luna", Some "xhigh")
-        | Some _ | None -> ("gpt-6.1-sol", Some "medium")
+        | Some _ | None -> ("gpt-6-sol", Some "medium")
       in
       Option.equal String.equal model (Some expected_model)
       && Option.equal String.equal

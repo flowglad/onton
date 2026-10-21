@@ -210,9 +210,9 @@ let codex_auto_tiers_pass_model_and_effort_to_cli =
       && List.mem tier1 "model_reasoning_effort=\"medium\"" ~equal:String.equal
       && List.mem tier2 "gpt-6-luna" ~equal:String.equal
       && List.mem tier2 "model_reasoning_effort=\"xhigh\"" ~equal:String.equal
-      && List.mem tier3 "gpt-6.1-sol" ~equal:String.equal
+      && List.mem tier3 "gpt-6-sol" ~equal:String.equal
       && List.mem tier3 "model_reasoning_effort=\"medium\"" ~equal:String.equal
-      && List.mem fallback "gpt-6.1-sol" ~equal:String.equal
+      && List.mem fallback "gpt-6-sol" ~equal:String.equal
       && List.mem fallback "model_reasoning_effort=\"medium\""
            ~equal:String.equal)
 

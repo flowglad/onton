@@ -103,13 +103,20 @@ let pi_parse_event_is_total =
 let pi_auto_tiers =
   QCheck2.Test.make ~name:"pi auto tiers pass model and thinking to CLI"
     ~count:200
-    QCheck2.Gen.(option int)
+    QCheck2.Gen.(
+      oneof
+        [
+          return None;
+          return (Some 1);
+          return (Some 2);
+          map (fun complexity -> Some complexity) int;
+        ])
     (fun complexity ->
       let model, effort =
         match complexity with
         | Some 1 -> ("gpt-6-luna", "medium")
         | Some 2 -> ("gpt-6-luna", "xhigh")
-        | Some _ | None -> ("gpt-6.1-sol", "medium")
+        | Some _ | None -> ("gpt-6-sol", "medium")
       in
       let decision =
         Backend_routing.decide ~repo_config:Repo_config.empty

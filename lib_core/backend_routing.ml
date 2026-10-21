@@ -153,9 +153,9 @@ let%test "Codex auto routes select Luna/Sol with tier-specific effort" =
   let fallback = decide None in
   Option.equal String.equal tier2.model (Some "gpt-6-luna")
   && Option.equal String.equal tier2.effort (Some "xhigh")
-  && Option.equal String.equal tier3.model (Some "gpt-6.1-sol")
+  && Option.equal String.equal tier3.model (Some "gpt-6-sol")
   && Option.equal String.equal tier3.effort (Some "medium")
-  && Option.equal String.equal fallback.model (Some "gpt-6.1-sol")
+  && Option.equal String.equal fallback.model (Some "gpt-6-sol")
   && Option.equal String.equal fallback.effort (Some "medium")
 
 let%test "Codex auto effort respects configured and route overrides" =

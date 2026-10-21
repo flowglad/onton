@@ -7,7 +7,7 @@ let settings ~complexity =
   match complexity with
   | Some 1 -> ("gpt-6-luna", "medium")
   | Some 2 -> ("gpt-6-luna", "xhigh")
-  | Some _ | None -> ("gpt-6.1-sol", "medium")
+  | Some _ | None -> ("gpt-6-sol", "medium")
 
 let auto_model ~complexity = Some (fst (settings ~complexity))
 let auto_effort ~complexity = Some (snd (settings ~complexity))

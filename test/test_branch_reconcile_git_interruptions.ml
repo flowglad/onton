@@ -178,17 +178,14 @@ let () =
                         (Git.git_capture ~cwd:dir [ "rev-parse"; "unrelated" ]
                         = candidate);
                       if stop_at = 4 then (
-                        check "conflicting or dirty replay reaches owned repair"
+                        check "dirty replay reaches owned repair"
                           (match outcome with
                           | R.Repair_needed _ -> true
                           | R.Idle | R.Waiting | R.Intervention _
                           | R.Checkpoint_failed _ ->
                               false);
-                        check
-                          "dirty replay stops before mutation; conflicts \
-                           follow Git"
-                          (if stop_at = 4 then !mutations = 0
-                           else !mutations > 0);
+                        check "dirty replay stops before mutation"
+                          (!mutations = 0);
                         check "repair retains the local candidate backup"
                           (List.mem (sha candidate)
                              (B.required_revisions (state restarted)));
@@ -198,13 +195,12 @@ let () =
                         check "rejected replay retains incoming evidence"
                           (List.mem (sha !incoming)
                              (B.required_revisions (state restarted)));
-                        if stop_at = 4 then (
-                          check "dirty replay retains the local candidate"
-                            (Git.git_capture ~cwd:dir [ "rev-parse"; "HEAD" ]
-                            = candidate);
-                          check "late staged edits survive"
-                            (Git.git_capture ~cwd:dir [ "show"; ":local" ]
-                            = "late staged edit")))
+                        check "dirty replay retains the local candidate"
+                          (Git.git_capture ~cwd:dir [ "rev-parse"; "HEAD" ]
+                          = candidate);
+                        check "late staged edits survive"
+                          (Git.git_capture ~cwd:dir [ "show"; ":local" ]
+                          = "late staged edit"))
                       else (
                         check
                           "ancestor-based remote replay converges after lost \

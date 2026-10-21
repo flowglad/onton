@@ -6,7 +6,7 @@ open Onton_core
 let expected = function
   | Some 1 -> ("gpt-6-luna", "medium")
   | Some 2 -> ("gpt-6-luna", "xhigh")
-  | Some _ | None -> ("gpt-6.1-sol", "medium")
+  | Some _ | None -> ("gpt-6-sol", "medium")
 
 let ladder =
   QCheck2.Test.make ~name:"shared auto ladder is total and selects exact tiers"
@@ -58,7 +58,23 @@ let boundaries =
           Some max_int;
         ])
 
+let auto_tiers_enforce_budget =
+  QCheck2.Test.make ~name:"every auto tier accrues cost and enforces its cap"
+    QCheck2.Gen.unit (fun () ->
+      List.for_all
+        (fun complexity ->
+          let model = Openai_auto_settings.auto_model ~complexity in
+          let decision =
+            Codex_cost.on_turn_completed ~model ~budget_cap_nano_usd:(Some 0L)
+              ~state:Codex_cost.initial_cost_state
+              (`Assoc [ ("usage", `Assoc [ ("input_tokens", `Int 1000) ]) ])
+          in
+          Option.is_some (Codex_cost.model_pricing model)
+          && decision.Codex_cost.state.Codex_cost.cumulative_nano_usd > 0L
+          && List.length decision.Codex_cost.events = 2)
+        [ None; Some 1; Some 2; Some 3; Some 0; Some (-1) ])
+
 let () =
   List.iter
     (fun test -> QCheck2.Test.check_exn test)
-    [ ladder; backend_agreement; boundaries ]
+    [ ladder; backend_agreement; boundaries; auto_tiers_enforce_budget ]
