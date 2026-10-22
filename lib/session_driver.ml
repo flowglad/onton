@@ -420,7 +420,12 @@ struct
       Branch_reconcile.Request
         (Session_result.publication_intent completion ~base ~policy)
     in
-    let persist = C.persist in
+    let persist =
+      if Mode.strict then C.persist
+      else
+        Persistence.save_snapshot
+          ~path:(Project_store.snapshot_path Env.project_name)
+    in
     let execute = WS.execute_reconciliation ~patch_id in
     let now () = Eio.Time.now Env.clock in
     let outcome =
@@ -1230,10 +1235,19 @@ struct
                       }
                     in
 
+                    let persist_completion =
+                      if Mode.strict then C.persist
+                      else
+                        let path =
+                          Project_store.snapshot_path Env.project_name
+                        in
+                        Project_store.ensure_dir (Stdlib.Filename.dirname path);
+                        Persistence.save_snapshot ~path
+                    in
                     (match
                        Eio.Cancel.protect (fun () ->
-                           Runtime.update_persisting runtime ~persist:C.persist
-                             (fun snap ->
+                           Runtime.update_persisting runtime
+                             ~persist:persist_completion (fun snap ->
                                let orchestrator =
                                  Orchestrator.record_session_completion
                                    snap.Runtime.orchestrator patch_id completion
