@@ -595,6 +595,25 @@ module Make_impl
           W.reconcile ~path ~project_name:Env.project_name ~branch:agent.branch
             ~operation command
 
+  let provisioning_intent ~runtime ~patch_id ~request ?base_ref () =
+    Runtime.read runtime (fun snap ->
+        let orch = snap.Runtime.orchestrator in
+        let agent = Orchestrator.agent orch patch_id in
+        Branch_reconcile.
+          {
+            base =
+              Option.value base_ref
+                ~default:
+                  (Types.Branch.to_string
+                     (Option.value agent.Patch_agent.base_branch
+                        ~default:(Orchestrator.main_branch orch)));
+            policy =
+              (if Orchestrator.is_integration_root orch patch_id then
+                 Preserve_ancestry
+               else Rewrite);
+            purpose = Provision_checkout request;
+          })
+
   let ensure_owned ~owner ?base_ref () =
     Runtime.with_owned_patch owner (fun runtime patch_id ->
         if not (phys_equal runtime Env.runtime) then
@@ -603,23 +622,7 @@ module Make_impl
          of a captured request keep its durable identity and obey owner backoff. *)
         let request = "checkout:" ^ Session_id.mint () in
         let intent =
-          Runtime.read runtime (fun snap ->
-              let orch = snap.Runtime.orchestrator in
-              let agent = Orchestrator.agent orch patch_id in
-              Branch_reconcile.
-                {
-                  base =
-                    Option.value base_ref
-                      ~default:
-                        (Types.Branch.to_string
-                           (Option.value agent.Patch_agent.base_branch
-                              ~default:(Orchestrator.main_branch orch)));
-                  policy =
-                    (if Orchestrator.is_integration_root orch patch_id then
-                       Preserve_ancestry
-                     else Rewrite);
-                  purpose = Provision_checkout request;
-                })
+          provisioning_intent ~runtime ~patch_id ~request ?base_ref ()
         in
         let persist = C.persist in
         let now () = Eio.Time.now Env.clock in
@@ -711,18 +714,7 @@ module Make_impl
                     Branch_reconcile.Workspace_lost { request }
                   else
                     let intent =
-                      Runtime.read runtime (fun snap ->
-                          let orch = snap.Runtime.orchestrator in
-                          let agent = Orchestrator.agent orch patch_id in
-                          Branch_reconcile.
-                            {
-                              base =
-                                Types.Branch.to_string
-                                  (Option.value agent.Patch_agent.base_branch
-                                     ~default:(Orchestrator.main_branch orch));
-                              policy = Rewrite;
-                              purpose = Provision_checkout request;
-                            })
+                      provisioning_intent ~runtime ~patch_id ~request ()
                     in
                     Branch_reconcile.Workspace_lost_without_operation
                       { request; intent }

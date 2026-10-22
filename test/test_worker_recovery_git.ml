@@ -266,6 +266,19 @@ let () =
   let runtime4 =
     Onton_test_support.Branch_reconcile_git_fixture.make_runtime ()
   in
+  let feature_mode =
+    match
+      Execution_mode.infer_gameplan
+        Onton_test_support.Branch_reconcile_git_fixture.gameplan
+    with
+    | Ok mode -> mode
+    | Error reason -> failwith reason
+  in
+  Runtime.update_orchestrator runtime4 (fun orch ->
+      Orchestrator.set_execution_mode orch feature_mode);
+  check "unstarted patch is the integration root"
+    (Runtime.read runtime4 (fun snap ->
+         Orchestrator.is_integration_root snap.Runtime.orchestrator patch_id));
   let module Real4 =
     (val Worktree.make ~fs:(Eio.Stdenv.fs env) ~config:Worktree_lifecycle.git
            ~clock:(Eio.Stdenv.clock env)
@@ -291,7 +304,17 @@ let () =
   with
   | Worktree_setup.Recovery_ready path ->
       check "unstarted recovery provisions confirmed base"
-        (String.equal (Git.git_capture ~cwd:path [ "rev-parse"; "HEAD" ]) base)
+        (String.equal (Git.git_capture ~cwd:path [ "rev-parse"; "HEAD" ]) base);
+      check "unstarted root retains ancestry policy"
+        (Runtime.read runtime4 (fun snap ->
+             let owner =
+               (Orchestrator.agent snap.Runtime.orchestrator patch_id)
+                 .Patch_agent.branch_reconcile
+             in
+             match B.operation owner with
+             | Some operation ->
+                 operation.B.intent.B.policy = B.Preserve_ancestry
+             | None -> false))
   | Worktree_setup.Recovery_wait reason ->
       failwith ("unstarted recovery waited: " ^ reason)
   | Worktree_setup.Recovery_attention _ ->
