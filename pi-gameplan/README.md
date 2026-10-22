@@ -4,8 +4,9 @@ A [Pi](https://pi.dev) extension for authoring Onton gameplans with the
 [write-gameplan skill](../skills/write-gameplan/SKILL.md). The skill keeps the judgment;
 this extension owns the rules the skill cannot enforce by prose:
 
-- **Engineer approval is unforgeable.** `gameplan_decide` is the only way a decision can be
-  recorded as `engineer_approved` or `delegated`. It asks the engineer in a dialog, generates
+- **Engineer approval requires consent.** `gameplan_decide` records new decisions as
+  `engineer_approved` or `delegated`; `gameplan_load` imports existing answers only after
+  explicit engineer confirmation. `gameplan_decide` asks the engineer in a dialog, generates
   the `resolution.evidence` text itself, and the check tool rejects any resolution in the YAML
   that does not match a recorded answer.
 - **The model never writes YAML by hand.** `gameplan_write` and `gameplan_write_patch` take
@@ -94,8 +95,41 @@ they are not.
 form with each option's tradeoffs as its description, the recommendation marked, a
 "Delegate to the agent" row when there are three or fewer options, notes on any choice
 (a note on the delegate row becomes the delegation scope), and the tool's own free-text row.
-Otherwise it uses Pi's built-in selector with **Other** and **Delegate** rows. Either way the
-answer is mapped to the same ledger record, and a decline leaves the decision unresolved.
+Otherwise it uses Pi's built-in selector with **Discuss further / propose another option**
+and **Delegate** rows. **Type something** (or the fallback discussion row) requests discussion,
+not approval: your comments are recorded, the AD stays unresolved, and the agent must address
+them before asking again with the same AD id and updated options. To approve a proposed custom
+option, select it when the agent presents it in the follow-up dialog. Selecting a listed design
+explicitly approves it; selecting delegation explicitly delegates. A decline also leaves the
+decision unresolved.
+
+## Starting another gameplan
+
+Finalization completes the current plan, not the session. When you ask for another plan,
+the agent calls `gameplan_new({ path: "gameplans/next-plan.yaml" })`. After your confirmation,
+it selects the unused path, clears the active decision ledger and finalization marker, and
+keeps gameplan mode enabled. Previous gameplan files remain unchanged; their approvals are
+not inherited by the new draft. The draft state survives reload/resume. The file is created
+by the subsequent `gameplan_write` call, not by `gameplan_new`.
+
+Existing paths are refused. To explicitly resume or revise an existing plan, use
+`gameplan_load` instead. Declining confirmation leaves the active plan unchanged.
+
+## Loading and removing decisions
+
+- `gameplan_load({ path })` reads an existing file in the configured gameplan directory,
+  validates its architecture section, and shows its ledger decisions and evidence for engineer
+  confirmation. Acceptance replaces the current ledger and active file pointer and clears
+  finalization. It preserves existing evidence and leaves the file unchanged. Unresolved entries
+  stay unresolved; constrained entries still require acceptance at finalize. Run `gameplan_check`
+  afterward for full validation. A file or state change during confirmation rejects the import.
+- `gameplan_remove_decision({ id })` asks the engineer before removing a ledger entry and
+  clearing finalization. Unknown IDs are a no-op. It leaves the YAML unchanged: follow with
+  `gameplan_write` to remove the decision and any stale references or open questions.
+
+Both tools require gameplan mode; operations requiring confirmation fail without an interactive
+UI. Declining confirmation leaves state unchanged. Imported and removed entries persist with the
+active session branch.
 
 ## The gameplan file pointer
 
@@ -121,7 +155,7 @@ restriction, and lists the recorded decisions. The agent:
 1. inspects the code and scopes the change;
 2. calls `gameplan_decide` for each architectural choice. You see the question, the options
    with tradeoffs, and the recommendation in the transcript, then a selector with the options,
-   **Other** (free text in the editor), and **Delegate** (records the recommendation as
+   **Discuss further** (free text in the editor; not approval), and **Delegate** (records the recommendation as
    `delegated` with your stated scope). Dismissing the selector records the decision as
    `unresolved`;
 3. builds the file with `gameplan_write` (a few top-level sections per call) and

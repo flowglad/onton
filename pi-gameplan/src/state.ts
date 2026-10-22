@@ -41,7 +41,7 @@ export interface DecideParams {
 /** What the engineer did in the dialog. */
 export type Answer =
   | { kind: "selected"; index: number; note?: string }
-  | { kind: "other"; text: string }
+  | { kind: "discussion"; text: string }
   | { kind: "delegated"; scope: string }
   | { kind: "cancelled" }
   | { kind: "no-ui" };
@@ -75,6 +75,28 @@ export function recordDecision(state: GameplanState, record: DecisionRecord): Ga
   const decisions =
     index < 0 ? [...state.decisions, record] : state.decisions.map((d, i) => (i === index ? record : d));
   return { ...state, decisions };
+}
+
+/** Start an independent draft without inheriting the previous plan's approvals. */
+export function startGameplan(state: GameplanState, path: string): GameplanState {
+  return {
+    ...state,
+    decisions: [],
+    gameplanPath: path,
+    finalizedPath: undefined,
+    finalizedDigest: undefined,
+  };
+}
+
+/** Remove a ledger entry and invalidate finalization; an unknown id is a no-op. */
+export function removeDecision(state: GameplanState, id: string): GameplanState {
+  if (!state.decisions.some((d) => d.id === id)) return state;
+  return {
+    ...state,
+    decisions: state.decisions.filter((d) => d.id !== id),
+    finalizedPath: undefined,
+    finalizedDigest: undefined,
+  };
 }
 
 /**
@@ -143,13 +165,14 @@ export function resolveDecision(params: DecideParams, answer: Answer, now: Date)
         evidence: `Engineer selected ${quote(chosen.choice)} in a gameplan_decide dialog on ${date}.${note}`,
       };
     }
-    case "other":
+    case "discussion":
       return {
         ...base,
-        choice: answer.text.trim(),
-        alternatives: params.options,
-        kind: "engineer_approved",
-        evidence: `Engineer answered ${quote(answer.text)} in a gameplan_decide dialog on ${date}.`,
+        choice: recommended.choice,
+        alternatives: params.options.filter((_, i) => i !== params.recommendation),
+        kind: "unresolved",
+        evidence: "",
+        reason: `Engineer requested discussion in a gameplan_decide dialog on ${date}: ${answer.text.trim()}`,
       };
     case "delegated":
       return {

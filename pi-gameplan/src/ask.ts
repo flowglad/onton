@@ -55,7 +55,7 @@ export interface AskUserDetails {
 
 /**
  * Read the answer back. A chosen label maps to its option index; the delegate row maps to a
- * delegation whose scope is the user's note; a typed answer is a free-text choice. Anything
+ * delegation whose scope is the user's note; free text requests discussion, never approval. Anything
  * unreadable is treated as cancelled so the decision stays unresolved rather than guessed.
  */
 export function answerFromAskUser(params: DecideParams, details: unknown): Answer {
@@ -66,14 +66,14 @@ export function answerFromAskUser(params: DecideParams, details: unknown): Answe
   if (!text) return { kind: "cancelled" };
   const note = first?.notes?.trim();
   if (first?.custom) {
-    return { kind: "other", text: note ? `${text} (${note})` : text };
+    return { kind: "discussion", text: note ? `${text} (${note})` : text };
   }
   if (text === DELEGATE_LABEL) return { kind: "delegated", scope: note ?? "" };
   const request = buildAskUserRequest(params);
   const index = request.questions[0].options.findIndex((o) => o.label === text);
   if (index < 0 || index >= params.options.length) {
-    // The label was not one we authored; keep the user's words rather than guessing an index.
-    return { kind: "other", text: note ? `${text} (${note})` : text };
+    // The label was not one we authored; keep the user's words without granting approval.
+    return { kind: "discussion", text: note ? `${text} (${note})` : text };
   }
   return note ? { kind: "selected", index, note } : { kind: "selected", index };
 }

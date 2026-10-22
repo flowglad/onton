@@ -7,6 +7,7 @@ import { parse, stringify } from "yaml";
 import type { ExtensionAPI, ExtensionToolContext } from "@earendil-works/pi-coding-agent";
 import gameplan from "../src/index.js";
 import { resolveSkillPaths } from "../src/validator.js";
+import { fromEntries } from "../src/state.js";
 
 // Drive the registered tools with a host adapter. Files and documents are real; validator
 // success is controlled so these cases isolate confirmation and path ownership behavior.
@@ -19,7 +20,7 @@ async function fixture(run: (f: {
   emit: (event: string, input?: unknown) => Promise<unknown>;
   onConfirm: (fn: (index: number) => Promise<boolean>) => void;
   onExec: (fn: (command: string, args: string[]) => Promise<void>) => void;
-}) => Promise<void>) {
+}) => Promise<void>, registeredTools: string[] = []) {
   const dir = await mkdtemp(join(tmpdir(), "gameplan-host-"));
   const path = join(dir, "gameplans", "example.yaml");
   await mkdir(dirname(path));
@@ -38,7 +39,7 @@ async function fixture(run: (f: {
     registerTool: (tool: { name: string; execute: (...args: any[]) => Promise<unknown> }) => tools.set(tool.name, tool),
     registerFlag: () => {}, registerCommand: () => {},
     on: (event: string, handler: (...args: any[]) => unknown) => events.set(event, handler),
-    getFlag: () => true, getActiveTools: () => [], getAllTools: () => [], setActiveTools: () => {},
+    getFlag: () => true, getActiveTools: () => [], getAllTools: () => registeredTools.map((name) => ({ name })), setActiveTools: () => {},
     appendEntry: (_type: string, state: object) => saved.push({ ...state }),
     exec: async (command: string, args: string[]) => {
       await exec(command, args);
@@ -66,6 +67,136 @@ async function fixture(run: (f: {
     });
   } finally { await rm(dir, { recursive: true, force: true }); }
 }
+
+test("discussion through either dialog stays unresolved, survives resume, and blocks finalize", async () => {
+  for (const nested of [false, true]) {
+    await fixture(async ({ call, path, saved, restore, ctx }) => {
+      await call("gameplan_finalize", { path });
+      const params = { id: "AD-1", topic: "ownership", question: "Who owns state?", options: [
+        { choice: "Core", tradeoffs: "Pure" }, { choice: "Handler", tradeoffs: "Local" },
+      ], recommendation: 0, why: "Test" };
+      ctx.ui.select = async () => "Discuss further / propose another option (no approval)";
+      ctx.ui.editor = async () => "Can we discuss failure recovery first?";
+      ctx.executeTool = async () => ({ isError: false,
+        toolCall: { type: "toolCall", id: "nested", name: "ask_user_question", arguments: {} },
+        result: { content: [], details: {
+          answers: [{ questionIndex: 0, custom: true, answer: "Can we discuss failure recovery first?" }],
+        } },
+      });
+      const result = await call("gameplan_decide", params);
+      assert.match(JSON.stringify(result), /This is not approval/);
+      const pending = fromEntries([{ type: "custom", customType: "gameplan-mode", data: saved.at(-1) }]);
+      assert.equal(pending.decisions[0]!.kind, "unresolved");
+      assert.equal(pending.decisions[0]!.evidence, "");
+      assert.match(pending.decisions[0]!.reason!, /failure recovery/);
+      assert.equal(pending.finalizedPath, undefined);
+      await restore(pending);
+      await assert.rejects(call("gameplan_finalize", { path }), /unresolved/i);
+      ctx.ui.select = async () => "2. Handler";
+      ctx.executeTool = async () => ({ isError: false,
+        toolCall: { type: "toolCall", id: "nested", name: "ask_user_question", arguments: {} },
+        result: { content: [], details: {
+          answers: [{ questionIndex: 0, custom: false, answer: "2. Handler" }],
+        } },
+      });
+      await call("gameplan_decide", params);
+      const resolved = fromEntries([{ type: "custom", customType: "gameplan-mode", data: saved.at(-1) }]);
+      assert.equal(resolved.decisions.length, 1);
+      assert.equal(resolved.decisions[0]!.kind, "engineer_approved");
+      assert.equal(resolved.decisions[0]!.choice, "Handler");
+    }, nested ? ["ask_user_question"] : []);
+  }
+});
+
+test("a finalized plan can be followed by an independent draft in the same session", async () => {
+  await fixture(async ({ call, path, saved, restore, emit, ctx }) => {
+    await call("gameplan_finalize", { path });
+    const finalized = saved.at(-1)!;
+    const bytes = await readFile(path);
+    await call("gameplan_new", { path: "gameplans/next.yaml" });
+    const draft = fromEntries([{ type: "custom", customType: "gameplan-mode", data: saved.at(-1) }]);
+    assert.equal(draft.enabled, true);
+    assert.equal(draft.gameplanPath, "gameplans/next.yaml");
+    assert.equal(draft.finalizedPath, undefined);
+    assert.deepEqual(draft.decisions, []);
+    await assert.rejects(readFile(join(ctx.cwd, "gameplans/next.yaml")), /ENOENT/);
+    await restore(draft);
+    const context = await emit("before_agent_start", { messageType: "user" });
+    assert.match(JSON.stringify(context), /gameplan_new/);
+    assert.match(JSON.stringify(context), /gameplans\/next.yaml/);
+    await call("gameplan_write", { path: "gameplans/next.yaml", sections: { problemStatement: "Next plan" } });
+    assert.match(await readFile(join(ctx.cwd, "gameplans/next.yaml"), "utf8"), /Next plan/);
+    assert.deepEqual(await readFile(path), bytes);
+    const count = saved.length;
+    await restore(finalized);
+    const restoredContext = await emit("before_agent_start", { messageType: "user" });
+    assert.ok(JSON.stringify(restoredContext).includes(path));
+    assert.equal(saved.length, count); // No invalidation of the previous finalization.
+    assert.equal(finalized.finalizedPath, path);
+  });
+});
+
+test("new draft refusal and invalid destinations leave the active plan unchanged", async () => {
+  await fixture(async ({ call, path, saved, onConfirm, ctx, restore }) => {
+    await call("gameplan_finalize", { path });
+    const count = saved.length;
+    await assert.rejects(call("gameplan_new", { path }), /already exists/);
+    await assert.rejects(call("gameplan_new", { path: "../outside.yaml" }), /Refusing/);
+    await symlink(path, join(ctx.cwd, "gameplans/link.yaml"));
+    await assert.rejects(call("gameplan_new", { path: "gameplans/link.yaml" }), /non-regular/);
+    onConfirm(async () => false);
+    await call("gameplan_new", { path: "gameplans/next.yaml" });
+    ctx.hasUI = false;
+    await assert.rejects(call("gameplan_new", { path: "gameplans/next.yaml" }), /interactive UI/);
+    ctx.hasUI = true;
+    onConfirm(async () => { await writeFile(join(ctx.cwd, "gameplans/next.yaml"), "other writer"); return true; });
+    await assert.rejects(call("gameplan_new", { path: "gameplans/next.yaml" }), /changed during confirmation/);
+    assert.equal(saved.length, count);
+    onConfirm(async () => { await restore({ enabled: true, gameplanDir: "gameplans", decisions: [] }); return true; });
+    await assert.rejects(call("gameplan_new", { path: "gameplans/another.yaml" }), /changed during confirmation/);
+  });
+});
+
+test("load confirms ledger replacement, preserves file bytes, and removal survives restoration", async () => {
+  await fixture(async ({ call, path, saved, restore }) => {
+    const doc = parse(await readFile(path, "utf8"));
+    doc.architectureDesign.decisions = [{ id: "AD-1", topic: "ownership", question: "Who owns state?",
+      choice: "Core", alternatives: [{ choice: "Handler", tradeoffs: "Effects mixed in" }],
+      resolution: { kind: "engineer_approved", evidence: "Previously approved", rationale: "Pure state" } }];
+    await writeFile(path, stringify(doc));
+    const bytes = await readFile(path);
+    await call("gameplan_load", { path });
+    const loaded = fromEntries([{ type: "custom", customType: "gameplan-mode", data: saved.at(-1) }]);
+    assert.equal(loaded.gameplanPath, path);
+    assert.equal(loaded.decisions[0]?.evidence, "Previously approved");
+    assert.deepEqual(await readFile(path), bytes);
+    await call("gameplan_remove_decision", { id: "AD-1" });
+    const removed = saved.at(-1);
+    assert.deepEqual(fromEntries([{ type: "custom", customType: "gameplan-mode", data: removed }]).decisions, []);
+    await restore(removed);
+    const count = saved.length;
+    await call("gameplan_remove_decision", { id: "AD-1" });
+    assert.equal(saved.length, count);
+    assert.deepEqual(await readFile(path), bytes);
+  });
+});
+
+test("load refusal, missing UI, malformed input, and changes during confirmation preserve state", async () => {
+  await fixture(async ({ call, path, saved, onConfirm, ctx }) => {
+    const count = saved.length;
+    onConfirm(async () => false);
+    await call("gameplan_load", { path });
+    assert.equal(saved.length, count);
+    ctx.hasUI = false;
+    await assert.rejects(call("gameplan_load", { path }), /interactive UI/);
+    ctx.hasUI = true;
+    onConfirm(async () => { await writeFile(path, "changed"); return true; });
+    await assert.rejects(call("gameplan_load", { path }), /changed during confirmation/);
+    assert.equal(saved.length, count);
+    await assert.rejects(call("gameplan_load", { path }), /Missing architectureDesign/);
+    assert.equal(saved.length, count);
+  });
+});
 
 test("refused writes do not replace the session's remembered gameplan", async () => {
   await fixture(async ({ call, path, saved, ctx }) => {
