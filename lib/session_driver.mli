@@ -37,7 +37,7 @@ module type ENV = sig
   val event_log : Event_log.t
 end
 
-module Make (_ : Worktree.S) (_ : ENV) : sig
+module type S = sig
   type nonrec run_result = run_result
 
   val create_prompt :
@@ -122,3 +122,10 @@ module Make (_ : Worktree.S) (_ : ENV) : sig
       buffer (e.g. on [Final_result]) to treat end-of-buffer as a valid
       terminator. *)
 end
+
+module Make (_ : Worktree.S) (_ : ENV) : S
+
+module Make_with_checkpoint
+    (_ : Execution_checkpoint.S)
+    (_ : Worktree.S)
+    (_ : ENV) : S

@@ -35,7 +35,13 @@ module type S = sig
     owner:Runtime.patch_write -> ?base_ref:string -> unit -> ensure_result
 end
 
-module Make (W : Worktree.S) (Env : ENV) : S = struct
+module Make_impl
+    (C : Execution_checkpoint.S)
+    (Mode : sig
+      val strict : bool
+    end)
+    (W : Worktree.S)
+    (Env : ENV) : S = struct
   let resolve_worktree_path ~patch_id ~(agent : Patch_agent.t) ?branch () =
     (* When the caller passes [?branch], they're asking for that branch's
      worktree specifically — the agent's stored [worktree_path] may be from
@@ -61,15 +67,13 @@ module Make (W : Worktree.S) (Env : ENV) : S = struct
     | Ok ready -> ready
     | Error msg -> failwith msg
 
+  exception Checkpoint_failed of string
   exception Provenance_unavailable of string
   exception Hook_unavailable of string
 
   let checkpoint_event ?(guard = fun _ -> None) ~patch_id event =
-    let checkpoint = Project_store.snapshot_path Env.project_name in
-    Project_store.ensure_dir (Stdlib.Filename.dirname checkpoint);
     match
-      Runtime.update_persisting Env.runtime
-        ~persist:(Persistence.save_snapshot ~path:checkpoint) (fun snap ->
+      Runtime.update_persisting Env.runtime ~persist:C.persist (fun snap ->
           match
             guard (Orchestrator.agent snap.Runtime.orchestrator patch_id)
           with
@@ -83,7 +87,24 @@ module Make (W : Worktree.S) (Env : ENV) : S = struct
     with
     | Ok (Ok ()) -> ()
     | Ok (Error reason) -> raise (Hook_unavailable reason)
-    | Error message -> raise (Provenance_unavailable message)
+    | Error message -> raise (Checkpoint_failed message)
+
+  let set_worktree_path ~patch_id path =
+    if Mode.strict then
+      match
+        Runtime.update_persisting Env.runtime ~persist:C.persist (fun snap ->
+            ( {
+                snap with
+                Runtime.orchestrator =
+                  Orchestrator.set_worktree_path snap.orchestrator patch_id path;
+              },
+              () ))
+      with
+      | Ok () -> ()
+      | Error reason -> raise (Checkpoint_failed reason)
+    else
+      Runtime.update_orchestrator Env.runtime (fun orch ->
+          Orchestrator.set_worktree_path orch patch_id path)
 
   let owner_state ~patch_id =
     Runtime.read Env.runtime (fun snap ->
@@ -192,8 +213,7 @@ module Make (W : Worktree.S) (Env : ENV) : S = struct
     if is_ready ~path ~branch:br then (
       checkpoint_provenance ~patch_id ~path ~branch:br ();
       ensure_hook ~patch_id ~path ~branch:br;
-      Runtime.update_orchestrator runtime (fun orch ->
-          Orchestrator.set_worktree_path orch patch_id path);
+      set_worktree_path ~patch_id path;
       Path path)
     else
       let br =
@@ -226,8 +246,7 @@ module Make (W : Worktree.S) (Env : ENV) : S = struct
           ensure_hook ~patch_id ~path:existing ~branch:br;
           log_event runtime ~patch_id
             (Printf.sprintf "Found existing worktree for branch at %s" existing);
-          Runtime.update_orchestrator runtime (fun orch ->
-              Orchestrator.set_worktree_path orch patch_id existing);
+          set_worktree_path ~patch_id existing;
           Path existing
       | None -> (
           if W.is_checked_out_in_repo_root br then (
@@ -401,8 +420,7 @@ module Make (W : Worktree.S) (Env : ENV) : S = struct
             | true ->
                 checkpoint_provenance ~creation_base:(base, creation_revision)
                   ~patch_id ~path ~branch:br ();
-                Runtime.update_orchestrator runtime (fun orch ->
-                    Orchestrator.set_worktree_path orch patch_id path);
+                set_worktree_path ~patch_id path;
                 ensure_hook ~patch_id ~path ~branch:br;
                 Path path
             | false -> (
@@ -426,9 +444,7 @@ module Make (W : Worktree.S) (Env : ENV) : S = struct
                           (Printf.sprintf
                              "Adopting concurrently-created worktree at %s"
                              existing);
-                        Runtime.update_orchestrator runtime (fun orch ->
-                            Orchestrator.set_worktree_path orch patch_id
-                              existing);
+                        set_worktree_path ~patch_id existing;
                         Path existing
                     | Some _ | None ->
                         Unavailable
@@ -438,6 +454,8 @@ module Make (W : Worktree.S) (Env : ENV) : S = struct
   let ensure_worktree ~patch_id ~agent ?branch ?base_ref () =
     try ensure_worktree_impl ~patch_id ~agent ?branch ?base_ref () with
     | exn when Worktree.has_cancellation exn -> raise exn
+    | Checkpoint_failed reason when Mode.strict ->
+        raise (Checkpoint_failed reason)
     | Hook_unavailable reason -> Unavailable (Worktree_provision.Unsafe reason)
     | Provenance_unavailable reason ->
         Runtime_logging.log_event Env.runtime ~patch_id
@@ -476,8 +494,7 @@ module Make (W : Worktree.S) (Env : ENV) : S = struct
             in
             match W.inspect_existing ~path ~branch:agent.branch with
             | Ok true ->
-                Runtime.update_orchestrator Env.runtime (fun orch ->
-                    Orchestrator.set_worktree_path orch patch_id path);
+                set_worktree_path ~patch_id path;
                 Path path
             | Ok false ->
                 Unavailable
@@ -487,6 +504,7 @@ module Make (W : Worktree.S) (Env : ENV) : S = struct
                 Unavailable (Worktree_provision.materialization_failure reason)
           with
           | exn when Worktree.has_cancellation exn -> raise exn
+          | Checkpoint_failed _ as exn when Mode.strict -> raise exn
           | exn ->
               Unavailable (Worktree_provision.Temporary (Exn.to_string exn))
         else if Option.is_none operation.source then
@@ -535,15 +553,7 @@ module Make (W : Worktree.S) (Env : ENV) : S = struct
                   purpose = Provision_checkout request;
                 })
         in
-        let checkpoint = Project_store.snapshot_path Env.project_name in
-        let persist snapshot =
-          try
-            Project_store.ensure_dir (Stdlib.Filename.dirname checkpoint);
-            Persistence.save_snapshot ~path:checkpoint snapshot
-          with exn ->
-            if Worktree.has_cancellation exn then raise exn
-            else Error (Exn.to_string exn)
-        in
+        let persist = C.persist in
         let now () = Eio.Time.now Env.clock in
         let rec advance () =
           let agent =
@@ -579,8 +589,34 @@ module Make (W : Worktree.S) (Env : ENV) : S = struct
                        "branch_reconciliation_pending")
               | Branch_reconcile_runner.Intervention reason ->
                   Unavailable (Worktree_provision.Unsafe reason)
+              | Branch_reconcile_runner.Checkpoint_failed reason
+                when Mode.strict ->
+                  raise (Checkpoint_failed reason)
               | Branch_reconcile_runner.Checkpoint_failed reason ->
                   Unavailable (Worktree_provision.Temporary reason))
         in
         advance ())
 end
+
+module Make_with_checkpoint
+    (C : Execution_checkpoint.S)
+    (W : Worktree.S)
+    (Env : ENV) =
+  Make_impl
+    (C)
+    (struct
+      let strict = true
+    end)
+    (W)
+    (Env)
+
+module Make (W : Worktree.S) (Env : ENV) =
+  Make_impl
+    (Execution_checkpoint.Local (struct
+      let project_name = Env.project_name
+    end))
+    (struct
+      let strict = false
+    end)
+    (W)
+    (Env)
