@@ -64,8 +64,12 @@ let publishing () =
 
 let total_matrix =
   QCheck2.Test.make ~name:"workspace decision matrix" ~count:1000
-    G.(tup5 bool bool bool bool bool)
-    (fun (probe_ok, branch_present, base_confirmed, published, renewed) ->
+    G.(
+      pair
+        (tup5 bool bool bool bool bool)
+        (oneof_list [ B.Forge_unknown; B.Forge_merged; B.Forge_not_merged ]))
+    (fun ((probe_ok, branch_present, base_confirmed, published, renewed), forge)
+       ->
       let observation =
         Some
           B.
@@ -77,9 +81,7 @@ let total_matrix =
       in
       let result =
         B.decide_workspace ~probe_ok ~observation
-          ~never_published:(not published)
-          ~forge:(if published then B.Forge_not_merged else B.Forge_unknown)
-          ~renewed ~renewal_id:"receipt"
+          ~never_published:(not published) ~forge ~renewed ~renewal_id:"receipt"
       in
       if not probe_ok then result = B.Workspace_wait
       else if branch_present then
@@ -87,7 +89,12 @@ let total_matrix =
         =
         if base_confirmed then B.Workspace_patch (patch, base)
         else B.Workspace_wait
-      else if (not published) || renewed then
+      else if not published then
+        result
+        = if base_confirmed then B.Workspace_base base else B.Workspace_wait
+      else if forge = B.Forge_unknown then result = B.Workspace_wait
+      else if forge = B.Forge_merged then result = B.Workspace_merged
+      else if renewed then
         result
         = if base_confirmed then B.Workspace_base base else B.Workspace_wait
       else result = B.Workspace_attention "receipt")

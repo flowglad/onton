@@ -70,26 +70,6 @@ let status_of_recovery = function
         | Some number -> string_of_int (Types.Pr_number.to_int number)),
         None )
 
-let kind_of_label = function
-  | None -> None
-  | Some label ->
-      let all =
-        Types.Operation_kind.
-          [
-            Uncommitted_changes;
-            Rebase;
-            Human;
-            Merge_conflict;
-            Ci;
-            Review_comments;
-            Pr_body;
-            Findings;
-          ]
-      in
-      List.find_opt
-        (fun kind -> String.equal (Types.Operation_kind.to_label kind) label)
-        all
-
 let short_error exn =
   let message = Printexc.to_string exn in
   if String.length message <= 4096 then message else String.sub message 0 4096
@@ -152,6 +132,7 @@ let capsule_matches_admission capsule receipt =
   | [] -> Int64.equal (Worker_checkpoint.version capsule) 0L
 
 let run env =
+  let event_log_path = Filename.temp_file "onton-worker-" ".jsonl" in
   let protocol = ref (Worker_protocol.initial ()) in
   let protocol_mutex = Eio.Mutex.create () in
   let output_mutex = Eio.Mutex.create () in
@@ -207,10 +188,13 @@ let run env =
       work;
       guidance;
       recovery_mode;
-      renewal_id;
+      renewal;
       _;
     } =
       request
+    in
+    let renewal_id =
+      match renewal with Ordinary -> None | Renewed id -> Some id
     in
     let patch_id = Types.Patch_id.of_string identity.patch_id in
     let runtime, capsule, workspace_id =
@@ -243,10 +227,17 @@ let run env =
         && Option.is_none current.llm_session_id
       in
       let candidate =
-        Worker_checkpoint.advance !capsule ~version ~operation ~guidance
-          ~workspace_id:
-            (if workspace_confirmed then Some workspace_id else None)
-          ~agent:current ~terminal:!terminal
+        match
+          Worker_checkpoint.advance !capsule ~operation ~guidance
+            ~workspace_id:
+              (if workspace_confirmed then Some workspace_id else None)
+            ~agent:current ~terminal:!terminal
+        with
+        | Ok candidate
+          when Int64.equal (Worker_checkpoint.version candidate) version ->
+            candidate
+        | Ok _ -> fail_host "capsule and protocol state version differ"
+        | Error reason -> fail_host reason
       in
       let bytes = Worker_checkpoint.to_string candidate in
       let proposal_id =
@@ -277,6 +268,16 @@ let run env =
     let persist snapshot =
       Eio.Cancel.protect (fun () -> persist_unprotected snapshot)
     in
+    (* Begin is only an internal dispatch. This first checkpoint freezes the
+       assigned operation and the post-admission receipt before any checkout,
+       hook, backend, or owner event can run. An accepted ACK attests that the
+       host committed that receipt with these exact capsule bytes. *)
+    (match
+       Runtime.update_persisting runtime ~persist (fun snapshot ->
+           (snapshot, ()))
+     with
+    | Ok () -> ()
+    | Error reason -> fail_host reason);
     let module C = struct
       let persist = persist
 
@@ -315,9 +316,7 @@ let run env =
       let repo = env.gameplan.repo_name
       let transcripts = Stdlib.Hashtbl.create 1
       let transcript_updates = Stdlib.Hashtbl.create 1
-
-      let event_log =
-        Event_log.create ~path:(Filename.temp_file "onton-worker-" ".jsonl")
+      let event_log = Event_log.create ~path:event_log_path
     end in
     let module Driver = Session_driver.Make_with_checkpoint (C) (Real) (Env) in
     let module Setup = Worktree_setup.Make_with_checkpoint (C) (Real) (Env) in
@@ -356,8 +355,10 @@ let run env =
             io
             ~branch:(Types.Branch.to_string current.branch)
         with
-        | Ok (Some sha) -> Some (Branch_reconcile.Commit.to_string sha)
-        | Ok None | Error _ -> None
+        | Ok (Some sha) ->
+            Session_prompt.Revision (Branch_reconcile.Commit.to_string sha)
+        | Ok None -> Session_prompt.Absent
+        | Error _ -> Session_prompt.Unavailable
       in
       let base = Option.value current.base_branch ~default:env.main_branch in
       let base_revision =
@@ -382,7 +383,7 @@ let run env =
         else
           match work with
           | Worker_protocol.Reconcile -> snapshot.orchestrator
-          | Worker_protocol.Session { phase = "start"; _ } ->
+          | Worker_protocol.Session { phase = Start; _ } ->
               let current = agent snapshot patch_id in
               if current.busy then snapshot.orchestrator
               else
@@ -391,13 +392,12 @@ let run env =
                      ( patch_id,
                        Option.value current.base_branch ~default:env.main_branch
                      ))
-          | Session { phase = "respond"; kind; _ } -> (
-              match kind_of_label kind with
+          | Session { phase = Respond; kind; _ } -> (
+              match kind with
               | None -> snapshot.orchestrator
               | Some kind ->
                   Orchestrator.fire snapshot.orchestrator
                     (Respond (patch_id, kind)))
-          | Session { phase = _; _ } -> snapshot.orchestrator
       in
       ({ snapshot with Runtime.orchestrator }, ())
     in
@@ -408,8 +408,9 @@ let run env =
             (Worker_protocol.Failed, "session not admitted by patch state", None)
           else
             let delivery_mode =
-              if String.equal phase "start" then Patch_decision.Start
-              else Patch_decision.Respond
+              match phase with
+              | Worker_protocol.Start -> Patch_decision.Start
+              | Respond -> Patch_decision.Respond
             in
             let prompt =
               Driver.create_prompt
@@ -420,17 +421,15 @@ let run env =
             let on_pr_detected _ = () in
             if recovery_mode = Worker_protocol.Lost_workspace then
               Driver.run_recovery_owned ~write_owner:owner ~request:request_id
-                ~renewal_id ~observe_forge ~recovery:(recovery_context ())
-                ~kind:(kind_of_label kind) ~delivery_mode ~patch_id ~prompt
-                ~agent:current ~on_pr_detected ~backend:env.backend
-                ~complexity:current.complexity ()
+                ~renewal_id ~observe_forge ~recovery:(recovery_context ()) ~kind
+                ~delivery_mode ~patch_id ~prompt ~on_pr_detected
+                ~backend:env.backend ~complexity:current.complexity ()
               |> status_of_recovery
             else
               let result =
-                Driver.run_owned ~write_owner:owner ~kind:(kind_of_label kind)
-                  ~delivery_mode ~patch_id ~prompt ~agent:current
-                  ~on_pr_detected ~backend:env.backend
-                  ~complexity:current.complexity
+                Driver.run_owned ~write_owner:owner ~kind ~delivery_mode
+                  ~patch_id ~prompt ~agent:current ~on_pr_detected
+                  ~backend:env.backend ~complexity:current.complexity
               in
               (status_of_session result, "", None))
     in
@@ -444,6 +443,18 @@ let run env =
                    ~observe_forge ())
             else None)
       in
+      Option.iter
+        (fun result ->
+          let text =
+            match result with
+            | Worktree_setup.Recovery_ready _ -> "workspace ready"
+            | Recovery_wait reason -> "workspace waiting: " ^ reason
+            | Recovery_attention { reason; _ } ->
+                "workspace needs renewed intent: " ^ reason
+            | Recovery_merged _ -> "merge observed"
+          in
+          apply (Worker_protocol.Report_observation text))
+        setup;
       match setup with
       | Some result when interrupted -> classify_setup result
       | Some (Worktree_setup.Recovery_wait reason) ->
@@ -626,81 +637,89 @@ let run env =
     | Shutdown _ ->
         Error "not a bind"
   in
-  Eio.Switch.run (fun sw ->
-      let spawn request ~interrupted =
-        Eio.Fiber.fork ~sw (fun () ->
-            Eio.Cancel.sub (fun context ->
-                active_cancel := Some context;
-                Fun.protect
-                  ~finally:(fun () -> active_cancel := None)
-                  (fun () -> execute request ~interrupted)))
-      in
-      let dispatch = function
-        | Worker_protocol.Begin (Worker_protocol.Execute request) ->
-            spawn request ~interrupted:false
-        | Recover (Worker_protocol.Execute request) ->
-            spawn request ~interrupted:true
-        | Begin
-            (Bind _ | Cancel _ | Checkpoint_ack _ | Result_ack _ | Shutdown _)
-        | Recover
-            (Bind _ | Cancel _ | Checkpoint_ack _ | Result_ack _ | Shutdown _)
-          ->
-            ()
-        | (Worker_protocol.Send _ | Cancel_active | Stop) as output ->
-            emit [ output ]
-      in
-      let reader = Eio.Buf_read.of_flow ~max_size:(1024 * 1024) env.input in
-      let rec loop () =
-        if not !stopped then
-          let line =
-            try Some (Eio.Buf_read.line reader ^ "\n") with
-            | End_of_file -> None
-            | Eio.Buf_read.Buffer_limit_exceeded ->
-                send
-                  (Worker_protocol.Protocol_error
-                     { identity = None; reason = "frame too large" });
-                fail_host "frame too large"
+  Fun.protect
+    ~finally:(fun () -> try Sys.remove event_log_path with Sys_error _ -> ())
+    (fun () ->
+      Eio.Switch.run (fun sw ->
+          let spawn request ~interrupted =
+            Eio.Fiber.fork ~sw (fun () ->
+                Eio.Cancel.sub (fun context ->
+                    active_cancel := Some context;
+                    Fun.protect
+                      ~finally:(fun () -> active_cancel := None)
+                      (fun () -> execute request ~interrupted)))
           in
-          match line with
-          | None -> fail_host "host disconnected"
-          | Some line -> (
-              match Worker_protocol.decode line with
-              | Error (Worker_protocol.Invalid reason) ->
-                  send
-                    (Worker_protocol.Protocol_error { identity = None; reason });
-                  loop ()
-              | Error (Incompatible reason) ->
-                  send
-                    (Worker_protocol.Protocol_error { identity = None; reason });
-                  fail_host reason
-              | Ok (Worker_protocol.Bind _ as message) ->
-                  if Option.is_none !binding then (
-                    match validate_bind message with
-                    | Ok () ->
-                        if Worker_protocol.recovery_pending !protocol then
-                          List.iter dispatch
-                            (transition Worker_protocol.Recover_unfinished)
-                    | Error reason ->
-                        send
-                          (Worker_protocol.Protocol_error
-                             { identity = None; reason });
-                        fail_host reason)
-                  else apply (Worker_protocol.Host message);
-                  loop ()
-              | Ok
-                  (( Worker_protocol.Execute _ | Cancel _ | Checkpoint_ack _
-                   | Result_ack _ | Shutdown _ ) as message) ->
-                  let before = Worker_protocol.state_version !protocol in
-                  let outputs = transition (Worker_protocol.Host message) in
-                  List.iter dispatch outputs;
-                  (match message with
-                  | Worker_protocol.Checkpoint_ack { accepted; _ } ->
-                      let after = Worker_protocol.state_version !protocol in
-                      if before <> after || Worker_protocol.is_stopped !protocol
-                      then Eio.Stream.add ack_mailbox accepted
-                  | Worker_protocol.Bind _ | Execute _ | Cancel _ | Result_ack _
-                  | Shutdown _ ->
-                      ());
-                  loop ())
-      in
-      loop ())
+          let dispatch = function
+            | Worker_protocol.Begin (Worker_protocol.Execute request) ->
+                spawn request ~interrupted:false
+            | Recover (Worker_protocol.Execute request) ->
+                spawn request ~interrupted:true
+            | Begin
+                ( Bind _ | Cancel _ | Checkpoint_ack _ | Result_ack _
+                | Shutdown _ )
+            | Recover
+                ( Bind _ | Cancel _ | Checkpoint_ack _ | Result_ack _
+                | Shutdown _ ) ->
+                ()
+            | (Worker_protocol.Send _ | Cancel_active | Stop) as output ->
+                emit [ output ]
+          in
+          let reader = Eio.Buf_read.of_flow ~max_size:(1024 * 1024) env.input in
+          let rec loop () =
+            if not !stopped then
+              let line =
+                try Some (Eio.Buf_read.line reader ^ "\n") with
+                | End_of_file -> None
+                | Eio.Buf_read.Buffer_limit_exceeded ->
+                    send
+                      (Worker_protocol.Protocol_error
+                         { identity = None; reason = "frame too large" });
+                    fail_host "frame too large"
+              in
+              match line with
+              | None -> fail_host "host disconnected"
+              | Some line -> (
+                  match Worker_protocol.decode line with
+                  | Error (Worker_protocol.Invalid reason) ->
+                      send
+                        (Worker_protocol.Protocol_error
+                           { identity = None; reason });
+                      loop ()
+                  | Error (Incompatible reason) ->
+                      send
+                        (Worker_protocol.Protocol_error
+                           { identity = None; reason });
+                      fail_host reason
+                  | Ok (Worker_protocol.Bind _ as message) ->
+                      if Option.is_none !binding then (
+                        match validate_bind message with
+                        | Ok () ->
+                            if Worker_protocol.recovery_pending !protocol then
+                              List.iter dispatch
+                                (transition Worker_protocol.Recover_unfinished)
+                        | Error reason ->
+                            send
+                              (Worker_protocol.Protocol_error
+                                 { identity = None; reason });
+                            fail_host reason)
+                      else apply (Worker_protocol.Host message);
+                      loop ()
+                  | Ok
+                      (( Worker_protocol.Execute _ | Cancel _ | Checkpoint_ack _
+                       | Result_ack _ | Shutdown _ ) as message) ->
+                      let before = Worker_protocol.state_version !protocol in
+                      let outputs = transition (Worker_protocol.Host message) in
+                      List.iter dispatch outputs;
+                      (match message with
+                      | Worker_protocol.Checkpoint_ack { accepted; _ } ->
+                          let after = Worker_protocol.state_version !protocol in
+                          if
+                            before <> after
+                            || Worker_protocol.is_stopped !protocol
+                          then Eio.Stream.add ack_mailbox accepted
+                      | Worker_protocol.Bind _ | Execute _ | Cancel _
+                      | Result_ack _ | Shutdown _ ->
+                          ());
+                      loop ())
+          in
+          loop ()))

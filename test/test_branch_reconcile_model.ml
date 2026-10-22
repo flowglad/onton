@@ -1446,6 +1446,10 @@ end
 let workspace_loss_model =
   QCheck2.Test.make ~name:"model: destroyed checkout uses remote facts"
     ~count:500
+    ~print:(fun
+        (probe_ok, branch_present, base_present, possibly_published, merged) ->
+      Printf.sprintf "probe=%b branch=%b base=%b published=%b merged=%b"
+        probe_ok branch_present base_present possibly_published merged)
     Gen.(tup5 bool bool bool bool bool)
     (fun (probe_ok, branch_present, base_present, possibly_published, merged) ->
       let state, _ =

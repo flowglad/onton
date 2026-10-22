@@ -44,6 +44,8 @@ end
 module type RECOVERY_S = sig
   include S
 
+  exception Checkpoint_failed of string
+
   val recover_owned :
     owner:Runtime.patch_write ->
     request:string ->
@@ -109,7 +111,9 @@ module Make_impl
     with
     | Ok (Ok ()) -> ()
     | Ok (Error reason) -> raise (Hook_unavailable reason)
-    | Error message -> raise (Checkpoint_failed message)
+    | Error message ->
+        if Mode.strict then raise (Checkpoint_failed message)
+        else raise (Provenance_unavailable message)
 
   let set_worktree_path ~patch_id path =
     if Mode.strict then

@@ -313,6 +313,7 @@ type publication_identity = { operation_id : int; revision : Commit.t }
 type t = {
   workspace_recovery : workspace_recovery option; [@yojson.default None]
   workspace_was_lost : bool; [@yojson.default false]
+  workspace_integration_floor : int option; [@yojson.default None]
   workspace_requests : string list; [@yojson.default []]
   observation_destination : remote_binding; [@yojson.default Unobserved_remote]
   worktree_hook : Worktree_hook.t; [@yojson.default Worktree_hook.empty]
@@ -413,6 +414,7 @@ let empty =
   {
     workspace_recovery = None;
     workspace_was_lost = false;
+    workspace_integration_floor = None;
     workspace_requests = [];
     observation_destination = Unobserved_remote;
     worktree_hook = Worktree_hook.empty;
@@ -699,6 +701,7 @@ let required_revisions t =
   let {
     workspace_recovery = _;
     workspace_was_lost = _;
+    workspace_integration_floor = _;
     workspace_requests = _;
     observation_destination = _;
     worktree_hook = _;
@@ -985,11 +988,17 @@ let observation_boundaries (op : operation) =
    Only a complete linear chain can identify an equivalent prefix to omit. *)
 let recorded_boundaries t =
   let revisions =
-    if t.workspace_was_lost then []
-    else
-      List.map t.integrations ~f:(fun receipt ->
-          receipt.capture.target_revision)
-      @ Option.to_list (Option.bind t.materialized ~f:materialization_boundary)
+    let integrations =
+      if not t.workspace_was_lost then t.integrations
+      else
+        match t.workspace_integration_floor with
+        | None -> []
+        | Some floor ->
+            List.take t.integrations
+              (Int.max 0 (List.length t.integrations - floor))
+    in
+    List.map integrations ~f:(fun receipt -> receipt.capture.target_revision)
+    @ Option.to_list (Option.bind t.materialized ~f:materialization_boundary)
   in
   let _, reversed =
     List.fold revisions
@@ -2106,6 +2115,7 @@ let[@warning "-4"] step_workspace t event =
           t with
           workspace_recovery = Some recovery;
           workspace_was_lost = true;
+          workspace_integration_floor = Some (List.length t.integrations);
           workspace_requests = request :: t.workspace_requests;
           materialized = None;
           worktree_hook = Worktree_hook.empty;
@@ -2177,7 +2187,14 @@ let[@warning "-4"] step_workspace t event =
                     Bound_remote observed.push_destination))
           in
           issue
-            { t with workspace_recovery = None }
+            {
+              t with
+              workspace_recovery = None;
+              workspace_integration_floor =
+                (match t.workspace_integration_floor with
+                | Some _ as floor -> floor
+                | None -> Some (List.length t.integrations));
+            }
             {
               op with
               lost_workspace = false;

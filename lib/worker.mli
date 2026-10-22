@@ -20,6 +20,8 @@ type env = {
 (** Explicit patch worker environment. No local scheduler, poller, control
     socket, or periodic snapshot fiber is constructed by this entry point. *)
 
+exception Host_lost of string
+
 val run : env -> unit
 (** Host loss or an unacknowledged checkpoint raises after cancelling active
     descendants. The spawning host must confirm termination before replacement.

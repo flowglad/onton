@@ -73,7 +73,8 @@ let () =
         (fun (requirements, operation, guidance, patch, base) ->
           let context =
             Session_prompt.create_recovery ~requirements ~operation
-              ~guidance:[ guidance ] ~patch_revision:(Some patch)
+              ~guidance:[ guidance ]
+              ~patch_revision:(Session_prompt.Revision patch)
               ~base_revision:base
           in
           let rendered = Session_prompt.render_recovery context in

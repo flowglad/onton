@@ -43,7 +43,7 @@ Required fields are shown in the examples. Optional values are represented expli
 ```json
 {"version":2,"type":"bind","run_id":"r","patch_id":"p","worker_id":"w","workspace_id":"ws","context":"requirements and configuration","capsule":"{}","state_version":"0","attention_id":null,"admission":{"mode":"fresh"}}
 {"version":2,"type":"execute","run_id":"r","patch_id":"p","operation_id":"o1","attempt_id":"a1","assignment_seq":"1","expected_state_version":"0","work":{"type":"session","phase":"start","kind":null,"turn":"Implement this patch"},"guidance":"current guidance","recovery_mode":"retained_workspace","renewal_id":null,"renewed_intent":false}
-{"version":2,"type":"execute","run_id":"r","patch_id":"p","operation_id":"o2","attempt_id":"a2","assignment_seq":"2","expected_state_version":"4","work":{"type":"reconcile"},"guidance":"reconcile patch branch","recovery_mode":"lost_workspace","renewal_id":"receipt-7","renewed_intent":true}
+{"version":2,"type":"execute","run_id":"r","patch_id":"p","operation_id":"o2","attempt_id":"a2","assignment_seq":"2","expected_state_version":"3","work":{"type":"reconcile"},"guidance":"reconcile patch branch","recovery_mode":"lost_workspace","renewal_id":"receipt-7","renewed_intent":true}
 {"version":2,"type":"cancel","run_id":"r","patch_id":"p","operation_id":"o1","attempt_id":"a1","assignment_seq":"1"}
 {"version":2,"type":"checkpoint_ack","run_id":"r","patch_id":"p","operation_id":"o1","attempt_id":"a1","assignment_seq":"1","proposal_id":"cp-1","state_version":"1","capsule":"frozen capsule bytes","accepted":true}
 {"version":2,"type":"result_ack","run_id":"r","patch_id":"p","operation_id":"o1","attempt_id":"a1","assignment_seq":"1","state_version":"3"}
@@ -71,7 +71,7 @@ The first `bind` fixes the run, patch, worker and workspace identity, context, i
 
 A checkpoint freezes its proposal ID, version and capsule bytes. The host conditionally stores those exact bytes under current authority and replies with an ACK matching the full operation identity, proposal ID, version and capsule. Only an accepted exact ACK advances the pure state version. Duplicate exact ACKs are harmless. Rejection cancels and stops the worker; a lost ACK may have committed at the host, so readmission must retrieve the host's actual stored version and observe remote effects. The adapter must not run any dependent effect before the ACK. Its ACK mailbox must not acquire the Runtime mutex while a persistence callback waits for ACK.
 
-The worker emits a terminal result only after acknowledged state and completed descendant cleanup. The next assignment waits for `result_ack`; stale ACKs, cancels and changed replays cannot affect a successor. Active shutdown cancels; idle shutdown exits. Host EOF, broken stdout, checkpoint rejection or ACK timeout cancels execution and terminates the process tree within the adapter's documented bound. It does not authorize spawning a replacement; that is the host wrapper's responsibility. No arbitrary agent shell or API side effect is promised exactly once.
+The worker emits a terminal result only after acknowledged state and completed descendant cleanup. The next assignment waits for `result_ack`; stale ACKs, cancels and changed replays cannot affect a successor. Active shutdown cancels and stops; idle shutdown exits. Host EOF, broken stdout, checkpoint rejection or ACK timeout cancels execution and terminates active backend descendants before the worker exits. The spawning host must enforce a hard deadline of the configured ACK timeout plus 5 seconds after disconnect or rejection (at most 65 seconds, since the CLI caps ACK timeout at 60 seconds), then kill the worker process group if necessary and confirm all descendants have exited before replacement. The local smoke uses a 1-second ACK timeout. No arbitrary agent shell or API side effect is promised exactly once.
 
 For a possibly published branch that disappeared, plain retry and old guidance cannot recreate it. The host must supply `renewed_intent:true` and the exact outstanding `renewal_id` in a new logical operation and attempt after the prior result ACK. A wrong, consumed, or superseded receipt is rejected. Exact replay of the accepted renewal is idempotent. Wire admission is not Git mutation authority: the owner re-observes branch, base, and forge state; a merge or reappeared branch takes precedence. Publication history remains possibly published.
 
@@ -182,8 +182,10 @@ For example, the bind above can resume one completed operation with:
 {"mode":"resume","initial_state_version":"0","initial_attention_id":null,"state_version":"1","capsule":"committed capsule","attention_id":null,"entries":[{"request":{"version":2,"type":"execute","run_id":"r","patch_id":"p","operation_id":"o1","attempt_id":"a1","assignment_seq":"1","expected_state_version":"0","work":{"type":"reconcile"},"guidance":"reconcile","recovery_mode":"retained_workspace","renewal_id":null,"renewed_intent":false},"terminal":{"state_version":"1","status":"completed_ok","diagnostics":"done","renewal_id":null},"result_acknowledged":true}]}
 ```
 
-The adapter commits the post-admission receipt before acting on `Begin`, and
-commits the post-Finish receipt before delivering the terminal result. For a
+`Begin` is internal dispatch only. The worker immediately proposes an admission
+checkpoint and waits for its exact accepted ACK before running any owner event,
+checkout, hook, backend or Git effect. The host commits the post-admission
+receipt and proposed capsule together before issuing that ACK. For a
 checkpoint or result ACK, the host can compute the prospective immutable
 `step` transition and export its receipt, commit that receipt and the matching
 capsule atomically, then deliver the ACK. Computing a prospective transition is

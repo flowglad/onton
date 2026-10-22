@@ -12,6 +12,15 @@ let field name = function
   | `Assoc fields -> List.assoc_opt name fields
   | _ -> None
 
+let replace_field name replacement = function
+  | `Assoc fields ->
+      `Assoc
+        (List.map
+           (fun (key, value) ->
+             if String.equal key name then (key, replacement) else (key, value))
+           fields)
+  | other -> other
+
 let string name json =
   match field name json with
   | Some (`String value) -> value
@@ -58,7 +67,12 @@ let step state event =
 let has_checkpoint outputs =
   List.exists (function P.Send (P.Checkpoint _) -> true | _ -> false) outputs
 
-type child = { output : in_channel; input : out_channel; error : in_channel }
+type child = {
+  output : in_channel;
+  input : out_channel;
+  error : in_channel;
+  pending : Buffer.t;
+}
 
 type host = {
   child : child;
@@ -115,7 +129,7 @@ let spawn_with_fixture ?forge_fixture ~gameplan ~repo_root ~home ~fake_bin
       | Some fixture -> ("ONTON_WORKER_FORGE_FIXTURE=" ^ fixture) :: values))
   in
   let output, input, error = Unix.open_process_full command env in
-  { output; input; error }
+  { output; input; error; pending = Buffer.create 4096 }
 
 let spawn ~gameplan ~repo_root ~home ~fake_bin ~prompt_log =
   spawn_with_fixture ~gameplan ~repo_root ~home ~fake_bin ~prompt_log ()
@@ -125,12 +139,32 @@ let send child json =
   flush child.input
 
 let available child timeout =
-  let fd = Unix.descr_of_in_channel child.output in
-  match Unix.select [ fd ] [] [] timeout with [], _, _ -> false | _ -> true
+  if String.contains (Buffer.contents child.pending) '\n' then true
+  else
+    let fd = Unix.descr_of_in_channel child.output in
+    match Unix.select [ fd ] [] [] timeout with [], _, _ -> false | _ -> true
 
 let recv ?(timeout = 10.) child =
-  if not (available child timeout) then failwith "worker output timed out";
-  Yojson.Safe.from_string (input_line child.output)
+  let rec line () =
+    let bytes = Buffer.contents child.pending in
+    match String.index_opt bytes '\n' with
+    | Some index ->
+        let result = String.sub bytes 0 index in
+        Buffer.clear child.pending;
+        Buffer.add_substring child.pending bytes (index + 1)
+          (String.length bytes - index - 1);
+        Yojson.Safe.from_string result
+    | None ->
+        if not (available child timeout) then failwith "worker output timed out";
+        let chunk = Bytes.create 4096 in
+        let count =
+          Unix.read (Unix.descr_of_in_channel child.output) chunk 0 4096
+        in
+        if count = 0 then failwith "worker output closed";
+        Buffer.add_subbytes child.pending chunk 0 count;
+        line ()
+  in
+  line ()
 
 let finish child =
   Unix.close_process_full (child.output, child.input, child.error)
@@ -196,6 +230,29 @@ let acknowledge host checkpoint =
   let next_version = counter checkpoint in
   check "capsule version"
     (Int64.equal (Worker_checkpoint.version decoded_capsule) next_version);
+  let capsule_json = Yojson.Safe.from_string bytes in
+  (match field "agent" capsule_json with
+  | Some (`Assoc agent_fields) ->
+      let truncated =
+        replace_field "agent"
+          (`Assoc (List.remove_assoc "queue" agent_fields))
+          capsule_json
+      in
+      check "truncated capsule agent rejected"
+        (Result.is_error (Worker_checkpoint.decode truncated))
+  | _ -> failwith "capsule missing agent");
+  check "operation capsule needs positive version"
+    (Result.is_error
+       (Worker_checkpoint.decode
+          (replace_field "state_version" (`String "0") capsule_json)));
+  (match field "terminal" capsule_json with
+  | Some `Null ->
+      check "nonterminal capsule rejects stale attention"
+        (Result.is_error
+           (Worker_checkpoint.decode
+              (replace_field "attention_id" (`String "stale") capsule_json)))
+  | Some (`Assoc _) -> ()
+  | _ -> failwith "capsule missing terminal");
   let model, outputs =
     step host.model (P.Propose_checkpoint { proposal_id; capsule = bytes })
   in
@@ -265,6 +322,10 @@ let complete ?(initial_checkpoints = 0) host =
             (not (available host.child 0.05));
         acknowledge host message;
         loop (checkpoints + 1)
+    | "observation" ->
+        check "observation has diagnostic text"
+          (String.length (string "text" message) > 0);
+        loop checkpoints
     | "result" ->
         check "result follows a checkpoint" (checkpoints > 0);
         observe_result host message;

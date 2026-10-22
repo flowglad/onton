@@ -158,7 +158,7 @@ let () =
       let recovery =
         Session_prompt.create_recovery ~requirements:"REQ unique"
           ~operation:"OP unique" ~guidance:[ "GUIDE unique" ]
-          ~patch_revision:None ~base_revision:"BASE unique"
+          ~patch_revision:Session_prompt.Absent ~base_revision:"BASE unique"
       in
       let prompt =
         SD.create_prompt
@@ -169,7 +169,7 @@ let () =
         Runtime.with_patch_ownership runtime ~patch_id (fun write_owner ->
             SD.run_recovery_owned ~write_owner ~request ~renewal_id
               ?observe_forge ~recovery ~kind:None
-              ~delivery_mode:Patch_decision.Start ~patch_id ~prompt ~agent
+              ~delivery_mode:Patch_decision.Start ~patch_id ~prompt
               ~on_pr_detected:(fun _ -> ())
               ~backend ~complexity:None ())
       in
@@ -242,6 +242,13 @@ let () =
           "push";
           "-q";
           "origin";
+          "HEAD:refs/heads/" ^ Types.Branch.to_string agent.Patch_agent.branch;
+        ];
+      Git.run_git ~cwd:fresh
+        [
+          "push";
+          "-q";
+          "origin";
           "--delete";
           Types.Branch.to_string agent.Patch_agent.branch;
         ];
@@ -294,17 +301,13 @@ let () =
              });
       reply2 B.Pinned;
       reply2 (B.Integrated sha);
-      let agent2 =
-        Runtime.read runtime2 (fun snap ->
-            Orchestrator.agent snap.Runtime.orchestrator patch_id)
-      in
       let merged =
         Runtime.with_patch_ownership runtime2 ~patch_id (fun write_owner ->
             SD2.run_recovery_owned ~write_owner ~request:"merged-loss"
               ~renewal_id:None
               ~observe_forge:(fun () -> Ok (B.Forge_merged, None))
               ~recovery ~kind:None ~delivery_mode:Patch_decision.Start ~patch_id
-              ~prompt ~agent:agent2
+              ~prompt
               ~on_pr_detected:(fun _ -> ())
               ~backend ~complexity:None ())
       in

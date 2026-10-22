@@ -133,6 +133,77 @@ let rec unique_keys depth (json : Yojson.Safe.t) =
   | `List values -> List.for_all values ~f:(unique_keys (depth + 1))
   | `Null | `Bool _ | `Int _ | `Intlit _ | `Float _ | `String _ -> true
 
+(* The general snapshot reader accepts older schemas and supplies defaults.
+   A worker capsule is a current-version authority record, so every field the
+   current writer emits must be present before invoking that reader. *)
+let agent_fields =
+  [
+    "branch_reconcile";
+    "session_completion";
+    "patch_id";
+    "branch";
+    "pr_status";
+    "complexity";
+    "pr_number";
+    "has_session";
+    "busy";
+    "merged";
+    "queue";
+    "satisfies";
+    "changed";
+    "base_branch";
+    "notified_base_branch";
+    "ci_failure_count";
+    "max_ci_failures";
+    "session_fallback";
+    "wontdo_reason";
+    "human_messages";
+    "inflight_human_messages";
+    "ci_checks";
+    "merge_ready";
+    "merge_queue_required";
+    "merge_queue_entry";
+    "merge_queue_ejection";
+    "head_oid";
+    "review_decision";
+    "unresolved_comment_count";
+    "mergeability_unknown";
+    "scheduler_recovery";
+    "scheduler_repair";
+    "native_stack";
+    "native_stack_absent_polls";
+    "is_draft";
+    "pr_body_delivered";
+    "pr_body_refresh_pending";
+    "pr_body_refresh_version";
+    "pr_body_artifact_miss_count";
+    "review_unresolved_cycle_count";
+    "start_attempts_without_pr";
+    "no_commits_push_count";
+    "context_exhaustion_count";
+    "merge_commit_sha";
+    "base_contains_merged_siblings";
+    "checks_passing";
+    "current_op";
+    "current_op_state";
+    "current_message_id";
+    "generation";
+    "worktree_path";
+    "branch_blocked";
+    "intervention_reason";
+    "llm_session_id";
+    "automerge_enabled";
+    "automerge_deadline";
+    "review_requested_for_oid";
+    "review_request_inflight";
+    "automerge_failure_count";
+    "delivered_ci_run_ids";
+  ]
+
+let complete_agent = function
+  | `Assoc _ as json -> Option.is_some (fields agent_fields json)
+  | _ -> false
+
 let decode json =
   let invalid = Error "invalid patch-execution capsule" in
   if not (unique_keys 0 json) then invalid
@@ -223,10 +294,24 @@ let decode json =
             Some (`Assoc _ as agent),
             Some terminal,
             Some attention_id )
-          when Option.is_none operation && Int64.equal version 0L
-               && Option.is_none terminal
-               && Option.is_none attention_id
-               || Option.is_some operation ->
+          when complete_agent agent
+               && (Option.is_none operation && Int64.equal version 0L
+                   && Option.is_none terminal
+                   && Option.is_none attention_id
+                  || Option.is_some operation
+                     && Int64.(version > 0L)
+                     && Option.equal String.equal attention_id
+                          (match terminal with
+                          | Some (Worker_protocol.Attention, _, receipt) ->
+                              receipt
+                          | None -> None
+                          | Some
+                              ( ( Worker_protocol.Completed_ok
+                                | Completed_no_commits | Failed | Cancelled
+                                | Retryable | Merged_observed ),
+                                _,
+                                _ ) ->
+                              None)) ->
             Ok
               {
                 run_id;
@@ -295,8 +380,12 @@ let validate_binding t ~run_id ~patch_id ~context ~state_version ~attention_id
               Patch_id.equal agent.patch_id patch_id
               && Branch.equal agent.branch
                    (Gameplan.branch_of_id gameplan patch_id)
+              && Yojson.Safe.equal
+                   (Persistence.patch_agent_to_yojson agent)
+                   t.agent
             then Ok agent
-            else Error "capsule patch identity mismatch")
+            else
+              Error "capsule agent is noncanonical or has wrong patch identity")
     | _ -> Error "capsule agent missing required fields"
 
 let version t = t.version
@@ -306,7 +395,7 @@ let attention_id t = t.attention_id
 let latest_operation t = t.operation
 let terminal t = t.terminal
 
-let advance t ~version ~operation ~guidance ~workspace_id ~agent ~terminal =
+let advance t ~operation ~guidance ~workspace_id ~agent ~terminal =
   let attention_id =
     match terminal with
     | Some (Worker_protocol.Attention, _, receipt) -> receipt
@@ -316,15 +405,20 @@ let advance t ~version ~operation ~guidance ~workspace_id ~agent ~terminal =
           _,
           _ ) ->
         None
-    | None -> t.attention_id
+    | None ->
+        if Poly.equal t.operation (Some operation) then t.attention_id else None
   in
-  {
-    t with
-    version;
-    operation = Some operation;
-    guidance;
-    workspace_id = Option.value workspace_id ~default:t.workspace_id;
-    agent = Persistence.patch_agent_to_yojson agent;
-    terminal;
-    attention_id;
-  }
+  if Int64.equal t.version Int64.max_value then
+    Error "capsule state version exhausted"
+  else
+    Ok
+      {
+        t with
+        version = Int64.succ t.version;
+        operation = Some operation;
+        guidance;
+        workspace_id = Option.value workspace_id ~default:t.workspace_id;
+        agent = Persistence.patch_agent_to_yojson agent;
+        terminal;
+        attention_id;
+      }

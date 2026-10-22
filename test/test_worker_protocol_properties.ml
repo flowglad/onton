@@ -5,7 +5,7 @@
 open Onton_core
 module P = Worker_protocol
 
-let check b = if not b then failwith "worker protocol property failed"
+let check ~label b = if not b then QCheck2.Test.fail_report label
 
 let wire kind extra =
   Yojson.Safe.to_string
@@ -150,30 +150,30 @@ let sequential =
     QCheck2.Gen.unit (fun () ->
       let t = initial () in
       let t, first = host t (execute ()) in
-      check (begins first);
+      check ~label:"protocol assertion 1" (begins first);
       let t, replay = host t (execute ()) in
-      check (not (begins replay));
+      check ~label:"protocol assertion 2" (not (begins replay));
       let _, overlap =
         host t (execute ~operation:"op2" ~attempt:"attempt2" ~seq:"2" ())
       in
-      check (not (begins overlap));
+      check ~label:"protocol assertion 3" (not (begins overlap));
       let t, finished = complete t in
-      check (result finished);
+      check ~label:"protocol assertion 4" (result finished);
       let _, blocked =
         host t
           (execute ~operation:"op2" ~attempt:"attempt2" ~seq:"2" ~version:"1" ())
       in
-      check (not (begins blocked));
+      check ~label:"protocol assertion 5" (not (begins blocked));
       let t, _ = host t (result_ack ()) in
       let t, next =
         host t
           (execute ~operation:"op2" ~attempt:"attempt2" ~seq:"2" ~version:"1" ())
       in
-      check (begins next);
+      check ~label:"protocol assertion 6" (begins next);
       let _, stale = host t (cancel ()) in
-      check (not (cancel_effect stale));
+      check ~label:"protocol assertion 7" (not (cancel_effect stale));
       let _, conflict = host t (execute ~operation:"changed" ~seq:"1" ()) in
-      check (not (begins conflict));
+      check ~label:"protocol assertion 8" (not (begins conflict));
       true)
 
 let acks =
@@ -195,7 +195,7 @@ let acks =
                renewal_id = None;
              })
       in
-      check (not (result premature));
+      check ~label:"protocol assertion 9" (not (result premature));
       let t, _ = host t (checkpoint_ack ()) in
       let _, finished =
         P.step t
@@ -206,14 +206,14 @@ let acks =
                renewal_id = None;
              })
       in
-      check (result finished);
+      check ~label:"protocol assertion 10" (result finished);
       let t = admitted () in
       let t, _ =
         P.step t
           (P.Propose_checkpoint { proposal_id = "cp"; capsule = "capsule" })
       in
       let t, e = host t (checkpoint_ack ~accepted:false ()) in
-      check (P.is_stopped t && stops e);
+      check ~label:"protocol assertion 11" (P.is_stopped t && stops e);
       true)
 
 let renewal =
@@ -223,23 +223,25 @@ let renewal =
         fst (host (P.initial ()) (bind ~attention:(`String "receipt") ()))
       in
       let _, plain = host t (execute ()) in
-      check (not (begins plain));
+      check ~label:"protocol assertion 12" (not (begins plain));
       let _, wrong =
         host t
           (execute ~operation:"op2" ~attempt:"attempt2"
              ~renewal:(`String "wrong") ~renewed:true ())
       in
-      check (not (begins wrong));
-      let _, implicit = host t (execute ~renewal:(`String "receipt") ()) in
-      check (not (begins implicit));
+      check ~label:"protocol assertion 13" (not (begins wrong));
+      let implicit = execute ~renewal:(`String "receipt") () in
+      check ~label:"protocol assertion 14" (Result.is_error (P.decode implicit));
+      check ~label:"renewal flag without receipt is invalid"
+        (Result.is_error (P.decode (execute ~renewed:true ())));
       let t, accepted =
         host t (execute ~renewal:(`String "receipt") ~renewed:true ())
       in
-      check (begins accepted);
+      check ~label:"protocol assertion 15" (begins accepted);
       let _, dup =
         host t (execute ~renewal:(`String "receipt") ~renewed:true ())
       in
-      check (not (begins dup));
+      check ~label:"protocol assertion 16" (not (begins dup));
       true)
 
 let cancellation =
@@ -247,12 +249,22 @@ let cancellation =
     QCheck2.Gen.unit (fun () ->
       let t = admitted () in
       let t, e = host t (cancel ()) in
-      check (cancel_effect e);
+      check ~label:"protocol assertion 17" (cancel_effect e);
       let t, e = host t (cancel ()) in
-      check (not (cancel_effect e));
+      check ~label:"protocol assertion 18" (not (cancel_effect e));
       let t, e = P.step t P.Host_lost in
-      check (P.is_stopped t && stops e && cancel_effect e);
+      check ~label:"protocol assertion 19"
+        (P.is_stopped t && stops e && cancel_effect e);
       true)
+
+let active_shutdown =
+  QCheck2.Test.make
+    ~name:"active shutdown stops without an acknowledged checkpoint" ~count:1
+    QCheck2.Gen.unit (fun () ->
+      let t = admitted () in
+      let shutdown = wire "shutdown" [] in
+      let t, outputs = host t shutdown in
+      P.is_stopped t && stops outputs && cancel_effect outputs)
 
 let interleavings =
   QCheck2.Test.make
@@ -317,9 +329,10 @@ let exact_ack_replay =
       in
       let t, _ = host t (checkpoint_ack ()) in
       let t, e = host t (checkpoint_ack ()) in
-      check (e = [] && P.state_version t = Some 1L);
+      check ~label:"protocol assertion 20"
+        (e = [] && P.state_version t = Some 1L);
       let t, e = host t (bind ()) in
-      check ((not (P.is_stopped t)) && e <> []);
+      check ~label:"protocol assertion 21" ((not (P.is_stopped t)) && e <> []);
       let changed =
         wire "bind"
           [
@@ -333,7 +346,7 @@ let exact_ack_replay =
           ]
       in
       let t, e = host t changed in
-      check (P.is_stopped t && stops e);
+      check ~label:"protocol assertion 22" (P.is_stopped t && stops e);
       true)
 
 let attention_transition =
@@ -343,21 +356,42 @@ let attention_transition =
       let t, emitted =
         complete ~status:P.Attention ~renewal:"receipt" (admitted ())
       in
-      check (result emitted);
+      check ~label:"protocol assertion 23" (result emitted);
       let t, _ = host t (result_ack ()) in
       let next =
         execute ~operation:"op2" ~attempt:"attempt2" ~seq:"2" ~version:"1" ()
       in
       let _, plain = host t next in
-      check (not (begins plain));
+      check ~label:"protocol assertion 24" (not (begins plain));
       let renewed =
         execute ~operation:"op2" ~attempt:"attempt2" ~seq:"2" ~version:"1"
           ~renewal:(`String "receipt") ~renewed:true ()
       in
       let t, yes = host t renewed in
-      check (begins yes);
+      check ~label:"protocol assertion 25" (begins yes);
       let _, again = host t renewed in
-      check (not (begins again));
+      check ~label:"protocol assertion 26" (not (begins again));
+      let t, _ =
+        P.step t
+          (P.Propose_checkpoint { proposal_id = "cp2"; capsule = "capsule" })
+      in
+      let t, _ =
+        host t
+          (checkpoint_ack ~seq:"2" ~operation:"op2" ~attempt:"attempt2"
+             ~proposal:"cp2" ~version:"2" ())
+      in
+      let t, _ = P.step t P.Cleanup_complete in
+      let _, reused =
+        P.step t
+          (P.Finish
+             {
+               status = P.Attention;
+               diagnostics = "same receipt";
+               renewal_id = Some "receipt";
+             })
+      in
+      check ~label:"consumed renewal cannot be republished"
+        (not (result reused));
       true)
 
 let bounded_encode =
@@ -463,7 +497,7 @@ let finish_assignment n t =
       (P.Finish
          { status = P.Completed_ok; diagnostics = "done"; renewal_id = None })
   in
-  check (result output);
+  check ~label:"protocol assertion 27" (result output);
   t
 
 let acknowledge n t =
@@ -479,7 +513,7 @@ let completed_history n =
     if i > n then t
     else
       let t, output = host t (assignment i) in
-      check (begins output);
+      check ~label:"protocol assertion 28" (begins output);
       loop (acknowledge i (finish_assignment i t)) (i + 1)
   in
   loop (initial ()) 1
@@ -493,23 +527,24 @@ let replacement_continuity =
       try
         let original = completed_history n in
         let t = replace original in
-        check (not (P.is_stopped t));
-        check (receipt t = receipt original);
+        check ~label:"protocol assertion 29" (not (P.is_stopped t));
+        check ~label:"protocol assertion 30" (receipt t = receipt original);
         let _, replay = host t (assignment n) in
-        check ((not (begins replay)) && result replay);
+        check ~label:"protocol assertion 31"
+          ((not (begins replay)) && result replay);
         let _, old = host t (assignment 1) in
-        check (not (begins old));
+        check ~label:"protocol assertion 32" (not (begins old));
         let _, reset = host t (execute ~version:(string_of_int n) ()) in
-        check (not (begins reset));
+        check ~label:"protocol assertion 33" (not (begins reset));
         let _, reused =
           host t
             (execute ~operation:"op1" ~attempt:"new-attempt"
                ~seq:(string_of_int (n + 1))
                ~version:(string_of_int n) ())
         in
-        check (not (begins reused));
+        check ~label:"protocol assertion 34" (not (begins reused));
         let _, next = host t (assignment (n + 1)) in
-        check (begins next);
+        check ~label:"protocol assertion 35" (begins next);
         true
       with _ -> false)
 
@@ -525,12 +560,13 @@ let replacement_lost_ack =
         let t, _ = host (completed_history (n - 1)) (assignment n) in
         let t = replace (finish_assignment n t) |> replace in
         let _, blocked = host t (assignment (n + 1)) in
-        check (not (begins blocked));
+        check ~label:"protocol assertion 36" (not (begins blocked));
         let _, replay = host t (assignment n) in
-        check (result replay && not (begins replay));
+        check ~label:"protocol assertion 37"
+          (result replay && not (begins replay));
         let t, _ = host t (result_ack ~version:"0" ()) in
         let _, blocked = host t (assignment (n + 1)) in
-        check (not (begins blocked));
+        check ~label:"protocol assertion 38" (not (begins blocked));
         let t = acknowledge n t in
         let t, duplicate =
           host t
@@ -539,13 +575,13 @@ let replacement_lost_ack =
                ~attempt:("attempt" ^ string_of_int n)
                ~version:(string_of_int n) ())
         in
-        check (duplicate = []);
+        check ~label:"protocol assertion 39" (duplicate = []);
         let t = replace t in
         let t, next = host t (assignment (n + 1)) in
-        check (begins next);
+        check ~label:"protocol assertion 40" (begins next);
         let t, _ = host t (result_ack ()) in
         let _, still_busy = host t (assignment (n + 2)) in
-        check (not (begins still_busy));
+        check ~label:"protocol assertion 41" (not (begins still_busy));
         true
       with _ -> false)
 
@@ -566,20 +602,20 @@ let replacement_unfinished =
           else t
         in
         let t = replace t |> replace in
-        check (P.recovery_pending t);
+        check ~label:"protocol assertion 42" (P.recovery_pending t);
         let _, replay = host t (execute ()) in
-        check (not (begins replay));
+        check ~label:"protocol assertion 43" (not (begins replay));
         let _, blocked = host t (assignment 2) in
-        check (not (begins blocked));
+        check ~label:"protocol assertion 44" (not (begins blocked));
         let _, illegal = complete t in
-        check (not (result illegal));
+        check ~label:"protocol assertion 45" (not (result illegal));
         let t, outputs = P.step t P.Recover_unfinished in
-        check (not (P.recovery_pending t));
-        check
+        check ~label:"protocol assertion 46" (not (P.recovery_pending t));
+        check ~label:"protocol assertion 47"
           (List.exists (function P.Recover _ -> true | _ -> false) outputs);
-        check (not (begins outputs));
+        check ~label:"protocol assertion 48" (not (begins outputs));
         let t, duplicate = P.step t P.Recover_unfinished in
-        check
+        check ~label:"protocol assertion 49"
           (not
              (List.exists
                 (function P.Recover _ -> true | _ -> false)
@@ -601,13 +637,13 @@ let replacement_unfinished =
                  renewal_id = None;
                })
         in
-        check (result output);
+        check ~label:"protocol assertion 50" (result output);
         let t, _ = host t (result_ack ~version ()) in
         let _, next =
           host (replace t)
             (execute ~seq:"2" ~operation:"op2" ~attempt:"attempt2" ~version ())
         in
-        check (begins next);
+        check ~label:"protocol assertion 51" (begins next);
         true
       with _ -> false)
 
@@ -659,8 +695,9 @@ let invalid_receipts =
             | Error _ -> ()
             | Ok binding ->
                 let state, output = P.step (P.initial ()) (P.Host binding) in
-                check (P.is_stopped state && not (begins output));
-                check
+                check ~label:"protocol assertion 52"
+                  (P.is_stopped state && not (begins output));
+                check ~label:"protocol assertion 53"
                   (not
                      (List.exists
                         (function P.Send (P.Ready _) -> true | _ -> false)
@@ -683,7 +720,8 @@ let invalid_receipts =
         in
         let t, _ = host (P.initial ()) (resume ~mutate:changed t) in
         let _, altered = host t (assignment 3) in
-        check ((not (begins altered)) && not (result altered));
+        check ~label:"protocol assertion 54"
+          ((not (begins altered)) && not (result altered));
         true
       with _ -> false)
 
@@ -697,16 +735,16 @@ let replacement_renewal =
         in
         let t = replace (acknowledge 1 t) in
         let _, blocked = host t (assignment 2) in
-        check (not (begins blocked));
+        check ~label:"protocol assertion 55" (not (begins blocked));
         let request =
           execute ~seq:"2" ~operation:"op2" ~attempt:"attempt2" ~version:"1"
             ~renewal:(`String "receipt") ~renewed:true ()
         in
         let t, output = host t request in
-        check (begins output);
+        check ~label:"protocol assertion 56" (begins output);
         let t = replace t in
         let _, replay = host t request in
-        check (not (begins replay));
+        check ~label:"protocol assertion 57" (not (begins replay));
         let t, _ = P.step t P.Recover_unfinished in
         let t = finish_assignment 2 t |> acknowledge 2 |> replace in
         let _, reused =
@@ -714,7 +752,7 @@ let replacement_renewal =
             (execute ~seq:"3" ~operation:"op3" ~attempt:"attempt3" ~version:"2"
                ~renewal:(`String "receipt") ~renewed:true ())
         in
-        check (not (begins reused));
+        check ~label:"protocol assertion 58" (not (begins reused));
         true
       with _ -> false)
 
@@ -731,8 +769,8 @@ let bound_receipt_pair =
               Yojson.Safe.to_string (edit_field key value binding) ^ "\n"
             in
             let t, outputs = host (P.initial ()) line in
-            check (P.is_stopped t);
-            check
+            check ~label:"protocol assertion 59" (P.is_stopped t);
+            check ~label:"protocol assertion 60"
               (not
                  (List.exists
                     (function
@@ -775,7 +813,8 @@ let bound_receipt_pair =
             | Error _ -> ()
             | Ok binding ->
                 let t, output = P.step (P.initial ()) (P.Host binding) in
-                check (P.is_stopped t && not (begins output)))
+                check ~label:"protocol assertion 61"
+                  (P.is_stopped t && not (begins output)))
           malformed;
         true
       with _ -> false)
@@ -803,17 +842,18 @@ let committed_before_delivery =
                  renewal_id = None;
                })
         in
-        check (not (result blocked));
+        check ~label:"protocol assertion 62" (not (result blocked));
         let replacement = replace committed in
-        check (P.state_version replacement = Some 1L);
+        check ~label:"protocol assertion 63"
+          (P.state_version replacement = Some 1L);
         let _, replay = host replacement (execute ()) in
-        check (not (begins replay));
+        check ~label:"protocol assertion 64" (not (begins replay));
         let terminal = finish_assignment 1 running in
         let acknowledged = acknowledge 1 terminal in
         let _, blocked = host terminal (assignment 2) in
-        check (not (begins blocked));
+        check ~label:"protocol assertion 65" (not (begins blocked));
         let _, allowed = host (replace acknowledged) (assignment 2) in
-        check (begins allowed);
+        check ~label:"protocol assertion 66" (begins allowed);
         let missing =
           match Yojson.Safe.from_string (bind ()) with
           | `Assoc fields ->
@@ -822,7 +862,8 @@ let committed_before_delivery =
               ^ "\n"
           | _ -> ""
         in
-        check (match P.decode missing with Error _ -> true | Ok _ -> false);
+        check ~label:"protocol assertion 67"
+          (match P.decode missing with Error _ -> true | Ok _ -> false);
         true
       with _ -> false)
 
@@ -843,6 +884,7 @@ let () =
       acks;
       renewal;
       cancellation;
+      active_shutdown;
       interleavings;
       boundaries;
       exact_ack_replay;

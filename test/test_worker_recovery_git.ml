@@ -54,6 +54,8 @@ let () =
     Onton_test_support.Branch_reconcile_git_fixture.make_runtime ()
   in
   let patch_id = Onton_test_support.Branch_reconcile_git_fixture.id in
+  Runtime.update_orchestrator runtime (fun orch ->
+      Orchestrator.set_llm_session_id orch patch_id (Some "lost-conversation"));
   let agent =
     Runtime.read runtime (fun snap ->
         Orchestrator.agent snap.Runtime.orchestrator patch_id)

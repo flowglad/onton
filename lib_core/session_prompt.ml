@@ -8,11 +8,13 @@ let create ~context ~turn = { context; turn }
 let render ~resume_session t =
   match resume_session with None -> t.context ^ t.turn | Some _ -> t.turn
 
+type patch_revision = Absent | Revision of string | Unavailable
+
 type recovery_context = {
   requirements : string;
   operation : string;
   guidance : string list;
-  patch_revision : string option;
+  patch_revision : patch_revision;
   base_revision : string;
 }
 
@@ -39,5 +41,8 @@ let render_recovery context =
   ^ section "Outstanding operation" context.operation
   ^ section "Current guidance" guidance
   ^ section "Observed patch revision"
-      (Option.value context.patch_revision ~default:"absent")
+      (match context.patch_revision with
+      | Absent -> "absent"
+      | Revision revision -> revision
+      | Unavailable -> "unavailable")
   ^ section "Observed base revision" context.base_revision

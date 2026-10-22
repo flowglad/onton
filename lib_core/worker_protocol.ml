@@ -12,11 +12,18 @@ type operation = {
   assignment_seq : int64;
 }
 
+type phase = Start | Respond
+
 type operation_kind =
-  | Session of { phase : string; kind : string option; turn : string }
+  | Session of {
+      phase : phase;
+      kind : Types.Operation_kind.t option;
+      turn : string;
+    }
   | Reconcile
 
 type recovery_mode = Retained_workspace | Lost_workspace
+type renewal = Ordinary | Renewed of string
 
 type result_status =
   | Completed_ok
@@ -41,8 +48,7 @@ type execute_request = {
   work : operation_kind;
   guidance : string;
   recovery_mode : recovery_mode;
-  renewal_id : string option;
-  renewed_intent : bool;
+  renewal : renewal;
 }
 
 type host_message =
@@ -215,6 +221,24 @@ let optional_text xs k =
   | Some (`String s) when valid_text s -> Some (Some s)
   | _ -> None
 
+let phase_of_string = function
+  | "start" -> Some Start
+  | "respond" -> Some Respond
+  | _ -> None
+
+let phase_string = function Start -> "start" | Respond -> "respond"
+
+let kind_of_label = function
+  | "uncommitted-changes" -> Some Types.Operation_kind.Uncommitted_changes
+  | "rebase" -> Some Types.Operation_kind.Rebase
+  | "human" -> Some Types.Operation_kind.Human
+  | "merge-conflict" -> Some Types.Operation_kind.Merge_conflict
+  | "ci" -> Some Types.Operation_kind.Ci
+  | "review-comments" -> Some Types.Operation_kind.Review_comments
+  | "pr-body" -> Some Types.Operation_kind.Pr_body
+  | "findings" -> Some Types.Operation_kind.Findings
+  | _ -> None
+
 let required_identity xs =
   match (id xs "run_id", id xs "patch_id") with
   | Some run_id, Some patch_id -> Some { run_id; patch_id }
@@ -333,24 +357,19 @@ let rec decode line =
                               | ( Some (`String "session"),
                                   Some phase,
                                   Some kind,
-                                  Some turn )
-                                when List.mem phase [ "start"; "respond" ]
-                                     &&
-                                     match kind with
-                                     | None -> true
-                                     | Some name ->
-                                         List.mem name
-                                           [
-                                             "uncommitted-changes";
-                                             "rebase";
-                                             "human";
-                                             "merge-conflict";
-                                             "ci";
-                                             "review-comments";
-                                             "pr-body";
-                                             "findings";
-                                           ] ->
-                                  Some (Session { phase; kind; turn })
+                                  Some turn ) -> (
+                                  match
+                                    ( phase_of_string phase,
+                                      match kind with
+                                      | None -> Some None
+                                      | Some label ->
+                                          Option.map
+                                            (fun kind -> Some kind)
+                                            (kind_of_label label) )
+                                  with
+                                  | Some phase, Some kind ->
+                                      Some (Session { phase; kind; turn })
+                                  | _ -> None)
                               | _ -> None)
                           | None -> (
                               match fields [ "type" ] j with
@@ -381,19 +400,33 @@ let rec decode line =
                         Some guidance,
                         Some recovery_mode,
                         Some renewal_id,
-                        Some (`Bool renewed_intent) ) ->
-                        Ok
-                          (Execute
-                             {
-                               identity;
-                               operation;
-                               expected_state_version;
-                               work;
-                               guidance;
-                               recovery_mode;
-                               renewal_id;
-                               renewed_intent;
-                             })
+                        Some (`Bool renewed_intent) ) -> (
+                        match (renewal_id, renewed_intent) with
+                        | None, false ->
+                            Ok
+                              (Execute
+                                 {
+                                   identity;
+                                   operation;
+                                   expected_state_version;
+                                   work;
+                                   guidance;
+                                   recovery_mode;
+                                   renewal = Ordinary;
+                                 })
+                        | Some id, true ->
+                            Ok
+                              (Execute
+                                 {
+                                   identity;
+                                   operation;
+                                   expected_state_version;
+                                   work;
+                                   guidance;
+                                   recovery_mode;
+                                   renewal = Renewed id;
+                                 })
+                        | None, true | Some _, false -> invalid)
                     | _ -> invalid)
                 | _ -> invalid)
             | Some (`String "cancel"), Some identity -> (
@@ -723,6 +756,7 @@ let stop t = ({ t with stopped = true }, [ Stop ])
 
 type event =
   | Host of host_message
+  | Report_observation of string
   | Propose_checkpoint of { proposal_id : string; capsule : string }
   | Finish of {
       status : result_status;
@@ -794,14 +828,8 @@ let rec step t event =
             (t, error t "binding changed" @ e))
     | Host
         (Execute
-           ({
-              identity;
-              operation;
-              expected_state_version;
-              renewal_id;
-              renewed_intent;
-              _;
-            } as request)) -> (
+           ({ identity; operation; expected_state_version; renewal; _ } as
+            request)) -> (
         if not (bound t identity) then (t, error t "unbound identity")
         else
           match
@@ -847,12 +875,12 @@ let rec step t event =
                     && operation.assignment_seq = Int64.succ n
               in
               let renewal_ok =
-                match (t.attention, renewal_id) with
-                | None, None -> not renewed_intent
-                | Some expected, Some supplied ->
-                    renewed_intent && expected = supplied
+                match (t.attention, renewal) with
+                | None, Ordinary -> true
+                | Some expected, Renewed supplied ->
+                    expected = supplied
                     && not (List.mem supplied t.consumed_renewals)
-                | _ -> false
+                | None, Renewed _ | Some _, Ordinary -> false
               in
               if
                 t.active <> None || (not next)
@@ -880,9 +908,9 @@ let rec step t event =
                       :: t.receipts;
                     attention = None;
                     consumed_renewals =
-                      (match renewal_id with
-                      | None -> t.consumed_renewals
-                      | Some x -> x :: t.consumed_renewals);
+                      (match renewal with
+                      | Ordinary -> t.consumed_renewals
+                      | Renewed x -> x :: t.consumed_renewals);
                   }
                 in
                 ( t,
@@ -969,8 +997,18 @@ let rec step t event =
           match t.active with
           | None -> stop t
           | Some a ->
-              ( { t with active = Some { a with cancelled = true } },
-                [ Cancel_active ] ))
+              let t, outputs =
+                stop { t with active = Some { a with cancelled = true } }
+              in
+              (t, Cancel_active :: outputs))
+    | Report_observation text -> (
+        match (t.identity, t.active) with
+        | Some identity, Some a
+          when (not t.stopped) && a.terminal = None && valid_text text ->
+            ( t,
+              [ Send (Observation { identity; operation = a.operation; text }) ]
+            )
+        | _ -> (t, error t "observation not admissible"))
     | Propose_checkpoint { proposal_id; capsule } -> (
         match (t.identity, t.active) with
         | Some identity, Some a
@@ -1012,7 +1050,8 @@ let rec step t event =
                && valid_text diagnostics
                &&
                match (status, renewal_id) with
-               | Attention, Some x -> valid_id x
+               | Attention, Some x ->
+                   valid_id x && not (List.mem x t.consumed_renewals)
                | Attention, None -> false
                | ( ( Completed_ok | Completed_no_commits | Failed | Cancelled
                    | Retryable | Merged_observed ),
@@ -1166,8 +1205,7 @@ let request_json
       work;
       guidance;
       recovery_mode;
-      renewal_id;
-      renewed_intent;
+      renewal;
     } =
   let work =
     match work with
@@ -1176,8 +1214,8 @@ let request_json
         obj
           [
             ("type", s "session");
-            ("phase", s phase);
-            ("kind", opt kind);
+            ("phase", s (phase_string phase));
+            ("kind", opt (Option.map Types.Operation_kind.to_label kind));
             ("turn", s turn);
           ]
   in
@@ -1192,8 +1230,10 @@ let request_json
             (match recovery_mode with
             | Retained_workspace -> "retained_workspace"
             | Lost_workspace -> "lost_workspace") );
-        ("renewal_id", opt renewal_id);
-        ("renewed_intent", `Bool renewed_intent);
+        ( "renewal_id",
+          opt (match renewal with Ordinary -> None | Renewed id -> Some id) );
+        ( "renewed_intent",
+          `Bool (match renewal with Ordinary -> false | Renewed _ -> true) );
       ])
 
 let admission_receipt (t : t) =

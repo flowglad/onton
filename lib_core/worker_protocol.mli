@@ -14,11 +14,18 @@ type operation = {
   assignment_seq : int64;
 }
 
+type phase = Start | Respond
+
 type operation_kind =
-  | Session of { phase : string; kind : string option; turn : string }
+  | Session of {
+      phase : phase;
+      kind : Types.Operation_kind.t option;
+      turn : string;
+    }
   | Reconcile
 
 type recovery_mode = Retained_workspace | Lost_workspace
+type renewal = Ordinary | Renewed of string
 
 type execute_request = {
   identity : identity;
@@ -27,8 +34,7 @@ type execute_request = {
   work : operation_kind;
   guidance : string;
   recovery_mode : recovery_mode;
-  renewal_id : string option;
-  renewed_intent : bool;
+  renewal : renewal;
 }
 
 type admission
@@ -110,6 +116,7 @@ val recovery_pending : t -> bool
 
 type event =
   | Host of host_message
+  | Report_observation of string
   | Propose_checkpoint of { proposal_id : string; capsule : string }
   | Finish of {
       status : result_status;

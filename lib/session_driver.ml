@@ -359,7 +359,7 @@ struct
         (match result with
         | Branch_reconcile.Repair_completed _ ->
             Option.iter !captured_session ~f:(fun session_id ->
-                if Mode.strict then
+                if Mode.strict then (
                   checkpoint_snapshot "repair conversation" (fun snap ->
                       let orchestrator =
                         Orchestrator.set_llm_session_id
@@ -367,7 +367,13 @@ struct
                         |> fun orch ->
                         Orchestrator.clear_session_fallback orch patch_id
                       in
-                      ({ snap with Runtime.orchestrator }, ()))
+                      let transcripts = Hashtbl.copy snap.transcripts in
+                      Hashtbl.set transcripts ~key:patch_id
+                        ~data:(Buffer.contents text_buf);
+                      ({ snap with Runtime.orchestrator; transcripts }, ()));
+                  match C.record_session_id ~patch_id ~session_id with
+                  | Ok () -> ()
+                  | Error reason -> raise (Checkpoint_failure reason))
                 else
                   let snapshot_path =
                     Project_store.snapshot_path Env.project_name
@@ -1451,7 +1457,6 @@ module type RECOVERY_S = sig
     delivery_mode:Patch_decision.delivery_mode ->
     patch_id:Types.Patch_id.t ->
     prompt:prompt ->
-    agent:Patch_agent.t ->
     on_pr_detected:(Types.Pr_number.t -> unit) ->
     backend:Llm_backend.t ->
     complexity:int option ->
@@ -1478,8 +1483,8 @@ module Make_with_checkpoint
   include Driver
 
   let run_recovery_owned ~write_owner ~request ~renewal_id ?observe_forge
-      ~recovery ~kind ~delivery_mode ~patch_id ~prompt ~agent:_ ~on_pr_detected
-      ~backend ~complexity () =
+      ~recovery ~kind ~delivery_mode ~patch_id ~prompt ~on_pr_detected ~backend
+      ~complexity () =
     match
       WS.recover_owned ~owner:write_owner ~request ~renewal_id ?observe_forge ()
     with

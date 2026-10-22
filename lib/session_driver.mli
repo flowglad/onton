@@ -148,7 +148,6 @@ module type RECOVERY_S = sig
     delivery_mode:Patch_decision.delivery_mode ->
     patch_id:Types.Patch_id.t ->
     prompt:prompt ->
-    agent:Patch_agent.t ->
     on_pr_detected:(Types.Pr_number.t -> unit) ->
     backend:Llm_backend.t ->
     complexity:int option ->

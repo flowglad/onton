@@ -8,7 +8,7 @@ open Onton_test_support.Branch_reconcile_git_fixture
 let check label condition = if not condition then failwith label
 
 let () =
-  Eio_main.run @@ fun _ ->
+  Eio_main.run @@ fun env ->
   let runtime = make_runtime () in
   let before = Runtime.read runtime (fun snap -> snap.Runtime.orchestrator) in
   let entered, signal_entered = Eio.Promise.create () in
@@ -49,7 +49,6 @@ let () =
   check "rejection retains prior memory"
     (Runtime.read runtime (fun snap -> snap.Runtime.orchestrator == after));
   print_endline "execution checkpoint barrier: acknowledged, rejected, delayed";
-  Eio_main.run @@ fun env ->
   let runtime = make_runtime () in
   let calls = ref 0 in
   let module W = struct
@@ -90,9 +89,15 @@ let () =
     let project_name = "checkpoint-test"
     let user_config = { User_config.on_worktree_create = None }
   end in
+  let checkpoint_rejected = ref false in
   let module C = struct
-    let persist _ = Error "host rejected"
-    let record_session_id ~patch_id:_ ~session_id:_ = Error "host rejected"
+    let persist _ =
+      checkpoint_rejected := true;
+      Error "host rejected"
+
+    let record_session_id ~patch_id:_ ~session_id:_ =
+      checkpoint_rejected := true;
+      Error "host rejected"
   end in
   let module WS = Worktree_setup.Make_with_checkpoint (C) (W) (Env) in
   let refused =
@@ -100,10 +105,13 @@ let () =
       Runtime.with_patch_ownership runtime ~patch_id:id (fun owner ->
           ignore (WS.ensure_owned ~owner ());
           false)
-    with _ -> true
+    with
+    | WS.Checkpoint_failed _ -> !checkpoint_rejected
+    | _ -> false
   in
   check "strict setup refuses failed checkpoint" refused;
   check "strict setup stops before worktree effects" (!calls = 0);
+  checkpoint_rejected := false;
   let module Session_env = struct
     include Env
 
@@ -152,7 +160,7 @@ let () =
                ~on_pr_detected:(fun _ -> ())
                ~backend ~complexity:None);
           false)
-    with _ -> true
+    with _ -> !checkpoint_rejected
   in
   check "strict session refuses failed setup checkpoint" refused;
   check "strict session does not spawn backend" (!backend_calls = 0);

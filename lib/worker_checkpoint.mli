@@ -5,6 +5,11 @@ type t
 (** Versioned, patch-scoped execution state. Admission receipts are stored by
     the host beside these exact capsule bytes, never recursively inside them. *)
 
+(** This codec remains in [lib] because it reuses the effectful [Persistence]
+    patch-agent snapshot codec. Moving it to [lib_core] would require moving
+    that existing codec and its migration dependencies across the library
+    boundary. Its decoder still performs no I/O. *)
+
 val decode : Yojson.Safe.t -> (t, string) result
 val encode : t -> Yojson.Safe.t
 val to_string : t -> string
@@ -41,10 +46,10 @@ val status_name : Worker_protocol.result_status -> string
 
 val advance :
   t ->
-  version:int64 ->
   operation:Worker_protocol.operation ->
   guidance:string ->
   workspace_id:string option ->
   agent:Patch_agent.t ->
   terminal:(Worker_protocol.result_status * string * string option) option ->
-  t
+  (t, string) result
+(** Advances exactly one state version, rejecting counter exhaustion. *)
