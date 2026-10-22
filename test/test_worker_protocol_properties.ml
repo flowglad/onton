@@ -11,7 +11,7 @@ let wire kind extra =
   Yojson.Safe.to_string
     (`Assoc
        ([
-          ("version", `Int 1);
+          ("version", `Int 2);
           ("type", `String kind);
           ("run_id", `String "run");
           ("patch_id", `String "patch");
@@ -28,6 +28,7 @@ let bind ?(attention = `Null) () =
       ("capsule", `String "{}");
       ("state_version", `String "0");
       ("attention_id", attention);
+      ("admission", `Assoc [ ("mode", `String "fresh") ]);
     ]
 
 let execute ?(operation = "op1") ?(attempt = "attempt1") ?(seq = "1")
@@ -117,7 +118,7 @@ let malformed =
         [
           "{}";
           "{}\n";
-          "{\"version\":1,\"version\":1}\n";
+          "{\"version\":2,\"version\":2}\n";
           String.make (1024 * 1024) 'x' ^ "\n";
           "\255\n";
           execute ~seq:"01" ();
@@ -140,7 +141,7 @@ let malformed =
 let incompatible =
   QCheck2.Test.make ~name:"unsupported version is distinct" ~count:1
     QCheck2.Gen.unit (fun () ->
-      match P.decode "{\"version\":2,\"type\":\"bind\"}\n" with
+      match P.decode "{\"version\":1,\"type\":\"bind\"}\n" with
       | Error (P.Incompatible _) -> true
       | _ -> false)
 
@@ -286,7 +287,7 @@ let boundaries =
         Yojson.Safe.to_string
           (`Assoc
              [
-               ("version", `Int 1);
+               ("version", `Int 2);
                ("type", `String "shutdown");
                ("run_id", `String name);
                ("patch_id", `String "patch");
@@ -301,7 +302,7 @@ let boundaries =
       &&
       match
         P.decode
-          "{\"version\":1,\"type\":\"shutdown\",\"run_id\":\"r\",\"patch_id\":\"p\",\"extra\":0}\n"
+          "{\"version\":2,\"type\":\"shutdown\",\"run_id\":\"r\",\"patch_id\":\"p\",\"extra\":0}\n"
       with
       | Error _ -> true
       | Ok _ -> false)
@@ -328,6 +329,7 @@ let exact_ack_replay =
             ("capsule", `String "{}");
             ("state_version", `String "0");
             ("attention_id", `Null);
+            ("admission", `Assoc [ ("mode", `String "fresh") ]);
           ]
       in
       let t, e = host t changed in
@@ -391,6 +393,7 @@ let generated_wire_state =
             ("capsule", `String "{}");
             ("state_version", `String (string_of_int version));
             ("attention_id", `Null);
+            ("admission", `Assoc [ ("mode", `String "fresh") ]);
           ]
       in
       let t, _ = host (P.initial ()) binding in
@@ -412,9 +415,425 @@ let generated_wire_state =
           List.assoc_opt "type" fields = Some (`String "protocol_error")
       | _ -> false)
 
+let receipt t =
+  match P.admission_receipt t with
+  | Some json -> json
+  | None -> failwith "unbound"
+
+let resume ?(mutate = Fun.id) t =
+  let admission = mutate (receipt t) in
+  let fields = match admission with `Assoc fields -> fields | _ -> [] in
+  let get key fallback =
+    Option.value (List.assoc_opt key fields) ~default:fallback
+  in
+  wire "bind"
+    [
+      ("worker_id", `String "replacement");
+      ("workspace_id", `String "space");
+      ("context", `String "context");
+      ("capsule", get "capsule" (`String "{}"));
+      ("state_version", get "state_version" (`String "0"));
+      ("attention_id", get "attention_id" `Null);
+      ("admission", admission);
+    ]
+
+let replace t = fst (host (P.initial ()) (resume t))
+
+let assignment n =
+  execute ~seq:(string_of_int n)
+    ~operation:("op" ^ string_of_int n)
+    ~attempt:("attempt" ^ string_of_int n)
+    ~version:(string_of_int (n - 1))
+    ()
+
+let finish_assignment n t =
+  let t, _ =
+    P.step t (P.Propose_checkpoint { proposal_id = "cp"; capsule = "capsule" })
+  in
+  let t, _ =
+    host t
+      (checkpoint_ack ~seq:(string_of_int n)
+         ~operation:("op" ^ string_of_int n)
+         ~attempt:("attempt" ^ string_of_int n)
+         ~version:(string_of_int n) ())
+  in
+  let t, _ = P.step t P.Cleanup_complete in
+  let t, output =
+    P.step t
+      (P.Finish
+         { status = P.Completed_ok; diagnostics = "done"; renewal_id = None })
+  in
+  check (result output);
+  t
+
+let acknowledge n t =
+  fst
+    (host t
+       (result_ack ~seq:(string_of_int n)
+          ~operation:("op" ^ string_of_int n)
+          ~attempt:("attempt" ^ string_of_int n)
+          ~version:(string_of_int n) ()))
+
+let completed_history n =
+  let rec loop t i =
+    if i > n then t
+    else
+      let t, output = host t (assignment i) in
+      check (begins output);
+      loop (acknowledge i (finish_assignment i t)) (i + 1)
+  in
+  loop (initial ()) 1
+
+let replacement_continuity =
+  QCheck2.Test.make
+    ~name:"replacement preserves sequence, reservations and exact replay"
+    ~count:100
+    QCheck2.Gen.(int_range 1 30)
+    (fun n ->
+      try
+        let original = completed_history n in
+        let t = replace original in
+        check (not (P.is_stopped t));
+        check (receipt t = receipt original);
+        let _, replay = host t (assignment n) in
+        check ((not (begins replay)) && result replay);
+        let _, old = host t (assignment 1) in
+        check (not (begins old));
+        let _, reset = host t (execute ~version:(string_of_int n) ()) in
+        check (not (begins reset));
+        let _, reused =
+          host t
+            (execute ~operation:"op1" ~attempt:"new-attempt"
+               ~seq:(string_of_int (n + 1))
+               ~version:(string_of_int n) ())
+        in
+        check (not (begins reused));
+        let _, next = host t (assignment (n + 1)) in
+        check (begins next);
+        true
+      with _ -> false)
+
+let replacement_lost_ack =
+  QCheck2.Test.make
+    ~name:
+      "lost result ACK blocks successor until exact ACK, including repeated \
+       replacements"
+    ~count:100
+    QCheck2.Gen.(int_range 1 20)
+    (fun n ->
+      try
+        let t, _ = host (completed_history (n - 1)) (assignment n) in
+        let t = replace (finish_assignment n t) |> replace in
+        let _, blocked = host t (assignment (n + 1)) in
+        check (not (begins blocked));
+        let _, replay = host t (assignment n) in
+        check (result replay && not (begins replay));
+        let t, _ = host t (result_ack ~version:"0" ()) in
+        let _, blocked = host t (assignment (n + 1)) in
+        check (not (begins blocked));
+        let t = acknowledge n t in
+        let t, duplicate =
+          host t
+            (result_ack ~seq:(string_of_int n)
+               ~operation:("op" ^ string_of_int n)
+               ~attempt:("attempt" ^ string_of_int n)
+               ~version:(string_of_int n) ())
+        in
+        check (duplicate = []);
+        let t = replace t in
+        let t, next = host t (assignment (n + 1)) in
+        check (begins next);
+        let t, _ = host t (result_ack ()) in
+        let _, still_busy = host t (assignment (n + 2)) in
+        check (not (begins still_busy));
+        true
+      with _ -> false)
+
+let replacement_unfinished =
+  QCheck2.Test.make
+    ~name:"interrupted attempt never begins again and has explicit recovery"
+    ~count:100 QCheck2.Gen.bool (fun checkpoint_committed ->
+      try
+        let t = admitted () in
+        let t =
+          if checkpoint_committed then
+            let t, _ =
+              P.step t
+                (P.Propose_checkpoint
+                   { proposal_id = "cp"; capsule = "capsule" })
+            in
+            fst (host t (checkpoint_ack ()))
+          else t
+        in
+        let t = replace t |> replace in
+        let _, replay = host t (execute ()) in
+        check (not (begins replay));
+        let _, blocked = host t (assignment 2) in
+        check (not (begins blocked));
+        let _, illegal = complete t in
+        check (not (result illegal));
+        let t, outputs = P.step t P.Recover_unfinished in
+        check
+          (List.exists (function P.Recover _ -> true | _ -> false) outputs);
+        check (not (begins outputs));
+        let t, duplicate = P.step t P.Recover_unfinished in
+        check
+          (not
+             (List.exists
+                (function P.Recover _ -> true | _ -> false)
+                duplicate));
+        let version = if checkpoint_committed then "2" else "1" in
+        let t, _ =
+          P.step t
+            (P.Propose_checkpoint
+               { proposal_id = "recovery"; capsule = "capsule" })
+        in
+        let t, _ = host t (checkpoint_ack ~proposal:"recovery" ~version ()) in
+        let t, _ = P.step t P.Cleanup_complete in
+        let t, output =
+          P.step t
+            (P.Finish
+               {
+                 status = P.Retryable;
+                 diagnostics = "observed effects";
+                 renewal_id = None;
+               })
+        in
+        check (result output);
+        let t, _ = host t (result_ack ~version ()) in
+        let _, next =
+          host (replace t)
+            (execute ~seq:"2" ~operation:"op2" ~attempt:"attempt2" ~version ())
+        in
+        check (begins next);
+        true
+      with _ -> false)
+
+let edit_field key value = function
+  | `Assoc fields -> `Assoc ((key, value) :: List.remove_assoc key fields)
+  | json -> json
+
+let edit_entries f = function
+  | `Assoc fields as json -> (
+      match List.assoc_opt "entries" fields with
+      | Some (`List entries) -> edit_field "entries" (`List (f entries)) json
+      | _ -> json)
+  | json -> json
+
+let invalid_receipts =
+  QCheck2.Test.make
+    ~name:"malformed and inconsistent receipts fail before ready or execution"
+    ~count:1 QCheck2.Gen.unit (fun () ->
+      try
+        let t = completed_history 3 in
+        let mutations =
+          [
+            edit_field "state_version" (`String "0");
+            edit_field "initial_state_version" (`String "1");
+            edit_field "initial_attention_id" (`String "unknown");
+            edit_field "entries" (`List []);
+            edit_entries List.rev;
+            edit_entries (function x :: xs -> x :: x :: xs | [] -> []);
+            edit_entries
+              (List.map (edit_field "result_acknowledged" (`Bool false)));
+            edit_entries (List.map (edit_field "terminal" `Null));
+            edit_field "unknown" `Null;
+            edit_entries
+              (List.map (fun entry ->
+                   match entry with
+                   | `Assoc fields -> (
+                       match List.assoc_opt "request" fields with
+                       | Some request ->
+                           edit_field "request"
+                             (edit_field "run_id" (`String "other") request)
+                             entry
+                       | None -> entry)
+                   | _ -> entry));
+          ]
+        in
+        List.iter
+          (fun mutate ->
+            match P.decode (resume ~mutate t) with
+            | Error _ -> ()
+            | Ok binding ->
+                let state, output = P.step (P.initial ()) (P.Host binding) in
+                check (P.is_stopped state && not (begins output));
+                check
+                  (not
+                     (List.exists
+                        (function P.Send (P.Ready _) -> true | _ -> false)
+                        output)))
+          mutations;
+        (* Receipts are authenticated host assertions, not signatures. A changed
+         self-consistent history still cannot authorize the old request. *)
+        let changed =
+          edit_entries
+            (List.map (fun entry ->
+                 match entry with
+                 | `Assoc fields -> (
+                     match List.assoc_opt "request" fields with
+                     | Some request ->
+                         edit_field "request"
+                           (edit_field "guidance" (`String "changed") request)
+                           entry
+                     | None -> entry)
+                 | _ -> entry))
+        in
+        let t, _ = host (P.initial ()) (resume ~mutate:changed t) in
+        let _, altered = host t (assignment 3) in
+        check ((not (begins altered)) && not (result altered));
+        true
+      with _ -> false)
+
+let replacement_renewal =
+  QCheck2.Test.make
+    ~name:"replacement preserves attention and consumed renewal receipts"
+    ~count:1 QCheck2.Gen.unit (fun () ->
+      try
+        let t, _ =
+          complete ~status:P.Attention ~renewal:"receipt" (admitted ())
+        in
+        let t = replace (acknowledge 1 t) in
+        let _, blocked = host t (assignment 2) in
+        check (not (begins blocked));
+        let request =
+          execute ~seq:"2" ~operation:"op2" ~attempt:"attempt2" ~version:"1"
+            ~renewal:(`String "receipt") ~renewed:true ()
+        in
+        let t, output = host t request in
+        check (begins output);
+        let t = replace t in
+        let _, replay = host t request in
+        check (not (begins replay));
+        let t, _ = P.step t P.Recover_unfinished in
+        let t = finish_assignment 2 t |> acknowledge 2 |> replace in
+        let _, reused =
+          host t
+            (execute ~seq:"3" ~operation:"op3" ~attempt:"attempt3" ~version:"2"
+               ~renewal:(`String "receipt") ~renewed:true ())
+        in
+        check (not (begins reused));
+        true
+      with _ -> false)
+
+let bound_receipt_pair =
+  QCheck2.Test.make
+    ~name:"resume binds exact committed capsule, version, attention and patch"
+    ~count:1 QCheck2.Gen.unit (fun () ->
+      try
+        let t = completed_history 3 in
+        let binding = Yojson.Safe.from_string (resume t) in
+        List.iter
+          (fun (key, value) ->
+            let line =
+              Yojson.Safe.to_string (edit_field key value binding) ^ "\n"
+            in
+            let t, outputs = host (P.initial ()) line in
+            check (P.is_stopped t);
+            check
+              (not
+                 (List.exists
+                    (function
+                      | P.Send (P.Ready _) | P.Begin _ -> true | _ -> false)
+                    outputs)))
+          [
+            ("capsule", `String "different");
+            ("state_version", `String "4");
+            ("attention_id", `String "different");
+            ("patch_id", `String "different");
+          ];
+        let admission = receipt t in
+        let malformed =
+          [
+            edit_entries
+              (List.map (edit_field "result_acknowledged" `Null))
+              admission;
+            edit_entries
+              (List.map (edit_field "terminal" (`Assoc [])))
+              admission;
+            edit_field "initial_state_version" (`String "01") admission;
+            edit_entries
+              (List.map (fun entry ->
+                   match entry with
+                   | `Assoc fields -> (
+                       match List.assoc_opt "request" fields with
+                       | Some request ->
+                           edit_field "request"
+                             (edit_field "assignment_seq"
+                                (`String "9223372036854775807") request)
+                             entry
+                       | None -> entry)
+                   | _ -> entry))
+              admission;
+          ]
+        in
+        List.iter
+          (fun invalid ->
+            match P.decode (resume ~mutate:(fun _ -> invalid) t) with
+            | Error _ -> ()
+            | Ok binding ->
+                let t, output = P.step (P.initial ()) (P.Host binding) in
+                check (P.is_stopped t && not (begins output)))
+          malformed;
+        true
+      with _ -> false)
+
+let committed_before_delivery =
+  QCheck2.Test.make
+    ~name:
+      "host committed checkpoint and result ACK receipts survive lost delivery"
+    ~count:1 QCheck2.Gen.unit (fun () ->
+      try
+        let running = admitted () in
+        let pending, _ =
+          P.step running
+            (P.Propose_checkpoint { proposal_id = "cp"; capsule = "capsule" })
+        in
+        (* Pure prospective transition: host commits this receipt, but the live
+         worker is still at pending and has not received its ACK. *)
+        let committed, _ = host pending (checkpoint_ack ()) in
+        let _, blocked =
+          P.step pending
+            (P.Finish
+               {
+                 status = P.Completed_ok;
+                 diagnostics = "done";
+                 renewal_id = None;
+               })
+        in
+        check (not (result blocked));
+        let replacement = replace committed in
+        check (P.state_version replacement = Some 1L);
+        let _, replay = host replacement (execute ()) in
+        check (not (begins replay));
+        let terminal = finish_assignment 1 running in
+        let acknowledged = acknowledge 1 terminal in
+        let _, blocked = host terminal (assignment 2) in
+        check (not (begins blocked));
+        let _, allowed = host (replace acknowledged) (assignment 2) in
+        check (begins allowed);
+        let missing =
+          match Yojson.Safe.from_string (bind ()) with
+          | `Assoc fields ->
+              Yojson.Safe.to_string
+                (`Assoc (List.remove_assoc "admission" fields))
+              ^ "\n"
+          | _ -> ""
+        in
+        check (match P.decode missing with Error _ -> true | Ok _ -> false);
+        true
+      with _ -> false)
+
 let () =
   QCheck_base_runner.run_tests_main
     [
+      bound_receipt_pair;
+      committed_before_delivery;
+      replacement_continuity;
+      replacement_lost_ack;
+      replacement_unfinished;
+      invalid_receipts;
+      replacement_renewal;
       totality;
       malformed;
       incompatible;
