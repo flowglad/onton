@@ -297,6 +297,10 @@ let fixture () =
   Onton_test_support.Git_env.sh ~dir:"/"
     (Printf.sprintf "git clone --no-local -q %s %s" (Filename.quote origin)
        (Filename.quote managed));
+  Onton_test_support.Git_env.run_git ~cwd:managed
+    [ "config"; "user.name"; "Onton Worker Test" ];
+  Onton_test_support.Git_env.run_git ~cwd:managed
+    [ "config"; "user.email"; "worker-test@example.invalid" ];
   let gameplan = Filename.concat root "gameplan.yaml" in
   write_file gameplan
     "projectName: worker-protocol-test\n\

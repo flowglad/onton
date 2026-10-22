@@ -1,5 +1,5 @@
-(* @archlint.module state
-   @archlint.domain worker-checkpoint *)
+(* @archlint.module exempt
+   @archlint.exempt-reason effect-facade *)
 
 open Base
 open Types

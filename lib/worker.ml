@@ -1,5 +1,5 @@
 (* @archlint.module shell
-   @archlint.domain worker-transport *)
+   @archlint.domain worker-protocol *)
 
 open Onton_core
 

@@ -1,5 +1,5 @@
-(* @archlint.module shell
-   @archlint.domain worker-transport *)
+(* @archlint.module exempt
+   @archlint.exempt-reason effect-boundary *)
 
 open Onton
 open Onton_core

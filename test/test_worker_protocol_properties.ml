@@ -566,6 +566,7 @@ let replacement_unfinished =
           else t
         in
         let t = replace t |> replace in
+        check (P.recovery_pending t);
         let _, replay = host t (execute ()) in
         check (not (begins replay));
         let _, blocked = host t (assignment 2) in
@@ -573,6 +574,7 @@ let replacement_unfinished =
         let _, illegal = complete t in
         check (not (result illegal));
         let t, outputs = P.step t P.Recover_unfinished in
+        check (not (P.recovery_pending t));
         check
           (List.exists (function P.Recover _ -> true | _ -> false) outputs);
         check (not (begins outputs));
