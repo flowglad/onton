@@ -9,7 +9,7 @@ dune build @worker-protocol-smoke
 ONTON_WORKER_BINARY=/absolute/path/to/onton-worker dune build @worker-protocol-smoke --force
 ```
 
-The first command builds and drives `bin/worker.exe` through the public JSONL entry point. The override drives an explicitly supplied binary with the same harness, for the later exact-image gate. The smoke uses local bare Git repositories, separate clones, a fake Codex executable, and a host durability simulator; it does not require AWS or a GitHub credential. `dune build && dune runtest` runs the source-change gate. Ordinary `onton` is a separate executable.
+The first command builds and drives `bin/worker.exe` through the public JSONL entry point. The override drives an explicitly supplied binary with the same harness, for the later exact-image gate. The smoke uses local bare Git repositories, separate clones, a fake Codex executable, a local forge observation fixture, and a host durability simulator; it does not require AWS or a GitHub credential. `dune build && dune runtest` runs the source-change gate. Ordinary `onton` is a separate executable.
 
 The worker CLI is:
 
@@ -21,6 +21,8 @@ onton-worker --gameplan FILE --repo-root DIR --project-name NAME \
 The spawning wrapper provides the immutable gameplan file, managed repository root and workspace configuration. Defaults are `main`, `codex`, and a ten-second checkpoint acknowledgement timeout; the timeout must be greater than zero and at most 60 seconds. The worker reads Git credentials from the existing Git transport environment. Forge observations use `ONTON_GITHUB_TOKEN_FILE` (read again on each observation) or `GITHUB_TOKEN`. Missing or failed forge evidence yields a typed retryable result where merge status matters. No credentials are carried in protocol frames or capsules. The executable does not start the scheduler, poller, local control socket, or periodic persistence fiber.
 
 The public test uses `ONTON_WORKER_BINARY_DEFAULT` only as Dune's built-binary path. An explicit `ONTON_WORKER_BINARY` takes precedence. The test supplies `ONTON_SETSID_EXEC` for process-tree supervision.
+
+`ONTON_WORKER_FORGE_FIXTURE` is a local qualification hook supplied only to the smoke subprocess. Its file contains exactly `{"branch":"<assigned branch>","state":"merged|not_merged|unavailable"}`. The worker re-reads it for each forge observation, allowing the harness to change provider evidence between operations. Do not set it in a production host; absent this variable, the worker uses the GitHub client and renewable token path.
 
 ## Capsule v1
 

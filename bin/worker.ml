@@ -58,6 +58,20 @@ let github_token () =
       with _ -> "")
   | None -> Option.value (Sys.getenv_opt "GITHUB_TOKEN") ~default:""
 
+let fixture_forge ~branch path =
+  try
+    let json = Yojson.Safe.from_file path in
+    match json with
+    | `Assoc [ ("branch", `String named); ("state", `String state) ]
+      when String.equal named (Types.Branch.to_string branch) -> (
+        match state with
+        | "merged" -> Ok (Branch_reconcile.Forge_merged, None)
+        | "not_merged" -> Ok (Branch_reconcile.Forge_not_merged, None)
+        | "unavailable" -> Error "forge fixture evidence unavailable"
+        | _ -> Error "invalid forge fixture state")
+    | _ -> Error "invalid forge fixture observation"
+  with _ -> Error "forge fixture read failed"
+
 let () =
   let ( gameplan_path,
         repo_root,
@@ -87,25 +101,30 @@ let () =
     Backend_registry.get registry ~backend:backend_name ~model:None ~effort:None
   in
   let observe_forge ~branch =
-    let token = github_token () in
-    if String.length token = 0 then
-      Error "GitHub token unavailable for recovery observation"
-    else
-      let module Github =
-        (val Github.make ~net:(Eio.Stdenv.net system) ~clock ~token
-               ~owner:gameplan.repo_owner ~repo:gameplan.repo_name ~main_branch)
-      in
-      match Github.list_prs ~branch ~state:`All () with
-      | Error error -> Error (Github.show_error error)
-      | Ok prs -> (
-          match List.find_opt (fun (_, _, merged) -> merged) prs with
-          | Some (number, _, _) ->
-              Ok (Branch_reconcile.Forge_merged, Some number)
-          | None ->
-              Ok
-                ( Branch_reconcile.Forge_not_merged,
-                  Option.map (fun (number, _, _) -> number) (List.nth_opt prs 0)
-                ))
+    match Sys.getenv_opt "ONTON_WORKER_FORGE_FIXTURE" with
+    | Some path -> fixture_forge ~branch path
+    | None -> (
+        let token = github_token () in
+        if String.length token = 0 then
+          Error "GitHub token unavailable for recovery observation"
+        else
+          let module Github =
+            (val Github.make ~net:(Eio.Stdenv.net system) ~clock ~token
+                   ~owner:gameplan.repo_owner ~repo:gameplan.repo_name
+                   ~main_branch)
+          in
+          match Github.list_prs ~branch ~state:`All () with
+          | Error error -> Error (Github.show_error error)
+          | Ok prs -> (
+              match List.find_opt (fun (_, _, merged) -> merged) prs with
+              | Some (number, _, _) ->
+                  Ok (Branch_reconcile.Forge_merged, Some number)
+              | None ->
+                  Ok
+                    ( Branch_reconcile.Forge_not_merged,
+                      Option.map
+                        (fun (number, _, _) -> number)
+                        (List.nth_opt prs 0) )))
   in
   let env : Worker.env =
     {

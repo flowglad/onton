@@ -77,7 +77,8 @@ let binary () =
       | Some value -> value
       | None -> failwith "worker binary not supplied")
 
-let spawn ~gameplan ~repo_root ~home ~fake_bin ~prompt_log =
+let spawn_with_fixture ?forge_fixture ~gameplan ~repo_root ~home ~fake_bin
+    ~prompt_log () =
   let command =
     String.concat " "
       (List.map Filename.quote
@@ -102,15 +103,22 @@ let spawn ~gameplan ~repo_root ~home ~fake_bin ~prompt_log =
         not
           (String.starts_with ~prefix:"HOME=" entry
           || String.starts_with ~prefix:"PATH=" entry
-          || String.starts_with ~prefix:"ONTON_FAKE_PROMPT=" entry))
+          || String.starts_with ~prefix:"ONTON_FAKE_PROMPT=" entry
+          || String.starts_with ~prefix:"ONTON_WORKER_FORGE_FIXTURE=" entry))
     |> fun values ->
     Array.of_list
       (("HOME=" ^ home) :: ("PATH=" ^ path)
       :: ("ONTON_FAKE_PROMPT=" ^ prompt_log)
-      :: values)
+      ::
+      (match forge_fixture with
+      | None -> values
+      | Some fixture -> ("ONTON_WORKER_FORGE_FIXTURE=" ^ fixture) :: values))
   in
   let output, input, error = Unix.open_process_full command env in
   { output; input; error }
+
+let spawn ~gameplan ~repo_root ~home ~fake_bin ~prompt_log =
+  spawn_with_fixture ~gameplan ~repo_root ~home ~fake_bin ~prompt_log ()
 
 let send child json =
   output_string child.input (wire json);
@@ -673,6 +681,102 @@ let run_admission_faults ~root ~managed ~gameplan ~fake_bin ~prompt_log =
   check "admission fault worker stays usable" (finish child = Unix.WEXITED 0);
   print_endline "public worker: overlap, replay and stale controls"
 
+let run_attention_renewal ~root ~origin ~managed ~gameplan ~fake_bin ~prompt_log
+    ~merge_after_attention (model, capsule, version, attention) =
+  let branch = "worker-protocol-test/patch-1" in
+  Onton_test_support.Git_env.run_git ~cwd:managed
+    [ "push"; "-q"; "origin"; "--delete"; branch ];
+  Onton_test_support.Git_env.sh ~dir:"/"
+    ("rm -rf " ^ Filename.quote managed ^ " "
+    ^ Filename.quote (Filename.concat root "worktrees"));
+  let fresh = Filename.concat root "fresh" in
+  Onton_test_support.Git_env.sh ~dir:"/"
+    (Printf.sprintf "git clone --no-local -q %s %s" (Filename.quote origin)
+       (Filename.quote fresh));
+  let fixture_path = Filename.concat root "forge.json" in
+  write_file fixture_path
+    "{\"branch\":\"worker-protocol-test/patch-1\",\"state\":\"not_merged\"}";
+  let child =
+    spawn_with_fixture ~forge_fixture:fixture_path ~gameplan ~repo_root:fresh
+      ~home:root ~fake_bin ~prompt_log ()
+  in
+  let host =
+    { child; model; capsule; version; attention; workspace = "workspace-2" }
+  in
+  bind host ~context:"Requirements from assigned patch";
+  let work =
+    `Assoc
+      [
+        ("type", `String "session");
+        ("phase", `String "start");
+        ("kind", `Null);
+        ("turn", `String "RENEWED TURN");
+      ]
+  in
+  let first =
+    execute ~seq:2 ~version:host.version ~mode:"lost_workspace" work
+  in
+  start host first;
+  let result = complete host in
+  check "disappeared publication requests attention"
+    (String.equal (string "status" result) "attention");
+  let renewal_id =
+    match optional_string "renewal_id" result with
+    | Some value -> value
+    | None -> failwith "attention omitted renewal receipt"
+  in
+  check "attention did not invoke backend" (not (Sys.file_exists prompt_log));
+  ack_result host result;
+  send child (execute ~seq:3 ~version:host.version ~mode:"lost_workspace" work);
+  expect_protocol_error child "plain retry cannot renew disappearance";
+  send child
+    (execute ~seq:3 ~version:host.version ~mode:"lost_workspace"
+       ~renewal_id:(Some "wrong-receipt") work);
+  expect_protocol_error child "wrong renewal receipt rejected";
+  if merge_after_attention then
+    write_file fixture_path
+      "{\"branch\":\"worker-protocol-test/patch-1\",\"state\":\"merged\"}";
+  let renewed =
+    execute ~seq:3 ~version:host.version ~mode:"lost_workspace"
+      ~renewal_id:(Some renewal_id) work
+  in
+  start host renewed;
+  let result = complete host in
+  if merge_after_attention then (
+    check "confirmed merge wins renewed intent"
+      (String.equal (string "status" result) "merged_observed");
+    check "merge observation invokes no backend"
+      (not (Sys.file_exists prompt_log)))
+  else (
+    check "renewed operation invokes fresh backend" (Sys.file_exists prompt_log);
+    check "renewed result is typed"
+      (List.mem (string "status" result)
+         [ "completed_ok"; "completed_no_commits"; "retryable" ]);
+    let prompt = In_channel.with_open_bin prompt_log In_channel.input_all in
+    check "renewed prompt carries loss context"
+      (Base.String.is_substring prompt ~substring:"previous workspace"));
+  ack_result host result;
+  (if not merge_after_attention then
+     let recovered_path =
+       Filename.concat root "worktrees/worker-protocol-test/patch-1"
+     in
+     let head =
+       Onton_test_support.Git_env.git_capture ~cwd:recovered_path
+         [ "rev-parse"; "HEAD" ]
+     in
+     let base =
+       Onton_test_support.Git_env.git_capture ~cwd:fresh
+         [ "rev-parse"; "refs/remotes/origin/main" ]
+     in
+     check "renewal recreates from confirmed current base"
+       (String.equal head base));
+  send child (frame "shutdown" []);
+  check "renewal worker shutdown" (finish child = Unix.WEXITED 0);
+  print_endline
+    (if merge_after_attention then
+       "public worker: merge observation wins renewed intent"
+     else "public worker: attention requires explicit renewed intent")
+
 let run_cancellation ~root ~managed ~gameplan ~fake_bin ~prompt_log =
   write_file
     (Filename.concat fake_bin "codex")
@@ -800,6 +904,26 @@ let () =
       Onton_test_support.Git_env.sh ~dir:"/" ("rm -rf " ^ Filename.quote root))
     (fun () ->
       run_admission_faults ~root ~managed ~gameplan ~fake_bin ~prompt_log);
+  let root, origin, managed, gameplan, fake_bin, prompt_log = fixture () in
+  Fun.protect
+    ~finally:(fun () ->
+      Onton_test_support.Git_env.sh ~dir:"/" ("rm -rf " ^ Filename.quote root))
+    (fun () ->
+      let committed =
+        run_recovery_seed ~root ~managed ~gameplan ~fake_bin ~prompt_log
+      in
+      run_attention_renewal ~root ~origin ~managed ~gameplan ~fake_bin
+        ~prompt_log ~merge_after_attention:false committed);
+  let root, origin, managed, gameplan, fake_bin, prompt_log = fixture () in
+  Fun.protect
+    ~finally:(fun () ->
+      Onton_test_support.Git_env.sh ~dir:"/" ("rm -rf " ^ Filename.quote root))
+    (fun () ->
+      let committed =
+        run_recovery_seed ~root ~managed ~gameplan ~fake_bin ~prompt_log
+      in
+      run_attention_renewal ~root ~origin ~managed ~gameplan ~fake_bin
+        ~prompt_log ~merge_after_attention:true committed);
   let root, _origin, managed, gameplan, fake_bin, prompt_log = fixture () in
   Fun.protect
     ~finally:(fun () ->
