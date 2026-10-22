@@ -400,7 +400,9 @@ struct
         | Worktree_hook _ | Publication_observed _ | Materialized _ | Request _
         | Result _ | Repair_invalidated _ | Repair_dispatched _
         | Repair_started _ | Repair_interrupted _ | Repair_failed _ | Tick _
-        | Recover | Reconfirm_publication | Resume | Refresh _ ->
+        | Recover | Reconfirm_publication | Resume | Refresh _
+        | Workspace_lost _ | Workspace_forge_observed _
+        | Renew_workspace_intent _ | Workspace_resumed ->
             ());
         result)
 

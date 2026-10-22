@@ -474,8 +474,10 @@ let complete_initial_tracking io ~destination ~branch ~operation ~remote =
 
 let execute ~io ~prefix ~branch ~(operation : Branch_reconcile.operation)
     (command : Branch_reconcile.command) =
-  if Branch_reconcile.is_provisioning operation.intent.purpose then
-    Branch_reconcile.Needs_diagnosis "provisioning_requires_checkout_handler"
+  if
+    Branch_reconcile.is_provisioning operation.intent.purpose
+    && not operation.lost_workspace
+  then Branch_reconcile.Needs_diagnosis "provisioning_requires_checkout_handler"
   else if
     not
       (Branch_reconcile.command_allowed_for_purpose operation.intent.purpose
@@ -550,6 +552,39 @@ let execute ~io ~prefix ~branch ~(operation : Branch_reconcile.operation)
             ()
       in
       match command.kind with
+      | Branch_reconcile.Observe when operation.lost_workspace ->
+          (* The old checkout and its recovery refs may have been destroyed.
+             Probe both configured destinations before consulting any local
+             captured revision. A missing ref is distinct from a probe error. *)
+          let patch =
+            match remote_head_at io ~destination ~branch with
+            | Ok revision -> revision
+            | Error reason -> raise (Probe_failed reason)
+          in
+          let base =
+            match remote_base io ~branch:operation.intent.base with
+            | Ok revision -> revision
+            | Error reason -> raise (Probe_failed reason)
+          in
+          let fetch from revision =
+            Option.iter revision ~f:(fun sha ->
+                let text = Branch_reconcile.Commit.to_string sha in
+                ignore
+                  (checked io
+                     [ "fetch"; "--no-write-fetch-head"; "--"; from; text ]
+                    : string);
+                ignore
+                  (checked io [ "cat-file"; "-e"; text ^ "^{commit}" ] : string))
+          in
+          fetch destination patch;
+          fetch "origin" base;
+          Branch_reconcile.Workspace_observed
+            {
+              push_destination =
+                Branch_reconcile.Remote_id.of_destination destination;
+              patch_revision = patch;
+              base_revision = base;
+            }
       | Branch_reconcile.Observe ->
           refresh_base ();
           let o, checkout =

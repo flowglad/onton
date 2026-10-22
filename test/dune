@@ -1237,18 +1237,32 @@
 ; replace their bodies; a PENDING exit is not acceptance evidence.
 (test
  (name test_worker_protocol_properties)
+ (modules test_worker_protocol_properties)
  (libraries onton_core qcheck-core qcheck-core.runner))
 
 (test
  (name test_execution_checkpoint)
+ (modules test_execution_checkpoint)
  (libraries onton onton_core onton_test_support eio_main unix))
 
 (test
  (name test_workspace_recovery_properties)
+ (modules test_workspace_recovery_properties)
  (libraries onton_core qcheck-core qcheck-core.runner))
 
 (test
+ (name test_workspace_recovery_git)
+ (modules test_workspace_recovery_git)
+ (libraries onton onton_core onton_test_support eio_main unix)
+ (deps (package onton))
+ (action
+  (setenv ONTON_SETSID_EXEC
+   %{bin:onton-setsid-exec}
+   (run %{test}))))
+
+(test
  (name test_worker_recovery_git)
+ (modules test_worker_recovery_git)
  (libraries onton onton_core onton_test_support eio_main unix)
  (deps (package onton))
  (action
@@ -1258,10 +1272,12 @@
 
 (test
  (name test_worker_recovery_prompt)
+ (modules test_worker_recovery_prompt)
  (libraries onton onton_core onton_test_support eio_main unix))
 
 (test
  (name test_worker_protocol)
+ (modules test_worker_protocol)
  (libraries onton onton_core onton_test_support eio_main unix yojson))
 
 ; Patch 6 adds the onton-worker executable dependency and drives its exact

@@ -279,6 +279,9 @@ type operation = private {
   agent_dispatched : bool;
       (** Durable execution fence: reservation alone does not grant agent work.
       *)
+  lost_workspace : bool;
+      (** The old checkout's captured objects and sequencer are unavailable.
+          Only a remote observation may advance this operation. *)
   deferred_remote : Commit.t option;
       (** Incoming head retained by older checkpoints during publication. *)
   candidate_evidence : integration_evidence option;
@@ -301,14 +304,51 @@ type operation = private {
 }
 [@@deriving eq, compare, sexp_of]
 
+type workspace_forge = Forge_unknown | Forge_merged | Forge_not_merged
+[@@deriving eq, compare, sexp_of]
+
+type workspace_observation = {
+  push_destination : Remote_id.t;
+  patch_revision : Commit.t option;
+  base_revision : Commit.t option;
+}
+[@@deriving eq, compare, sexp_of]
+(** The patch revision is observed through the bound push destination; the base
+    is observed through origin's fetch destination. Both reported objects must
+    be fetched and verified before this result is submitted. *)
+
+type workspace_outcome =
+  | Workspace_wait
+  | Workspace_patch of Commit.t * Commit.t
+  | Workspace_base of Commit.t
+  | Workspace_attention of string
+  | Workspace_merged
+[@@deriving eq, compare, sexp_of]
+
+val decide_workspace :
+  probe_ok:bool ->
+  observation:workspace_observation option ->
+  never_published:bool ->
+  forge:workspace_forge ->
+  renewed:bool ->
+  renewal_id:string ->
+  workspace_outcome
+
 type t [@@deriving eq, compare, sexp_of]
 
+val workspace_outcome : t -> workspace_outcome option
+(** A present outcome means ordinary reconciliation is suspended. A ready
+    patch/base outcome permits checkout setup, followed by [Workspace_resumed].
+    Neither observation nor renewal alone authorizes publication. *)
+
+val workspace_diagnostic : t -> string option
 val yojson_of_t : t -> Yojson.Safe.t
 
 type result =
   | Checkout_ready
       (** Completion of the owner's provisioning inspection. This cannot settle
           an integration or publication operation. *)
+  | Workspace_observed of workspace_observation
   | Observed of observation
   | Observed_active of { observation : observation; policy : policy }
   | Observed_recovery of { observation : observation; policy : policy }
@@ -357,6 +397,14 @@ type event =
   | Repair_completed of { token : token; at : float }
   | Tick of float
   | Recover
+  | Workspace_lost of { request : string }
+  | Workspace_forge_observed of { request : string; forge : workspace_forge }
+  | Renew_workspace_intent of { request : string; renewal_id : string }
+  | Workspace_resumed
+      (** These events are owned by the assigned attempt. The forge result must
+          come from a fresh resolved observation; unknown evidence waits.
+          Renewal requires a new request identity and the current attention
+          receipt. [Workspace_resumed] follows successful checkout setup. *)
   | Reconfirm_publication
       (** Explicitly revalidate a settled candidate; ordinary polling and
           duplicate requests remain fixed points. *)
