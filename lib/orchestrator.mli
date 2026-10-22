@@ -194,6 +194,7 @@ val mark_running : t -> Patch_id.t -> t
     agent is no longer busy. *)
 
 val set_worktree_path : t -> Patch_id.t -> string -> t
+val forget_workspace_session : t -> Patch_id.t -> t
 val set_llm_session_id : t -> Patch_id.t -> string option -> t
 
 val mark_inflight_human_messages_delivered : t -> Patch_id.t -> t

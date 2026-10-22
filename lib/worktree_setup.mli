@@ -16,6 +16,18 @@ type ensure_result =
   | Path of string
   | Unavailable of Worktree_provision.failure
 
+type recovery_result =
+  | Recovery_ready of string
+      (** A confirmed checkout at the observed patch revision or current base.
+      *)
+  | Recovery_wait of string
+      (** Evidence or a prerequisite is unavailable; retry after observation. *)
+  | Recovery_attention of { reason : string; renewal_id : string }
+      (** A formerly published branch disappeared without a confirmed merge. A
+          new operation must cite this exact receipt to authorize recreation. *)
+  | Recovery_merged of Types.Pr_number.t option
+      (** Forge confirmed that the formerly published work was merged. *)
+
 module type S = sig
   val resolve_worktree_path :
     patch_id:Types.Patch_id.t ->
@@ -56,3 +68,33 @@ module type S = sig
 end
 
 module Make (_ : Worktree.S) (_ : ENV) : S
+
+module type RECOVERY_S = sig
+  include S
+
+  exception Checkpoint_failed of string
+  (** Host checkpoint rejection. The strict worker stops before dependent
+      effects; callers may catch this to terminate the attempt. *)
+
+  val recover_owned :
+    owner:Runtime.patch_write ->
+    request:string ->
+    renewal_id:string option ->
+    ?observe_forge:
+      (unit ->
+      ( Branch_reconcile.workspace_forge * Types.Pr_number.t option,
+        string )
+      Result.t) ->
+    unit ->
+    recovery_result
+  (** Reconcile a lost workspace from remote and forge observations. Supply
+      [renewal_id] only on an explicitly renewed operation after an outstanding
+      [Recovery_attention] receipt; ordinary retry passes [None]. In the strict
+      checkpoint variant, an unacknowledged state change raises before dependent
+      effects, including [ensure_owned] inherited from [S]. *)
+end
+
+module Make_with_checkpoint
+    (_ : Execution_checkpoint.S)
+    (_ : Worktree.S)
+    (_ : ENV) : RECOVERY_S

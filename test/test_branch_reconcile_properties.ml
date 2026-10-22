@@ -5046,9 +5046,73 @@ let creation_base_tests =
         with _ -> false);
   ]
 
+let[@warning "-4"] workspace_state_tests =
+  [
+    QCheck2.Test.make ~count:200
+      ~name:"BR workspace loss roundtrip retains intent and fences old command"
+      Gen.bool (fun captured ->
+        try
+          let before = if captured then publishing () else fst (request ()) in
+          let old = B.pending before in
+          let lost, effects =
+            B.step before (B.Workspace_lost { request = "attempt" })
+          in
+          let restored = restore lost in
+          let stale =
+            match old with
+            | None -> restored
+            | Some command ->
+                fst
+                  (B.step restored
+                     (B.Result
+                        { token = command.token; at = 5.; result = B.Published }))
+          in
+          B.equal lost restored && B.equal stale restored
+          && B.workspace_outcome restored = Some B.Workspace_wait
+          &&
+          match (B.operation before, B.operation restored, effects) with
+          | Some previous, Some current, [ B.Execute command ] ->
+              B.equal_intent previous.intent current.intent
+              && current.command_sequence > previous.command_sequence
+              && current.pending = Some command
+              && current.source = None && current.target = None
+              && current.candidate = None && current.expected = None
+              && current.integration = None
+              && current.merge_progress = None
+          | _ -> false
+        with _ -> false);
+    QCheck2.Test.make ~count:100
+      ~name:"BR invalid workspace receipt cannot import" Gen.string_small
+      (fun receipt ->
+        let state, _ = request () in
+        let state =
+          fst (B.step state (B.Workspace_lost { request = "attempt" }))
+        in
+        let json = B.yojson_of_t state in
+        let replace key value = function
+          | `Assoc fields ->
+              `Assoc
+                (List.map
+                   (fun (name, old) ->
+                     (name, if String.equal name key then value else old))
+                   fields)
+          | other -> other
+        in
+        let stage = Option.get (Json.field "workspace_recovery" json) in
+        let json =
+          replace "workspace_recovery"
+            (replace "renewal_id" (`String receipt) stage)
+            json
+        in
+        match B.decode json with
+        | Ok _ -> String.length receipt = 64
+        | Error _ -> String.length receipt <> 64);
+  ]
+
 let () =
   QCheck_base_runner.run_tests_main
     (creation_base_tests @ trusted_repair_tests @ tests @ tracking_tests
    @ publication_observation_tests @ initial_remote_integration_tests
    @ preservation_policy_tests @ preservation_checkpoint_tests
-   @ legacy_retention_tests @ m2_upgrade_tests @ forge_history_tests)
+   @ legacy_retention_tests @ m2_upgrade_tests @ forge_history_tests
+   @ workspace_state_tests)

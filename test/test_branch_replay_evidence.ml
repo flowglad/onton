@@ -23,11 +23,11 @@ let commit dir file message =
 let evidence = function
   | B.Observed o -> (Some o, false)
   | B.Retryable _ -> (None, true)
-  | B.Checkout_ready | B.Observed_recovery _ | B.Observed_active _ | Pinned
-  | Merge_completion_needed _ | Merge_completed _ | Remote_replay_selected _
-  | Remote_checked_out | Integrated _ | Conflict _ | Recovery_observed _
-  | Inspected _ | Inspected_active _ | Published | Remote _
-  | Recovery_required _ | Publication_rejected _ | Attempt_failed _
+  | B.Checkout_ready | B.Workspace_observed _ | B.Observed_recovery _
+  | B.Observed_active _ | Pinned | Merge_completion_needed _ | Merge_completed _
+  | Remote_replay_selected _ | Remote_checked_out | Integrated _ | Conflict _
+  | Recovery_observed _ | Inspected _ | Inspected_active _ | Published
+  | Remote _ | Recovery_required _ | Publication_rejected _ | Attempt_failed _
   | Needs_diagnosis _ ->
       (None, false)
 
@@ -73,14 +73,15 @@ let plain_replay env merged_history =
                   | B.Observed observed ->
                       check "adopted branch observes a shared ancestor"
                         (observed.boundary = B.Inferred (sha base))
-                  | B.Checkout_ready | B.Observed_recovery _
-                  | B.Observed_active _ | B.Pinned | B.Merge_completion_needed _
-                  | B.Merge_completed _ | B.Remote_replay_selected _
-                  | B.Remote_checked_out | B.Integrated _ | B.Conflict _
-                  | B.Recovery_observed _ | B.Inspected _ | B.Inspected_active _
-                  | B.Published | B.Remote _ | B.Retryable _
-                  | B.Recovery_required _ | B.Publication_rejected _
-                  | B.Attempt_failed _ | B.Needs_diagnosis _ ->
+                  | B.Checkout_ready | B.Workspace_observed _
+                  | B.Observed_recovery _ | B.Observed_active _ | B.Pinned
+                  | B.Merge_completion_needed _ | B.Merge_completed _
+                  | B.Remote_replay_selected _ | B.Remote_checked_out
+                  | B.Integrated _ | B.Conflict _ | B.Recovery_observed _
+                  | B.Inspected _ | B.Inspected_active _ | B.Published
+                  | B.Remote _ | B.Retryable _ | B.Recovery_required _
+                  | B.Publication_rejected _ | B.Attempt_failed _
+                  | B.Needs_diagnosis _ ->
                       ());
                   let next, effects =
                     B.step state

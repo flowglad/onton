@@ -9,6 +9,25 @@ let agent id =
 
 let tests =
   [
+    QCheck2.Test.make ~count:300
+      ~name:"lost workspace forgets checkout and conversation authority"
+      QCheck2.Gen.(pair string string)
+      (fun (path, session_id) ->
+        let before =
+          agent "lost" |> fun a ->
+          Patch_agent.set_worktree_path a path |> fun a ->
+          Patch_agent.set_llm_session_id a (Some session_id)
+        in
+        let after = Patch_agent.forget_workspace_session before in
+        Option.is_none after.Patch_agent.worktree_path
+        && Option.is_none after.Patch_agent.llm_session_id
+        && Option.is_none after.Patch_agent.session_completion
+        && (match Patch_agent.worktree_state after with
+          | Patch_agent.Unmaterialized -> true
+          | Patch_agent.Materialized _ -> false)
+        && Patch_agent.equal after (Patch_agent.forget_workspace_session after)
+        && Branch_reconcile.equal before.Patch_agent.branch_reconcile
+             after.Patch_agent.branch_reconcile);
     QCheck2.Test.make ~count:400
       ~name:"manual merge wait requires confirmed readiness and no work"
       QCheck2.Gen.(int_range 0 10)

@@ -79,6 +79,21 @@ module Operation_kind = struct
     | Review_comments -> "review-comments"
     | Pr_body -> "pr-body"
     | Findings -> "findings"
+
+  let all =
+    [
+      Uncommitted_changes;
+      Rebase;
+      Human;
+      Merge_conflict;
+      Ci;
+      Review_comments;
+      Pr_body;
+      Findings;
+    ]
+
+  let of_label label =
+    List.find all ~f:(fun kind -> String.equal (to_label kind) label)
 end
 
 module Comment_id = struct

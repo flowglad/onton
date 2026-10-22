@@ -625,6 +625,15 @@ let set_checks_passing t v = { t with checks_passing = v }
 let set_worktree_path t path = { t with worktree_path = Some path }
 let clear_worktree_path t = { t with worktree_path = None }
 
+let forget_workspace_session t =
+  {
+    t with
+    worktree_path = None;
+    llm_session_id = None;
+    session_completion = None;
+    session_fallback = Fresh_available;
+  }
+
 let worktree_state t =
   match t.worktree_path with
   | None -> Unmaterialized

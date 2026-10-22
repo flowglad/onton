@@ -1443,6 +1443,116 @@ module Stack = struct
         with exn -> QCheck2.Test.fail_report (Printexc.to_string exn))
 end
 
+let workspace_loss_model =
+  QCheck2.Test.make ~name:"model: destroyed checkout uses remote facts"
+    ~count:500
+    ~print:(fun
+        (probe_ok, branch_present, base_present, possibly_published, merged) ->
+      Printf.sprintf "probe=%b branch=%b base=%b published=%b merged=%b"
+        probe_ok branch_present base_present possibly_published merged)
+    Gen.(tup5 bool bool bool bool bool)
+    (fun (probe_ok, branch_present, base_present, possibly_published, merged) ->
+      let state, _ =
+        B.step B.empty
+          (B.Request
+             B.{ base = "main"; policy = Rewrite; purpose = Reconcile_base })
+      in
+      let state =
+        if not possibly_published then state
+        else
+          let advance state result =
+            match B.pending state with
+            | None -> failwith "model command missing"
+            | Some command ->
+                fst
+                  (B.step state
+                     (B.Result { token = command.token; at = 1.; result }))
+          in
+          let state =
+            advance state
+              (B.Observed
+                 (observation
+                    {
+                      head = source;
+                      remote = Some source;
+                      pinned = false;
+                      integrated = false;
+                      mutations = 0;
+                    }))
+          in
+          let state = advance state B.Pinned in
+          advance state (B.Integrated integrated)
+      in
+      let old = B.pending state in
+      let lost, _ =
+        B.step state (B.Workspace_lost { request = "model-attempt" })
+      in
+      let stale =
+        match old with
+        | None -> lost
+        | Some command ->
+            fst
+              (B.step lost
+                 (B.Result
+                    { token = command.token; at = 2.; result = B.Published }))
+      in
+      let observed =
+        match B.pending lost with
+        | None -> failwith "workspace probe missing"
+        | Some command ->
+            fst
+              (B.step lost
+                 (B.Result
+                    {
+                      token = command.token;
+                      at = 3.;
+                      result =
+                        (if probe_ok then
+                           B.Workspace_observed
+                             {
+                               push_destination = destination;
+                               patch_revision =
+                                 (if branch_present then Some source else None);
+                               base_revision =
+                                 (if base_present then Some base else None);
+                             }
+                         else
+                           B.Retryable
+                             { reason = "network"; retry_after = None });
+                    }))
+      in
+      let observed, _ =
+        B.step observed
+          (B.Workspace_forge_observed
+             {
+               request = "model-attempt";
+               forge = (if merged then B.Forge_merged else B.Forge_not_merged);
+             })
+      in
+      let expected =
+        if not probe_ok then B.Workspace_wait
+        else if branch_present then
+          if base_present then B.Workspace_patch (source, base)
+          else B.Workspace_wait
+        else if not possibly_published then
+          if base_present then B.Workspace_base base else B.Workspace_wait
+        else if merged then B.Workspace_merged
+        else B.Workspace_attention ""
+      in
+      B.equal lost stale
+      && roundtrip lost = lost
+      && roundtrip observed = observed
+      &&
+      match B.workspace_outcome observed with
+      | Some (B.Workspace_attention receipt) ->
+          B.equal_workspace_outcome expected (B.Workspace_attention "")
+          && String.length receipt > 0
+      | Some
+          (( B.Workspace_wait | B.Workspace_patch _ | B.Workspace_base _
+           | B.Workspace_merged ) as actual) ->
+          B.equal_workspace_outcome actual expected
+      | None -> false)
+
 let () =
   let faults =
     Gen.list_size (Gen.int_range 0 100)
@@ -1536,6 +1646,7 @@ let () =
                [ B.Rewrite; B.Preserve_ancestry ]
            with exn -> QCheck2.Test.fail_report (Printexc.to_string exn));
        compatible_order B.Rewrite;
+       workspace_loss_model;
        compatible_order B.Preserve_ancestry;
        Conflicting_sequencer.test B.Rewrite;
        Conflicting_sequencer.test B.Preserve_ancestry;

@@ -25,6 +25,12 @@ type run_result = {
           successful process exits without processing the prompt. *)
 }
 
+type recovery_result =
+  | Recovery_session of run_result
+  | Recovery_wait of string
+  | Recovery_attention of { reason : string; renewal_id : string }
+  | Recovery_merged of Types.Pr_number.t option
+
 (** Construction-time environment for session driving. Values here are fixed for
     the lifetime of the module instance and never vary per call. *)
 module type ENV = sig
@@ -37,7 +43,7 @@ module type ENV = sig
   val event_log : Event_log.t
 end
 
-module Make (_ : Worktree.S) (_ : ENV) : sig
+module type S = sig
   type nonrec run_result = run_result
 
   val create_prompt :
@@ -122,3 +128,34 @@ module Make (_ : Worktree.S) (_ : ENV) : sig
       buffer (e.g. on [Final_result]) to treat end-of-buffer as a valid
       terminator. *)
 end
+
+module Make (_ : Worktree.S) (_ : ENV) : S
+
+module type RECOVERY_S = sig
+  include S
+
+  val run_recovery_owned :
+    write_owner:Runtime.patch_write ->
+    request:string ->
+    renewal_id:string option ->
+    ?observe_forge:
+      (unit ->
+      ( Branch_reconcile.workspace_forge * Types.Pr_number.t option,
+        string )
+      Result.t) ->
+    recovery:Session_prompt.recovery_context ->
+    kind:Types.Operation_kind.t option ->
+    delivery_mode:Patch_decision.delivery_mode ->
+    patch_id:Types.Patch_id.t ->
+    prompt:prompt ->
+    on_pr_detected:(Types.Pr_number.t -> unit) ->
+    backend:Llm_backend.t ->
+    complexity:int option ->
+    unit ->
+    recovery_result
+end
+
+module Make_with_checkpoint
+    (_ : Execution_checkpoint.S)
+    (_ : Worktree.S)
+    (_ : ENV) : RECOVERY_S

@@ -263,6 +263,7 @@ type operation = {
   recovery_revisions : Commit.t list; [@yojson.default []]
   retained_revisions : Commit.t list; [@yojson.default []]
   agent_dispatched : bool; [@yojson.default true]
+  lost_workspace : bool; [@yojson.default false]
   deferred_remote : Commit.t option; [@yojson.default None]
   candidate_evidence : integration_evidence option; [@yojson.default None]
   phase : phase;
@@ -277,10 +278,43 @@ type operation = {
 }
 [@@deriving eq, compare, sexp_of, yojson]
 
+type workspace_forge = Forge_unknown | Forge_merged | Forge_not_merged
+[@@deriving eq, compare, sexp_of, yojson]
+
+type workspace_observation = {
+  push_destination : Remote_id.t;
+  patch_revision : Commit.t option;
+  base_revision : Commit.t option;
+}
+[@@deriving eq, compare, sexp_of, yojson]
+
+type workspace_outcome =
+  | Workspace_wait
+  | Workspace_patch of Commit.t * Commit.t
+  | Workspace_base of Commit.t
+  | Workspace_attention of string
+  | Workspace_merged
+[@@deriving eq, compare, sexp_of]
+
+type workspace_recovery = {
+  request : string;
+  renewal_id : string;
+  publication_possible : bool;
+  observation : workspace_observation option;
+  diagnostic : string option;
+  forge : workspace_forge;
+  renewed : bool;
+}
+[@@deriving eq, compare, sexp_of, yojson]
+
 type publication_identity = { operation_id : int; revision : Commit.t }
 [@@deriving eq, compare, sexp_of, yojson]
 
 type t = {
+  workspace_recovery : workspace_recovery option; [@yojson.default None]
+  workspace_was_lost : bool; [@yojson.default false]
+  workspace_integration_floor : int option; [@yojson.default None]
+  workspace_requests : string list; [@yojson.default []]
   observation_destination : remote_binding; [@yojson.default Unobserved_remote]
   worktree_hook : Worktree_hook.t; [@yojson.default Worktree_hook.empty]
   forge_observations : Forge_observation.history;
@@ -300,6 +334,7 @@ type t = {
 
 type result =
   | Checkout_ready
+  | Workspace_observed of workspace_observation
   | Observed of observation
   | Observed_active of { observation : observation; policy : policy }
   | Observed_recovery of { observation : observation; policy : policy }
@@ -340,6 +375,11 @@ type event =
   | Repair_completed of { token : token; at : float }
   | Tick of float
   | Recover
+  | Workspace_lost of { request : string }
+  | Workspace_lost_without_operation of { request : string; intent : intent }
+  | Workspace_forge_observed of { request : string; forge : workspace_forge }
+  | Renew_workspace_intent of { request : string; renewal_id : string }
+  | Workspace_resumed
   | Reconfirm_publication
   | Resume
   | Refresh of observation
@@ -373,6 +413,10 @@ let command_allowed_for_purpose purpose kind =
 
 let empty =
   {
+    workspace_recovery = None;
+    workspace_was_lost = false;
+    workspace_integration_floor = None;
+    workspace_requests = [];
     observation_destination = Unobserved_remote;
     worktree_hook = Worktree_hook.empty;
     forge_observations = Forge_observation.empty_history;
@@ -387,6 +431,52 @@ let empty =
     publications = [];
     observed_publication = None;
   }
+
+let decide_workspace ~probe_ok ~observation ~never_published ~forge ~renewed
+    ~renewal_id =
+  if not probe_ok then Workspace_wait
+  else
+    match observation with
+    | None -> Workspace_wait
+    | Some
+        {
+          push_destination = _;
+          patch_revision = Some patch;
+          base_revision = Some base;
+        } ->
+        Workspace_patch (patch, base)
+    | Some
+        { push_destination = _; patch_revision = Some _; base_revision = None }
+      ->
+        Workspace_wait
+    | Some { push_destination = _; patch_revision = None; base_revision = base }
+      -> (
+        if never_published then
+          Option.value_map base ~default:Workspace_wait ~f:(fun base ->
+              Workspace_base base)
+        else
+          match forge with
+          | Forge_unknown -> Workspace_wait
+          | Forge_merged -> Workspace_merged
+          | Forge_not_merged when renewed ->
+              Option.value_map base ~default:Workspace_wait ~f:(fun base ->
+                  Workspace_base base)
+          | Forge_not_merged -> Workspace_attention renewal_id)
+
+let workspace_outcome t =
+  Option.map t.workspace_recovery ~f:(fun recovery ->
+      decide_workspace
+        ~probe_ok:(Option.is_some recovery.observation)
+        ~observation:recovery.observation
+        ~never_published:(not recovery.publication_possible)
+        ~forge:recovery.forge ~renewed:recovery.renewed
+        ~renewal_id:recovery.renewal_id)
+
+let workspace_request t =
+  Option.map t.workspace_recovery ~f:(fun recovery -> recovery.request)
+
+let workspace_diagnostic t =
+  Option.bind t.workspace_recovery ~f:(fun recovery -> recovery.diagnostic)
 
 let forge_observations t = t.forge_observations
 let worktree_hook t = t.worktree_hook
@@ -572,6 +662,7 @@ let required_revisions t =
         recovery_revisions;
         retained_revisions;
         agent_dispatched = _;
+        lost_workspace = _;
         deferred_remote;
         candidate_evidence = _;
         phase;
@@ -609,6 +700,10 @@ let required_revisions t =
         head :: merge captured
   in
   let {
+    workspace_recovery = _;
+    workspace_was_lost = _;
+    workspace_integration_floor = _;
+    workspace_requests = _;
     observation_destination = _;
     worktree_hook = _;
     forge_observations = _;
@@ -738,16 +833,21 @@ let check_destination (op : operation) ~observed =
   | Bound_remote _ -> Error "publication_destination_changed"
   | Unobserved_remote when Option.is_none op.source -> Ok ()
   | Unobserved_remote -> Error "publication_destination_unrecorded"
-  | Reconfirm_remote _ ->
+  | Reconfirm_remote previous ->
       if
-        equal_phase op.phase Recovering
+        op.lost_workspace
+        && Option.for_all previous ~f:(Remote_id.equal observed)
+        && equal_phase op.phase Recovering
         && Option.value_map op.pending ~default:false ~f:(fun command ->
-            match command.kind with
-            | Inspect | Verify_recovery -> true
-            | Observe | Pin _ | Integrate _ | Continue _ | Commit_merge _
-            | Plan_remote_replay _ | Checkout_remote _ | Publish _ | Confirm _
-              ->
-                false)
+            equal_command_kind command.kind Observe)
+        || equal_phase op.phase Recovering
+           && Option.value_map op.pending ~default:false ~f:(fun command ->
+               match command.kind with
+               | Inspect | Verify_recovery -> true
+               | Observe | Pin _ | Integrate _ | Continue _ | Commit_merge _
+               | Plan_remote_replay _ | Checkout_remote _ | Publish _
+               | Confirm _ ->
+                   false)
       then Ok ()
       else Error "publication_destination_requires_inspection"
 
@@ -889,7 +989,16 @@ let observation_boundaries (op : operation) =
    Only a complete linear chain can identify an equivalent prefix to omit. *)
 let recorded_boundaries t =
   let revisions =
-    List.map t.integrations ~f:(fun receipt -> receipt.capture.target_revision)
+    let integrations =
+      if not t.workspace_was_lost then t.integrations
+      else
+        match t.workspace_integration_floor with
+        | None -> []
+        | Some floor when floor >= 0 && floor <= List.length t.integrations ->
+            List.take t.integrations (List.length t.integrations - floor)
+        | Some _ -> []
+    in
+    List.map integrations ~f:(fun receipt -> receipt.capture.target_revision)
     @ Option.to_list (Option.bind t.materialized ~f:materialization_boundary)
   in
   let _, reversed =
@@ -934,6 +1043,7 @@ let start t intent =
       expected = None;
       recovery_revisions = [];
       agent_dispatched = false;
+      lost_workspace = false;
       retained_revisions =
         Option.value_map t.active ~default:[] ~f:(fun previous ->
             previous.retained_revisions);
@@ -1869,9 +1979,9 @@ let verification_result t (op : operation) at command result =
           else diagnose t op "legacy_publication_not_confirmed"
       | Some _ | None -> diagnose t op "command_result_mismatch")
   | Checkout_ready | Observed_active _ | Observed_recovery _
-  | Inspected_active _ | Integrated _ | Conflict _ | Merge_completion_needed _
-  | Merge_completed _ | Remote_replay_selected _ | Remote_checked_out
-  | Recovery_observed _ | Published ->
+  | Workspace_observed _ | Inspected_active _ | Integrated _ | Conflict _
+  | Merge_completion_needed _ | Merge_completed _ | Remote_replay_selected _
+  | Remote_checked_out | Recovery_observed _ | Published ->
       diagnose t op "legacy_publication_requires_reconciliation"
 
 let valid_intent (intent : intent) =
@@ -1914,7 +2024,244 @@ let interrupt_repair ~attempt_completed t token at reason =
       } ->
       (t, [])
 
-let step_transition t = function
+let renewal_receipt t (op : operation) request =
+  let published =
+    List.map t.publications ~f:(fun receipt ->
+        Commit.to_string receipt.published_revision)
+    |> String.concat ~sep:","
+  in
+  let identity =
+    let destination =
+      match op.destination with
+      | Unobserved_remote -> t.observation_destination
+      | (Bound_remote _ | Reconfirm_remote _) as binding -> binding
+    in
+    String.concat ~sep:"\000"
+      [
+        Int.to_string op.id;
+        request;
+        Sexp.to_string (sexp_of_intent op.intent);
+        Sexp.to_string (sexp_of_remote_binding destination);
+        published;
+      ]
+  in
+  Stdlib.Digest.BLAKE256.(to_hex (string identity))
+
+let[@warning "-4"] rec step_workspace t event =
+  match (event, t.workspace_recovery, t.active) with
+  | Workspace_lost_without_operation { request; intent }, None, None
+    when (not (String.is_empty request))
+         && (not (String.is_empty intent.base))
+         && equal_purpose intent.purpose (Provision_checkout request)
+         && (not (List.mem t.workspace_requests request ~equal:String.equal))
+         && t.next_operation < Int.max_value ->
+      let seeded, _ = start { t with desired = Some intent } intent in
+      step_workspace seeded (Workspace_lost { request })
+  | Workspace_lost { request }, None, Some op
+    when (not (String.is_empty request))
+         && (not (List.mem t.workspace_requests request ~equal:String.equal))
+         && op.command_sequence < Int.max_value ->
+      let publication_possible =
+        (not (List.is_empty t.publications))
+        || Option.is_some op.candidate
+        || op.agent_dispatched
+        ||
+        match op.phase with
+        | Publishing | Confirming | Settled -> true
+        | Preparing | Integrating | Repairing _ | Waiting _ | Recovering
+        | Intervention _ ->
+            false
+      in
+      let recovery =
+        {
+          request;
+          renewal_id = renewal_receipt t op request;
+          publication_possible;
+          observation = None;
+          diagnostic = None;
+          forge = Forge_unknown;
+          renewed = false;
+        }
+      in
+      let op =
+        {
+          op with
+          local_action =
+            (match op.intent.purpose with
+            | Publish_revision _ | Publish_session _ | Verify_publication ->
+                Publish_source
+            | Provision_checkout _ | Reconcile_base | Reconcile_request _
+            | Reconcile_scoped _ | Integrate_revision _ ->
+                Integrate_source (execution_policy op));
+          destination =
+            (match op.destination with
+            | Unobserved_remote -> t.observation_destination
+            | (Bound_remote _ | Reconfirm_remote _) as binding -> binding);
+          integration = None;
+          remote_integration = None;
+          reobserve_after_completion = false;
+          source = None;
+          target = None;
+          boundary = Plain;
+          boundary_candidates = [];
+          remote_replay = None;
+          candidate = None;
+          candidate_origin = Deterministic;
+          expected = None;
+          recovery_revisions = [];
+          retained_revisions = [];
+          agent_dispatched = false;
+          lost_workspace = true;
+          deferred_remote = None;
+          candidate_evidence = None;
+          pending = None;
+          repair = None;
+          merge_progress = None;
+        }
+      in
+      let t =
+        {
+          t with
+          workspace_recovery = Some recovery;
+          workspace_was_lost = true;
+          workspace_integration_floor = Some (List.length t.integrations);
+          workspace_requests = request :: t.workspace_requests;
+          materialized = None;
+          worktree_hook = Worktree_hook.empty;
+        }
+      in
+      issue t op Recovering Observe
+  | ( ( Workspace_lost _ | Workspace_lost_without_operation _
+      | Renew_workspace_intent _ | Workspace_resumed
+      | Workspace_forge_observed _ ),
+      None,
+      _ ) ->
+      (t, [])
+  | Workspace_lost _, Some _, _ | Workspace_lost_without_operation _, _, _ ->
+      (t, [])
+  | Workspace_forge_observed { request; forge }, Some recovery, _
+    when String.equal request recovery.request
+         && Option.is_some recovery.observation
+         && equal_workspace_forge recovery.forge Forge_unknown ->
+      ({ t with workspace_recovery = Some { recovery with forge } }, [])
+  | Workspace_forge_observed _, Some _, _ -> (t, [])
+  | Renew_workspace_intent { request; renewal_id }, Some recovery, Some op
+    when (not (String.is_empty request))
+         && (not (String.equal request recovery.request))
+         && (not (List.mem t.workspace_requests request ~equal:String.equal))
+         && String.equal renewal_id recovery.renewal_id
+         && Option.value_map (workspace_outcome t) ~default:false ~f:(function
+           | Workspace_attention _ -> true
+           | Workspace_wait | Workspace_patch _ | Workspace_base _
+           | Workspace_merged ->
+               false) -> (
+      let next, _ = start t op.intent in
+      match next.active with
+      | None -> (t, [])
+      | Some successor ->
+          let pending = successor.pending in
+          let command =
+            Option.to_list pending |> List.map ~f:(fun c -> Execute c)
+          in
+          ( {
+              next with
+              active =
+                Some
+                  {
+                    successor with
+                    pending;
+                    phase = Recovering;
+                    lost_workspace = true;
+                    destination = op.destination;
+                  };
+              workspace_recovery =
+                Some
+                  {
+                    request;
+                    renewal_id = renewal_receipt next successor request;
+                    publication_possible = true;
+                    observation = None;
+                    diagnostic = None;
+                    forge = Forge_unknown;
+                    renewed = true;
+                  };
+              workspace_requests = request :: next.workspace_requests;
+            },
+            command ))
+  | Renew_workspace_intent _, Some _, _ -> (t, [])
+  | Workspace_resumed, Some _, Some op -> (
+      match workspace_outcome t with
+      | Some (Workspace_patch _ | Workspace_base _) ->
+          let destination =
+            Option.bind t.workspace_recovery ~f:(fun recovery ->
+                Option.map recovery.observation ~f:(fun observed ->
+                    Bound_remote observed.push_destination))
+          in
+          issue
+            {
+              t with
+              workspace_recovery = None;
+              workspace_integration_floor =
+                (match t.workspace_integration_floor with
+                | Some _ as floor -> floor
+                | None -> Some (List.length t.integrations));
+            }
+            {
+              op with
+              lost_workspace = false;
+              destination = Option.value destination ~default:op.destination;
+            }
+            Preparing Observe
+      | None | Some (Workspace_wait | Workspace_attention _ | Workspace_merged)
+        ->
+          (t, []))
+  | Workspace_resumed, Some _, None -> (t, [])
+  | ( Result { token; result = Workspace_observed observation; _ },
+      Some recovery,
+      Some op )
+    when Option.value_map op.pending ~default:false ~f:(fun command ->
+             equal_token command.token token
+             && equal_command_kind command.kind Observe)
+         && Result.is_ok
+              (check_destination op ~observed:observation.push_destination) ->
+      ( {
+          t with
+          workspace_recovery =
+            Some
+              {
+                recovery with
+                observation = Some observation;
+                diagnostic = None;
+              };
+          active = Some { op with pending = None };
+        },
+        [] )
+  | ( Result
+        { token; result = Retryable { reason; _ } | Needs_diagnosis reason; _ },
+      Some recovery,
+      Some op )
+    when Option.value_map op.pending ~default:false ~f:(fun command ->
+             equal_token command.token token
+             && equal_command_kind command.kind Observe) ->
+      ( {
+          t with
+          workspace_recovery = Some { recovery with diagnostic = Some reason };
+          active = Some { op with pending = None };
+        },
+        [] )
+  | Recover, Some _, Some { pending = Some command; _ }
+    when equal_command_kind command.kind Observe ->
+      (t, [ Execute command ])
+  | Recover, Some recovery, Some op
+    when Option.is_none op.pending && Option.is_none recovery.observation ->
+      issue t op Recovering Observe
+  | _, Some _, _ -> (t, [])
+  | _, None, _ -> (t, [])
+
+let step_ordinary_transition t = function
+  | Workspace_lost _ | Workspace_lost_without_operation _
+  | Workspace_forge_observed _ | Renew_workspace_intent _ | Workspace_resumed ->
+      (t, [])
   | Worktree_hook event ->
       if
         Option.exists t.active ~f:(fun op ->
@@ -2192,9 +2539,9 @@ let step_transition t = function
           let command = Option.map op.pending ~f:(fun c -> c.kind) in
           let observation_failures =
             match result with
-            | Checkout_ready | Observed _ | Observed_active _
-            | Observed_recovery _ | Inspected _ | Inspected_active _
-            | Recovery_observed _
+            | Checkout_ready | Workspace_observed _ | Observed _
+            | Observed_active _ | Observed_recovery _ | Inspected _
+            | Inspected_active _ | Recovery_observed _
             | Remote { topology = Equal | Includes | Behind | Diverged; _ } ->
                 0
             | Remote { topology = Unproven; _ }
@@ -2450,12 +2797,12 @@ let step_transition t = function
                 remote t op at sha topology
             | Remote { sha; topology }, Some (Confirm _) ->
                 remote t op at sha topology
-            | ( ( Checkout_ready | Observed _ | Observed_active _
-                | Observed_recovery _ | Pinned | Integrated _ | Conflict _
-                | Merge_completion_needed _ | Merge_completed _
-                | Remote_replay_selected _ | Remote_checked_out | Inspected _
-                | Inspected_active _ | Recovery_observed _ | Published
-                | Remote _ ),
+            | ( ( Checkout_ready | Workspace_observed _ | Observed _
+                | Observed_active _ | Observed_recovery _ | Pinned
+                | Integrated _ | Conflict _ | Merge_completion_needed _
+                | Merge_completed _ | Remote_replay_selected _
+                | Remote_checked_out | Inspected _ | Inspected_active _
+                | Recovery_observed _ | Published | Remote _ ),
                 ( None
                 | Some
                     ( Observe | Commit_merge _ | Plan_remote_replay _
@@ -2464,6 +2811,18 @@ let step_transition t = function
               ->
                 diagnose t op "command_result_mismatch")
       | _ -> (t, []))
+
+let step_transition t event =
+  match event with
+  | Workspace_lost _ | Workspace_lost_without_operation _
+  | Workspace_forge_observed _ | Renew_workspace_intent _ | Workspace_resumed ->
+      step_workspace t event
+  | Worktree_hook _ | Publication_observed _ | Materialized _ | Request _
+  | Result _ | Repair_invalidated _ | Repair_dispatched _ | Repair_started _
+  | Repair_interrupted _ | Repair_failed _ | Repair_completed _ | Tick _
+  | Recover | Reconfirm_publication | Resume | Refresh _ ->
+      if Option.is_some t.workspace_recovery then step_workspace t event
+      else step_ordinary_transition t event
 
 let step t event =
   let next, effects = step_transition t event in
@@ -2892,6 +3251,8 @@ let decode json =
         && equal_local_action op.local_action (Integrate_source Rewrite)
     | Some { kind = Observe; _ }, Preparing ->
         Option.is_none op.source && Option.is_none op.target
+    | Some { kind = Observe; _ }, Recovering when op.lost_workspace ->
+        Option.is_none op.source && Option.is_none op.target
     | Some { kind = Pin { source; target }; _ }, Preparing ->
         commit_matches op.source source && commit_matches op.target target
     | ( Some { kind = Integrate { source; target; policy; boundary }; _ },
@@ -2914,6 +3275,7 @@ let decode json =
         | Some { mode = Content_repair | Diagnosis _; _ } | None -> false)
     | None, Repairing repair ->
         Option.equal equal_repair op.repair (Some repair)
+    | None, Recovering when op.lost_workspace -> true
     | None, (Settled | Waiting _ | Intervention _) -> true
     | ( ( None
         | Some
@@ -2940,6 +3302,27 @@ let decode json =
                  Option.for_all previous ~f:Remote_id.valid) ->
         Error "invalid observation destination"
     | Ok t -> (
+        let valid_workspace =
+          Option.for_all t.workspace_integration_floor ~f:(fun floor ->
+              floor >= 0 && floor <= List.length t.integrations)
+          &&
+          match (t.workspace_recovery, t.active) with
+          | None, None -> true
+          | None, Some op -> not op.lost_workspace
+          | Some recovery, Some op ->
+              t.workspace_was_lost && op.lost_workspace
+              && String.length recovery.request > 0
+              && List.mem t.workspace_requests recovery.request
+                   ~equal:String.equal
+              && String.length recovery.renewal_id = 64
+              && (recovery.publication_possible || List.is_empty t.publications)
+              && ((not recovery.renewed) || recovery.publication_possible)
+              && Option.for_all recovery.observation ~f:(fun observed ->
+                  Remote_id.valid observed.push_destination
+                  && Option.for_all observed.patch_revision ~f:valid_commit
+                  && Option.for_all observed.base_revision ~f:valid_commit)
+          | Some _, None -> false
+        in
         let t =
           {
             t with
@@ -3038,8 +3421,13 @@ let decode json =
             }
         in
         if
-          t.next_operation < 1
+          t.next_operation < 1 || (not valid_workspace)
           || (not (Worktree_hook.valid t.worktree_hook))
+          || List.exists t.workspace_requests ~f:String.is_empty
+          || List.length t.workspace_requests
+             <> List.length
+                  (List.dedup_and_sort t.workspace_requests
+                     ~compare:String.compare)
           || (not (Forge_observation.history_valid t.forge_observations))
           || (not (List.for_all t.legacy_revisions ~f:valid_commit))
           || (not

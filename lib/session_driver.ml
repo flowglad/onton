@@ -12,6 +12,12 @@ type run_result = {
   turn_accepted : bool;
 }
 
+type recovery_result =
+  | Recovery_session of run_result
+  | Recovery_wait of string
+  | Recovery_attention of { reason : string; renewal_id : string }
+  | Recovery_merged of Types.Pr_number.t option
+
 let truncate s n =
   if String.length s <= n then s else String.sub s ~pos:0 ~len:n ^ "..."
 
@@ -153,7 +159,101 @@ module type ENV = sig
   val event_log : Event_log.t
 end
 
-module Make (W : Worktree.S) (Env : ENV) = struct
+module type S = sig
+  type nonrec run_result = run_result
+
+  val create_prompt :
+    context:(worktree_path:string -> string) -> turn:string -> prompt
+  (** The context renderer receives the ensured worktree path and is called once
+      for a fresh session, including fallback, and never when resuming, giving
+      up, or failing to provision a worktree. *)
+
+  val publish_completion :
+    write_owner:Runtime.patch_write ->
+    patch_id:Types.Patch_id.t ->
+    agent:Patch_agent.t ->
+    path:string ->
+    Session_result.completion ->
+    [ `Published | `No_work | `Pending ]
+  (** Reconcile a checkpointed local completion. Scripted gameplan publication
+      and backend sessions use the same captured-revision publication protocol.
+      Pending publication never changes the recorded implementation outcome. *)
+
+  val run_repair :
+    patch_id:Types.Patch_id.t ->
+    agent:Patch_agent.t ->
+    backend:Llm_backend.t ->
+    complexity:int option ->
+    cwd:Eio.Fs.dir_ty Eio.Path.t ->
+    context:string ->
+    guidance:string list ->
+    turn:Branch_reconcile.repair_turn ->
+    read_head:(unit -> string option) ->
+    Branch_reconcile.event
+  (** Continue the patch conversation for every repair mode and append all
+      streamed content to its transcript. The caller holds patch ownership. This
+      does not invoke implementation completion or publication. *)
+
+  val run_owned :
+    write_owner:Runtime.patch_write ->
+    kind:Types.Operation_kind.t option ->
+    delivery_mode:Patch_decision.delivery_mode ->
+    patch_id:Types.Patch_id.t ->
+    prompt:prompt ->
+    agent:Patch_agent.t ->
+    on_pr_detected:(Types.Pr_number.t -> unit) ->
+    backend:Llm_backend.t ->
+    complexity:int option ->
+    run_result
+  (** Reuse the session action's scoped patch ownership. *)
+
+  val run :
+    kind:Types.Operation_kind.t option ->
+    delivery_mode:Patch_decision.delivery_mode ->
+    patch_id:Types.Patch_id.t ->
+    prompt:prompt ->
+    agent:Patch_agent.t ->
+    on_pr_detected:(Types.Pr_number.t -> unit) ->
+    backend:Llm_backend.t ->
+    complexity:int option ->
+    run_result
+  (** Returns the supervisor disposition, backend-acceptance evidence, and the
+      list of [(tool_name, status)] pairs for tool calls that did not reach a
+      [completed] state. [delivery_mode] records whether Start or Respond
+      initiated the turn and must remain stable across in-session PR discovery.
+      Callers may also produce a [`Stale] variant from pre-flight checks before
+      invoking this function. *)
+
+  val session_mode : Patch_agent.t -> [ `Resume of string | `Fresh | `Give_up ]
+  (** Inspect the agent's session-fallback state to decide whether the next
+      invocation should resume an existing session, start fresh, or give up. *)
+
+  val extract_pr_number_from_text :
+    ?at_end_of_stream:bool ->
+    owner:string ->
+    repo:string ->
+    string ->
+    Types.Pr_number.t option
+  (** Scan [text] for a [github.com/<owner>/<repo>/pull/N] URL and return the
+      first [N] found. Used to sniff PR creation from the agent's stdout stream.
+
+      A digit run terminating at the end of [text] is treated as
+      potentially-incomplete by default, so this function will return [None] for
+      [".../pull/12"] when the next stream chunk could turn it into
+      [.../pull/1234]. Pass [~at_end_of_stream:true] when calling on a complete
+      buffer (e.g. on [Final_result]) to treat end-of-buffer as a valid
+      terminator. *)
+end
+
+module Make_impl
+    (C : Execution_checkpoint.S)
+    (Mode : sig
+      val strict : bool
+    end)
+    (W : Worktree.S)
+    (Env : ENV)
+    (WS : Worktree_setup.S) =
+struct
   let create_prompt ~context ~turn = { context; turn }
 
   type nonrec run_result = run_result
@@ -161,7 +261,15 @@ module Make (W : Worktree.S) (Env : ENV) = struct
   let session_mode = session_mode
   let extract_pr_number_from_text = extract_pr_number_from_text
 
-  module WS = Worktree_setup.Make (W) (Env)
+  exception Checkpoint_failure of string
+
+  let checkpoint_failure where message =
+    raise (Checkpoint_failure (where ^ " checkpoint failed: " ^ message))
+
+  let checkpoint_snapshot where f =
+    match Runtime.update_persisting Env.runtime ~persist:C.persist f with
+    | Ok value -> value
+    | Error message -> checkpoint_failure where message
 
   let publish_transcript ~patch_id text =
     Stdlib.Hashtbl.replace Env.transcripts patch_id text;
@@ -239,6 +347,9 @@ module Make (W : Worktree.S) (Env : ENV) = struct
       sync ()
     in
     Exn.protect ~finally:sync ~f:(fun () ->
+        if Mode.strict then
+          ignore
+            (checkpoint_snapshot "repair dispatch" (fun snap -> (snap, ())));
         let result =
           Branch_repair_session.run ~backend ~context ~guidance ~on_event ~cwd
             ~project_name:Env.project_name ~patch_id ~complexity ~resume_session
@@ -248,44 +359,60 @@ module Make (W : Worktree.S) (Env : ENV) = struct
         (match result with
         | Branch_reconcile.Repair_completed _ ->
             Option.iter !captured_session ~f:(fun session_id ->
-                let snapshot_path =
-                  Project_store.snapshot_path Env.project_name
-                in
-                let save_error = ref None in
-                Runtime.update Env.runtime (fun snap ->
-                    let orchestrator =
-                      Orchestrator.set_llm_session_id snap.Runtime.orchestrator
-                        patch_id (Some session_id)
-                      |> fun orch ->
-                      Orchestrator.clear_session_fallback orch patch_id
-                    in
-                    let transcripts = Hashtbl.copy snap.transcripts in
-                    Hashtbl.set transcripts ~key:patch_id
-                      ~data:(Buffer.contents text_buf);
-                    let next =
-                      { snap with Runtime.orchestrator; transcripts }
-                    in
-                    (match
-                       Persistence.save_snapshot ~path:snapshot_path next
-                     with
-                    | Ok () -> ()
-                    | Error error -> save_error := Some error);
-                    next);
-                Option.iter !save_error ~f:(fun error ->
-                    Runtime_logging.log_event Env.runtime ~patch_id
-                      ("Failed to checkpoint repair conversation: " ^ error));
-                match
-                  Persistence.record_session_id ~snapshot_path ~patch_id
-                    ~session_id
-                with
-                | Ok () -> ()
-                | Error error ->
-                    Runtime_logging.log_event Env.runtime ~patch_id
-                      ("Failed to persist repair conversation: " ^ error))
+                if Mode.strict then
+                  checkpoint_snapshot "repair conversation" (fun snap ->
+                      let orchestrator =
+                        Orchestrator.set_llm_session_id
+                          snap.Runtime.orchestrator patch_id (Some session_id)
+                        |> fun orch ->
+                        Orchestrator.clear_session_fallback orch patch_id
+                      in
+                      let transcripts = Hashtbl.copy snap.transcripts in
+                      Hashtbl.set transcripts ~key:patch_id
+                        ~data:(Buffer.contents text_buf);
+                      ({ snap with Runtime.orchestrator; transcripts }, ()))
+                else
+                  let snapshot_path =
+                    Project_store.snapshot_path Env.project_name
+                  in
+                  let save_error = ref None in
+                  Runtime.update Env.runtime (fun snap ->
+                      let orchestrator =
+                        Orchestrator.set_llm_session_id
+                          snap.Runtime.orchestrator patch_id (Some session_id)
+                        |> fun orch ->
+                        Orchestrator.clear_session_fallback orch patch_id
+                      in
+                      let transcripts = Hashtbl.copy snap.transcripts in
+                      Hashtbl.set transcripts ~key:patch_id
+                        ~data:(Buffer.contents text_buf);
+                      let next =
+                        { snap with Runtime.orchestrator; transcripts }
+                      in
+                      (match
+                         Persistence.save_snapshot ~path:snapshot_path next
+                       with
+                      | Ok () -> ()
+                      | Error error -> save_error := Some error);
+                      next);
+                  Option.iter !save_error ~f:(fun error ->
+                      Runtime_logging.log_event Env.runtime ~patch_id
+                        ("Failed to checkpoint repair conversation: " ^ error));
+                  match
+                    Persistence.record_session_id ~snapshot_path ~patch_id
+                      ~session_id
+                  with
+                  | Ok () -> ()
+                  | Error error ->
+                      Runtime_logging.log_event Env.runtime ~patch_id
+                        ("Failed to persist repair conversation: " ^ error))
         | Worktree_hook _ | Publication_observed _ | Materialized _ | Request _
         | Result _ | Repair_invalidated _ | Repair_dispatched _
         | Repair_started _ | Repair_interrupted _ | Repair_failed _ | Tick _
-        | Recover | Reconfirm_publication | Resume | Refresh _ ->
+        | Recover | Reconfirm_publication | Resume | Refresh _
+        | Workspace_lost _ | Workspace_lost_without_operation _
+        | Workspace_forge_observed _ | Renew_workspace_intent _
+        | Workspace_resumed ->
             ());
         result)
 
@@ -306,8 +433,10 @@ module Make (W : Worktree.S) (Env : ENV) = struct
         (Session_result.publication_intent completion ~base ~policy)
     in
     let persist =
-      Persistence.save_snapshot
-        ~path:(Project_store.snapshot_path Env.project_name)
+      if Mode.strict then C.persist
+      else
+        Persistence.save_snapshot
+          ~path:(Project_store.snapshot_path Env.project_name)
     in
     let execute = WS.execute_reconciliation ~patch_id in
     let now () = Eio.Time.now Env.clock in
@@ -337,13 +466,16 @@ module Make (W : Worktree.S) (Env : ENV) = struct
     | Branch_reconcile_runner.Waiting | Branch_reconcile_runner.Repair_needed _
       ->
         `Pending
+    | Branch_reconcile_runner.Checkpoint_failed reason when Mode.strict ->
+        checkpoint_failure "publication" reason
     | Branch_reconcile_runner.Intervention reason
     | Branch_reconcile_runner.Checkpoint_failed reason ->
         Runtime_logging.log_event Env.runtime ~patch_id
           ("Publication pending: " ^ reason);
         `Pending
 
-  let run_owned ~write_owner ~(kind : Types.Operation_kind.t option)
+  let run_owned_with_setup ~ensure_checkout ~write_owner
+      ~(kind : Types.Operation_kind.t option)
       ~(delivery_mode : Patch_decision.delivery_mode) ~patch_id ~prompt
       ~(agent : Patch_agent.t) ~on_pr_detected ~(backend : Llm_backend.t)
       ~complexity =
@@ -383,6 +515,9 @@ module Make (W : Worktree.S) (Env : ENV) = struct
           | `No_work -> `No_commits
           | `Pending -> `Retry_push
         in
+        if Mode.strict then
+          ignore
+            (checkpoint_snapshot "captured completion" (fun snap -> (snap, ())));
         make_run_result ~turn_accepted:completion.turn_accepted disposition []
     | None -> (
         match session_mode agent with
@@ -390,9 +525,19 @@ module Make (W : Worktree.S) (Env : ENV) = struct
             log_event runtime ~patch_id
               "Session fallback exhausted — continue and fresh both failed, \
                needs intervention";
-            Runtime.update_orchestrator runtime (fun orch ->
-                Orchestrator.apply_session_result orch patch_id
-                  Orchestrator.Session_give_up);
+            if Mode.strict then
+              checkpoint_snapshot "give up" (fun snap ->
+                  ( {
+                      snap with
+                      Runtime.orchestrator =
+                        Orchestrator.apply_session_result snap.orchestrator
+                          patch_id Orchestrator.Session_give_up;
+                    },
+                    () ))
+            else
+              Runtime.update_orchestrator runtime (fun orch ->
+                  Orchestrator.apply_session_result orch patch_id
+                    Orchestrator.Session_give_up);
             make_run_result `Failed []
         | (`Resume _ | `Fresh) as mode -> (
             let resume_session, is_fresh =
@@ -400,8 +545,20 @@ module Make (W : Worktree.S) (Env : ENV) = struct
               | `Resume id -> (Some id, false)
               | `Fresh -> (None, true)
             in
-            match WS.ensure_owned ~owner:write_owner () with
-            | Worktree_setup.Unavailable _ -> make_run_result `Failed []
+            match ensure_checkout write_owner with
+            | Worktree_setup.Unavailable failure ->
+                if Mode.strict then (
+                  (match failure with
+                  | Worktree_provision.Temporary reason
+                    when String.is_prefix reason ~prefix:"checkpoint" ->
+                      checkpoint_failure "setup" reason
+                  | Worktree_provision.Temporary _ | Worktree_provision.Unsafe _
+                    ->
+                      ());
+                  ignore
+                    (checkpoint_snapshot "setup outcome" (fun snap ->
+                         (snap, ()))));
+                make_run_result `Failed []
             | Worktree_setup.Path worktree_path ->
                 let cwd = Eio.Path.(fs / worktree_path) in
                 let pre_session_branch_sha =
@@ -576,6 +733,11 @@ module Make (W : Worktree.S) (Env : ENV) = struct
                     let content_gate = ref (Content_gate.create ()) in
                     let maybe_persist_session_id () =
                       match (snapshot_path_opt, !captured_session_id) with
+                      | _, Some session_id when Mode.strict -> (
+                          match C.record_session_id ~patch_id ~session_id with
+                          | Ok () -> ()
+                          | Error msg ->
+                              checkpoint_failure "session identity" msg)
                       | Some snapshot_path, Some session_id -> (
                           match
                             Persistence.record_session_id ~snapshot_path
@@ -598,10 +760,21 @@ module Make (W : Worktree.S) (Env : ENV) = struct
                           Patch_decision.human_acceptance_delivers_messages
                             ~agent ~delivery_mode ~kind
                         then
-                          Runtime.update_orchestrator runtime (fun orch ->
-                              Orchestrator
-                              .mark_inflight_human_messages_delivered orch
-                                patch_id)
+                          if Mode.strict then
+                            checkpoint_snapshot "guidance" (fun snap ->
+                                ( {
+                                    snap with
+                                    Runtime.orchestrator =
+                                      Orchestrator
+                                      .mark_inflight_human_messages_delivered
+                                        snap.orchestrator patch_id;
+                                  },
+                                  () ))
+                          else
+                            Runtime.update_orchestrator runtime (fun orch ->
+                                Orchestrator
+                                .mark_inflight_human_messages_delivered orch
+                                  patch_id)
                         else ())
                     in
                     let on_event (event : Types.Stream_event.t) =
@@ -765,6 +938,10 @@ module Make (W : Worktree.S) (Env : ENV) = struct
                       content_gate := next_gate;
                       if persist then maybe_persist_session_id ()
                     in
+                    if Mode.strict then
+                      ignore
+                        (checkpoint_snapshot "session admission" (fun snap ->
+                             (snap, ())));
                     let cancelled = ref None in
                     let result =
                       try
@@ -773,6 +950,7 @@ module Make (W : Worktree.S) (Env : ENV) = struct
                              ~prompt ~resume_session ~session_uuid ~complexity
                              ~on_event)
                       with
+                      | Checkpoint_failure _ as exn -> raise exn
                       | Eio.Cancel.Cancelled _ as exn ->
                           cancelled := Some exn;
                           Error (Stdlib.Printexc.to_string exn)
@@ -976,33 +1154,39 @@ module Make (W : Worktree.S) (Env : ENV) = struct
                               (%s): %s"
                              (List.length failures) backend_name rendered));
                     let apply_result_and_emit_complete final_session_result =
-                      let agent_before, agent_after =
-                        Runtime.update_orchestrator_returning runtime
-                          (fun orch ->
-                            let agent_before =
-                              Orchestrator.agent orch patch_id
-                            in
-                            (* Store the captured session_id BEFORE applying the session
+                      let transition orch =
+                        let agent_before = Orchestrator.agent orch patch_id in
+                        (* Store the captured session_id BEFORE applying the session
                      result. [apply_session_result] clears [llm_session_id] on
                      start-path fresh failure (via [on_session_failure]) and on
                      [Session_no_resume] / [Session_give_up]; doing the set
                      afterwards would overwrite that reset and break the
                      clean-retry path. *)
-                            let orch =
-                              match !captured_session_id with
-                              | Some _ ->
-                                  Orchestrator.set_llm_session_id orch patch_id
-                                    !captured_session_id
-                              | None -> orch
-                            in
-                            let orch =
-                              Orchestrator.apply_session_result orch patch_id
-                                final_session_result
-                            in
-                            let agent_after =
-                              Orchestrator.agent orch patch_id
-                            in
-                            (orch, (agent_before, agent_after)))
+                        let orch =
+                          match !captured_session_id with
+                          | Some _ ->
+                              Orchestrator.set_llm_session_id orch patch_id
+                                !captured_session_id
+                          | None -> orch
+                        in
+                        let orch =
+                          Orchestrator.apply_session_result orch patch_id
+                            final_session_result
+                        in
+                        let agent_after = Orchestrator.agent orch patch_id in
+                        (orch, (agent_before, agent_after))
+                      in
+                      let agent_before, agent_after =
+                        if Mode.strict then
+                          checkpoint_snapshot "terminal classification"
+                            (fun snap ->
+                              let orchestrator, value =
+                                transition snap.orchestrator
+                              in
+                              ({ snap with Runtime.orchestrator }, value))
+                        else
+                          Runtime.update_orchestrator_returning runtime
+                            transition
                       in
                       let subkind =
                         match final_session_result with
@@ -1063,17 +1247,20 @@ module Make (W : Worktree.S) (Env : ENV) = struct
                                   ^ Types.Branch.to_string agent.branch));
                       }
                     in
-                    let checkpoint =
-                      Project_store.snapshot_path Env.project_name
+
+                    let persist_completion =
+                      if Mode.strict then C.persist
+                      else
+                        let path =
+                          Project_store.snapshot_path Env.project_name
+                        in
+                        Project_store.ensure_dir (Stdlib.Filename.dirname path);
+                        Persistence.save_snapshot ~path
                     in
-                    Project_store.ensure_dir
-                      (Stdlib.Filename.dirname checkpoint);
                     (match
                        Eio.Cancel.protect (fun () ->
                            Runtime.update_persisting runtime
-                             ~persist:
-                               (Persistence.save_snapshot ~path:checkpoint)
-                             (fun snap ->
+                             ~persist:persist_completion (fun snap ->
                                let orchestrator =
                                  Orchestrator.record_session_completion
                                    snap.Runtime.orchestrator patch_id completion
@@ -1111,8 +1298,7 @@ module Make (W : Worktree.S) (Env : ENV) = struct
                      with
                     | Ok () -> ()
                     | Error message ->
-                        failwith
-                          ("session completion checkpoint failed: " ^ message));
+                        checkpoint_failure "session completion" message);
                     (match !cancelled with
                     | None -> ()
                     | Some exn ->
@@ -1238,9 +1424,98 @@ module Make (W : Worktree.S) (Env : ENV) = struct
                         make_run_result ~turn_accepted:!backend_accepted_turn
                           final_user_result (List.rev !tool_failures))))
 
+  let run_owned ~write_owner ~kind ~delivery_mode ~patch_id ~prompt ~agent
+      ~on_pr_detected ~backend ~complexity =
+    run_owned_with_setup
+      ~ensure_checkout:(fun owner -> WS.ensure_owned ~owner ())
+      ~write_owner ~kind ~delivery_mode ~patch_id ~prompt ~agent ~on_pr_detected
+      ~backend ~complexity
+
   let run ~kind ~delivery_mode ~patch_id ~prompt ~agent ~on_pr_detected ~backend
       ~complexity =
     Runtime.with_patch_ownership Env.runtime ~patch_id (fun write_owner ->
         run_owned ~write_owner ~kind ~delivery_mode ~patch_id ~prompt ~agent
           ~on_pr_detected ~backend ~complexity)
 end
+
+module type RECOVERY_S = sig
+  include S
+
+  val run_recovery_owned :
+    write_owner:Runtime.patch_write ->
+    request:string ->
+    renewal_id:string option ->
+    ?observe_forge:
+      (unit ->
+      ( Branch_reconcile.workspace_forge * Types.Pr_number.t option,
+        string )
+      Result.t) ->
+    recovery:Session_prompt.recovery_context ->
+    kind:Types.Operation_kind.t option ->
+    delivery_mode:Patch_decision.delivery_mode ->
+    patch_id:Types.Patch_id.t ->
+    prompt:prompt ->
+    on_pr_detected:(Types.Pr_number.t -> unit) ->
+    backend:Llm_backend.t ->
+    complexity:int option ->
+    unit ->
+    recovery_result
+end
+
+module Make_with_checkpoint
+    (C : Execution_checkpoint.S)
+    (W : Worktree.S)
+    (Env : ENV) : RECOVERY_S = struct
+  module WS = Worktree_setup.Make_with_checkpoint (C) (W) (Env)
+
+  module Driver =
+    Make_impl
+      (C)
+      (struct
+        let strict = true
+      end)
+      (W)
+      (Env)
+      (WS)
+
+  include Driver
+
+  let run_recovery_owned ~write_owner ~request ~renewal_id ?observe_forge
+      ~recovery ~kind ~delivery_mode ~patch_id ~prompt ~on_pr_detected ~backend
+      ~complexity () =
+    match
+      WS.recover_owned ~owner:write_owner ~request ~renewal_id ?observe_forge ()
+    with
+    | Worktree_setup.Recovery_wait reason -> Recovery_wait reason
+    | Worktree_setup.Recovery_attention { reason; renewal_id } ->
+        Recovery_attention { reason; renewal_id }
+    | Worktree_setup.Recovery_merged pr -> Recovery_merged pr
+    | Worktree_setup.Recovery_ready path ->
+        let agent =
+          Runtime.read Env.runtime (fun snap ->
+              Orchestrator.agent snap.Runtime.orchestrator patch_id)
+        in
+        let prompt =
+          create_prompt
+            ~context:(fun ~worktree_path:_ ->
+              Session_prompt.render_recovery recovery)
+            ~turn:prompt.turn
+        in
+        Recovery_session
+          (run_owned_with_setup
+             ~ensure_checkout:(fun _ -> Worktree_setup.Path path)
+             ~write_owner ~kind ~delivery_mode ~patch_id ~prompt ~agent
+             ~on_pr_detected ~backend ~complexity)
+end
+
+module Make (W : Worktree.S) (Env : ENV) =
+  Make_impl
+    (Execution_checkpoint.Local (struct
+      let project_name = Env.project_name
+    end))
+    (struct
+      let strict = false
+    end)
+    (W)
+    (Env)
+    (Worktree_setup.Make (W) (Env))

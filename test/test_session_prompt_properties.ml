@@ -3,6 +3,15 @@
 
 open Onton_core
 
+let contains text needle =
+  let text_length = String.length text
+  and needle_length = String.length needle in
+  let rec scan index =
+    index + needle_length <= text_length
+    && (String.sub text index needle_length = needle || scan (index + 1))
+  in
+  scan 0
+
 let () =
   let open QCheck2 in
   let input = Gen.(pair string string) in
@@ -59,6 +68,33 @@ let () =
           String.equal
             (Session_prompt.render ~resume_session prompt)
             (Session_prompt.render ~resume_session prompt));
+      Test.make ~name:"recovery context preserves all supplied text" ~count:500
+        Gen.(tup5 string string string string string)
+        (fun (requirements, operation, guidance, patch, base) ->
+          let context =
+            Session_prompt.create_recovery ~requirements ~operation
+              ~guidance:[ guidance ]
+              ~patch_revision:(Session_prompt.Revision patch)
+              ~base_revision:base
+          in
+          let rendered = Session_prompt.render_recovery context in
+          List.for_all (contains rendered)
+            [
+              Printf.sprintf "Patch requirements (%d bytes):\n%s\n"
+                (String.length requirements)
+                requirements;
+              Printf.sprintf "Outstanding operation (%d bytes):\n%s\n"
+                (String.length operation) operation;
+              Printf.sprintf "Guidance 1 (%d bytes):\n%s\n"
+                (String.length guidance) guidance;
+              Printf.sprintf "Observed patch revision (%d bytes):\n%s\n"
+                (String.length patch) patch;
+              Printf.sprintf "Observed base revision (%d bytes):\n%s\n"
+                (String.length base) base;
+              "previous workspace and conversation are unavailable";
+              "Inspect the current checkout";
+              "Validate the resulting work";
+            ]);
     ]
   in
   QCheck_base_runner.run_tests_main tests

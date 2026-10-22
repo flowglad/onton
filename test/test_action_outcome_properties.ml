@@ -1633,3 +1633,51 @@ let () =
                    (Orchestrator.agent resolved id)
                      .Patch_agent.scheduler_recovery R.Pr_draft)
          with _ -> false))
+
+let () =
+  QCheck2.Test.check_exn
+    (QCheck2.Test.make
+       ~name:"workspace loss clears only the selected patch session" ~count:200
+       QCheck2.Gen.(pair string string)
+       (fun (path, session_id) ->
+         try
+           let patches = mk_patches 2 in
+           let lost = pid_of_idx patches 0 in
+           let other = pid_of_idx patches 1 in
+           let state = Orchestrator.create ~main_branch:main ~patches in
+           let state = Orchestrator.set_worktree_path state lost path in
+           let state =
+             Orchestrator.set_llm_session_id state lost (Some session_id)
+           in
+           let state =
+             Orchestrator.record_session_completion state lost
+               Session_result.
+                 {
+                   session_uuid = "completed";
+                   delivery_mode = Start;
+                   kind = None;
+                   message_id = None;
+                   result = Session_ok;
+                   head = None;
+                   guidance = [];
+                   turn_accepted = true;
+                 }
+           in
+           let state = Orchestrator.set_tried_fresh state lost in
+           let state = Orchestrator.set_tried_fresh state lost in
+           let before = Orchestrator.agent state lost in
+           let peer = Orchestrator.agent state other in
+           let recovered = Orchestrator.forget_workspace_session state lost in
+           let after = Orchestrator.agent recovered lost in
+           Option.is_some before.Patch_agent.session_completion
+           && Patch_agent.equal_session_fallback
+                before.Patch_agent.session_fallback Patch_agent.Given_up
+           && Option.is_none after.Patch_agent.worktree_path
+           && Option.is_none after.Patch_agent.llm_session_id
+           && Option.is_none after.Patch_agent.session_completion
+           && Patch_agent.equal_session_fallback
+                after.Patch_agent.session_fallback Patch_agent.Fresh_available
+           && Branch_reconcile.equal before.Patch_agent.branch_reconcile
+                after.Patch_agent.branch_reconcile
+           && Patch_agent.equal peer (Orchestrator.agent recovered other)
+         with _ -> false))
