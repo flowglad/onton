@@ -18,6 +18,33 @@ type operation_kind =
 
 type recovery_mode = Retained_workspace | Lost_workspace
 
+type result_status =
+  | Completed_ok
+  | Completed_no_commits
+  | Failed
+  | Cancelled
+  | Retryable
+  | Attention
+  | Merged_observed
+
+type terminal = {
+  state_version : int64;
+  status : result_status;
+  diagnostics : string;
+  renewal_id : string option;
+}
+
+type execute_request = {
+  identity : identity;
+  operation : operation;
+  expected_state_version : int64;
+  work : operation_kind;
+  guidance : string;
+  recovery_mode : recovery_mode;
+  renewal_id : string option;
+  renewed_intent : bool;
+}
+
 type host_message =
   | Bind of {
       identity : identity;
@@ -27,17 +54,9 @@ type host_message =
       capsule : string;
       state_version : int64;
       attention_id : string option;
+      admission : admission;
     }
-  | Execute of {
-      identity : identity;
-      operation : operation;
-      expected_state_version : int64;
-      work : operation_kind;
-      guidance : string;
-      recovery_mode : recovery_mode;
-      renewal_id : string option;
-      renewed_intent : bool;
-    }
+  | Execute of execute_request
   | Cancel of { identity : identity; operation : operation }
   | Checkpoint_ack of {
       identity : identity;
@@ -54,14 +73,22 @@ type host_message =
     }
   | Shutdown of identity
 
-type result_status =
-  | Completed_ok
-  | Completed_no_commits
-  | Failed
-  | Cancelled
-  | Retryable
-  | Attention
-  | Merged_observed
+and admission =
+  | Fresh
+  | Resume of {
+      initial_version : int64;
+      initial_attention : string option;
+      committed_version : int64;
+      committed_capsule : string;
+      committed_attention : string option;
+      entries : receipt list;
+    }
+
+and receipt = {
+  request : execute_request;
+  terminal : terminal option;
+  result_acknowledged : bool;
+}
 
 type worker_message =
   | Ready of { identity : identity; worker_id : string; state_version : int64 }
@@ -205,7 +232,7 @@ let base = [ "version"; "type"; "run_id"; "patch_id" ]
 let op = [ "operation_id"; "attempt_id"; "assignment_seq" ]
 let invalid = Error (Invalid "invalid worker protocol frame")
 
-let decode line =
+let rec decode line =
   if
     String.length line = 0
     || String.length line > max_frame
@@ -226,7 +253,7 @@ let decode line =
     | Some json when not (recursive_shape json) -> invalid
     | Some (`Assoc xs as json) -> (
         match get xs "version" with
-        | Some (`Int 1) -> (
+        | Some (`Int 2) -> (
             match (get xs "type", required_identity xs) with
             | Some (`String "bind"), Some identity -> (
                 match
@@ -239,6 +266,7 @@ let decode line =
                         "capsule";
                         "state_version";
                         "attention_id";
+                        "admission";
                       ])
                     json
                 with
@@ -249,14 +277,16 @@ let decode line =
                         string f "context",
                         string f "capsule",
                         counter f "state_version",
-                        optional_id f "attention_id" )
+                        optional_id f "attention_id",
+                        decode_admission (get f "admission") )
                     with
                     | ( Some worker_id,
                         Some workspace_id,
                         Some context,
                         Some capsule,
                         Some state_version,
-                        Some attention_id ) ->
+                        Some attention_id,
+                        Some admission ) ->
                         Ok
                           (Bind
                              {
@@ -267,6 +297,7 @@ let decode line =
                                capsule;
                                state_version;
                                attention_id;
+                               admission;
                              })
                     | _ -> invalid)
                 | None -> invalid)
@@ -422,6 +453,121 @@ let decode line =
         | None -> invalid)
     | _ -> invalid
 
+and decode_admission = function
+  | Some (`Assoc [ ("mode", `String "fresh") ]) -> Some Fresh
+  | Some json -> (
+      match
+        fields
+          [
+            "mode";
+            "initial_state_version";
+            "initial_attention_id";
+            "state_version";
+            "capsule";
+            "attention_id";
+            "entries";
+          ]
+          json
+      with
+      | Some f when get f "mode" = Some (`String "resume") -> (
+          match
+            ( counter f "initial_state_version",
+              optional_id f "initial_attention_id",
+              get f "entries",
+              counter f "state_version",
+              string f "capsule",
+              optional_id f "attention_id" )
+          with
+          | ( Some initial_version,
+              Some initial_attention,
+              Some (`List (_ :: _ as entries)),
+              Some committed_version,
+              Some committed_capsule,
+              Some committed_attention ) ->
+              let rec loop acc = function
+                | [] ->
+                    Some
+                      (Resume
+                         {
+                           initial_version;
+                           initial_attention;
+                           committed_version;
+                           committed_capsule;
+                           committed_attention;
+                           entries = List.rev acc;
+                         })
+                | json :: rest -> (
+                    match
+                      fields
+                        [ "request"; "terminal"; "result_acknowledged" ]
+                        json
+                    with
+                    | Some f -> (
+                        match
+                          ( get f "request",
+                            decode_terminal (get f "terminal"),
+                            get f "result_acknowledged" )
+                        with
+                        | ( Some (`Assoc request as json),
+                            Some terminal,
+                            Some (`Bool result_acknowledged) )
+                          when get request "type" = Some (`String "execute")
+                          -> (
+                            match
+                              decode (Yojson.Safe.to_string json ^ "\n")
+                            with
+                            | Ok (Execute request)
+                              when terminal <> None || not result_acknowledged
+                              ->
+                                loop
+                                  ({ request; terminal; result_acknowledged }
+                                  :: acc)
+                                  rest
+                            | Ok
+                                ( Bind _ | Execute _ | Cancel _
+                                | Checkpoint_ack _ | Result_ack _ | Shutdown _
+                                  )
+                            | Error _ ->
+                                None)
+                        | _ -> None)
+                    | None -> None)
+              in
+              loop [] entries
+          | _ -> None)
+      | _ -> None)
+  | None -> None
+
+and decode_terminal = function
+  | Some `Null -> Some None
+  | Some json -> (
+      match
+        fields [ "state_version"; "status"; "diagnostics"; "renewal_id" ] json
+      with
+      | Some f -> (
+          let status =
+            match get f "status" with
+            | Some (`String "completed_ok") -> Some Completed_ok
+            | Some (`String "completed_no_commits") -> Some Completed_no_commits
+            | Some (`String "failed") -> Some Failed
+            | Some (`String "cancelled") -> Some Cancelled
+            | Some (`String "retryable") -> Some Retryable
+            | Some (`String "attention") -> Some Attention
+            | Some (`String "merged_observed") -> Some Merged_observed
+            | _ -> None
+          in
+          match
+            ( counter f "state_version",
+              status,
+              string f "diagnostics",
+              optional_id f "renewal_id" )
+          with
+          | Some state_version, Some status, Some diagnostics, Some renewal_id
+            when status = Attention = (renewal_id <> None) ->
+              Some (Some { state_version; status; diagnostics; renewal_id })
+          | _ -> None)
+      | None -> None)
+  | None -> None
+
 let obj xs = `Assoc xs
 let s x = `String x
 let n x = s (Int64.to_string x)
@@ -436,7 +582,7 @@ let operation_fields o =
 
 let envelope kind identity fields =
   obj
-    ([ ("version", `Int 1); ("type", s kind) ]
+    ([ ("version", `Int 2); ("type", s kind) ]
     @ identity_fields identity @ fields)
 
 let status_name = function
@@ -496,7 +642,7 @@ let encode msg =
         | None ->
             obj
               [
-                ("version", `Int 1);
+                ("version", `Int 2);
                 ("type", s "protocol_error");
                 ("reason", s reason);
               ])
@@ -504,12 +650,13 @@ let encode msg =
   let line = Yojson.Safe.to_string json ^ "\n" in
   if String.length line <= max_frame && valid_utf8 line then line
   else
-    "{\"version\":1,\"type\":\"protocol_error\",\"reason\":\"worker output \
+    "{\"version\":2,\"type\":\"protocol_error\",\"reason\":\"worker output \
      exceeds frame limit\"}\n"
 
 type output =
   | Send of worker_message
   | Begin of host_message
+  | Recover of host_message
   | Cancel_active
   | Stop
 
@@ -529,13 +676,15 @@ type t = {
   identity : identity option;
   binding : host_message option;
   version : int64;
-  last_seq : int64 option;
-  seen : (operation * host_message) list;
   active : active option;
-  last_result : worker_message option;
   attention : string option;
   consumed_renewals : string list;
   stopped : bool;
+  initial_version : int64;
+  initial_attention : string option;
+  receipts : receipt list;
+  capsule : string;
+  restored_unfinished : bool;
 }
 
 let initial () =
@@ -543,21 +692,26 @@ let initial () =
     identity = None;
     binding = None;
     version = 0L;
-    last_seq = None;
-    seen = [];
     active = None;
-    last_result = None;
     attention = None;
     consumed_renewals = [];
     stopped = false;
+    initial_version = 0L;
+    initial_attention = None;
+    receipts = [];
+    capsule = "";
+    restored_unfinished = false;
   }
 
-let state_version t =
+let state_version (t : t) =
   match t.identity with None -> None | Some _ -> Some t.version
 
 let is_stopped t = t.stopped
-let error t reason = [ Send (Protocol_error { identity = t.identity; reason }) ]
-let bound t identity = t.identity = Some identity
+
+let error (t : t) reason =
+  [ Send (Protocol_error { identity = t.identity; reason }) ]
+
+let bound (t : t) identity = t.identity = Some identity
 
 let active_match t identity operation =
   match t.active with
@@ -575,26 +729,63 @@ type event =
       renewal_id : string option;
     }
   | Cleanup_complete
+  | Recover_unfinished
   | Host_lost
 
-let step t event =
+let rec step t event =
   if t.stopped then (t, [])
   else
     match event with
     | Host
         (Bind
-           ({ identity; worker_id; state_version; attention_id; _ } as binding))
-      -> (
+           ({
+              identity;
+              worker_id;
+              state_version;
+              attention_id;
+              admission;
+              capsule;
+              _;
+            } as binding)) -> (
         match t.identity with
-        | None ->
-            ( {
+        | None -> (
+            let base =
+              {
                 t with
                 identity = Some identity;
                 binding = Some (Bind binding);
                 version = state_version;
                 attention = attention_id;
-              },
-              [ Send (Ready { identity; worker_id; state_version }) ] )
+                capsule;
+                initial_version = state_version;
+                initial_attention = attention_id;
+              }
+            in
+            let restored =
+              match admission with
+              | Fresh -> Some base
+              | Resume
+                  {
+                    initial_version;
+                    initial_attention;
+                    committed_version;
+                    committed_capsule;
+                    committed_attention;
+                    entries;
+                  } ->
+                  if
+                    committed_version = state_version
+                    && committed_capsule = capsule
+                    && committed_attention = attention_id
+                  then restore base initial_version initial_attention entries
+                  else None
+            in
+            match restored with
+            | Some t ->
+                (t, [ Send (Ready { identity; worker_id; state_version }) ])
+            | None ->
+                let t, outputs = stop t in
+                (t, error t "invalid predecessor receipt" @ outputs))
         | Some old when old = identity && t.binding = Some (Bind binding) ->
             (t, [ Send (Ready { identity; worker_id; state_version }) ])
         | _ ->
@@ -614,36 +805,43 @@ let step t event =
         else
           match
             List.find_opt
-              (fun (op, _) ->
-                op = operation
-                || op.assignment_seq = operation.assignment_seq
-                || op.operation_id = operation.operation_id
-                || op.attempt_id = operation.attempt_id)
-              t.seen
+              (fun receipt ->
+                let old = receipt.request.operation in
+                old.assignment_seq = operation.assignment_seq
+                || old.operation_id = operation.operation_id
+                || old.attempt_id = operation.attempt_id)
+              t.receipts
           with
-          | Some (old_op, old_request)
-            when old_op = operation && old_request = Execute request ->
+          | Some receipt when receipt.request = request ->
               let replay =
                 [ Send (Accepted { identity; operation; replay = true }) ]
               in
               let replay =
-                match t.last_result with
-                | Some (Result { operation = old; _ } as result)
-                  when old = operation ->
-                    replay @ [ Send result ]
-                | Some
-                    ( Ready _ | Accepted _ | Observation _ | Checkpoint _
-                    | Protocol_error _ | Result _ )
-                | None ->
+                match receipt.terminal with
+                | Some terminal ->
                     replay
+                    @ [
+                        Send
+                          (Result
+                             {
+                               identity;
+                               operation;
+                               state_version = terminal.state_version;
+                               status = terminal.status;
+                               diagnostics = terminal.diagnostics;
+                               renewal_id = terminal.renewal_id;
+                             });
+                      ]
+                | None -> replay
               in
               (t, replay)
           | Some _ -> (t, error t "identity or sequence reused")
           | None ->
               let next =
-                match t.last_seq with
-                | None -> operation.assignment_seq = 1L
-                | Some n ->
+                match t.receipts with
+                | [] -> operation.assignment_seq = 1L
+                | previous :: _ ->
+                    let n = previous.request.operation.assignment_seq in
                     Int64.compare n Int64.max_int < 0
                     && operation.assignment_seq = Int64.succ n
               in
@@ -676,9 +874,9 @@ let step t event =
                   {
                     t with
                     active = Some active;
-                    last_seq = Some operation.assignment_seq;
-                    seen = (operation, Execute request) :: t.seen;
-                    last_result = None;
+                    receipts =
+                      { request; terminal = None; result_acknowledged = false }
+                      :: t.receipts;
                     attention = None;
                     consumed_renewals =
                       (match renewal_id with
@@ -720,6 +918,7 @@ let step t event =
                   ( {
                       t with
                       version = state_version;
+                      capsule;
                       active =
                         Some
                           {
@@ -742,20 +941,26 @@ let step t event =
         | _ -> (t, error t "stale checkpoint acknowledgment"))
     | Host (Result_ack { identity; operation; state_version }) -> (
         let matches =
-          match t.last_result with
-          | Some (Result { operation = op; state_version = ver; _ }) ->
-              operation = op && state_version = ver
-          | Some
-              ( Ready _ | Accepted _ | Observation _ | Checkpoint _
-              | Protocol_error _ )
-          | None ->
-              false
+          match t.receipts with
+          | { request; terminal = Some terminal; _ } :: _ ->
+              operation = request.operation
+              && state_version = terminal.state_version
+          | [] | { terminal = None; _ } :: _ -> false
         in
         match t.active with
         | Some a
           when matches && bound t identity && a.operation = operation
                && a.cleanup && a.pending = None ->
-            ({ t with active = None }, [])
+            ( {
+                t with
+                active = None;
+                receipts =
+                  (match t.receipts with
+                  | r :: rest -> { r with result_acknowledged = true } :: rest
+                  | [] -> []);
+              },
+              [] )
+        | None when matches && bound t identity -> (t, [])
         | Some _ | None -> (t, error t "stale result acknowledgment"))
     | Host (Shutdown identity) -> (
         if not (bound t identity) then (t, error t "unbound shutdown")
@@ -768,7 +973,8 @@ let step t event =
     | Propose_checkpoint { proposal_id; capsule } -> (
         match (t.identity, t.active) with
         | Some identity, Some a
-          when a.pending = None && a.terminal = None && valid_id proposal_id
+          when (not t.restored_unfinished)
+               && a.pending = None && a.terminal = None && valid_id proposal_id
                && valid_text capsule
                && Int64.compare t.version Int64.max_int < 0 ->
             let version = Int64.succ t.version in
@@ -798,7 +1004,8 @@ let step t event =
     | Finish { status; diagnostics; renewal_id } -> (
         match (t.identity, t.active) with
         | Some identity, Some a
-          when a.pending = None && a.acknowledged && a.cleanup
+          when (not t.restored_unfinished)
+               && a.pending = None && a.acknowledged && a.cleanup
                && a.terminal = None
                && ((not a.cancelled) || status = Cancelled)
                && valid_text diagnostics
@@ -828,7 +1035,22 @@ let step t event =
             ( {
                 t with
                 active = Some { a with terminal = Some result };
-                last_result = Some result;
+                receipts =
+                  (match t.receipts with
+                  | r :: rest ->
+                      {
+                        r with
+                        terminal =
+                          Some
+                            {
+                              state_version = t.version;
+                              status;
+                              diagnostics;
+                              renewal_id;
+                            };
+                      }
+                      :: rest
+                  | [] -> []);
                 attention =
                   (match status with
                   | Attention -> renewal_id
@@ -838,6 +1060,175 @@ let step t event =
               },
               [ Send result ] )
         | _ -> (t, error t "terminal result not admissible"))
+    | Recover_unfinished -> (
+        match (t.restored_unfinished, t.receipts) with
+        | true, { request; terminal = None; _ } :: _ ->
+            ( { t with restored_unfinished = false },
+              [ Recover (Execute request) ] )
+        | _ -> (t, error t "no interrupted assignment to recover"))
     | Host_lost -> (
         let t, e = stop t in
         (t, match t.active with Some _ -> Cancel_active :: e | None -> e))
+
+and restore base initial_version initial_attention entries =
+  let start =
+    {
+      base with
+      version = initial_version;
+      attention = initial_attention;
+      initial_version;
+      initial_attention;
+    }
+  in
+  let rec loop (t : t) = function
+    | [] ->
+        if t.version = base.version && t.attention = base.attention then Some t
+        else None
+    | receipt :: rest -> (
+        let admitted, outputs = step t (Host (Execute receipt.request)) in
+        if
+          not
+            (List.exists
+               (function
+                 | Begin _ -> true
+                 | Send _ | Recover _ | Cancel_active | Stop -> false)
+               outputs)
+        then None
+        else
+          match (receipt.terminal, admitted.active) with
+          | None, Some _
+            when rest = []
+                 && (not receipt.result_acknowledged)
+                 && Int64.compare base.version admitted.version >= 0
+                 && base.attention = None ->
+              Some
+                {
+                  admitted with
+                  version = base.version;
+                  restored_unfinished = true;
+                }
+          | Some terminal, Some active
+            when Int64.compare terminal.state_version admitted.version > 0 ->
+              let prepared =
+                {
+                  admitted with
+                  version = terminal.state_version;
+                  active =
+                    Some { active with acknowledged = true; cleanup = true };
+                }
+              in
+              let finished, outputs =
+                step prepared
+                  (Finish
+                     {
+                       status = terminal.status;
+                       diagnostics = terminal.diagnostics;
+                       renewal_id = terminal.renewal_id;
+                     })
+              in
+              if
+                not
+                  (List.exists
+                     (function
+                       | Send (Result _) -> true
+                       | Send
+                           ( Ready _ | Accepted _ | Observation _ | Checkpoint _
+                           | Protocol_error _ )
+                       | Begin _ | Recover _ | Cancel_active | Stop ->
+                           false)
+                     outputs)
+              then None
+              else if receipt.result_acknowledged then
+                let request = receipt.request in
+                let acknowledged, _ =
+                  step finished
+                    (Host
+                       (Result_ack
+                          {
+                            identity = request.identity;
+                            operation = request.operation;
+                            state_version = terminal.state_version;
+                          }))
+                in
+                loop acknowledged rest
+              else if rest = [] then loop finished rest
+              else None
+          | _ -> None)
+  in
+  loop start entries
+
+let request_json
+    {
+      identity;
+      operation;
+      expected_state_version;
+      work;
+      guidance;
+      recovery_mode;
+      renewal_id;
+      renewed_intent;
+    } =
+  let work =
+    match work with
+    | Reconcile -> obj [ ("type", s "reconcile") ]
+    | Session { phase; kind; turn } ->
+        obj
+          [
+            ("type", s "session");
+            ("phase", s phase);
+            ("kind", opt kind);
+            ("turn", s turn);
+          ]
+  in
+  envelope "execute" identity
+    (operation_fields operation
+    @ [
+        ("expected_state_version", n expected_state_version);
+        ("work", work);
+        ("guidance", s guidance);
+        ( "recovery_mode",
+          s
+            (match recovery_mode with
+            | Retained_workspace -> "retained_workspace"
+            | Lost_workspace -> "lost_workspace") );
+        ("renewal_id", opt renewal_id);
+        ("renewed_intent", `Bool renewed_intent);
+      ])
+
+let admission_receipt (t : t) =
+  match (t.identity, t.receipts) with
+  | None, _ -> None
+  | Some _, [] -> Some (obj [ ("mode", s "fresh") ])
+  | Some _, receipts ->
+      Some
+        (obj
+           [
+             ("mode", s "resume");
+             ("initial_state_version", n t.initial_version);
+             ("initial_attention_id", opt t.initial_attention);
+             ("state_version", n t.version);
+             ("capsule", s t.capsule);
+             ("attention_id", opt t.attention);
+             ( "entries",
+               `List
+                 (List.rev_map
+                    (fun receipt ->
+                      obj
+                        [
+                          ("request", request_json receipt.request);
+                          ( "terminal",
+                            match receipt.terminal with
+                            | None -> `Null
+                            | Some terminal ->
+                                obj
+                                  [
+                                    ("state_version", n terminal.state_version);
+                                    ("status", s (status_name terminal.status));
+                                    ("diagnostics", s terminal.diagnostics);
+                                    ("renewal_id", opt terminal.renewal_id);
+                                  ] );
+                          ( "result_acknowledged",
+                            `Bool receipt.result_acknowledged );
+                        ])
+                    receipts) );
+           ])

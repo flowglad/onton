@@ -1,9 +1,9 @@
 (* @archlint.module core
    @archlint.domain worker-protocol *)
 
-(** Protocol v1 pure framing and single-process admission. Only [decode] can
-    construct a host message. The wrapper authenticates its local pipe and
-    establishes exclusive process ownership before [bind]. *)
+(** Protocol v2 pure framing and durable admission. Only [decode] can construct
+    a host message. The wrapper authenticates its local pipe and establishes
+    exclusive process ownership before [bind]. *)
 type decode_error = Invalid of string | Incompatible of string
 
 type identity = { run_id : string; patch_id : string }
@@ -20,6 +20,21 @@ type operation_kind =
 
 type recovery_mode = Retained_workspace | Lost_workspace
 
+type execute_request = {
+  identity : identity;
+  operation : operation;
+  expected_state_version : int64;
+  work : operation_kind;
+  guidance : string;
+  recovery_mode : recovery_mode;
+  renewal_id : string option;
+  renewed_intent : bool;
+}
+
+type admission
+(** Decoded wire receipt; bind validates its admission history before readiness.
+*)
+
 type host_message = private
   | Bind of {
       identity : identity;
@@ -29,17 +44,9 @@ type host_message = private
       capsule : string;
       state_version : int64;
       attention_id : string option;
+      admission : admission;
     }
-  | Execute of {
-      identity : identity;
-      operation : operation;
-      expected_state_version : int64;
-      work : operation_kind;
-      guidance : string;
-      recovery_mode : recovery_mode;
-      renewal_id : string option;
-      renewed_intent : bool;
-    }
+  | Execute of execute_request
   | Cancel of { identity : identity; operation : operation }
   | Checkpoint_ack of {
       identity : identity;
@@ -107,12 +114,25 @@ type event =
       renewal_id : string option;
     }
   | Cleanup_complete
+  | Recover_unfinished
+      (** Explicitly dispatch observation/repair of an interrupted assignment.
+          The adapter must not rerun its original work. Recovery must checkpoint
+          observed state and finish cleanup before producing a terminal result.
+      *)
   | Host_lost
 
 type output =
   | Send of worker_message
   | Begin of host_message
+  | Recover of host_message
   | Cancel_active
   | Stop
 
 val step : t -> event -> t * output list
+
+val admission_receipt : t -> Yojson.Safe.t option
+(** Patch-scoped admission facts for the required bind [admission] field.
+    Persist admission before effects, terminal results before delivery, and the
+    post-ACK receipt before delivering Result ACK to a worker. Pair this with
+    the same committed capsule, state version and attention ID. Never replace a
+    process until its descendants have been fenced. *)

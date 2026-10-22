@@ -112,6 +112,7 @@ let loss_fences_old_reply =
                     { token = command.B.token; at = 2.; result = B.Published }))
       in
       B.equal lost repeated && duplicate_effects = [] && B.equal lost stale
+      && B.workspace_request lost = Some request
       && roundtrip lost
       &&
       match (effects, B.operation lost) with
