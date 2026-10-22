@@ -376,6 +376,42 @@ let bounded_encode =
       | `Assoc xs -> List.assoc_opt "type" xs = Some (`String "protocol_error")
       | _ -> false)
 
+let generated_wire_state =
+  QCheck2.Test.make
+    ~name:"generated state versions and diagnostics retain protocol framing"
+    ~count:200
+    QCheck2.Gen.(pair (int_range 0 100000) string)
+    (fun (version, diagnostic) ->
+      let binding =
+        wire "bind"
+          [
+            ("worker_id", `String "worker");
+            ("workspace_id", `String "space");
+            ("context", `String "context");
+            ("capsule", `String "{}");
+            ("state_version", `String (string_of_int version));
+            ("attention_id", `Null);
+          ]
+      in
+      let t, _ = host (P.initial ()) binding in
+      let state_ok =
+        P.state_version t = Some (Int64.of_int version) && not (P.is_stopped t)
+      in
+      let stopped, _ = P.step t P.Host_lost in
+      let stopped_ok = P.is_stopped stopped in
+      let encoded =
+        P.encode (P.Protocol_error { identity = None; reason = diagnostic })
+      in
+      state_ok && stopped_ok
+      && String.length encoded <= 1024 * 1024
+      && String.length encoded > 0
+      && encoded.[String.length encoded - 1] = '\n'
+      &&
+      match Yojson.Safe.from_string encoded with
+      | `Assoc fields ->
+          List.assoc_opt "type" fields = Some (`String "protocol_error")
+      | _ -> false)
+
 let () =
   QCheck_base_runner.run_tests_main
     [
@@ -391,4 +427,5 @@ let () =
       exact_ack_replay;
       attention_transition;
       bounded_encode;
+      generated_wire_state;
     ]
