@@ -358,6 +358,24 @@ let attention_transition =
       check (not (begins again));
       true)
 
+let bounded_encode =
+  QCheck2.Test.make ~name:"worker output stays within frame limit" ~count:1
+    QCheck2.Gen.unit (fun () ->
+      let identity = P.{ run_id = "r"; patch_id = "p" } in
+      let operation =
+        P.{ operation_id = "o"; attempt_id = "a"; assignment_seq = 1L }
+      in
+      let line =
+        P.encode
+          (P.Observation
+             { identity; operation; text = String.make (1024 * 1024) 'x' })
+      in
+      String.length line <= 1024 * 1024
+      &&
+      match Yojson.Safe.from_string line with
+      | `Assoc xs -> List.assoc_opt "type" xs = Some (`String "protocol_error")
+      | _ -> false)
+
 let () =
   QCheck_base_runner.run_tests_main
     [
@@ -372,4 +390,5 @@ let () =
       boundaries;
       exact_ack_replay;
       attention_transition;
+      bounded_encode;
     ]

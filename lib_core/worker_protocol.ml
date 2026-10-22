@@ -501,7 +501,11 @@ let encode msg =
                 ("reason", s reason);
               ])
   in
-  Yojson.Safe.to_string json ^ "\n"
+  let line = Yojson.Safe.to_string json ^ "\n" in
+  if String.length line <= max_frame && valid_utf8 line then line
+  else
+    "{\"version\":1,\"type\":\"protocol_error\",\"reason\":\"worker output \
+     exceeds frame limit\"}\n"
 
 type output =
   | Send of worker_message
