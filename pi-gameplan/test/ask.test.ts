@@ -18,6 +18,7 @@ test("the request marks the recommendation, carries tradeoffs, and adds a delega
   const request = buildAskUserRequest(params);
   const q = request.questions[0];
   assert.equal(q.header, "AD-7");
+  assert.equal(q.question, params.question);
   assert.deepEqual(
     q.options.map((o) => o.label),
     ["1. Relational rows in the app database.", "2. Immutable objects in the artifact bucket. (recommended)", DELEGATE_LABEL],
@@ -50,14 +51,14 @@ test("the delegate row becomes a delegation scoped by the note", () => {
   );
 });
 
-test("typed answers and unknown labels become free-text choices; declines and errors cancel", () => {
+test("typed answers and unknown labels request discussion; declines and errors cancel", () => {
   assert.deepEqual(
     answerFromAskUser(params, { answers: [{ questionIndex: 0, answer: "Reuse the outbox table", custom: true }] }),
-    { kind: "other", text: "Reuse the outbox table" },
+    { kind: "discussion", text: "Reuse the outbox table" },
   );
   assert.deepEqual(
     answerFromAskUser(params, { answers: [{ questionIndex: 0, answer: "Something else", custom: false }] }),
-    { kind: "other", text: "Something else" },
+    { kind: "discussion", text: "Something else" },
   );
   assert.deepEqual(answerFromAskUser(params, { cancelled: true, answers: [] }), { kind: "cancelled" });
   assert.deepEqual(answerFromAskUser(params, { error: "no_ui", answers: [] }), { kind: "cancelled" });
@@ -65,6 +66,13 @@ test("typed answers and unknown labels become free-text choices; declines and er
   assert.deepEqual(answerFromAskUser(params, "garbage"), { kind: "cancelled" });
 });
 
+
+test("typed option labels and delegation labels cannot grant consent", () => {
+  for (const answer of [buildAskUserRequest(params).questions[0].options[0]!.label, DELEGATE_LABEL]) {
+    assert.deepEqual(answerFromAskUser(params, { answers: [{ answer, custom: true, notes: "Why?" }] }),
+      { kind: "discussion", text: `${answer} (Why?)` });
+  }
+});
 
 test("duplicate choices still identify the selected option", () => {
   const duplicate = { ...params, recommendation: 2, options: [

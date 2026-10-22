@@ -6,7 +6,9 @@ import {
   fromEntries,
   initialState,
   recordDecision,
+  removeDecision,
   resolveDecision,
+  startGameplan,
 } from "../src/state.js";
 
 const params: DecideParams = {
@@ -33,12 +35,18 @@ test("a selected option is engineer_approved with tool-generated evidence and th
   assert.match(record.evidence, /Engineer selected "Synchronous execution in the admission request\." in a gameplan_decide dialog on 2026-10-16T12:00:00\.000Z\./);
 });
 
-test("a typed answer is engineer_approved and keeps every offered option as an alternative", () => {
-  const record = resolveDecision(params, { kind: "other", text: "  Reuse the existing outbox worker.  " }, now);
-  assert.equal(record.kind, "engineer_approved");
-  assert.equal(record.choice, "Reuse the existing outbox worker.");
-  assert.equal(record.alternatives.length, 3);
-  assert.match(record.evidence, /Engineer answered "Reuse the existing outbox worker\."/);
+test("discussion stays unresolved and preserves the engineer's comments without approval evidence", () => {
+  for (const text of ["Why not the outbox?", "Reuse the existing outbox worker.", "I approve", params.options[0]!.choice]) {
+    const record = resolveDecision(params, { kind: "discussion", text }, now);
+    assert.equal(record.kind, "unresolved");
+    assert.equal(record.choice, params.options[0]!.choice);
+    assert.equal(record.evidence, "");
+    assert.ok(record.reason?.includes(text));
+    const approved = resolveDecision(params, { kind: "selected", index: 1 }, now);
+    const pending = recordDecision(recordDecision(initialState, approved), record);
+    assert.deepEqual(pending.decisions, [record]);
+    assert.deepEqual(recordDecision(pending, approved).decisions, [approved]);
+  }
 });
 
 test("delegation records the recommendation as delegated with the stated scope", () => {
@@ -60,6 +68,36 @@ test("a dismissed dialog or missing UI leaves the decision unresolved with no ev
 test("an out-of-range recommendation or selection is rejected", () => {
   assert.throws(() => resolveDecision({ ...params, recommendation: 9 }, { kind: "selected", index: 0 }, now));
   assert.throws(() => resolveDecision(params, { kind: "selected", index: 9 }, now));
+});
+
+test("removal preserves other decisions, clears finalization, and is idempotent", () => {
+  for (const answer of [{ kind: "cancelled" } as const, { kind: "selected", index: 0 } as const, { kind: "delegated", scope: "all" } as const]) {
+    const first = resolveDecision(params, answer, now);
+    const second = { ...first, id: "AD-2" };
+    const state = { ...initialState, decisions: [first, second], finalizedPath: "plan.yaml", finalizedDigest: "hash" };
+    assert.equal(removeDecision(state, "missing"), state);
+    const removed = removeDecision(state, "AD-1");
+    assert.deepEqual(removed.decisions, [second]);
+    assert.equal(removed.finalizedPath, undefined);
+    assert.equal(removed.finalizedDigest, undefined);
+    assert.equal(removeDecision(removed, "AD-1"), removed);
+    assert.equal(state.decisions.length, 2);
+  }
+});
+
+test("a new draft clears plan-local state, preserves settings, and restores independently", () => {
+  const previous = {
+    ...initialState, enabled: true, gameplanDir: "plans", toolsBeforeMode: ["read"],
+    decisions: [resolveDecision(params, { kind: "selected", index: 0 }, now)],
+    gameplanPath: "plans/old.yaml", finalizedPath: "plans/old.yaml", finalizedDigest: "hash",
+  };
+  const next = startGameplan(previous, "plans/new.yaml");
+  assert.deepEqual(next, { ...previous, decisions: [], gameplanPath: "plans/new.yaml", finalizedPath: undefined, finalizedDigest: undefined });
+  const entry = (data: unknown) => ({ type: "custom", customType: CUSTOM_ENTRY_TYPE, data });
+  assert.deepEqual(fromEntries([entry(previous), entry(next)]), next);
+  assert.deepEqual(fromEntries([entry(previous)]), previous);
+  assert.equal(previous.decisions.length, 1);
+  assert.equal(previous.finalizedDigest, "hash");
 });
 
 test("recording the same id again replaces it in place", () => {

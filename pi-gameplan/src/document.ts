@@ -75,6 +75,33 @@ export function createValidator(schema: JsonObject): SchemaValidator {
 // ---------------------------------------------------------------------------------------------
 // Decisions
 
+/** Decode an existing ledger only after schema validation; caller must obtain import consent. */
+export function importDecisions(doc: unknown, validator: SchemaValidator, recordedAt: string): DecisionRecord[] {
+  if (!isObject(doc) || !isObject(doc.architectureDesign)) throw new Error("Missing architectureDesign");
+  const design = doc.architectureDesign;
+  const errors = validator.section("architectureDesign", design);
+  if (errors.length) throw new Error(errors.join("\n"));
+  const records: DecisionRecord[] = [];
+  const seen = new Set<string>();
+  for (const raw of design.decisions as JsonObject[]) {
+    const id = raw.id as string;
+    if (seen.has(id)) throw new Error(`${id}: duplicate decision id`);
+    seen.add(id);
+    const resolution = raw.resolution as JsonObject;
+    if (resolution.kind === "constrained") continue;
+    records.push({
+      id, topic: raw.topic as string, question: raw.question as string,
+      choice: raw.choice as string,
+      alternatives: raw.alternatives as DecisionRecord["alternatives"],
+      kind: resolution.kind as DecisionRecord["kind"],
+      evidence: typeof resolution.evidence === "string" ? resolution.evidence : "",
+      reason: resolution.kind === "unresolved" && typeof resolution.reason === "string" ? resolution.reason : undefined,
+      recordedAt,
+    });
+  }
+  return records;
+}
+
 /**
  * Fill `architectureDesign.decisions` from the ledger. For an answered decision the model
  * supplies only `id` and `rationale` (optionally `topic`); choice, alternatives, kind
@@ -85,7 +112,7 @@ export function composeDecisions(design: unknown, ledger: readonly DecisionRecor
   if (!isObject(design) || !Array.isArray(design.decisions)) return { design, errors: [] };
   const errors: string[] = [];
   const seen = new Set<string>();
-  const decisions = design.decisions.map((raw): unknown => {
+  const decisions = design.decisions.map((raw) => {
     if (!isObject(raw) || typeof raw.id !== "string") return raw;
     const id = raw.id;
     if (seen.has(id)) errors.push(`${id}: duplicate decision id`);

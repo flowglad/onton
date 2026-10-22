@@ -29,6 +29,7 @@ import {
   applySections,
   composeDecisions,
   createValidator,
+  importDecisions,
   type JsonObject,
   loadGameplanDocument,
   missingSections,
@@ -52,7 +53,9 @@ import {
   type GameplanState,
   initialState,
   recordDecision,
+  removeDecision,
   resolveDecision,
+  startGameplan,
 } from "./state.js";
 import {
   missingSkillFiles,
@@ -63,9 +66,9 @@ import {
   type ValidationReport,
 } from "./validator.js";
 
-const OUR_TOOLS = ["gameplan_decide", "gameplan_write", "gameplan_write_patch", "gameplan_write_spec", "gameplan_check", "gameplan_finalize"];
+const OUR_TOOLS = ["gameplan_new", "gameplan_load", "gameplan_remove_decision", "gameplan_decide", "gameplan_write", "gameplan_write_patch", "gameplan_write_spec", "gameplan_check", "gameplan_finalize"];
 const WRITE_TOOLS = new Set(["write", "edit"]);
-const OTHER_LABEL = "Other: type an answer";
+const OTHER_LABEL = "Discuss further / propose another option (no approval)";
 const DELEGATE_LABEL = "Delegate: let the agent choose (records the recommendation as delegated)";
 
 export default function gameplan(pi: ExtensionAPI) {
@@ -334,7 +337,9 @@ export default function gameplan(pi: ExtensionAPI) {
     const notes: string[] = [];
     notes.push(
       state.gameplanPath
-        ? `- The gameplan file is ${state.gameplanPath}. It is the source of truth; read it before editing rather than relying on memory of earlier turns.`
+        ? existsSync(resolve(ctx.cwd, state.gameplanPath))
+          ? `- The gameplan file is ${state.gameplanPath}. It is the source of truth; read it before editing rather than relying on memory of earlier turns.`
+          : `- No gameplan file exists yet. Write the selected draft to ${state.gameplanPath} with gameplan_write.`
         : `- No gameplan file exists yet. Write it to ${state.gameplanDir}/<project-name>.yaml.`,
     );
     const requiredMissing = missingRequired();
@@ -371,12 +376,93 @@ You are authoring a gameplan for this repository, not implementing changes.
 - For every architectural choice with meaningful alternatives, call gameplan_decide and wait for the answer before designing anything that depends on it. In architectureDesign.decisions, list each answered decision as { id, rationale }; choice, alternatives, kind, and evidence are filled from the recorded answer and cannot be authored by you. Decisions you assert yourself must be constrained (evidence and rationale) and the engineer will be asked to accept each one at finalize.
 - Each write reports which required sections and referenced patches are still missing. When none are, call gameplan_check and fix every error it reports. Checking earlier only returns INCOMPLETE with that same list.
 - When gameplan_check passes and openQuestions is empty, call gameplan_finalize.
+- Finalization completes only the current plan, not the session. When the user requests a different gameplan, call gameplan_new with a fresh path before recording decisions or writing it. This clears the active ledger without editing the previous file. Use gameplan_load instead to explicitly resume an existing plan.
 ${toolNote}
 
 Decisions recorded so far:
 ${ledger}`,
       },
     };
+  });
+
+  pi.registerTool({
+    name: "gameplan_new",
+    label: "New gameplan",
+    description: "Start a new independent gameplan, including after finalizing another in this session. Requires an unused path and engineer confirmation. Clears the active decision ledger and finalization marker, preserves mode settings, and leaves all files unchanged. Use gameplan_load to resume an existing plan instead.",
+    promptSnippet: "Start a fresh gameplan without inheriting the previous plan's decisions",
+    exposure: "model-only",
+    executionMode: "sequential",
+    parameters: Type.Object({ path: Type.String({ minLength: 1, description: "Unused gameplan path within the configured gameplan directory" }) }),
+    async execute(_id, params, signal, _onUpdate, ctx) {
+      requireMode();
+      signal?.throwIfAborted();
+      if (!ctx.hasUI) throw new Error("Starting a gameplan requires engineer confirmation in an interactive UI");
+      const before = state;
+      const admission = await resolveGameplanWrite(ctx.cwd, before.gameplanDir, params.path);
+      if (existsSync(admission.path)) throw new Error("Gameplan already exists; choose a fresh path or use gameplan_load");
+      const accepted = await ctx.ui.confirm("Start a new gameplan?", `${params.path}\nReplace the active ledger (${before.decisions.length} decisions) with an empty draft? Previous gameplan files remain unchanged.`);
+      signal?.throwIfAborted();
+      if (!accepted) return { content: [{ type: "text", text: "New gameplan cancelled; state unchanged." }], details: { started: false } };
+      const current = await resolveGameplanWrite(ctx.cwd, before.gameplanDir, params.path);
+      if (state !== before || current.path !== admission.path || current.device !== admission.device || current.inode !== admission.inode || existsSync(current.path)) {
+        throw new Error("Gameplan path or mode state changed during confirmation; retry with a fresh path");
+      }
+      state = startGameplan(state, params.path);
+      persist();
+      updateStatus(ctx);
+      return { content: [{ type: "text", text: `Started a fresh draft at ${params.path} with no recorded decisions. Previous files unchanged; record new choices with gameplan_decide and create the file with gameplan_write.` }], details: { started: true, path: params.path } };
+    },
+  });
+
+  pi.registerTool({
+    name: "gameplan_load",
+    label: "Load gameplan",
+    description: "Load an existing gameplan into mode state after engineer confirmation. Replaces the session decision ledger and active file path, clears finalization, and leaves the file unchanged. Imported approval evidence is trusted only after confirmation; constrained decisions still require acceptance at finalize. Run gameplan_check afterward for full validation.",
+    exposure: "model-only",
+    executionMode: "sequential",
+    parameters: Type.Object({ path: Type.String({ description: "Existing gameplan path within the configured gameplan directory" }) }),
+    async execute(_id, params, signal, _onUpdate, ctx) {
+      requireMode();
+      signal?.throwIfAborted();
+      if (!ctx.hasUI) throw new Error("Loading a gameplan requires engineer confirmation in an interactive UI");
+      const bytes = await readGameplanSnapshot(ctx.cwd, state.gameplanDir, params.path);
+      const records = importDecisions(parseYaml(bytes.toString("utf8")), validator(), new Date().toISOString());
+      const before = state;
+      const accepted = await ctx.ui.confirm("Load gameplan?", `${params.path}\nReplace the current ledger (${state.decisions.length} decisions) and clear finalization?\nConfirm importing these recorded answers and their evidence:\n${JSON.stringify(records, null, 2)}\nConstrained decisions remain subject to finalize confirmation.`);
+      signal?.throwIfAborted();
+      if (!accepted) return { content: [{ type: "text", text: "Load cancelled; state unchanged." }], details: { loaded: false } };
+      const current = await readGameplanSnapshot(ctx.cwd, state.gameplanDir, params.path);
+      if (state !== before || !bytes.equals(current)) throw new Error("Gameplan or mode state changed during confirmation; load again");
+      state = { ...state, decisions: records, gameplanPath: params.path, finalizedPath: undefined, finalizedDigest: undefined };
+      persist();
+      updateStatus(ctx);
+      return { content: [{ type: "text", text: `Loaded ${params.path} with ${records.length} ledger decisions. File unchanged; run gameplan_check next.` }], details: { loaded: true, path: params.path, decisions: records } };
+    },
+  });
+
+  pi.registerTool({
+    name: "gameplan_remove_decision",
+    label: "Remove gameplan decision",
+    description: "Remove a decision from the session ledger after engineer confirmation and clear finalization. Does not edit the YAML: remove the corresponding decision, open question, and stale references with gameplan_write afterward. Unknown IDs are a no-op.",
+    exposure: "model-only",
+    executionMode: "sequential",
+    parameters: Type.Object({ id: Type.String({ minLength: 1, description: "Exact decision id to remove" }) }),
+    async execute(_id, params, signal, _onUpdate, ctx) {
+      requireMode();
+      signal?.throwIfAborted();
+      const record = state.decisions.find((d) => d.id === params.id);
+      if (!record) return { content: [{ type: "text", text: `${params.id} is not in the ledger; nothing changed.` }], details: { removed: false } };
+      if (!ctx.hasUI) throw new Error("Removing a decision requires engineer confirmation in an interactive UI");
+      const before = state;
+      const accepted = await ctx.ui.confirm("Remove gameplan decision?", `${record.id}: ${record.question}\n${record.kind}: ${record.choice}\nRemove from the ledger and clear finalization? The YAML will not be edited.`);
+      signal?.throwIfAborted();
+      if (!accepted) return { content: [{ type: "text", text: "Removal cancelled; state unchanged." }], details: { removed: false } };
+      if (state !== before) throw new Error("Mode state changed during confirmation; retry removal");
+      state = removeDecision(state, params.id);
+      persist();
+      updateStatus(ctx);
+      return { content: [{ type: "text", text: `${params.id} removed from the ledger. Use gameplan_write to remove its YAML entry and any stale references or open questions.` }], details: { removed: true, id: params.id } };
+    },
   });
 
   pi.registerTool({
@@ -389,6 +475,7 @@ ${ledger}`,
       "Call gameplan_decide for each choice that changes ownership, state lifetime, execution semantics, validation boundaries, or data flow. Ask one decision at a time when answers depend on each other.",
       "Present real alternatives with concrete tradeoffs from the inspected code, and state a recommendation. Do not offer straw options.",
       "Paste the returned YAML block verbatim. Write the rationale yourself; never alter choice, kind, or evidence.",
+      "Free-text responses request discussion, not approval. Address the engineer's comments, keep the AD unresolved, and call gameplan_decide again with the same id and updated options when ready for an explicit choice.",
     ],
     exposure: "model-only",
     executionMode: "sequential",
@@ -413,13 +500,15 @@ ${ledger}`,
       }
       signal?.throwIfAborted();
       const answer = await askDecision(ctx, params, hasTool(ASK_USER_TOOL), signal);
+      signal?.throwIfAborted();
       const record = resolveDecision(params, answer, new Date());
+      clearFinalized(ctx);
       state = recordDecision(state, record);
       persist();
       updateStatus(ctx);
       const text =
         record.kind === "unresolved"
-          ? `${record.id} is UNRESOLVED: ${record.reason} Keep it in openQuestions, leave the dependent design provisional, and include { id: "${record.id}" } in architectureDesign.decisions so the file records it as unresolved.`
+          ? `${record.id} is UNRESOLVED: ${record.reason} This is not approval. Address any questions or proposed alternatives in conversation, then call gameplan_decide again with the same id when ready for an explicit choice. Keep it in openQuestions, leave the dependent design provisional, and include { id: "${record.id}" } in architectureDesign.decisions so the file records it as unresolved.`
           : `${record.id} recorded as ${record.kind}: ${JSON.stringify(record.choice)}\n\nOn your next gameplan_write, include { id: "${record.id}", rationale: "<why this choice fits this codebase>" } in architectureDesign.decisions. Choice, alternatives, kind, and evidence are filled from this record.`;
       return { content: [{ type: "text", text }], details: record };
     },
@@ -437,7 +526,7 @@ ${ledger}`,
       const record = result.details as DecisionRecord | undefined;
       if (!record) return new Text(textOf(result.content), 0, 0);
       const color = record.kind === "unresolved" ? "warning" : "success";
-      return new Text(theme.fg(color, `${record.id} ${record.kind}: ${record.choice}`), 0, 0);
+      return new Text(theme.fg(color, `${record.id} ${record.kind}: ${record.reason ?? record.choice}`), 0, 0);
     },
   });
 
@@ -865,9 +954,9 @@ async function askDecision(ctx: ExtensionToolContext, params: DecideParams, askU
   const picked = await ctx.ui.select(`${params.id} · ${params.topic}: ${params.question}`, [...labels, OTHER_LABEL, DELEGATE_LABEL]);
   if (picked === undefined) return { kind: "cancelled" };
   if (picked === OTHER_LABEL) {
-    const text = await ctx.ui.editor(`${params.id}: your answer`, "");
+    const text = await ctx.ui.editor(`${params.id}: questions or alternatives to discuss (not approval)`, "");
     if (!text?.trim()) return { kind: "cancelled" };
-    return { kind: "other", text };
+    return { kind: "discussion", text };
   }
   if (picked === DELEGATE_LABEL) {
     const scope = (await ctx.ui.input(`${params.id}: scope of the delegation (optional)`, "e.g. any option that keeps the request path synchronous")) ?? "";
