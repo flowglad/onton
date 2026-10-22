@@ -130,6 +130,39 @@ let loss_fences_old_reply =
           && operation.B.pending = Some command
       | _ -> false)
 
+let loss_before_first_operation =
+  QCheck2.Test.make
+    ~name:"loss before first owner operation seeds checkout intent" ~count:100
+    G.string_small (fun suffix ->
+      let request = "admission-" ^ suffix in
+      let intent =
+        B.
+          {
+            base = "main";
+            policy = Rewrite;
+            purpose = Provision_checkout request;
+          }
+      in
+      let lost, effects =
+        B.step B.empty (B.Workspace_lost_without_operation { request; intent })
+      in
+      let repeated, repeat_effects =
+        B.step lost (B.Workspace_lost_without_operation { request; intent })
+      in
+      let recovered =
+        observed lost ~patch_revision:None ~base_revision:(Some base)
+      in
+      B.equal lost repeated
+      && List.is_empty repeat_effects
+      && roundtrip lost
+      && B.workspace_outcome recovered = Some (B.Workspace_base base)
+      &&
+      match (effects, B.operation lost) with
+      | [ B.Execute command ], Some operation ->
+          command.B.kind = B.Observe && operation.B.lost_workspace
+          && operation.B.intent = intent
+      | _ -> false)
+
 let uncertainty_and_renewal =
   QCheck2.Test.make ~name:"uncertain push needs renewed operation" ~count:100
     G.bool (fun merged ->
@@ -263,6 +296,7 @@ let () =
     [
       total_matrix;
       loss_fences_old_reply;
+      loss_before_first_operation;
       uncertainty_and_renewal;
       stale_loss_and_renewal;
       probe_diagnostic;

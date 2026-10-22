@@ -705,7 +705,29 @@ module Make_impl
             match
               (Branch_reconcile.workspace_outcome (state ()), renewal_id)
             with
-            | None, None -> run (Branch_reconcile.Workspace_lost { request })
+            | None, None ->
+                let event =
+                  if Option.is_some (Branch_reconcile.operation (state ())) then
+                    Branch_reconcile.Workspace_lost { request }
+                  else
+                    let intent =
+                      Runtime.read runtime (fun snap ->
+                          let orch = snap.Runtime.orchestrator in
+                          let agent = Orchestrator.agent orch patch_id in
+                          Branch_reconcile.
+                            {
+                              base =
+                                Types.Branch.to_string
+                                  (Option.value agent.Patch_agent.base_branch
+                                     ~default:(Orchestrator.main_branch orch));
+                              policy = Rewrite;
+                              purpose = Provision_checkout request;
+                            })
+                    in
+                    Branch_reconcile.Workspace_lost_without_operation
+                      { request; intent }
+                in
+                run event
             | Some (Branch_reconcile.Workspace_attention _), Some renewal_id ->
                 run
                   (Branch_reconcile.Renew_workspace_intent

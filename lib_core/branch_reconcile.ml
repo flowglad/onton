@@ -376,6 +376,7 @@ type event =
   | Tick of float
   | Recover
   | Workspace_lost of { request : string }
+  | Workspace_lost_without_operation of { request : string; intent : intent }
   | Workspace_forge_observed of { request : string; forge : workspace_forge }
   | Renew_workspace_intent of { request : string; renewal_id : string }
   | Workspace_resumed
@@ -2046,8 +2047,16 @@ let renewal_receipt t (op : operation) request =
   in
   Stdlib.Digest.BLAKE256.(to_hex (string identity))
 
-let[@warning "-4"] step_workspace t event =
+let[@warning "-4"] rec step_workspace t event =
   match (event, t.workspace_recovery, t.active) with
+  | Workspace_lost_without_operation { request; intent }, None, None
+    when (not (String.is_empty request))
+         && (not (String.is_empty intent.base))
+         && equal_purpose intent.purpose (Provision_checkout request)
+         && (not (List.mem t.workspace_requests request ~equal:String.equal))
+         && t.next_operation < Int.max_value ->
+      let seeded, _ = start { t with desired = Some intent } intent in
+      step_workspace seeded (Workspace_lost { request })
   | Workspace_lost { request }, None, Some op
     when (not (String.is_empty request))
          && (not (List.mem t.workspace_requests request ~equal:String.equal))
@@ -2122,12 +2131,14 @@ let[@warning "-4"] step_workspace t event =
         }
       in
       issue t op Recovering Observe
-  | ( ( Workspace_lost _ | Renew_workspace_intent _ | Workspace_resumed
+  | ( ( Workspace_lost _ | Workspace_lost_without_operation _
+      | Renew_workspace_intent _ | Workspace_resumed
       | Workspace_forge_observed _ ),
       None,
       _ ) ->
       (t, [])
-  | Workspace_lost _, Some _, _ -> (t, [])
+  | Workspace_lost _, Some _, _ | Workspace_lost_without_operation _, _, _ ->
+      (t, [])
   | Workspace_forge_observed { request; forge }, Some recovery, _
     when String.equal request recovery.request
          && Option.is_some recovery.observation
@@ -2248,8 +2259,8 @@ let[@warning "-4"] step_workspace t event =
   | _, None, _ -> (t, [])
 
 let step_ordinary_transition t = function
-  | Workspace_lost _ | Workspace_forge_observed _ | Renew_workspace_intent _
-  | Workspace_resumed ->
+  | Workspace_lost _ | Workspace_lost_without_operation _
+  | Workspace_forge_observed _ | Renew_workspace_intent _ | Workspace_resumed ->
       (t, [])
   | Worktree_hook event ->
       if
@@ -2803,8 +2814,8 @@ let step_ordinary_transition t = function
 
 let step_transition t event =
   match event with
-  | Workspace_lost _ | Workspace_forge_observed _ | Renew_workspace_intent _
-  | Workspace_resumed ->
+  | Workspace_lost _ | Workspace_lost_without_operation _
+  | Workspace_forge_observed _ | Renew_workspace_intent _ | Workspace_resumed ->
       step_workspace t event
   | Worktree_hook _ | Publication_observed _ | Materialized _ | Request _
   | Result _ | Repair_invalidated _ | Repair_dispatched _ | Repair_started _

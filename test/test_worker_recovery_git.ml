@@ -260,4 +260,41 @@ let () =
   | Worktree_setup.Recovery_ready _ | Worktree_setup.Recovery_attention _
   | Worktree_setup.Recovery_merged _ ->
       failwith "failed probe granted recovery");
-  check "failed probe did not create checkout" (!creates = 0)
+  check "failed probe did not create checkout" (!creates = 0);
+  let fresh3 = Stdlib.Filename.concat sandbox "fresh3" in
+  clone ~origin ~dest:fresh3;
+  let runtime4 =
+    Onton_test_support.Branch_reconcile_git_fixture.make_runtime ()
+  in
+  let module Real4 =
+    (val Worktree.make ~fs:(Eio.Stdenv.fs env) ~config:Worktree_lifecycle.git
+           ~clock:(Eio.Stdenv.clock env)
+           ~process_mgr:(Eio.Stdenv.process_mgr env)
+           ~repo_root:fresh3)
+  in
+  let module Env4 = struct
+    include Env
+
+    let runtime = runtime4
+    let project_name = "worker-recovery-unstarted"
+  end in
+  let module WS4 = Worktree_setup.Make_with_checkpoint (C) (Real4) (Env4) in
+  check "admission can precede first owner operation"
+    (Runtime.read runtime4 (fun snap ->
+         Option.is_none
+           (B.operation
+              (Orchestrator.agent snap.Runtime.orchestrator patch_id)
+                .Patch_agent.branch_reconcile)));
+  match
+    Runtime.with_patch_ownership runtime4 ~patch_id (fun owner ->
+        WS4.recover_owned ~owner ~request:"unstarted" ~renewal_id:None ())
+  with
+  | Worktree_setup.Recovery_ready path ->
+      check "unstarted recovery provisions confirmed base"
+        (String.equal (Git.git_capture ~cwd:path [ "rev-parse"; "HEAD" ]) base)
+  | Worktree_setup.Recovery_wait reason ->
+      failwith ("unstarted recovery waited: " ^ reason)
+  | Worktree_setup.Recovery_attention _ ->
+      failwith "unstarted recovery requested renewal"
+  | Worktree_setup.Recovery_merged _ ->
+      failwith "unstarted recovery reported merge"

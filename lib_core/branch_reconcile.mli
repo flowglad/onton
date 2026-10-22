@@ -401,6 +401,9 @@ type event =
   | Tick of float
   | Recover
   | Workspace_lost of { request : string }
+  | Workspace_lost_without_operation of { request : string; intent : intent }
+      (** Seeds explicit checkout intent when admission was checkpointed before
+          the first reconciliation operation, then enters workspace loss. *)
   | Workspace_forge_observed of { request : string; forge : workspace_forge }
   | Renew_workspace_intent of { request : string; renewal_id : string }
   | Workspace_resumed
