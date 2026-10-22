@@ -104,4 +104,57 @@ let () =
   in
   check "strict setup refuses failed checkpoint" refused;
   check "strict setup stops before worktree effects" (!calls = 0);
-  print_endline "strict setup: rejected before worktree effect"
+  let module Session_env = struct
+    include Env
+
+    let owner = "owner"
+    let repo = "repo"
+    let transcripts = Stdlib.Hashtbl.create 1
+    let transcript_updates = Stdlib.Hashtbl.create 1
+
+    let event_log =
+      Event_log.create
+        ~path:(Stdlib.Filename.temp_file "checkpoint-events" ".jsonl")
+  end in
+  let module SD = Session_driver.Make_with_checkpoint (C) (W) (Session_env) in
+  let backend_calls = ref 0 in
+  let backend =
+    Llm_backend.
+      {
+        name = "fake";
+        run_streaming =
+          (fun ~project_name:_
+            ~cwd:_
+            ~patch_id:_
+            ~prompt:_
+            ~resume_session:_
+            ~session_uuid:_
+            ~complexity:_
+            ~on_event:_
+          ->
+            incr backend_calls;
+            failwith "backend spawned before checkpoint");
+      }
+  in
+  let agent =
+    Runtime.read runtime (fun snap ->
+        Orchestrator.agent snap.Runtime.orchestrator id)
+  in
+  let prompt =
+    SD.create_prompt ~context:(fun ~worktree_path:_ -> "context") ~turn:"turn"
+  in
+  let refused =
+    try
+      Runtime.with_patch_ownership runtime ~patch_id:id (fun write_owner ->
+          ignore
+            (SD.run_owned ~write_owner ~kind:None
+               ~delivery_mode:Patch_decision.Start ~patch_id:id ~prompt ~agent
+               ~on_pr_detected:(fun _ -> ())
+               ~backend ~complexity:None);
+          false)
+    with _ -> true
+  in
+  check "strict session refuses failed setup checkpoint" refused;
+  check "strict session does not spawn backend" (!backend_calls = 0);
+  print_endline
+    "strict setup/session: rejected before worktree or backend effect"
