@@ -1278,10 +1278,19 @@
 (test
  (name test_worker_protocol)
  (modules test_worker_protocol)
+ (deps ../bin/worker.exe (package onton))
+ (action
+  (setenv ONTON_WORKER_BINARY_DEFAULT %{exe:../bin/worker.exe}
+   (setenv ONTON_SETSID_EXEC %{bin:onton-setsid-exec}
+    (run %{test}))))
  (libraries onton onton_core onton_test_support eio_main unix yojson))
 
 ; Patch 6 adds the onton-worker executable dependency and drives its exact
 ; binary through this public-protocol alias.
 (rule
  (alias worker-protocol-smoke)
- (action (run %{exe:test_worker_protocol.exe})))
+ (deps ../bin/worker.exe (package onton))
+ (action
+  (setenv ONTON_WORKER_BINARY_DEFAULT %{exe:../bin/worker.exe}
+   (setenv ONTON_SETSID_EXEC %{bin:onton-setsid-exec}
+    (run %{exe:test_worker_protocol.exe})))))

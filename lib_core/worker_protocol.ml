@@ -707,6 +707,7 @@ let state_version (t : t) =
   match t.identity with None -> None | Some _ -> Some t.version
 
 let is_stopped t = t.stopped
+let recovery_pending t = t.restored_unfinished
 
 let error (t : t) reason =
   [ Send (Protocol_error { identity = t.identity; reason }) ]

@@ -105,6 +105,9 @@ val initial : unit -> t
 val state_version : t -> int64 option
 val is_stopped : t -> bool
 
+val recovery_pending : t -> bool
+(** True only for a restored unfinished predecessor needing observation. *)
+
 type event =
   | Host of host_message
   | Propose_checkpoint of { proposal_id : string; capsule : string }

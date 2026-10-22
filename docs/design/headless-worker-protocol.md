@@ -1,6 +1,32 @@
 # Headless patch worker protocol v2
 
-This is the local, trusted stdin/stdout contract for the opt-in `onton-worker` executable (wired in Patch 6). Each direction carries one UTF-8 JSON object per line. Stderr is diagnostics only. This document fixes the wire contract; it does not activate the existing `onton --headless` scheduler.
+This is the local, trusted stdin/stdout contract for the opt-in `onton-worker` executable. Each direction carries one UTF-8 JSON object per line. Stderr is diagnostics only. The existing `onton --headless` scheduler keeps its local execution route.
+
+## Invocation and local qualification
+
+```sh
+dune build @worker-protocol-smoke
+ONTON_WORKER_BINARY=/absolute/path/to/onton-worker dune build @worker-protocol-smoke --force
+```
+
+The first command builds and drives `bin/worker.exe` through the public JSONL entry point. The override drives an explicitly supplied binary with the same harness, for the later exact-image gate. The smoke uses local bare Git repositories, separate clones, a fake Codex executable, and a host durability simulator; it does not require AWS or a GitHub credential. `dune build && dune runtest` runs the source-change gate. Ordinary `onton` is a separate executable.
+
+The worker CLI is:
+
+```sh
+onton-worker --gameplan FILE --repo-root DIR --project-name NAME \
+  [--main-branch BRANCH] [--backend codex|claude] [--ack-timeout SECONDS]
+```
+
+The spawning wrapper provides the immutable gameplan file, managed repository root and workspace configuration. Defaults are `main`, `codex`, and a ten-second checkpoint acknowledgement timeout; the timeout must be greater than zero and at most 60 seconds. The worker reads Git credentials from the existing Git transport environment. Forge observations use `ONTON_GITHUB_TOKEN_FILE` (read again on each observation) or `GITHUB_TOKEN`. Missing or failed forge evidence yields a typed retryable result where merge status matters. No credentials are carried in protocol frames or capsules. The executable does not start the scheduler, poller, local control socket, or periodic persistence fiber.
+
+The public test uses `ONTON_WORKER_BINARY_DEFAULT` only as Dune's built-binary path. An explicit `ONTON_WORKER_BINARY` takes precedence. The test supplies `ONTON_SETSID_EXEC` for process-tree supervision.
+
+## Capsule v1
+
+The host stores the exact UTF-8 `capsule` bytes from each acknowledged checkpoint, along with the protocol admission receipt in one conditional storage envelope. The capsule is an object with exactly `version:1`, `run_id`, `patch_id`, `workspace_id`, `context`, decimal-string `state_version`, nullable `operation`, `guidance`, `agent`, nullable `terminal`, and nullable `attention_id`. `operation` contains `operation_id`, `attempt_id`, and decimal-string `assignment_seq`; `terminal` contains `status`, `diagnostics`, and nullable `renewal_id`. `agent` is the assigned patch's serialized `Patch_agent` record, including the reconciliation owner and session state. It is not a whole Runtime snapshot or gameplan authority. The gameplan file supplies immutable patch context at process start. The adapter rejects mismatched run, patch, version, context, attention receipt, patch branch, or missing required owner/session fields before constructing Runtime. It uses patch codecs directly and never calls `Persistence.load`, so no local sidecar overlay or archived conversation can become host authority.
+
+The workspace ID names the worker's current checkout authority. A changed workspace requires `lost_workspace` recovery; checkpointed loss clears the old path, conversation ID, and captured session completion before backend work. The host must restore its last actually committed envelope, including a newer capsule after a lost ACK. The adapter observes Git and forge evidence from that state; it never rolls the host state back to the last ACK it happened to see.
 
 ## Framing and validation
 
@@ -47,13 +73,13 @@ The worker emits a terminal result only after acknowledged state and completed d
 
 For a possibly published branch that disappeared, plain retry and old guidance cannot recreate it. The host must supply `renewed_intent:true` and the exact outstanding `renewal_id` in a new logical operation and attempt after the prior result ACK. A wrong, consumed, or superseded receipt is rejected. Exact replay of the accepted renewal is idempotent. Wire admission is not Git mutation authority: the owner re-observes branch, base, and forge state; a merge or reappeared branch takes precedence. Publication history remains possibly published.
 
-The local Patch 2 properties exercise the pure codec and transition algebra. Patch 6 adds the CLI invocation, exact-binary subprocess harness, and end-to-end cleanup deadline evidence.
+Pure properties exercise the codec and transition algebra. The exact-binary smoke exercises checkpoint barriers, sequential use, replacement, malformed framing, and backend descendant cancellation. The local simulator models conditional storage and ACK delivery; cloud authentication, conditional writes and task-stop evidence remain host obligations.
 
 ## Required replacement-worker contract (FC-1 amendment)
 
 The pure `Worker_protocol` owner implements durable admission in protocol v2.
 Version 1 is incompatible: a replacement must not silently discard durable
-admission evidence. Patch 6 supplies persistence and subprocess integration;
+admission evidence. The worker adapter supplies persistence and subprocess integration;
 receipt validation does not itself perform storage or fence a previous process.
 
 Every bind must include an `admission` object selecting `fresh` or `resume`. `fresh` is
@@ -120,10 +146,11 @@ least three assignments, admitting sequence 4 only after durable ACK, rejecting
 sequence 1 reset and altered replay, replaying a lost-ACK terminal result without
 `Begin`, blocking unfinished attempts, rejecting invalid receipts, preserving
 renewal consumption and identity reservations, and handling sequence exhaustion.
-Patch 6 then supplies real subprocess tests for death before effects, after
-checkpoint commit but before ACK delivery, after result delivery but before ACK
-commit, and after ACK commit but before delivery. Each must assert sequence
-continuity, explicit recovery or terminal replay, and no duplicate execution.
+The subprocess smoke withholds the first checkpoint ACK, terminates that worker,
+and verifies that a replacement enters observation recovery from the committed
+admission receipt. It also tests exact checkpoint rejection and subsequent
+same-process assignments. The pure interface tests cover result ACK delivery
+interleavings and terminal replay.
 
 ### Receipt schema and adapter API
 
