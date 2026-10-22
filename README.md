@@ -912,7 +912,8 @@ the archives.
 
 Three view modes:
 - **List view** — patch table with status badge, PR number, title (branch
-  name for ad-hoc), current operation, CI failures
+  name for ad-hoc), current operation, CI failures. Activity is hidden at startup;
+  press `a` to show or hide it for the current session.
 - **Detail view** — single patch: status, branch, base, worktree path, PR,
   dependencies, conflict, pending comments, CI checks. Scrollable
   markdown-rendered transcript with timestamped prompt delivery and Claude
@@ -927,6 +928,7 @@ Key bindings:
 | `j`/`k`, arrows | Navigate patches | Scroll transcript | Scroll log |
 | `Enter` | Open detail | Enter text mode | — |
 | `Esc`/`Backspace` | — | Back to list | Back to list |
+| `a` | Show/hide activity | — | — |
 | `t` | Timeline | Timeline | List |
 | `h` | Help overlay | Help overlay | Help overlay |
 | `q` | Quit | Quit | Quit |

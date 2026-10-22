@@ -18,6 +18,7 @@ type command =
   | Back
   | Noop
   | Timeline
+  | Toggle_activity
   | Send_message of string
   | Add_pr of Types.Pr_number.t
   | Add_worktree of string
@@ -53,6 +54,7 @@ let of_key (key : Term_key.t) : command =
   | Char 'q' | Ctrl 'c' -> Quit
   | Char 'h' | Char '?' -> Help
   | Char 't' -> Timeline
+  | Char 'a' -> Toggle_activity
   | Up | Char 'k' -> Move_up
   | Down | Char 'j' -> Move_down
   | Page_up -> Page_up
@@ -90,8 +92,9 @@ let apply_move ~count ~selected (cmd : command) =
     | Page_down -> if selected = -1 then 0 else clamp (selected + 5)
     | Scroll_top -> 0
     | Scroll_bottom -> count - 1
-    | Quit | Help | Select | Back | Timeline | Noop | Send_message _ | Add_pr _
-    | Add_worktree _ | Remove_patch | Open_in_browser ->
+    | Quit | Help | Select | Back | Timeline | Toggle_activity | Noop
+    | Send_message _ | Add_pr _ | Add_worktree _ | Remove_patch
+    | Open_in_browser ->
         if selected >= count then -1 else selected
 
 let%test "q maps to Quit" = equal_command (of_key (Char 'q')) Quit

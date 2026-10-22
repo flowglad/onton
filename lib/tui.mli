@@ -240,6 +240,7 @@ val render_frame :
   checks_scroll:int ->
   show_manage:bool ->
   now:float ->
+  ?show_activity:bool ->
   ?transcript:string ->
   ?status_msg:status_msg ->
   ?prompt_line:prompt_info ->

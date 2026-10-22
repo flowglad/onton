@@ -146,6 +146,7 @@ module Make (Forge : Forge.S) (W : Worktree.S) (Env : Tui_env.S) = struct
       input_mode;
       prompt_line;
       show_help;
+      show_activity;
       show_checks;
       checks_scroll;
       status_msg;
@@ -212,8 +213,8 @@ module Make (Forge : Forge.S) (W : Worktree.S) (Env : Tui_env.S) = struct
         Tui.render_frame ~width ~height ~selected:!list_selected ~scroll_offset
           ~view_mode:!view_mode ~activity ~project_name:Env.project_name
           ~backend_name:Env.backend_name ~version:Env.version
-          ~show_help:!show_help ~show_checks:!show_checks
-          ~checks_scroll:!checks_scroll
+          ~show_help:!show_help ~show_activity:!show_activity
+          ~show_checks:!show_checks ~checks_scroll:!checks_scroll
           ~show_manage:
             (Tui_input.equal_input_mode !input_mode Tui_input.Manage_patch)
           ~now ~transcript ?status_msg:!status_msg ?prompt_line:!prompt_line
@@ -251,6 +252,7 @@ module Make (Forge : Forge.S) (W : Worktree.S) (Env : Tui_env.S) = struct
       input_mode;
       prompt_line;
       show_help;
+      show_activity;
       show_checks;
       checks_scroll;
       status_msg;
@@ -1098,7 +1100,8 @@ module Make (Forge : Forge.S) (W : Worktree.S) (Env : Tui_env.S) = struct
                         | Tui_input.Move_up | Tui_input.Move_down
                         | Tui_input.Page_up | Tui_input.Page_down
                         | Tui_input.Quit | Tui_input.Help | Tui_input.Select
-                        | Tui_input.Back | Tui_input.Timeline | Tui_input.Noop
+                        | Tui_input.Back | Tui_input.Timeline
+                        | Tui_input.Toggle_activity | Tui_input.Noop
                         | Tui_input.Send_message _ | Tui_input.Add_pr _
                         | Tui_input.Add_worktree _ | Tui_input.Remove_patch
                         | Tui_input.Open_in_browser ->
@@ -1110,9 +1113,9 @@ module Make (Forge : Forge.S) (W : Worktree.S) (Env : Tui_env.S) = struct
                               | Tui_input.Page_down -> 10
                               | Tui_input.Quit | Tui_input.Help
                               | Tui_input.Select | Tui_input.Back
-                              | Tui_input.Timeline | Tui_input.Noop
-                              | Tui_input.Send_message _ | Tui_input.Add_pr _
-                              | Tui_input.Add_worktree _
+                              | Tui_input.Timeline | Tui_input.Toggle_activity
+                              | Tui_input.Noop | Tui_input.Send_message _
+                              | Tui_input.Add_pr _ | Tui_input.Add_worktree _
                               | Tui_input.Remove_patch
                               | Tui_input.Open_in_browser | Tui_input.Scroll_top
                               | Tui_input.Scroll_bottom ->
@@ -1168,6 +1171,11 @@ module Make (Forge : Forge.S) (W : Worktree.S) (Env : Tui_env.S) = struct
                         view_mode := Tui.Timeline_view;
                         timeline_scroll := 0;
                         loop ())
+                | Tui_input.Toggle_activity ->
+                    (match !view_mode with
+                    | Tui.List_view -> show_activity := not !show_activity
+                    | Tui.Detail_view _ | Tui.Timeline_view -> ());
+                    loop ()
                 | Tui_input.Help ->
                     show_help := true;
                     loop ()
