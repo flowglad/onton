@@ -337,7 +337,9 @@ export default function gameplan(pi: ExtensionAPI) {
     const notes: string[] = [];
     notes.push(
       state.gameplanPath
-        ? `- The gameplan file is ${state.gameplanPath}. It is the source of truth; read it before editing rather than relying on memory of earlier turns.`
+        ? existsSync(resolve(ctx.cwd, state.gameplanPath))
+          ? `- The gameplan file is ${state.gameplanPath}. It is the source of truth; read it before editing rather than relying on memory of earlier turns.`
+          : `- No gameplan file exists yet. Write the selected draft to ${state.gameplanPath} with gameplan_write.`
         : `- No gameplan file exists yet. Write it to ${state.gameplanDir}/<project-name>.yaml.`,
     );
     const requiredMissing = missingRequired();

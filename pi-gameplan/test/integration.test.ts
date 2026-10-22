@@ -124,8 +124,11 @@ test("a finalized plan can be followed by an independent draft in the same sessi
     const context = await emit("before_agent_start", { messageType: "user" });
     assert.match(JSON.stringify(context), /gameplan_new/);
     assert.match(JSON.stringify(context), /gameplans\/next.yaml/);
+    assert.match(JSON.stringify(context), /No gameplan file exists yet/);
     await call("gameplan_write", { path: "gameplans/next.yaml", sections: { problemStatement: "Next plan" } });
     assert.match(await readFile(join(ctx.cwd, "gameplans/next.yaml"), "utf8"), /Next plan/);
+    const writtenContext = await emit("before_agent_start", { messageType: "user" });
+    assert.match(JSON.stringify(writtenContext), /read it before editing/);
     assert.deepEqual(await readFile(path), bytes);
     const count = saved.length;
     await restore(finalized);
@@ -133,6 +136,21 @@ test("a finalized plan can be followed by an independent draft in the same sessi
     assert.ok(JSON.stringify(restoredContext).includes(path));
     assert.equal(saved.length, count); // No invalidation of the previous finalization.
     assert.equal(finalized.finalizedPath, path);
+  });
+});
+
+test("loading and rewriting an unresolved decision preserves its discussion reason", async () => {
+  await fixture(async ({ call, path }) => {
+    const doc = parse(await readFile(path, "utf8"));
+    const reason = "Can we discuss failure recovery before choosing an owner?";
+    doc.architectureDesign.decisions = [{ id: "AD-1", topic: "ownership", question: "Who owns state?",
+      choice: "Core", alternatives: [{ choice: "Handler", tradeoffs: "Effects mixed in" }],
+      resolution: { kind: "unresolved", reason } }];
+    await writeFile(path, stringify(doc));
+    await call("gameplan_load", { path });
+    await call("gameplan_write", { path, sections: { architectureDesign: doc.architectureDesign } });
+    const rewritten = parse(await readFile(path, "utf8"));
+    assert.deepEqual(rewritten.architectureDesign.decisions[0].resolution, { kind: "unresolved", reason });
   });
 });
 

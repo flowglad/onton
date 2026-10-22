@@ -95,7 +95,7 @@ export function importDecisions(doc: unknown, validator: SchemaValidator, record
       alternatives: raw.alternatives as DecisionRecord["alternatives"],
       kind: resolution.kind as DecisionRecord["kind"],
       evidence: typeof resolution.evidence === "string" ? resolution.evidence : "",
-      reason: resolution.kind === "unresolved" ? "Unresolved in imported gameplan" : undefined,
+      reason: resolution.kind === "unresolved" && typeof resolution.reason === "string" ? resolution.reason : undefined,
       recordedAt,
     });
   }

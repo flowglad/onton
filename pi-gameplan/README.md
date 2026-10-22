@@ -5,7 +5,7 @@ A [Pi](https://pi.dev) extension for authoring Onton gameplans with the
 this extension owns the rules the skill cannot enforce by prose:
 
 - **Engineer approval requires consent.** `gameplan_decide` records new decisions as
-  `engineer_approved` or `delegated`; `gameplan_load` imports existing answers only after
+  `engineer_approved`, `delegated`, or `unresolved`; `gameplan_load` imports existing answers only after
   explicit engineer confirmation. `gameplan_decide` asks the engineer in a dialog, generates
   the `resolution.evidence` text itself, and the check tool rejects any resolution in the YAML
   that does not match a recorded answer.
@@ -155,7 +155,7 @@ restriction, and lists the recorded decisions. The agent:
 1. inspects the code and scopes the change;
 2. calls `gameplan_decide` for each architectural choice. You see the question, the options
    with tradeoffs, and the recommendation in the transcript, then a selector with the options,
-   **Discuss further** (free text in the editor; not approval), and **Delegate** (records the recommendation as
+   **Discuss further** (free-text discussion; not approval), and **Delegate** (records the recommendation as
    `delegated` with your stated scope). Dismissing the selector records the decision as
    `unresolved`;
 3. builds the file with `gameplan_write` (a few top-level sections per call) and
