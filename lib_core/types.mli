@@ -73,6 +73,9 @@ module Operation_kind : sig
   val to_label : t -> string
   (** Human-readable label for log messages (e.g. ["ci"], ["review-comments"]).
   *)
+
+  val of_label : string -> t option
+  (** Parse the canonical wire/log label. Unknown labels return [None]. *)
 end
 
 (** Wrapper for GitHub comment [databaseId]. Synthetic IDs are always negative;

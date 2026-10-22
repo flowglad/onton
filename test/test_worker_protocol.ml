@@ -842,7 +842,8 @@ let run_attention_renewal ~root ~origin ~managed ~gameplan ~fake_bin ~prompt_log
        "public worker: merge observation wins renewed intent"
      else "public worker: attention requires explicit renewed intent")
 
-let run_cancellation ~root ~managed ~gameplan ~fake_bin ~prompt_log =
+let run_cancellation ~root ~managed ~gameplan ~fake_bin ~prompt_log
+    ~shutdown_active =
   write_file
     (Filename.concat fake_bin "codex")
     "#!/bin/sh\n\
@@ -893,22 +894,30 @@ let run_cancellation ~root ~managed ~gameplan ~fake_bin ~prompt_log =
       (String.trim
          (In_channel.with_open_bin (prompt_log ^ ".child") In_channel.input_all))
   in
-  let cancel = frame "cancel" (operation_fields 1) in
-  let model, outputs = step host.model (P.Host (decoded cancel)) in
-  check "cancel targets active operation"
-    (List.exists (function P.Cancel_active -> true | _ -> false) outputs);
-  host.model <- model;
-  send child cancel;
-  let result =
-    try complete host
-    with End_of_file ->
-      failwith ("cancelled worker exited: " ^ In_channel.input_all child.error)
-  in
-  check "cancelled result is typed"
-    (String.equal (string "status" result) "cancelled");
-  ack_result host result;
-  send child (frame "shutdown" []);
-  check "cancelled worker shuts down" (finish child = Unix.WEXITED 0);
+  (if shutdown_active then (
+     let started = Unix.gettimeofday () in
+     send child (frame "shutdown" []);
+     check "active shutdown exits cleanly" (finish child = Unix.WEXITED 0);
+     check "active shutdown does not wait for checkpoint timeout"
+       (Unix.gettimeofday () -. started < 5.))
+   else
+     let cancel = frame "cancel" (operation_fields 1) in
+     let model, outputs = step host.model (P.Host (decoded cancel)) in
+     check "cancel targets active operation"
+       (List.exists (function P.Cancel_active -> true | _ -> false) outputs);
+     host.model <- model;
+     send child cancel;
+     let result =
+       try complete host
+       with End_of_file ->
+         failwith
+           ("cancelled worker exited: " ^ In_channel.input_all child.error)
+     in
+     check "cancelled result is typed"
+       (String.equal (string "status" result) "cancelled");
+     ack_result host result;
+     send child (frame "shutdown" []);
+     check "cancelled worker shuts down" (finish child = Unix.WEXITED 0));
   let rec child_stopped attempts =
     try
       Unix.kill child_pid 0;
@@ -919,7 +928,9 @@ let run_cancellation ~root ~managed ~gameplan ~fake_bin ~prompt_log =
     with Unix.Unix_error (Unix.ESRCH, _, _) -> true
   in
   check "backend descendant terminated" (child_stopped 100);
-  print_endline "public worker: cancellation stops backend descendant"
+  print_endline
+    (if shutdown_active then "public worker: active shutdown stops descendant"
+     else "public worker: cancellation stops backend descendant")
 
 let () =
   let root, origin, managed, gameplan, fake_bin, prompt_log = fixture () in
@@ -993,4 +1004,13 @@ let () =
   Fun.protect
     ~finally:(fun () ->
       Onton_test_support.Git_env.sh ~dir:"/" ("rm -rf " ^ Filename.quote root))
-    (fun () -> run_cancellation ~root ~managed ~gameplan ~fake_bin ~prompt_log)
+    (fun () ->
+      run_cancellation ~root ~managed ~gameplan ~fake_bin ~prompt_log
+        ~shutdown_active:false);
+  let root, _origin, managed, gameplan, fake_bin, prompt_log = fixture () in
+  Fun.protect
+    ~finally:(fun () ->
+      Onton_test_support.Git_env.sh ~dir:"/" ("rm -rf " ^ Filename.quote root))
+    (fun () ->
+      run_cancellation ~root ~managed ~gameplan ~fake_bin ~prompt_log
+        ~shutdown_active:true)

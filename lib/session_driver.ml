@@ -359,7 +359,7 @@ struct
         (match result with
         | Branch_reconcile.Repair_completed _ ->
             Option.iter !captured_session ~f:(fun session_id ->
-                if Mode.strict then (
+                if Mode.strict then
                   checkpoint_snapshot "repair conversation" (fun snap ->
                       let orchestrator =
                         Orchestrator.set_llm_session_id
@@ -370,10 +370,7 @@ struct
                       let transcripts = Hashtbl.copy snap.transcripts in
                       Hashtbl.set transcripts ~key:patch_id
                         ~data:(Buffer.contents text_buf);
-                      ({ snap with Runtime.orchestrator; transcripts }, ()));
-                  match C.record_session_id ~patch_id ~session_id with
-                  | Ok () -> ()
-                  | Error reason -> raise (Checkpoint_failure reason))
+                      ({ snap with Runtime.orchestrator; transcripts }, ()))
                 else
                   let snapshot_path =
                     Project_store.snapshot_path Env.project_name

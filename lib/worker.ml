@@ -139,6 +139,7 @@ let run env =
   let ack_mailbox = Eio.Stream.create 2 in
   let active_cancel = ref None in
   let host_alive = ref true in
+  let shutdown_requested = ref false in
   let binding = ref None in
   let stopped = ref false in
   let send message =
@@ -643,11 +644,15 @@ let run env =
       Eio.Switch.run (fun sw ->
           let spawn request ~interrupted =
             Eio.Fiber.fork ~sw (fun () ->
-                Eio.Cancel.sub (fun context ->
-                    active_cancel := Some context;
-                    Fun.protect
-                      ~finally:(fun () -> active_cancel := None)
-                      (fun () -> execute request ~interrupted)))
+                try
+                  Eio.Cancel.sub (fun context ->
+                      active_cancel := Some context;
+                      Fun.protect
+                        ~finally:(fun () -> active_cancel := None)
+                        (fun () -> execute request ~interrupted))
+                with
+                | Host_lost _ when !shutdown_requested -> ()
+                | Eio.Cancel.Cancelled _ when !shutdown_requested -> ())
           in
           let dispatch = function
             | Worker_protocol.Begin (Worker_protocol.Execute request) ->
@@ -709,6 +714,21 @@ let run env =
                        | Result_ack _ | Shutdown _ ) as message) ->
                       let before = Worker_protocol.state_version !protocol in
                       let outputs = transition (Worker_protocol.Host message) in
+                      (match message with
+                      | Worker_protocol.Shutdown _
+                        when Worker_protocol.is_stopped !protocol
+                             && List.exists
+                                  (function
+                                    | Worker_protocol.Cancel_active -> true
+                                    | Send _ | Begin _ | Recover _ | Stop ->
+                                        false)
+                                  outputs ->
+                          shutdown_requested := true;
+                          host_alive := false;
+                          Eio.Stream.add ack_mailbox false
+                      | Bind _ | Execute _ | Cancel _ | Checkpoint_ack _
+                      | Result_ack _ | Shutdown _ ->
+                          ());
                       List.iter dispatch outputs;
                       (match message with
                       | Worker_protocol.Checkpoint_ack { accepted; _ } ->

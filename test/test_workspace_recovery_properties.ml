@@ -163,6 +163,26 @@ let loss_before_first_operation =
           && operation.B.intent = intent
       | _ -> false)
 
+let invalid_integration_floor =
+  QCheck2.Test.make ~name:"invalid workspace integration floor is rejected"
+    ~count:100 G.int (fun value ->
+      let state, _ = request () in
+      let lost, _ = lose state in
+      let invalid = if value < 0 then value else value + 1 in
+      let damaged =
+        match B.yojson_of_t lost with
+        | `Assoc fields ->
+            `Assoc
+              (List.map
+                 (fun (name, json) ->
+                   if String.equal name "workspace_integration_floor" then
+                     (name, `Int invalid)
+                   else (name, json))
+                 fields)
+        | json -> json
+      in
+      match B.decode damaged with Error _ -> true | Ok _ -> false)
+
 let uncertainty_and_renewal =
   QCheck2.Test.make ~name:"uncertain push needs renewed operation" ~count:100
     G.bool (fun merged ->
@@ -297,6 +317,7 @@ let () =
       total_matrix;
       loss_fences_old_reply;
       loss_before_first_operation;
+      invalid_integration_floor;
       uncertainty_and_renewal;
       stale_loss_and_renewal;
       probe_diagnostic;

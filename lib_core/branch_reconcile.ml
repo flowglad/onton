@@ -994,9 +994,9 @@ let recorded_boundaries t =
       else
         match t.workspace_integration_floor with
         | None -> []
-        | Some floor ->
-            List.take t.integrations
-              (Int.max 0 (List.length t.integrations - floor))
+        | Some floor when floor >= 0 && floor <= List.length t.integrations ->
+            List.take t.integrations (List.length t.integrations - floor)
+        | Some _ -> []
     in
     List.map integrations ~f:(fun receipt -> receipt.capture.target_revision)
     @ Option.to_list (Option.bind t.materialized ~f:materialization_boundary)
@@ -3303,6 +3303,9 @@ let decode json =
         Error "invalid observation destination"
     | Ok t -> (
         let valid_workspace =
+          Option.for_all t.workspace_integration_floor ~f:(fun floor ->
+              floor >= 0 && floor <= List.length t.integrations)
+          &&
           match (t.workspace_recovery, t.active) with
           | None, None -> true
           | None, Some op -> not op.lost_workspace

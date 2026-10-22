@@ -228,17 +228,6 @@ let phase_of_string = function
 
 let phase_string = function Start -> "start" | Respond -> "respond"
 
-let kind_of_label = function
-  | "uncommitted-changes" -> Some Types.Operation_kind.Uncommitted_changes
-  | "rebase" -> Some Types.Operation_kind.Rebase
-  | "human" -> Some Types.Operation_kind.Human
-  | "merge-conflict" -> Some Types.Operation_kind.Merge_conflict
-  | "ci" -> Some Types.Operation_kind.Ci
-  | "review-comments" -> Some Types.Operation_kind.Review_comments
-  | "pr-body" -> Some Types.Operation_kind.Pr_body
-  | "findings" -> Some Types.Operation_kind.Findings
-  | _ -> None
-
 let required_identity xs =
   match (id xs "run_id", id xs "patch_id") with
   | Some run_id, Some patch_id -> Some { run_id; patch_id }
@@ -365,7 +354,8 @@ let rec decode line =
                                       | Some label ->
                                           Option.map
                                             (fun kind -> Some kind)
-                                            (kind_of_label label) )
+                                            (Types.Operation_kind.of_label label)
+                                    )
                                   with
                                   | Some phase, Some kind ->
                                       Some (Session { phase; kind; turn })
