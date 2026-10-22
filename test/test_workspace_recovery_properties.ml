@@ -227,6 +227,29 @@ let stale_loss_and_renewal =
       | None ->
           false)
 
+let probe_diagnostic =
+  QCheck2.Test.make
+    ~name:"failed workspace probe retains its diagnostic until fresh evidence"
+    ~count:200 G.string (fun reason ->
+      let state, _ = request () in
+      let lost, _ = lose state in
+      let failed =
+        fst (reply lost (B.Retryable { reason; retry_after = None }))
+      in
+      let retained =
+        B.workspace_diagnostic failed = Some reason
+        && B.workspace_outcome failed = Some B.Workspace_wait
+        && roundtrip failed
+      in
+      let retrying, _ = B.step failed B.Recover in
+      let recovered =
+        observed retrying ~patch_revision:(Some patch)
+          ~base_revision:(Some base)
+      in
+      retained
+      && B.workspace_diagnostic recovered = None
+      && B.workspace_outcome recovered = Some (B.Workspace_patch (patch, base)))
+
 let () =
   QCheck_base_runner.run_tests_main
     [
@@ -234,4 +257,5 @@ let () =
       loss_fences_old_reply;
       uncertainty_and_renewal;
       stale_loss_and_renewal;
+      probe_diagnostic;
     ]
