@@ -117,8 +117,9 @@ Verified against the Onton and sibling `provisioning-agent` checkouts on
 
 **Repository**: Onton. **Dependencies**: none.
 
-**Status**: Planned and finalized on 2026-10-22; not implemented or released.
-Artifact: `gameplans/headless-patch-execution-contract.yaml` (six patches).
+**Status**: Planned as of 2026-10-22; not implemented or released.
+Artifact: planned at `gameplans/headless-patch-execution-contract.yaml`
+(six patches proposed; authoring the gameplan is outside this workstream PR).
 The following names describe the planned implementation, not landed APIs.
 
 **Definition of Done**:
@@ -345,7 +346,7 @@ conditional patch inside that gameplan.
 | Feature construction is in scope | The inspected OITC multi-patch path uses it today; supporting only independent PR branches would miss the actual target workflow. |
 | Reuse branch reconciliation | Required repository architecture. No alternate remote-only rebase or publication path. Workspace loss becomes an explicit owner transition. |
 | Recover effects by observation | A repeated execution may re-run tests or agent work. The system does not promise exactly-once arbitrary shell/API side effects; it must reconcile owned Git, PR, and operation state before repeating them. |
-| Planning status | M1 gameplan finalized; M2–M4 remain milestone sketches. No implementation, release, image qualification or deployment is claimed. |
+| Planning status | M1 proposes a future six-patch gameplan; M2–M4 remain milestone sketches. No finalized gameplan, implementation, release, image qualification or deployment is claimed. |
 
 ## Definition of Done (Acceptance Suite)
 
@@ -425,10 +426,25 @@ These fixtures are not implemented yet; no acceptance run is claimed.
   - **Verify by** `cmd`: Start a replacement, deliver its predecessor's success result, and inspect public run state and dependent dispatches.
   - **Expected**: No replacement completion or dependent release is caused by the stale result.
   - **Traces to**: M3 — message/result acceptance in `lib/orchestrator.ml`.
-- **A12 — Feature integration survives interruption**
+- **A12a — Feature content survives interrupted integration**
   - **Assert**: Distributed feature construction preserves each accepted contribution through an interrupted root integration.
   - **Verify by** `cmd`: Publish two independent content fixtures, interrupt root integration after a remote write but before acknowledgement, then recover from origin.
-  - **Expected**: The final root contains both expected contributions without duplicated contribution commits or lost root history; revision-specific checks still govern readiness.
+  - **Expected**: The final root contains the expected content of both fixtures.
+  - **Traces to**: M3 — integration orchestration in `lib/runner_fiber_impl.ml` through `Branch_reconcile_runner`.
+- **A12b — Integration recovery does not duplicate contribution commits**
+  - **Assert**: Recovery does not integrate an already published contribution a second time.
+  - **Verify by** `cmd`: Run the A12a interruption scenario and inspect the recovered root's commit history for each fixture contribution.
+  - **Expected**: Each fixture contribution has exactly one integration into root history.
+  - **Traces to**: M3 — integration orchestration in `lib/runner_fiber_impl.ml` through `Branch_reconcile_runner`.
+- **A12c — Integration recovery preserves root history**
+  - **Assert**: Recovery retains the root history that preceded integration.
+  - **Verify by** `cmd`: Record the root tip before the A12a interruption scenario, then check its ancestry against the recovered root tip.
+  - **Expected**: The recorded pre-integration root tip remains an ancestor of the recovered root tip.
+  - **Traces to**: M3 — integration orchestration in `lib/runner_fiber_impl.ml` through `Branch_reconcile_runner`.
+- **A12d — Recovered integration requires current revision checks**
+  - **Assert**: Recovering a published integration does not bypass revision-specific readiness checks.
+  - **Verify by** `cmd`: Run the A12a interruption scenario with passing checks only for the old revision; withhold required checks for the recovered revision, then supply passing checks for that revision while other readiness conditions hold.
+  - **Expected**: Readiness remains blocked until the recovered revision's required checks pass.
   - **Traces to**: M3 — integration orchestration in `lib/runner_fiber_impl.ml` through `Branch_reconcile_runner`.
 - **A13 — Coordinator replacement preserves pending intent**
   - **Assert**: A new coordinator resumes durable operations without redispatching live accepted work.
