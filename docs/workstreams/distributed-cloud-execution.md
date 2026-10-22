@@ -17,7 +17,8 @@ recover context and continue the outstanding work.
 
 The user has selected cloud-only deployment, headless operation, automatic worker
 replacement, and origin-based recovery without restoring agent sessions. The
-milestone sequence and implementation boundaries below are a review draft.
+milestone sequence and implementation boundaries below track delivery; M1 has
+passed local qualification, while release and OITC image qualification remain pending.
 
 ## Current State
 
@@ -56,9 +57,9 @@ Verified against the Onton and sibling `provisioning-agent` checkouts on
   whole-session archive is useful for the existing mode, but is not the new
   distributed recovery contract. Expired running claims currently become
   operator attention rather than automatic fresh-worker recovery.
-- No patch-level remote execution interface was found in the inspected runner,
-  backend, worktree, or OITC execution paths. Existing local control sockets carry
-  user controls, not distributed patch execution.
+- Onton now exposes the opt-in `onton-worker` patch execution interface described
+  in `docs/design/headless-worker-protocol.md` (protocol v2). The OITC adapter is
+  still M2 work; existing local control sockets carry user controls.
 
 ## Key Challenges
 
@@ -117,14 +118,17 @@ Verified against the Onton and sibling `provisioning-agent` checkouts on
 
 **Repository**: Onton. **Dependencies**: none.
 
-**Status**: Planned as of 2026-10-22; not implemented or released.
-Artifact: planned at `gameplans/headless-patch-execution-contract.yaml`
-(six patches proposed; authoring the gameplan is outside this workstream PR).
-The following names describe the planned implementation, not landed APIs.
+**Status**: Implemented and locally qualified as of 2026-10-22; release and
+exact-binary OITC image qualification remain pending.
+Planning artifact: `gameplans/headless-patch-execution-contract.yaml`.
+At source revision `215889d6536dbc201fa8cf8d2bf69f81af07fade`, `opam exec -- dune build`,
+`opam exec -- dune runtest`, `opam exec -- dune build @worker-protocol-smoke`
+and a forced smoke with `ONTON_WORKER_BINARY` pointing to the built worker all
+exited 0. These local runs do not qualify a release or OITC image.
 
 **Definition of Done**:
 
-- Define protocol v1 in `lib_core/worker_protocol.ml` and
+- Define protocol v2 in `lib_core/worker_protocol.ml` and
   `docs/design/headless-worker-protocol.md`: bounded JSON Lines over stdin/stdout,
   with stderr reserved for diagnostics. Bind requests, checkpoints, results and
   cancellation to run, patch, logical operation, attempt and sequence/version.
@@ -182,7 +186,7 @@ worker can be exercised directly through a local harness before cloud admission.
 - Run the `worker-protocol-smoke` harness using its explicit binary override for
   the released `onton-worker` in the OITC image; record binary/image identities
   and the result. Follow `docs/design/headless-worker-protocol.md` for the concrete
-  invocation once implemented. Do not advance if shipped and tested protocols differ.
+  invocation. Do not advance if shipped and tested protocols differ.
 
 ### Milestone 2: cloud-execution-attempt-adapter
 
@@ -346,7 +350,7 @@ conditional patch inside that gameplan.
 | Feature construction is in scope | The inspected OITC multi-patch path uses it today; supporting only independent PR branches would miss the actual target workflow. |
 | Reuse branch reconciliation | Required repository architecture. No alternate remote-only rebase or publication path. Workspace loss becomes an explicit owner transition. |
 | Recover effects by observation | A repeated execution may re-run tests or agent work. The system does not promise exactly-once arbitrary shell/API side effects; it must reconcile owned Git, PR, and operation state before repeating them. |
-| Planning status | M1 proposes a future six-patch gameplan; M2–M4 remain milestone sketches. No finalized gameplan, implementation, release, image qualification or deployment is claimed. |
+| Delivery status | M1 implementation passed local build, full tests and protocol smoke. Release and exact-binary OITC image qualification remain pending; M2–M4 remain milestone sketches. |
 
 ## Definition of Done (Acceptance Suite)
 
@@ -355,11 +359,11 @@ The M4 driver invokes the public headless protocol, OITC admission, task APIs,
 Git, forge APIs, and durable state observations. Failure injection acts at those
 boundaries. Source text is never the behavioral oracle. Proposed fixture command
 names are finalized in the owning gameplans; owner files below identify the
-implementation boundary. Each assertion has one owning milestone. M1 names are
-now planned: `dune build @worker-protocol-smoke` drives `onton-worker` through
+implementation boundary. Each assertion has one owning milestone. M1 fixtures are
+implemented: `dune build @worker-protocol-smoke` drives `onton-worker` through
 `test/test_worker_protocol.ml`; focused recovery fixtures are
 `test/test_worker_recovery_git.ml` and `test/test_worker_recovery_prompt.ml`.
-These fixtures are not implemented yet; no acceptance run is claimed.
+The local M1 qualification passed as recorded above; no cloud acceptance run is claimed.
 
 - **A01 — Fresh recovery starts from published code**
   - **Assert**: Replacing a worker without its workspace starts from the observed origin patch revision.
