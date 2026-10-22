@@ -48,3 +48,75 @@ The worker emits a terminal result only after acknowledged state and completed d
 For a possibly published branch that disappeared, plain retry and old guidance cannot recreate it. The host must supply `renewed_intent:true` and the exact outstanding `renewal_id` in a new logical operation and attempt after the prior result ACK. A wrong, consumed, or superseded receipt is rejected. Exact replay of the accepted renewal is idempotent. Wire admission is not Git mutation authority: the owner re-observes branch, base, and forge state; a merge or reappeared branch takes precedence. Publication history remains possibly published.
 
 The local Patch 2 properties exercise the pure codec and transition algebra. Patch 6 adds the CLI invocation, exact-binary subprocess harness, and end-to-end cleanup deadline evidence.
+
+## Required replacement-worker contract (FC-1 amendment)
+
+The single-process implementation does not yet satisfy FC-1 across replacement.
+Patch 2 owns the following admission API and wire change; Patch 6 must depend on
+that implementation rather than infer authority from capsule bytes or `bind`.
+The v1 examples above describe the current implementation, not safe readmission.
+The replacement contract must use a new protocol version so an older worker
+cannot silently discard durable admission evidence.
+
+A bind in that version must explicitly select `fresh` or `resume`. `fresh` is
+valid only when the host has durably established that this run/patch has never
+admitted an assignment. A nonzero capsule version alone is neither a sequence
+receipt nor permission to start again at sequence 1. `resume` must carry a
+host-committed, patch-scoped predecessor receipt. Missing, malformed,
+inconsistent, or unsupported receipts fail binding before `ready` or execution.
+The authenticated host supplies the receipt after fencing the previous process
+and descendants; the receipt does not itself establish exclusive ownership.
+
+The receipt must retain:
+
+- The run/patch identity and last admitted assignment sequence.
+- The exact decoded Execute request for each admitted identity, including
+  operation ID, attempt ID, sequence, expected state version, work, guidance,
+  recovery mode and renewal intent. Retain identity reservations for the whole
+  run/patch lifetime; result eviction must not permit identity reuse.
+- The last host-committed capsule and state version, together with outstanding
+  attention and consumed renewal receipts.
+- The predecessor disposition: `unfinished`, `terminal_unacknowledged`, or
+  `terminal_acknowledged`. A terminal disposition includes the exact terminal
+  result, full operation identity and committed state version. Terminal results
+  attest completed descendant cleanup. An acknowledged disposition additionally
+  includes the host's durable Result ACK receipt for that exact result.
+
+These dispositions are a tagged union: unfinished cannot contain an ACK,
+and acknowledged cannot omit its terminal result or matching ACK. The pure
+protocol owner must validate identity, sequence, state-version and renewal
+consistency before constructing restored admission state. The capsule codec
+must persist these owner facts without reconstructing them from inferred Git
+state or treating a successful bind as acknowledgement.
+
+After restoration, an exact Execute replay never emits `Begin`. It replays
+acceptance and the retained terminal result, if present. Changed content or
+reuse of a reserved operation, attempt or sequence is rejected. An unfinished
+predecessor remains ambiguous: neither exact replay nor a new assignment may
+start effects. It requires an explicit owner recovery disposition based on the
+committed capsule and observed effects; process replacement alone never turns
+it into a fresh attempt.
+
+A terminal unacknowledged predecessor permits result replay and an exact
+Result ACK, but blocks the next assignment. The host must commit its ACK receipt
+before sending Result ACK; a replacement supplied that receipt can restore the
+acknowledged state even if the prior process never received the ACK. A terminal
+acknowledged predecessor permits only sequence N+1 with the current committed
+state version and valid renewal intent. Sequence exhaustion admits no successor.
+Duplicate exact ACKs are harmless and stale ACKs cannot release a successor.
+
+The host must durably reserve an admitted request before allowing its first
+effect, commit terminal state before acknowledging its result, and preserve
+those facts when replacing a process. A worker-side in-memory acceptance is not
+a durable reservation. Failure between reservation and effect remains unfinished
+and ambiguous, preserving safety without claiming exactly-once arbitrary effects.
+
+Patch 2 acceptance requires public pure-interface tests for restoring after at
+least three assignments, admitting sequence 4 only after durable ACK, rejecting
+sequence 1 reset and altered replay, replaying a lost-ACK terminal result without
+`Begin`, blocking unfinished attempts, rejecting invalid receipts, preserving
+renewal consumption and identity reservations, and handling sequence exhaustion.
+Patch 6 then supplies real subprocess tests for death before effects, after
+checkpoint commit but before ACK delivery, after result delivery but before ACK
+commit, and after ACK commit but before delivery. Each must assert sequence
+continuity, explicit recovery or terminal replay, and no duplicate execution.
