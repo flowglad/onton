@@ -11,6 +11,18 @@ ONTON_WORKER_BINARY=/absolute/path/to/onton-worker dune build @worker-protocol-s
 
 The first command builds and drives `bin/worker.exe` through the public JSONL entry point. The override drives an explicitly supplied binary with the same harness, for the later exact-image gate. The smoke uses local bare Git repositories, separate clones, a fake Codex executable, a local forge observation fixture, and a host durability simulator; it does not require AWS or a GitHub credential. `dune build && dune runtest` runs the source-change gate. Ordinary `onton` is a separate executable.
 
+Release archives contain `onton`, `onton-setsid-exec`, and `onton-worker`.
+The release workflow extracts each archive and runs the protocol smoke against
+that extracted worker before publishing. Linux builds additionally check worker
+startup in Ubuntu 22.04. The Homebrew formula template installs all three tools.
+
+OITC image qualification is a separate gate: its Dockerfile must extract and
+install `onton-worker` from the pinned release alongside the existing tools.
+Run the harness in the qualification environment with `ONTON_WORKER_BINARY`
+pointing to that installed binary, and record the source revision, release,
+archive checksum, image digest, installed worker checksum and command exit status.
+An archive smoke does not qualify a downstream image.
+
 The worker CLI is:
 
 ```sh
