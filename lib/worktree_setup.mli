@@ -56,3 +56,8 @@ module type S = sig
 end
 
 module Make (_ : Worktree.S) (_ : ENV) : S
+
+module Make_with_checkpoint
+    (_ : Execution_checkpoint.S)
+    (_ : Worktree.S)
+    (_ : ENV) : S
