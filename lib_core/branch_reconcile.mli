@@ -337,6 +337,8 @@ val decide_workspace :
 type t [@@deriving eq, compare, sexp_of]
 
 val workspace_outcome : t -> workspace_outcome option
+
+val workspace_request : t -> string option
 (** A present outcome means ordinary reconciliation is suspended. A ready
     patch/base outcome permits checkout setup, followed by [Workspace_resumed].
     Neither observation nor renewal alone authorizes publication. *)

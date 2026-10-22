@@ -12,6 +12,12 @@ type run_result = {
   turn_accepted : bool;
 }
 
+type recovery_result =
+  | Recovery_session of run_result
+  | Recovery_wait of string
+  | Recovery_attention of { reason : string; renewal_id : string }
+  | Recovery_merged of Types.Pr_number.t option
+
 let truncate s n =
   if String.length s <= n then s else String.sub s ~pos:0 ~len:n ^ "..."
 
@@ -464,7 +470,8 @@ struct
           ("Publication pending: " ^ reason);
         `Pending
 
-  let run_owned ~write_owner ~(kind : Types.Operation_kind.t option)
+  let run_owned_with_setup ~ensure_checkout ~write_owner
+      ~(kind : Types.Operation_kind.t option)
       ~(delivery_mode : Patch_decision.delivery_mode) ~patch_id ~prompt
       ~(agent : Patch_agent.t) ~on_pr_detected ~(backend : Llm_backend.t)
       ~complexity =
@@ -534,7 +541,7 @@ struct
               | `Resume id -> (Some id, false)
               | `Fresh -> (None, true)
             in
-            match WS.ensure_owned ~owner:write_owner () with
+            match ensure_checkout write_owner with
             | Worktree_setup.Unavailable failure ->
                 if Mode.strict then (
                   (match failure with
@@ -1413,6 +1420,13 @@ struct
                         make_run_result ~turn_accepted:!backend_accepted_turn
                           final_user_result (List.rev !tool_failures))))
 
+  let run_owned ~write_owner ~kind ~delivery_mode ~patch_id ~prompt ~agent
+      ~on_pr_detected ~backend ~complexity =
+    run_owned_with_setup
+      ~ensure_checkout:(fun owner -> WS.ensure_owned ~owner ())
+      ~write_owner ~kind ~delivery_mode ~patch_id ~prompt ~agent ~on_pr_detected
+      ~backend ~complexity
+
   let run ~kind ~delivery_mode ~patch_id ~prompt ~agent ~on_pr_detected ~backend
       ~complexity =
     Runtime.with_patch_ownership Env.runtime ~patch_id (fun write_owner ->
@@ -1420,18 +1434,76 @@ struct
           ~on_pr_detected ~backend ~complexity)
 end
 
+module type RECOVERY_S = sig
+  include S
+
+  val run_recovery_owned :
+    write_owner:Runtime.patch_write ->
+    request:string ->
+    renewal_id:string option ->
+    ?observe_forge:
+      (unit ->
+      ( Branch_reconcile.workspace_forge * Types.Pr_number.t option,
+        string )
+      Result.t) ->
+    recovery:Session_prompt.recovery_context ->
+    kind:Types.Operation_kind.t option ->
+    delivery_mode:Patch_decision.delivery_mode ->
+    patch_id:Types.Patch_id.t ->
+    prompt:prompt ->
+    agent:Patch_agent.t ->
+    on_pr_detected:(Types.Pr_number.t -> unit) ->
+    backend:Llm_backend.t ->
+    complexity:int option ->
+    unit ->
+    recovery_result
+end
+
 module Make_with_checkpoint
     (C : Execution_checkpoint.S)
     (W : Worktree.S)
-    (Env : ENV) =
-  Make_impl
-    (C)
-    (struct
-      let strict = true
-    end)
-    (W)
-    (Env)
-    (Worktree_setup.Make_with_checkpoint (C) (W) (Env))
+    (Env : ENV) : RECOVERY_S = struct
+  module WS = Worktree_setup.Make_with_checkpoint (C) (W) (Env)
+
+  module Driver =
+    Make_impl
+      (C)
+      (struct
+        let strict = true
+      end)
+      (W)
+      (Env)
+      (WS)
+
+  include Driver
+
+  let run_recovery_owned ~write_owner ~request ~renewal_id ?observe_forge
+      ~recovery ~kind ~delivery_mode ~patch_id ~prompt ~agent:_ ~on_pr_detected
+      ~backend ~complexity () =
+    match
+      WS.recover_owned ~owner:write_owner ~request ~renewal_id ?observe_forge ()
+    with
+    | Worktree_setup.Recovery_wait reason -> Recovery_wait reason
+    | Worktree_setup.Recovery_attention { reason; renewal_id } ->
+        Recovery_attention { reason; renewal_id }
+    | Worktree_setup.Recovery_merged pr -> Recovery_merged pr
+    | Worktree_setup.Recovery_ready path ->
+        let agent =
+          Runtime.read Env.runtime (fun snap ->
+              Orchestrator.agent snap.Runtime.orchestrator patch_id)
+        in
+        let prompt =
+          create_prompt
+            ~context:(fun ~worktree_path:_ ->
+              Session_prompt.render_recovery recovery)
+            ~turn:prompt.turn
+        in
+        Recovery_session
+          (run_owned_with_setup
+             ~ensure_checkout:(fun _ -> Worktree_setup.Path path)
+             ~write_owner ~kind ~delivery_mode ~patch_id ~prompt ~agent
+             ~on_pr_detected ~backend ~complexity)
+end
 
 module Make (W : Worktree.S) (Env : ENV) =
   Make_impl

@@ -928,6 +928,9 @@ let mark_running t patch_id =
 let set_worktree_path t patch_id path =
   update_agent t patch_id ~f:(fun a -> Patch_agent.set_worktree_path a path)
 
+let forget_workspace_session t patch_id =
+  update_agent t patch_id ~f:Patch_agent.forget_workspace_session
+
 let set_llm_session_id t patch_id session_id =
   update_agent t patch_id ~f:(fun a ->
       Patch_agent.set_llm_session_id a session_id)

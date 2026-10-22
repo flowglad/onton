@@ -16,6 +16,12 @@ type ensure_result =
   | Path of string
   | Unavailable of Worktree_provision.failure
 
+type recovery_result =
+  | Recovery_ready of string
+  | Recovery_wait of string
+  | Recovery_attention of { reason : string; renewal_id : string }
+  | Recovery_merged of Types.Pr_number.t option
+
 module type S = sig
   val resolve_worktree_path :
     patch_id:Types.Patch_id.t ->
@@ -57,7 +63,23 @@ end
 
 module Make (_ : Worktree.S) (_ : ENV) : S
 
+module type RECOVERY_S = sig
+  include S
+
+  val recover_owned :
+    owner:Runtime.patch_write ->
+    request:string ->
+    renewal_id:string option ->
+    ?observe_forge:
+      (unit ->
+      ( Branch_reconcile.workspace_forge * Types.Pr_number.t option,
+        string )
+      Result.t) ->
+    unit ->
+    recovery_result
+end
+
 module Make_with_checkpoint
     (_ : Execution_checkpoint.S)
     (_ : Worktree.S)
-    (_ : ENV) : S
+    (_ : ENV) : RECOVERY_S

@@ -494,6 +494,10 @@ val clear_worktree_path : t -> t
 (** Clear a worktree path that recovery has proven is no longer live. The next
     Start is consequently treated as first materialization. *)
 
+val forget_workspace_session : t -> t
+(** Retire checkout and conversation authority after a lost workspace. Keep
+    publication history in the reconciliation owner. *)
+
 val worktree_state : t -> worktree_state
 (** The worktree lifecycle, independent of whether the patch session is queued
     or running. Dependency readiness gates only [Unmaterialized]; a retry in

@@ -469,6 +469,9 @@ let workspace_outcome t =
         ~forge:recovery.forge ~renewed:recovery.renewed
         ~renewal_id:recovery.renewal_id)
 
+let workspace_request t =
+  Option.map t.workspace_recovery ~f:(fun recovery -> recovery.request)
+
 let workspace_diagnostic t =
   Option.bind t.workspace_recovery ~f:(fun recovery -> recovery.diagnostic)
 
