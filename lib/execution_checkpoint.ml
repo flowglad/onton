@@ -3,6 +3,7 @@
 
 module type S = sig
   val persist : Runtime.snapshot -> (unit, string) result
+  val clear_session_id : patch_id:Types.Patch_id.t -> (unit, string) result
 
   val record_session_id :
     patch_id:Types.Patch_id.t -> session_id:string -> (unit, string) result
@@ -20,6 +21,9 @@ end) : S = struct
     with exn ->
       if Worktree.has_cancellation exn then raise exn
       else Error (Base.Exn.to_string exn)
+
+  let clear_session_id ~patch_id =
+    Persistence.clear_session_id ~snapshot_path ~patch_id
 
   let record_session_id ~patch_id ~session_id =
     Persistence.record_session_id ~snapshot_path ~patch_id ~session_id

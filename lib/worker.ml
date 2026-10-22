@@ -282,6 +282,19 @@ let run env =
     let module C = struct
       let persist = persist
 
+      let clear_session_id ~patch_id:id =
+        if not (Types.Patch_id.equal id patch_id) then
+          Error "session identity belongs to another patch"
+        else
+          Runtime.update_persisting runtime ~persist (fun snapshot ->
+              ( {
+                  snapshot with
+                  Runtime.orchestrator =
+                    Orchestrator.set_llm_session_id snapshot.orchestrator id
+                      None;
+                },
+                () ))
+
       let record_session_id ~patch_id:id ~session_id =
         if not (Types.Patch_id.equal id patch_id) then
           Error "session identity belongs to another patch"

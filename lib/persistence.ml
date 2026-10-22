@@ -1032,6 +1032,12 @@ let record_session_id ~snapshot_path ~patch_id ~session_id =
       ~content:session_id
   with exn -> Error (Stdlib.Printexc.to_string exn)
 
+let clear_session_id ~snapshot_path ~patch_id =
+  try
+    remove_if_exists (session_id_path ~snapshot_path ~patch_id);
+    Ok ()
+  with exn -> Error (Stdlib.Printexc.to_string exn)
+
 (* ppx_inline_test v0.17 emits an unused local module binding under OCaml 5.5.
    Keep warning 60 disabled only for this generated structure item. *)
 [@@@warning "-60"]

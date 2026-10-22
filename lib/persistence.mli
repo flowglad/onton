@@ -21,6 +21,10 @@ val load : path:string -> (Runtime.snapshot, string) result
     orchestrator graph directly from the saved JSON. Returns [Error msg] if the
     file is missing, malformed, or incompatible. *)
 
+val clear_session_id :
+  snapshot_path:string -> patch_id:Types.Patch_id.t -> (unit, string) result
+(** Remove a rejected resume identity so crash recovery cannot restore it. *)
+
 val record_session_id :
   snapshot_path:string ->
   patch_id:Types.Patch_id.t ->
