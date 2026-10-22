@@ -1,5 +1,6 @@
-(* @archlint.module shell
-   @archlint.domain orchestrator *)
+(* @archlint.module exempt
+   @archlint.exempt-reason effect-facade
+   @archlint.domain worker-checkpoint *)
 
 module type S = sig
   val persist : Runtime.snapshot -> (unit, string) result

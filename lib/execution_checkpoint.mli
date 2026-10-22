@@ -1,5 +1,5 @@
 (* @archlint.module interface
-   @archlint.domain orchestrator *)
+   @archlint.domain worker-checkpoint *)
 
 (** Attempt-scoped durable checkpoint boundary. Implementations must freeze the
     submitted candidate before waiting for an acknowledgement. *)

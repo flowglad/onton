@@ -1,5 +1,5 @@
 (* @archlint.module test
-   @archlint.domain worker-protocol *)
+   @archlint.domain worker-transport *)
 
 (* Patch 6 replaces this scaffold with a subprocess host harness against the
    actual onton-worker executable. Send versioned JSONL assignments and ACKs
