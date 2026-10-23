@@ -227,6 +227,6 @@ remains M3 work; request tickets are not ancestry or publication authority.
 - Reference specification: `../orchestrate-gameplan/spec/anton.pant`
 
 ## Stack
-- OCaml 5.5.0, dune 3.24.2, local opam switch
+- OCaml 5.5.1, dune 3.24.2, local opam switch
 - `open Base` in lib modules for Jane Street ppx compatibility
 - PPX: ppx_deriving (show/eq/ord), ppx_sexp_conv, ppx_compare, ppx_hash, ppx_expect, ppx_inline_test, ppx_assert
