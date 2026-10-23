@@ -192,7 +192,9 @@ module type S = sig
     Branch_reconcile.event
   (** Continue the patch conversation for every repair mode and append all
       streamed content to its transcript. The caller holds patch ownership. This
-      does not invoke implementation completion or publication. *)
+      does not invoke implementation completion or publication. If a resumed
+      backend fails before accepting the turn, discard its saved identity so the
+      next owner attempt starts fresh with the same repair context. *)
 
   val run_owned :
     write_owner:Runtime.patch_write ->
@@ -300,7 +302,9 @@ struct
   let run_repair ~patch_id ~(agent : Patch_agent.t) ~backend ~complexity ~cwd
       ~context ~guidance ~turn ~read_head =
     (* A repair is another turn of the patch conversation. In particular, the
-       ordinary fresh-session retry state must not discard this context. *)
+       ordinary fresh-session retry state must not discard this context. A
+       resume rejected before turn acceptance is cleared below so the owner
+       retries with a fresh conversation rather than the same unusable ID. *)
     let resume_session = agent.llm_session_id in
     let session_uuid =
       Option.value_or_thunk resume_session ~default:Session_id.mint
@@ -350,54 +354,94 @@ struct
         if Mode.strict then
           ignore
             (checkpoint_snapshot "repair dispatch" (fun snap -> (snap, ())));
+        let timed_out = ref false in
+        let backend =
+          {
+            backend with
+            Llm_backend.run_streaming =
+              (fun ~project_name
+                ~cwd
+                ~patch_id
+                ~prompt
+                ~resume_session
+                ~session_uuid
+                ~complexity
+                ~on_event
+              ->
+                let result =
+                  backend.run_streaming ~project_name ~cwd ~patch_id ~prompt
+                    ~resume_session ~session_uuid ~complexity ~on_event
+                in
+                timed_out := result.Llm_backend.timed_out;
+                result);
+          }
+        in
         let result =
           Branch_repair_session.run ~backend ~context ~guidance ~on_event ~cwd
             ~project_name:Env.project_name ~patch_id ~complexity ~resume_session
             ~session_uuid ~turn ~read_head ~now:(fun () ->
               Eio.Time.now Env.clock)
         in
-        (match result with
-        | Branch_reconcile.Repair_completed _ ->
-            Option.iter !captured_session ~f:(fun session_id ->
-                if Mode.strict then
-                  checkpoint_snapshot "repair conversation" (fun snap ->
-                      let orchestrator =
-                        Orchestrator.set_llm_session_id
-                          snap.Runtime.orchestrator patch_id (Some session_id)
-                        |> fun orch ->
-                        Orchestrator.clear_session_fallback orch patch_id
-                      in
-                      let transcripts = Hashtbl.copy snap.transcripts in
-                      Hashtbl.set transcripts ~key:patch_id
-                        ~data:(Buffer.contents text_buf);
-                      ({ snap with Runtime.orchestrator; transcripts }, ()))
-                else
-                  let snapshot_path =
-                    Project_store.snapshot_path Env.project_name
+        let conversation_update =
+          match result with
+          | Branch_reconcile.Repair_completed _ ->
+              Option.map !captured_session ~f:Option.some
+          | Branch_reconcile.Repair_interrupted { reason; _ }
+            when (not !timed_out)
+                 && Option.is_some resume_session
+                 && String.is_substring reason ~substring:"no rollout found" ->
+              Runtime_logging.log_event Env.runtime ~patch_id
+                "Repair resume was not accepted — retrying with a fresh session";
+              (match C.clear_session_id ~patch_id with
+              | Ok () -> ()
+              | Error error -> checkpoint_failure "repair resume identity" error);
+              Some None
+          | Worktree_hook _ | Publication_observed _ | Materialized _
+          | Request _ | Result _ | Repair_invalidated _ | Repair_dispatched _
+          | Repair_started _ | Repair_interrupted _ | Repair_failed _ | Tick _
+          | Recover | Reconfirm_publication | Resume | Refresh _
+          | Workspace_lost _ | Workspace_lost_without_operation _
+          | Workspace_forge_observed _ | Renew_workspace_intent _
+          | Workspace_resumed ->
+              None
+        in
+        Option.iter conversation_update ~f:(fun session_id ->
+            if Mode.strict then
+              checkpoint_snapshot "repair conversation" (fun snap ->
+                  let orchestrator =
+                    Orchestrator.set_llm_session_id snap.Runtime.orchestrator
+                      patch_id session_id
+                    |> fun orch ->
+                    Orchestrator.clear_session_fallback orch patch_id
                   in
-                  let save_error = ref None in
-                  Runtime.update Env.runtime (fun snap ->
-                      let orchestrator =
-                        Orchestrator.set_llm_session_id
-                          snap.Runtime.orchestrator patch_id (Some session_id)
-                        |> fun orch ->
-                        Orchestrator.clear_session_fallback orch patch_id
-                      in
-                      let transcripts = Hashtbl.copy snap.transcripts in
-                      Hashtbl.set transcripts ~key:patch_id
-                        ~data:(Buffer.contents text_buf);
-                      let next =
-                        { snap with Runtime.orchestrator; transcripts }
-                      in
-                      (match
-                         Persistence.save_snapshot ~path:snapshot_path next
-                       with
-                      | Ok () -> ()
-                      | Error error -> save_error := Some error);
-                      next);
-                  Option.iter !save_error ~f:(fun error ->
-                      Runtime_logging.log_event Env.runtime ~patch_id
-                        ("Failed to checkpoint repair conversation: " ^ error));
+                  let transcripts = Hashtbl.copy snap.transcripts in
+                  Hashtbl.set transcripts ~key:patch_id
+                    ~data:(Buffer.contents text_buf);
+                  ({ snap with Runtime.orchestrator; transcripts }, ()))
+            else
+              let snapshot_path =
+                Project_store.snapshot_path Env.project_name
+              in
+              let save_error = ref None in
+              Runtime.update Env.runtime (fun snap ->
+                  let orchestrator =
+                    Orchestrator.set_llm_session_id snap.Runtime.orchestrator
+                      patch_id session_id
+                    |> fun orch ->
+                    Orchestrator.clear_session_fallback orch patch_id
+                  in
+                  let transcripts = Hashtbl.copy snap.transcripts in
+                  Hashtbl.set transcripts ~key:patch_id
+                    ~data:(Buffer.contents text_buf);
+                  let next = { snap with Runtime.orchestrator; transcripts } in
+                  (match Persistence.save_snapshot ~path:snapshot_path next with
+                  | Ok () -> ()
+                  | Error error -> save_error := Some error);
+                  next);
+              Option.iter !save_error ~f:(fun error ->
+                  Runtime_logging.log_event Env.runtime ~patch_id
+                    ("Failed to checkpoint repair conversation: " ^ error));
+              Option.iter session_id ~f:(fun session_id ->
                   match
                     Persistence.record_session_id ~snapshot_path ~patch_id
                       ~session_id
@@ -405,15 +449,7 @@ struct
                   | Ok () -> ()
                   | Error error ->
                       Runtime_logging.log_event Env.runtime ~patch_id
-                        ("Failed to persist repair conversation: " ^ error))
-        | Worktree_hook _ | Publication_observed _ | Materialized _ | Request _
-        | Result _ | Repair_invalidated _ | Repair_dispatched _
-        | Repair_started _ | Repair_interrupted _ | Repair_failed _ | Tick _
-        | Recover | Reconfirm_publication | Resume | Refresh _
-        | Workspace_lost _ | Workspace_lost_without_operation _
-        | Workspace_forge_observed _ | Renew_workspace_intent _
-        | Workspace_resumed ->
-            ());
+                        ("Failed to persist repair conversation: " ^ error)));
         result)
 
   let publish_completion ~write_owner ~patch_id ~(agent : Patch_agent.t) ~path:_

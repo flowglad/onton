@@ -95,6 +95,8 @@ let () =
       checkpoint_rejected := true;
       Error "host rejected"
 
+    let clear_session_id ~patch_id:_ = Ok ()
+
     let record_session_id ~patch_id:_ ~session_id:_ =
       checkpoint_rejected := true;
       Error "host rejected"

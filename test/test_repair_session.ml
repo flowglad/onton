@@ -166,6 +166,9 @@ let[@warning "-4"] run env root ~existing mode =
             | None -> conversation := Some session_uuid);
             check "repair context is delivered"
               (Base.String.is_substring prompt ~substring:"repair context");
+            (* Even a protocol error after turn acceptance must retain the
+               conversation rather than replaying work in a fresh session. *)
+            if !calls = 4 then on_event Types.Stream_event.Turn_started;
             on_event
               (Types.Stream_event.Session_init
                  {
@@ -279,7 +282,201 @@ let[@warning "-4"] run env root ~existing mode =
       ((Orchestrator.agent saved.orchestrator id).llm_session_id = !conversation);
     Runtime.update_orchestrator runtime (fun _ -> saved.orchestrator)
   done;
-  check "one backend invocation per repair, no fresh retry" (!calls = 7)
+  check "one backend invocation per repair, no fresh retry" (!calls = 7);
+  (* A rejected resume must not poison the checkpoint and every later repair.
+     Exercise both backend exception and error-result reporting conventions. *)
+  let module C = Execution_checkpoint.Local (Env) in
+  let record_calls = ref 0 in
+  let module Snapshot_only = struct
+    include C
+
+    let record_session_id ~patch_id:_ ~session_id:_ =
+      incr record_calls;
+      Error "sidecar recording unavailable"
+  end in
+  let module Strict =
+    Session_driver.Make_with_checkpoint (Snapshot_only) (W) (Env)
+  in
+  List.iter
+    (fun run_repair ->
+      List.iter
+        (fun (timed_out, stderr) ->
+          Runtime.update_orchestrator runtime (fun orch ->
+              Orchestrator.set_llm_session_id orch id (Some "retained-thread"));
+          get
+            (Persistence.save_snapshot ~path:snapshot_path
+               (Runtime.read runtime Fun.id));
+          let backend =
+            Llm_backend.
+              {
+                name = "interrupted resume fixture";
+                run_streaming =
+                  (fun ~project_name:_
+                    ~cwd:_
+                    ~patch_id:_
+                    ~prompt:_
+                    ~resume_session
+                    ~session_uuid:_
+                    ~complexity:_
+                    ~on_event:_
+                  ->
+                    check "interruption resumes saved identity"
+                      (resume_session = Some "retained-thread");
+                    {
+                      exit_code = 1;
+                      stdout = "";
+                      stderr;
+                      got_events = false;
+                      saw_final_result = false;
+                      timed_out;
+                    });
+              }
+          in
+          let agent =
+            Runtime.read runtime (fun snap ->
+                Orchestrator.agent snap.orchestrator id)
+          in
+          let result =
+            run_repair ~patch_id:id ~agent ~backend ~complexity:None ~cwd:Env.fs
+              ~context:"repair context" ~guidance:[] ~turn ~read_head:(fun () ->
+                Some (B.Commit.to_string source))
+          in
+          check "unaccepted interruption is retryable"
+            (match result with B.Repair_interrupted _ -> true | _ -> false);
+          check "interruption preserves identity in memory"
+            ((Runtime.read runtime (fun snap ->
+                  Orchestrator.agent snap.orchestrator id))
+               .llm_session_id = Some "retained-thread");
+          let saved = get (Persistence.load ~path:snapshot_path) in
+          check "interruption preserves identity across restart"
+            ((Orchestrator.agent saved.orchestrator id).llm_session_id
+           = Some "retained-thread"))
+        [
+          (true, "deadline");
+          (true, "no rollout found");
+          (false, "backend transport failed");
+        ])
+    [ SD.run_repair; Strict.run_repair ];
+  List.iter
+    (fun (raises, run_repair) ->
+      Runtime.update_orchestrator runtime (fun orch ->
+          Orchestrator.set_llm_session_id orch id (Some "missing-thread"));
+      get
+        (Persistence.record_session_id ~snapshot_path ~patch_id:id
+           ~session_id:"missing-thread");
+      let attempts = ref 0 in
+      let replacement = ref None in
+      let backend =
+        Llm_backend.
+          {
+            name = "missing resume fixture";
+            run_streaming =
+              (fun ~project_name:_
+                ~cwd:_
+                ~patch_id:_
+                ~prompt
+                ~resume_session
+                ~session_uuid
+                ~complexity:_
+                ~on_event
+              ->
+                incr attempts;
+                check "fresh repair retains context and guidance"
+                  (Base.String.is_substring prompt ~substring:"repair context"
+                  && Base.String.is_substring prompt ~substring:"human guidance"
+                  );
+                if !attempts = 1 then (
+                  check "first repair resumes the saved thread"
+                    (resume_session = Some "missing-thread");
+                  let error =
+                    "thread/resume failed: no rollout found for thread id \
+                     missing-thread"
+                  in
+                  if raises then failwith error;
+                  on_event (Types.Stream_event.Error error);
+                  {
+                    exit_code = 1;
+                    stdout = "";
+                    stderr = error;
+                    got_events = true;
+                    saw_final_result = false;
+                    timed_out = false;
+                  })
+                else (
+                  check "next repair starts fresh" (resume_session = None);
+                  check "fresh repair has a new identity"
+                    (session_uuid <> "missing-thread");
+                  replacement := Some session_uuid;
+                  on_event
+                    (Types.Stream_event.Session_init
+                       {
+                         session_id = session_uuid;
+                         api_key_source = None;
+                         model = None;
+                         claude_code_version = None;
+                         permission_mode = None;
+                       });
+                  on_event Turn_started;
+                  on_event
+                    (Final_result { text = "repaired"; stop_reason = End_turn });
+                  {
+                    exit_code = 0;
+                    stdout = "";
+                    stderr = "";
+                    got_events = true;
+                    saw_final_result = true;
+                    timed_out = false;
+                  }));
+          }
+      in
+      if mode <> 0 then (
+        let agent =
+          Runtime.read runtime (fun snap ->
+              Orchestrator.agent snap.orchestrator id)
+        in
+        ignore
+          (run_repair ~patch_id:id ~agent ~backend ~complexity:None ~cwd:Env.fs
+             ~context:"repair context" ~guidance:[ "human guidance" ] ~turn
+             ~read_head:(fun () -> None));
+        check "failed checkout preflight never invokes the backend"
+          (!attempts = 0);
+        check "failed checkout preflight preserves the conversation"
+          ((Runtime.read runtime (fun snap ->
+                Orchestrator.agent snap.orchestrator id))
+             .llm_session_id = Some "missing-thread"));
+      for attempt = 1 to 2 do
+        let agent =
+          Runtime.read runtime (fun snap ->
+              Orchestrator.agent snap.orchestrator id)
+        in
+        let before = agent.branch_reconcile in
+        let result =
+          run_repair ~patch_id:id ~agent ~backend ~complexity:None ~cwd:Env.fs
+            ~context:"repair context" ~guidance:[ "human guidance" ] ~turn
+            ~read_head:(fun () -> Some (B.Commit.to_string source))
+        in
+        check "repair outcome follows backend acceptance"
+          (match result with
+          | B.Repair_interrupted _ -> attempt = 1
+          | B.Repair_completed _ -> attempt = 2
+          | _ -> false);
+        let saved = get (Persistence.load ~path:snapshot_path) in
+        let after = Orchestrator.agent saved.orchestrator id in
+        check "repair identity recovery preserves owner state"
+          (B.equal before after.branch_reconcile);
+        check "checkpoint survives restart with the recovered identity"
+          (after.llm_session_id = !replacement);
+        Runtime.update_orchestrator runtime (fun _ -> saved.orchestrator)
+      done;
+      check "recovery uses one invocation per owner attempt" (!attempts = 2))
+    [
+      (false, SD.run_repair);
+      (true, SD.run_repair);
+      (false, Strict.run_repair);
+      (true, Strict.run_repair);
+    ];
+  check "strict repair completes through the snapshot checkpoint alone"
+    (!record_calls = 0)
 
 let () =
   let root = Filename.temp_dir "repair-session-test" "" in

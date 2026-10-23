@@ -67,6 +67,7 @@ let () =
       end in
       let module C = struct
         let persist _ = Ok ()
+        let clear_session_id ~patch_id:_ = Ok ()
         let record_session_id ~patch_id:_ ~session_id:_ = Ok ()
       end in
       let module SD = Session_driver.Make_with_checkpoint (C) (Real) (Env) in

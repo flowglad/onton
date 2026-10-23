@@ -78,11 +78,7 @@ let overlay_session_id_sidecars ~snapshot_path (snap : Runtime.snapshot) =
         let path =
           session_id_path ~snapshot_path ~patch_id:agent.Patch_agent.patch_id
         in
-        if
-          agent.Patch_agent.busy
-          && Option.is_none agent.Patch_agent.llm_session_id
-          && Stdlib.Sys.file_exists path
-        then
+        if Stdlib.Sys.file_exists path then
           try
             let ic = Stdlib.open_in path in
             let session_id =
@@ -90,10 +86,33 @@ let overlay_session_id_sidecars ~snapshot_path (snap : Runtime.snapshot) =
                 ~finally:(fun () -> Stdlib.close_in_noerr ic)
                 (fun () -> Stdlib.In_channel.input_all ic |> String.strip)
             in
-            if String.is_empty session_id then orch
-            else
+            (* Clear records name the old snapshot identity. A replacement
+               checkpoint is authoritative even before its sidecar is written. *)
+            let cleared_identity =
+              try
+                match Yojson.Safe.from_string session_id with
+                | `Assoc [ ("cleared_snapshot_session_id", identity) ] -> (
+                    match identity with
+                    | `String id -> Some (Some id)
+                    | `Null -> Some None
+                    | _ -> None)
+                | _ -> None
+              with Yojson.Json_error _ -> None
+            in
+            if Option.is_some cleared_identity || String.is_empty session_id
+            then
+              match cleared_identity with
+              | Some identity
+                when Option.equal String.equal identity agent.llm_session_id ->
+                  Orchestrator.set_llm_session_id orch agent.patch_id None
+              | _ -> orch
+            else if
+              agent.Patch_agent.busy
+              && Option.is_none agent.Patch_agent.llm_session_id
+            then
               Orchestrator.set_llm_session_id orch agent.Patch_agent.patch_id
                 (Some session_id)
+            else orch
           with _ -> orch
         else orch)
   in
@@ -998,7 +1017,7 @@ let save ~path (snap : Runtime.snapshot) =
   Result.bind (save_snapshot ~path snap) ~f:(fun () ->
       sync_session_id_sidecars ~snapshot_path:path snap)
 
-let load ~path =
+let read_snapshot ~path =
   try
     let ic = Stdlib.open_in path in
     let content =
@@ -1016,12 +1035,12 @@ let load ~path =
        | Ok () -> ()
        | Error message ->
            raise (Decode_error ("cannot preserve legacy snapshot: " ^ message)));
-    let result =
-      Result.map (snapshot_of_yojson json)
-        ~f:(overlay_session_id_sidecars ~snapshot_path:path)
-    in
-    result
+    snapshot_of_yojson json
   with exn -> Error (Stdlib.Printexc.to_string exn)
+
+let load ~path =
+  Result.map (read_snapshot ~path)
+    ~f:(overlay_session_id_sidecars ~snapshot_path:path)
 
 let record_session_id ~snapshot_path ~patch_id ~session_id =
   try
@@ -1031,6 +1050,27 @@ let record_session_id ~snapshot_path ~patch_id ~session_id =
       ~path:(session_id_path ~snapshot_path ~patch_id)
       ~content:session_id
   with exn -> Error (Stdlib.Printexc.to_string exn)
+
+let clear_session_id ~snapshot_path ~patch_id =
+  (* Read without overlays so repeated clears retain the same rejected
+     snapshot identity. The atomic sidecar replacement also removes any
+     fallback identity; the next snapshot can safely carry a new one. *)
+  Result.bind (read_snapshot ~path:snapshot_path) ~f:(fun snapshot ->
+      let identity =
+        Option.bind
+          (Orchestrator.find_agent snapshot.Runtime.orchestrator patch_id)
+          ~f:(fun agent -> agent.Patch_agent.llm_session_id)
+      in
+      let content =
+        Yojson.Safe.to_string
+          (`Assoc
+             [
+               ( "cleared_snapshot_session_id",
+                 Option.value_map identity ~default:`Null ~f:(fun id ->
+                     `String id) );
+             ])
+      in
+      record_session_id ~snapshot_path ~patch_id ~session_id:content)
 
 (* ppx_inline_test v0.17 emits an unused local module binding under OCaml 5.5.
    Keep warning 60 disabled only for this generated structure item. *)
@@ -1149,6 +1189,51 @@ let%test_module "session_id_sidecars" =
                 (Some "minted")
           | None -> false)
       | Error _ -> false
+
+    let%test "clear survives restart before the next snapshot checkpoint" =
+      with_temp_snapshot_path @@ fun snapshot_path ->
+      Result.is_ok
+        (save ~path:snapshot_path
+           (snapshot ~busy:true ~llm_session_id:"rejected" ()))
+      && Result.is_ok
+           (record_session_id ~snapshot_path ~patch_id ~session_id:"rejected")
+      && Result.is_ok (clear_session_id ~snapshot_path ~patch_id)
+      && Result.is_ok (clear_session_id ~snapshot_path ~patch_id)
+      &&
+      match load ~path:snapshot_path with
+      | Ok loaded -> (
+          match
+            Orchestrator.find_agent loaded.Runtime.orchestrator patch_id
+          with
+          | Some agent -> Option.is_none agent.Patch_agent.llm_session_id
+          | None -> false)
+      | Error _ -> false
+
+    let%test "replacement checkpoint survives before sidecar replacement" =
+      List.for_all [ false; true ] ~f:(fun busy ->
+          with_temp_snapshot_path @@ fun snapshot_path ->
+          Result.is_ok
+            (save_snapshot ~path:snapshot_path
+               (snapshot ~busy ~llm_session_id:"rejected" ()))
+          && Result.is_ok
+               (record_session_id ~snapshot_path ~patch_id
+                  ~session_id:"rejected")
+          && Result.is_ok (clear_session_id ~snapshot_path ~patch_id)
+          && Result.is_ok
+               (save_snapshot ~path:snapshot_path
+                  (snapshot ~busy ~llm_session_id:"replacement" ()))
+          (* Restart without performing the next record_session_id write. *)
+          &&
+          match load ~path:snapshot_path with
+          | Ok loaded -> (
+              match
+                Orchestrator.find_agent loaded.Runtime.orchestrator patch_id
+              with
+              | Some agent ->
+                  Option.equal String.equal agent.llm_session_id
+                    (Some "replacement")
+              | None -> false)
+          | Error _ -> false)
 
     let%test "load ignores stale sidecar for idle session without id" =
       with_temp_snapshot_path @@ fun snapshot_path ->

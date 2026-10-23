@@ -76,7 +76,9 @@ module type S = sig
     Branch_reconcile.event
   (** Continue the patch conversation for every repair mode and append all
       streamed content to its transcript. The caller holds patch ownership. This
-      does not invoke implementation completion or publication. *)
+      does not invoke implementation completion or publication. If a resumed
+      backend fails before accepting the turn, discard its saved identity so the
+      next owner attempt starts fresh with the same repair context. *)
 
   val run_owned :
     write_owner:Runtime.patch_write ->
