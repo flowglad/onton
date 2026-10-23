@@ -4,29 +4,32 @@
 class Onton < Formula
   desc "OCaml orchestrator for parallel Claude Code agents executing gameplan patches"
   homepage "https://github.com/flowglad/onton"
-  version "0.68.5"
+  version "0.69.0"
   license "MIT"
 
   on_arm do
-    url "https://github.com/flowglad/onton/releases/download/v0.68.5/onton-arm64-apple-darwin.tar.gz"
-    sha256 "cbefc3b6697dcff38bea24544e267a0c593883ce69cdfd76abf315213a9d796c"
+    url "https://github.com/flowglad/onton/releases/download/v0.69.0/onton-arm64-apple-darwin.tar.gz"
+    sha256 "f2c930c929840e2a570478e4ac55df82d7308e908d33aeb43e7e5aaa12e274e0"
   end
 
   depends_on "gmp"
 
   def install
-    bin.install "onton", "onton-setsid-exec"
+    bin.install "onton", "onton-setsid-exec", "onton-worker"
     # Rewrite CI's hardcoded libgmp path to this machine's Homebrew prefix
-    old_path = Utils.popen_read("otool", "-L", bin/"onton")
-      .lines.find { |l| l.include?("libgmp") }&.strip&.split&.first
     gmp_lib = (Formula["gmp"].opt_lib/"libgmp.10.dylib").to_s
-    if old_path && old_path != gmp_lib
-      system "install_name_tool", "-change", old_path, gmp_lib, bin/"onton"
+    %w[onton onton-worker].each do |name|
+      old_path = Utils.popen_read("otool", "-L", bin/name)
+        .lines.find { |l| l.include?("libgmp") }&.strip&.split&.first
+      if old_path && old_path != gmp_lib
+        system "install_name_tool", "-change", old_path, gmp_lib, bin/name
+      end
     end
   end
 
   test do
     assert_match "onton", shell_output("#{bin}/onton --version 2>&1", 0)
     assert_predicate bin/"onton-setsid-exec", :executable?
+    assert_match "Usage: onton-worker", shell_output("#{bin}/onton-worker 2>&1", 2)
   end
 end
