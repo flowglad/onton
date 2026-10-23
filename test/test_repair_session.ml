@@ -286,7 +286,17 @@ let[@warning "-4"] run env root ~existing mode =
   (* A rejected resume must not poison the checkpoint and every later repair.
      Exercise both backend exception and error-result reporting conventions. *)
   let module C = Execution_checkpoint.Local (Env) in
-  let module Strict = Session_driver.Make_with_checkpoint (C) (W) (Env) in
+  let record_calls = ref 0 in
+  let module Snapshot_only = struct
+    include C
+
+    let record_session_id ~patch_id:_ ~session_id:_ =
+      incr record_calls;
+      Error "sidecar recording unavailable"
+  end in
+  let module Strict =
+    Session_driver.Make_with_checkpoint (Snapshot_only) (W) (Env)
+  in
   List.iter
     (fun run_repair ->
       List.iter
@@ -464,7 +474,9 @@ let[@warning "-4"] run env root ~existing mode =
       (true, SD.run_repair);
       (false, Strict.run_repair);
       (true, Strict.run_repair);
-    ]
+    ];
+  check "strict repair completes through the snapshot checkpoint alone"
+    (!record_calls = 0)
 
 let () =
   let root = Filename.temp_dir "repair-session-test" "" in

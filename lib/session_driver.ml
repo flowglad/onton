@@ -406,7 +406,7 @@ struct
               None
         in
         Option.iter conversation_update ~f:(fun session_id ->
-            if Mode.strict then (
+            if Mode.strict then
               checkpoint_snapshot "repair conversation" (fun snap ->
                   let orchestrator =
                     Orchestrator.set_llm_session_id snap.Runtime.orchestrator
@@ -417,12 +417,7 @@ struct
                   let transcripts = Hashtbl.copy snap.transcripts in
                   Hashtbl.set transcripts ~key:patch_id
                     ~data:(Buffer.contents text_buf);
-                  ({ snap with Runtime.orchestrator; transcripts }, ()));
-              Option.iter session_id ~f:(fun session_id ->
-                  match C.record_session_id ~patch_id ~session_id with
-                  | Ok () -> ()
-                  | Error error ->
-                      checkpoint_failure "repair conversation identity" error))
+                  ({ snap with Runtime.orchestrator; transcripts }, ()))
             else
               let snapshot_path =
                 Project_store.snapshot_path Env.project_name

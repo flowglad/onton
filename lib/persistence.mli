@@ -23,8 +23,10 @@ val load : path:string -> (Runtime.snapshot, string) result
 
 val clear_session_id :
   snapshot_path:string -> patch_id:Types.Patch_id.t -> (unit, string) result
-(** Atomically write a clear tombstone overriding both the snapshot identity and
-    sidecar on load, including before the next snapshot checkpoint. *)
+(** Atomically replace the sidecar with a tombstone scoped to the current
+    snapshot identity. Loading suppresses that identity, but preserves a later
+    checkpointed replacement even before its sidecar is recorded. Returns an
+    error if the current snapshot cannot be read. *)
 
 val record_session_id :
   snapshot_path:string ->
