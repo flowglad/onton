@@ -78,11 +78,7 @@ let overlay_session_id_sidecars ~snapshot_path (snap : Runtime.snapshot) =
         let path =
           session_id_path ~snapshot_path ~patch_id:agent.Patch_agent.patch_id
         in
-        if
-          agent.Patch_agent.busy
-          && Option.is_none agent.Patch_agent.llm_session_id
-          && Stdlib.Sys.file_exists path
-        then
+        if Stdlib.Sys.file_exists path then
           try
             let ic = Stdlib.open_in path in
             let session_id =
@@ -90,10 +86,19 @@ let overlay_session_id_sidecars ~snapshot_path (snap : Runtime.snapshot) =
                 ~finally:(fun () -> Stdlib.close_in_noerr ic)
                 (fun () -> Stdlib.In_channel.input_all ic |> String.strip)
             in
-            if String.is_empty session_id then orch
-            else
+            (* An empty sidecar is an atomic clear tombstone. It overrides
+               even an identity in an older snapshot until that snapshot has
+               checkpointed the clear. *)
+            if String.is_empty session_id then
+              Orchestrator.set_llm_session_id orch agent.Patch_agent.patch_id
+                None
+            else if
+              agent.Patch_agent.busy
+              && Option.is_none agent.Patch_agent.llm_session_id
+            then
               Orchestrator.set_llm_session_id orch agent.Patch_agent.patch_id
                 (Some session_id)
+            else orch
           with _ -> orch
         else orch)
   in
@@ -1033,10 +1038,10 @@ let record_session_id ~snapshot_path ~patch_id ~session_id =
   with exn -> Error (Stdlib.Printexc.to_string exn)
 
 let clear_session_id ~snapshot_path ~patch_id =
-  try
-    remove_if_exists (session_id_path ~snapshot_path ~patch_id);
-    Ok ()
-  with exn -> Error (Stdlib.Printexc.to_string exn)
+  (* Keep the tombstone until a snapshot without the identity is durable.
+     The ordinary save janitor can then remove it, or record_session_id can
+     replace it when a new conversation is accepted. *)
+  record_session_id ~snapshot_path ~patch_id ~session_id:""
 
 (* ppx_inline_test v0.17 emits an unused local module binding under OCaml 5.5.
    Keep warning 60 disabled only for this generated structure item. *)
@@ -1153,6 +1158,25 @@ let%test_module "session_id_sidecars" =
           | Some agent ->
               Option.equal String.equal agent.Patch_agent.llm_session_id
                 (Some "minted")
+          | None -> false)
+      | Error _ -> false
+
+    let%test "clear survives restart before the next snapshot checkpoint" =
+      with_temp_snapshot_path @@ fun snapshot_path ->
+      Result.is_ok
+        (save ~path:snapshot_path
+           (snapshot ~busy:true ~llm_session_id:"rejected" ()))
+      && Result.is_ok
+           (record_session_id ~snapshot_path ~patch_id ~session_id:"rejected")
+      && Result.is_ok (clear_session_id ~snapshot_path ~patch_id)
+      && Result.is_ok (clear_session_id ~snapshot_path ~patch_id)
+      &&
+      match load ~path:snapshot_path with
+      | Ok loaded -> (
+          match
+            Orchestrator.find_agent loaded.Runtime.orchestrator patch_id
+          with
+          | Some agent -> Option.is_none agent.Patch_agent.llm_session_id
           | None -> false)
       | Error _ -> false
 

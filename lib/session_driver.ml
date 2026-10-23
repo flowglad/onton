@@ -354,7 +354,7 @@ struct
         if Mode.strict then
           ignore
             (checkpoint_snapshot "repair dispatch" (fun snap -> (snap, ())));
-        let invoked = ref false in
+        let timed_out = ref false in
         let backend =
           {
             backend with
@@ -368,9 +368,12 @@ struct
                 ~complexity
                 ~on_event
               ->
-                invoked := true;
-                backend.run_streaming ~project_name ~cwd ~patch_id ~prompt
-                  ~resume_session ~session_uuid ~complexity ~on_event);
+                let result =
+                  backend.run_streaming ~project_name ~cwd ~patch_id ~prompt
+                    ~resume_session ~session_uuid ~complexity ~on_event
+                in
+                timed_out := result.Llm_backend.timed_out;
+                result);
           }
         in
         let result =
@@ -383,8 +386,10 @@ struct
           match result with
           | Branch_reconcile.Repair_completed _ ->
               Option.map !captured_session ~f:Option.some
-          | Branch_reconcile.Repair_interrupted _
-            when !invoked && Option.is_some resume_session ->
+          | Branch_reconcile.Repair_interrupted { reason; _ }
+            when (not !timed_out)
+                 && Option.is_some resume_session
+                 && String.is_substring reason ~substring:"no rollout found" ->
               Runtime_logging.log_event Env.runtime ~patch_id
                 "Repair resume was not accepted — retrying with a fresh session";
               (match C.clear_session_id ~patch_id with
@@ -401,7 +406,7 @@ struct
               None
         in
         Option.iter conversation_update ~f:(fun session_id ->
-            if Mode.strict then
+            if Mode.strict then (
               checkpoint_snapshot "repair conversation" (fun snap ->
                   let orchestrator =
                     Orchestrator.set_llm_session_id snap.Runtime.orchestrator
@@ -412,7 +417,12 @@ struct
                   let transcripts = Hashtbl.copy snap.transcripts in
                   Hashtbl.set transcripts ~key:patch_id
                     ~data:(Buffer.contents text_buf);
-                  ({ snap with Runtime.orchestrator; transcripts }, ()))
+                  ({ snap with Runtime.orchestrator; transcripts }, ()));
+              Option.iter session_id ~f:(fun session_id ->
+                  match C.record_session_id ~patch_id ~session_id with
+                  | Ok () -> ()
+                  | Error error ->
+                      checkpoint_failure "repair conversation identity" error))
             else
               let snapshot_path =
                 Project_store.snapshot_path Env.project_name

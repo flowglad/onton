@@ -288,6 +288,66 @@ let[@warning "-4"] run env root ~existing mode =
   let module C = Execution_checkpoint.Local (Env) in
   let module Strict = Session_driver.Make_with_checkpoint (C) (W) (Env) in
   List.iter
+    (fun run_repair ->
+      List.iter
+        (fun (timed_out, stderr) ->
+          Runtime.update_orchestrator runtime (fun orch ->
+              Orchestrator.set_llm_session_id orch id (Some "retained-thread"));
+          get
+            (Persistence.save_snapshot ~path:snapshot_path
+               (Runtime.read runtime Fun.id));
+          let backend =
+            Llm_backend.
+              {
+                name = "interrupted resume fixture";
+                run_streaming =
+                  (fun ~project_name:_
+                    ~cwd:_
+                    ~patch_id:_
+                    ~prompt:_
+                    ~resume_session
+                    ~session_uuid:_
+                    ~complexity:_
+                    ~on_event:_
+                  ->
+                    check "interruption resumes saved identity"
+                      (resume_session = Some "retained-thread");
+                    {
+                      exit_code = 1;
+                      stdout = "";
+                      stderr;
+                      got_events = false;
+                      saw_final_result = false;
+                      timed_out;
+                    });
+              }
+          in
+          let agent =
+            Runtime.read runtime (fun snap ->
+                Orchestrator.agent snap.orchestrator id)
+          in
+          let result =
+            run_repair ~patch_id:id ~agent ~backend ~complexity:None ~cwd:Env.fs
+              ~context:"repair context" ~guidance:[] ~turn ~read_head:(fun () ->
+                Some (B.Commit.to_string source))
+          in
+          check "unaccepted interruption is retryable"
+            (match result with B.Repair_interrupted _ -> true | _ -> false);
+          check "interruption preserves identity in memory"
+            ((Runtime.read runtime (fun snap ->
+                  Orchestrator.agent snap.orchestrator id))
+               .llm_session_id = Some "retained-thread");
+          let saved = get (Persistence.load ~path:snapshot_path) in
+          check "interruption preserves identity across restart"
+            ((Orchestrator.agent saved.orchestrator id).llm_session_id
+           = Some "retained-thread"))
+        [
+          (true, "deadline");
+          (true, "no rollout found");
+          (false, "backend transport failed");
+        ])
+    [ SD.run_repair; Strict.run_repair ];
+  List.iter
     (fun (raises, run_repair) ->
       Runtime.update_orchestrator runtime (fun orch ->
           Orchestrator.set_llm_session_id orch id (Some "missing-thread"));
