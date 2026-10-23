@@ -283,3 +283,4 @@ jobs:
         with:
           adapter: ocaml
           ocaml-root: .
+          ocaml-version: '5.5.1'
