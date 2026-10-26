@@ -1,7 +1,7 @@
 ---
 title: Distributed Onton execution in the cloud
-status: draft
-updated_at: 2026-10-23
+status: active
+updated_at: 2026-10-26
 ---
 
 # Workstream: Distributed Onton execution in the cloud
@@ -50,8 +50,11 @@ Onton's integration with these capabilities remains M3 work.
 
 ## Current State
 
-Verified against the Onton and sibling `provisioning-agent` checkouts on
-2026-10-22. These are source observations, not claims about deployed versions.
+The original source inventory below was verified against the Onton and sibling
+`provisioning-agent` checkouts on 2026-10-22. M2 deployment and qualification
+were independently verified on 2026-10-26; deployed identities and results are
+recorded below. The engineer accepted M2 as complete on 2026-10-26 and explicitly
+waived the template-retention replacement drill. M3 is the next milestone.
 
 - `lib/orchestrator.mli` exposes durable patch messages with stable identities
   and Pending/Acked/Completed/Obsolete states. `lib/runner_fiber_impl.ml` executes
@@ -94,7 +97,8 @@ Verified against the Onton and sibling `provisioning-agent` checkouts on
   in `docs/design/headless-worker-protocol.md` (protocol v2).
   `lib_core/worker_protocol.mli` exposes `step` and `admission_receipt` for Onton
   to reuse; OITC does not need a second receipt state machine. Resource capabilities
-  remain M2 work and coordinator-to-worker protocol integration remains M3 work;
+  are implemented and dev echo-qualified as recorded below; coordinator-to-worker
+  protocol integration remains M3 work;
   existing local control sockets carry user controls.
 
 ## Key Challenges
@@ -234,10 +238,481 @@ using cloud resource capabilities supplied by M2.
 
 **Repository**: provisioning-agent. **Dependencies**: M1 and its release gate.
 
-**Status**: Planned and finalized on 2026-10-23; not implemented or cloud-qualified.
+**Status**: Complete — engineer-accepted on 2026-10-26. Isolated dev echo,
+cloud fault/permission, connectivity, observation-recovery and production
+coding-worker qualification passed as recorded below. The coding evidence
+distinguishes the native renewal cycle from accelerated real-token rotation.
+The engineer explicitly waived the template-retention replacement drill and
+accepted M2 without that additional evidence. The drill was not performed and
+is not claimed as passed; it no longer gates M3. The deployed retention setting
+remains in place.
 Planning artifact: `provisioning-agent/gameplans/cloud-execution-attempt-adapter.yaml`
 (six patches, eight engineer-approved decisions). Plan validation and bounded
-Pantagruel checks passed; these are not runtime or deployed-service evidence.
+Pantagruel checks passed. Deployment and runtime evidence follow separately.
+
+**Deployment and qualification evidence (2026-10-26)**:
+
+- Qualification fixes merged in provisioning-agent
+  [PR #11789](https://github.com/flowglad/provisioning-agent/pull/11789).
+  [PR #11790](https://github.com/flowglad/provisioning-agent/pull/11790) added the
+  isolated dev resources and merged as `dea74e393d1e79f90fd62c7dd2c3bb0e5c2669da`.
+- [OITC deployment 40357547735](https://github.com/flowglad/provisioning-agent/actions/runs/40357547735)
+  succeeded for `97a0f6b2df6b930351965ff27dd805437abb0168`, whose ancestry includes
+  that merge. Both maintained-release and dev-resource jobs succeeded; dev release
+  tag: `deploy-issue-runner-dev-20261026T162107Z`.
+- Deployed coordinator/process task definitions: `oitc-rc-dev:1` and
+  `oitc-rp-dev:1`, cluster `payclaw-issue-runner-dev`, account `576847308568`,
+  region `us-east-1`. Both use image
+  `576847308568.dkr.ecr.us-east-1.amazonaws.com/payclaw-issue-runner-production@sha256:e2686b9d77baa3ec73ea90a7a929aaa65ed3079ce716626369a085af29f0dccc`.
+  Dev has separate lifecycle storage, roles and security groups in the dev private
+  network, direct CloudWatch logs, and no coding secrets or development-role authority.
+- Ran `resources fixture --cloud` in fresh coordinator task
+  `fc5805ec0533459889a4db8253130759`, using the descriptor from deployed dev state.
+  Run: `fixture-eb85256b697cfd5d987550594b6e4abf`. Child tasks:
+  `356f3ef93e1e4bb3aabb1819b7dc8480` and `fb7fcdce493c4f97be87b13aba77e701`.
+- Retrieved the immutable report directly from bucket
+  `oitc-res-dev-20261026162053300800000003`, key
+  `qualification/a18a6d2aa89989b6cf0b02664eecef54dacfd6c912ce465c1d100b1b2616bb00/b28a04cfd08c2e9d0a27b7d6a9f7927618a9688f99f4c1d3c09f30b48b561980/cloud.json`.
+  It records `passed: true`, `cleanup: closed`, a rejected stale-epoch write,
+  successful state readback across replacement, and matching echo/state SHA-256
+  `8258fe1968d38f7d875f0a4a180913e83fcd3f561e3f0f305f2c440f22c77915`.
+- Independent ECS reads confirmed the coordinator and both children `STOPPED`,
+  each with exit code 0 and the expected image digest. A strongly consistent read
+  from `oitc-res-dev` confirmed revision 29, state version 1, `closing: true`,
+  `closed: true`, and `cleanup_complete: true`.
+- The earlier failed production run
+  `fixture-8c26e3306b9486f9e5c5ae41e4a0a56c` remains a separate cleanup obligation:
+  its tasks were confirmed stopped, but its last observed record was closing with
+  cleanup incomplete. The successful dev drill does not discharge that record.
+
+**Additional cloud qualification (2026-10-26)**:
+
+- The operator harness's six fault checks passed in dev run
+  `fixture-7299d1e8e0c191347c87e14d3000c981`: lost successful launch and commit
+  responses, replacement fencing while send authorization was paused, exactly
+  two launch submissions, rejected TLS/bearer/duplicate attachment with EOF and
+  disconnect, and an interrupted cleanup upload followed by successful retry.
+  The immutable report is in the dev bucket above at
+  `qualification/8309be3bd0aadca61aed3d1431bfef9f171e603cb6f1f7d02da3159b83437fe0/7ed123c654b7713332f9a58d0d5cea9295a474d50d72b4935eab6cdb723d9ab6/cloud-faults.json`.
+  `passed` is true, cleanup is closed, and the echo/state digests match the prior
+  successful drill. CloudTrail independently confirmed exactly two successful
+  RunTask submissions by coordinator `95d72f1019c449d993bf922bc99dc328`.
+- This was an instrumented coordinator harness using the shipped process host,
+  not a claim that the ordinary cloud CLI injects faults. Its SHA-256 is
+  `8396cfc7c4507a2203080383a5b5c920846d4cccb96ab42030fc5162505e0c5f`.
+  The tested resource Go sources match the earlier deployed release; retained
+  copies of the task templates prevented concurrent releases from invalidating
+  the test. The coordinator and both children were confirmed stopped.
+- Process-role task `bd56a71c056746d28445af090cd81c60` exited 0 after actual AWS
+  AccessDenied responses for coordinator-state reads/writes, another bootstrap
+  object, ECS RunTask, and another task's transcript stream. Its own task-scoped
+  transcript role assumption and write succeeded. Credential-free evidence is
+  retained at `qualification/operator/permissions-bd56a71c056746d28445af090cd81c60.json`
+  in the dev bucket. This qualifies the echo process role; coding preparation and
+  credential renewal remain separate.
+- Actual coordinator-loss cleanup recovery also passed. Run
+  `fixture-fad2de3fc58d5355a0b9f829d9eda212` reached `closing: true` with cleanup
+  incomplete while uploads to only its payload prefix were temporarily denied.
+  Coordinator `c20a190716a64f14b109be14152673ce` was stopped; recovery was launched
+  only after positive ECS STOPPED evidence and removal of the temporary denial.
+  Successor `3f698f1d0de246d19ec32dbee96f0d87` took ownership at epoch 2 and closed
+  revision 32 with `cleanup_complete: true`, then exited 0. Its immutable report is
+  `qualification/b5add6e1c3c66af4dab44d39e5083a24d974b0b4e06eaa65745c0f21eddd65ff/159c59b4324961ed3a8bc39b3b5b0790153581c65fa820886932a7eff0947eca/cloud-close.json`.
+  The report correctly retains `passed: false` for the interrupted original
+  fixture; the independently verified result is successful cleanup recovery.
+- The aggregate, credential-free evidence was stored and read back exactly at
+  `qualification/operator/m2-followup-20261026-d0cf2be56e.json` in the dev bucket,
+  SHA-256 `d90f2efbfc436b2324975449e8011b1c71cb5571ddfa96caa6a21b54e03c6465`.
+  It includes CloudTrail, task states, permission evidence, run inventory and
+  recovery timeline. All drill tasks are stopped, the temporary IAM denial is
+  removed, and temporary task definitions were deregistered only after their
+  runs could no longer launch work. The dev cluster had no active tasks at the
+  final check.
+- A concurrent release deregistered `oitc-rp-dev:1` while two earlier attempts
+  still had that revision captured. ECS returned `TaskDefinition is inactive`;
+  the helper retained uncertainty and did not resubmit. The infrastructure fix
+  in [PR #11798](https://github.com/flowglad/provisioning-agent/pull/11798) retains
+  earlier resource task revisions with `skipDestroy`. The post-merge deployment
+  and rerun below verified the deployed setting; a subsequent template replacement
+  crossing an active run still needs verification.
+- Failed or interrupted attempts retain their authority records:
+  `fixture-6971fad4e69ebe024f46a2dd845a58d3` (the first harness assertion aborted
+  after send authorization), `fixture-17ef0622b04e418b886461de82af1d83`, and
+  `fixture-2d4ec39cd06f4d24c2422b357593544d` (deactivated captured template).
+  Their coordinators were stopped; the first and third records are closing,
+  while the second remains open with its consumed send authorization retained.
+  No resubmission or successful cleanup is claimed for these attempts.
+  The first attempt's safe projection is retained at
+  `qualification/operator/first-fault-attempt-5be77ed07acb460f8c4c8d5528c5104e.json`.
+- Retrying the earlier production cleanup produced a durable `cloud-close.json`
+  report with `cleanup: pending`: ECS no longer returns the old coordinator,
+  so takeover cannot obtain positive STOPPED evidence. Recovery task
+  `93645cee818c4c21846c52b58398911f` stopped with helper exit 1. Missing provider
+  history does not authorize clearing the record or declaring cleanup complete.
+
+**Post-merge rerun of PR #11798 (2026-10-26)**:
+
+- PR #11798 merged as `c2b8a7a074d070972aa21fc4ce3a1e002fa21c1f`.
+  [Deployment 40373740579](https://github.com/flowglad/provisioning-agent/actions/runs/40373740579)
+  succeeded for that exact commit, including maintained-release and dev-resource
+  jobs. The drill started only after deployment completed.
+- Deployed state confirmed `skipDestroy: true` in both inputs and outputs for
+  `oitc-rc-dev:4` and `oitc-rp-dev:4`; before deployment both were false. The task
+  revisions stayed unchanged during this deployment, so this verifies configuration
+  but does not yet exercise retention through a subsequent template replacement.
+  Both templates remained ACTIVE after the drill.
+- Both templates use image
+  `576847308568.dkr.ecr.us-east-1.amazonaws.com/payclaw-issue-runner-production@sha256:cc26be052fd4182cb3a8a54ac3861743232ac8dfa0d5149be8f91756d7f5a034`.
+  The instrumented harness was built from the exact merge commit, SHA-256
+  `b5b651c2fcffcbf0e202c3090441160ac8963a0384578f59cf17c720fb5b52de`.
+- Fault run `fixture-a4b9eae028e0a657e68bb6ca8b96456d` passed all six checks and
+  closed at revision 30. Ordinary deployed CLI echo run
+  `fixture-99bb41a4c3a936740621d4f6676db289` also passed and closed at revision 31.
+  Both reports record `passed: true`, `cleanup: closed`, and matching echo/state
+  digests. Strong reads confirmed `closed: true` and `cleanup_complete: true`.
+- Process-role probe `46179370fb5f4a9e95dee7e8b8ed3442` passed the real AWS
+  permission checks, including rejection of another task's transcript-role
+  assumption and stream, while its own transcript write succeeded. All seven
+  coordinator/probe/child tasks were independently confirmed STOPPED with exit 0
+  and the expected image digest. CloudTrail confirmed exactly two successful
+  child RunTask submissions per run, four total.
+- The aggregate report was stored and read back exactly from the dev bucket at
+  `qualification/operator/m2-rerun-11798-8a2afed6.json`, SHA-256
+  `4639e4a943de94bfce13a124b47eb46348e976f618d072117197b815fb912b62`.
+  It includes source/deployment identity, retention observations, both immutable
+  fixture reports, process-role evidence, final task/run state and CloudTrail.
+  Temporary probe task definitions were deregistered; managed templates remain
+  active. Earlier unresolved records were not altered by this rerun.
+
+**Dev stream interruption drill (2026-10-26)**:
+
+- Run `fixture-ea6e7210f42f2075a066eb375cb9316a` passed the dedicated stream
+  interruption probe using existing `oitc-rc-dev:4` and `oitc-rp-dev:4` templates.
+  No task-template registration, replacement, or deployment was initiated for
+  this drill. Both template revisions remained ACTIVE.
+- The operator probe ran through ECS Exec inside coordinator task
+  `9410972c65aa45edac5d55a4292042ca`, retaining its real task identity and resource
+  authority. Its temporary dev coordinator session-channel grant was removed
+  after cleanup. The ordinary fixture was deliberately paused and interrupted;
+  its own `cloud.json` is not the passing evidence for this probe.
+- After exact arbitrary-byte echo on an established stream, a premature replacement
+  returned `pending / predecessor_live` without reserving a successor. The probe
+  killed the local connection-helper process with stdin still open. The remote
+  host's containers were observed stopped after 10,329 ms, within the 65-second
+  cleanup bound. AWS recorded `EssentialContainerExited`; no StopTask request
+  was made for this interrupted host.
+- The successor was admitted only after positive predecessor STOPPED evidence,
+  then connected and echoed its expected bytes. Independent AWS timestamps
+  confirmed successor creation followed predecessor termination. CloudTrail
+  confirmed three successful child submissions: the ordinary fixture's retired
+  initial child, the interruption target, and its successor.
+- The run closed at revision 41, state version 2, with `closed: true` and
+  `cleanup_complete: true`. All four task instances were confirmed STOPPED.
+  The coordinator's exit 1 reflects the deliberately interrupted ordinary
+  fixture; the dedicated probe report records `passed: true` and all four
+  checks passed. The two probe worker hosts exited 0.
+- The probe source is retained at
+  `qualification/operator-tools/13341f23d99a665d037bf7dbf59806bdb493eb61ac414e8b8c55f68ae13e2b5c/connectivity.mjs`
+  in the dev bucket. Aggregate evidence was stored and read back exactly at
+  `qualification/operator/m2-connectivity-9410972c.json`, SHA-256
+  `16992d7298d13ebd90c1210f21f38a8f9700269c12c3a4e012d3f1f71ab0413f`.
+  It contains the immutable probe report, task/run observations, CloudTrail,
+  unchanged template identities, and permission-removal confirmation.
+- This qualifies abrupt client-process/stream loss and bounded host cleanup.
+  The bounded packet-loss qualification is recorded below. The template
+  replacement drill remains deferred at the engineer's request.
+
+**Dev packet-loss drill (2026-10-26)**:
+
+- Run `fixture-7154a7e25e76ef504d81da7a920b63b6` passed all seven dedicated
+  packet-loss checks using existing coordinator/process template revisions 4.
+  No task-template registration, replacement, or deployment was initiated.
+  The operator probe ran inside the real dev coordinator through ECS Exec;
+  the deliberately interrupted ordinary fixture's `cloud.json` is not this
+  drill's passing evidence.
+- Coordinator and worker were placed in separate private subnets. Two temporary
+  ingress ACL denies targeted only their established TCP connection's source
+  addresses and destination ports. They dropped traffic for 64.076 seconds;
+  removal restored the complete original ACL entry set. An independent watchdog
+  could remove only matching owned rules. No ACL associations were changed.
+- The operator's 15,015 ms read deadline expired while the helper and worker
+  remained running with 51 unacknowledged bytes. This is an operator-probe
+  timeout, not a native helper idle timeout. Replacement returned
+  `pending / predecessor_live` both before and during the partition, without
+  reserving a successor. A transient partition did not grant replacement authority.
+- After restoration, the original socket delivered all 29 buffered bytes exactly,
+  with unchanged inode and client port, without reattachment or replay. Recovery
+  took 48,546 ms from observation of the restoration marker, or approximately
+  51.698 seconds from actual ACL removal. TCP samples showed a pending
+  retransmission timer while recovery waited; no native idle timeout was observed.
+- Normal EOF then stopped the host containers in 10,337 ms measured after the
+  local helper exited (10,340 ms from the recovered-byte event). AWS recorded
+  `EssentialContainerExited`, with no StopTask request for that host. Successor
+  creation followed positive predecessor STOPPED evidence and independent AWS
+  termination timestamps; the successor connected and echoed successfully.
+- The run closed at revision 45, state version 2, with `closed: true` and
+  `cleanup_complete: true`. All four tasks were independently confirmed STOPPED;
+  CloudTrail confirmed three successful child launches. The coordinator exited 1
+  because its ordinary fixture was intentionally interrupted. The temporary dev
+  coordinator session-channel policy was removed, the owned deny rules are absent,
+  and both managed task definitions remain ACTIVE at revision 4.
+- Preserve the earlier failed attempt: run
+  `fixture-49c8af1db243746f345ab758e26ff5a9` blocked replacement during a real
+  partition but failed its 45-second post-restoration recovery observation window.
+  It was closed and cleaned up, with its coordinator stopped and temporary policy
+  removed. The successful second attempt used a 180-second observation budget;
+  it does not erase the first result or establish a 45-second recovery guarantee.
+- Aggregate evidence, including both immutable probe reports, safe task/run and
+  CloudTrail observations, ACL snapshots, source hashes and permission cleanup,
+  was stored and read back exactly from the dev bucket at
+  `qualification/operator/m2-packet-loss-87e658e5.json`, SHA-256
+  `0831023a7c6fa47ada80c2f712fa35cc06c15ab7d5d4c7ab0aecb3d1b630658d`.
+  This qualifies a bounded transient packet-loss partition and recovery. A
+  sustained blackhole and provider-observation qualification follow below.
+  Template replacement remains deferred by request.
+
+**Dev provider-observation drill (2026-10-26)**:
+
+- Two real dev coordinators ran the dedicated operator probe using existing
+  `oitc-rc-dev:4` and `oitc-rp-dev:4` templates. Leader run
+  `fixture-4d0f5e09ba550728fbe972be880bee5a` passed seven checks; contender run
+  `fixture-3af3eaa5880b398c2133c5dcc0e6cc9a` passed three takeover checks.
+  No task-template registration, replacement, or deployment was initiated.
+- The probe used real task metadata, roles, ECS calls and durable AWS storage.
+  An operator-only Go source overlay withheld successful DescribeTasks responses
+  at the client boundary, returning either an error or no matching task. These
+  are injected observation faults, not evidence of a native AWS outage. No clock,
+  STOPPED evidence, owner identity, or task success was fabricated. The compiled
+  harness/source and SHA-256 identities are retained with the aggregate evidence.
+- A distinct coordinator attempted takeover under an injected description error,
+  a missing result, and restored visibility confirming the owner remained RUNNING.
+  Every attempt returned `pending / predecessor_live`; owner and epoch remained
+  unchanged. The contender submitted no resource launch during these checks.
+- The leader launched one target worker and independently confirmed it actually
+  STOPPED before withholding that evidence from the helper. Alternating error and
+  missing-result observations never retired the resource. Replacement remained
+  `pending / predecessor_live`, without a successor reservation or another launch.
+  At persisted observation count 12, including earlier readiness observations,
+  the helper returned `attention / observation_exhausted` on the real clock and
+  backoff schedule. Close stayed pending while stop evidence was unavailable.
+- Restoring the real matching STOPPED response resolved attention through an
+  explicit observation. Cleanup then completed without another launch. Strong
+  reads confirmed both runs closed with cleanup complete: leader revision 32 and
+  contender revision 15, both state version 2 and owner epoch 1.
+- Independent AWS checks confirmed all five tasks STOPPED and both temporary
+  coordinator session-channel policies removed. CloudTrail showed exactly three
+  successful child launches: two retired ordinary-fixture children and the single
+  observation target. Coordinator exit 1 reflects deliberate interruption of the
+  ordinary fixtures; dedicated observation reports passed. Both managed task
+  definitions remained ACTIVE at revision 4.
+- Preserve the initial harness failure: the first source-overlay mapping used
+  `/tmp` instead of canonical `/private/tmp`, so both invocations selected no
+  tests. They provide no qualification evidence. Their two runs closed, all four
+  tasks stopped, and both temporary policies were removed before the fresh rerun.
+  The corrected invocation explicitly listed and executed the selected test.
+- Aggregate evidence was stored and read back exactly from the dev bucket at
+  `qualification/operator/m2-observations-c6046e43.json`, SHA-256
+  `5a7a2d0cf2adf7a0176278442fc96c7766ca4b7ca58af521fe5559d8b842489f`.
+  It includes both passing reports, the empty invocation's disposition, safe
+  task/run records, CloudTrail, template identities and permission cleanup.
+  The corrected overlay passed the native race suite and vet. Architecture
+  checking reproduced the four previously recorded baseline violations;
+  repository runtime source was unchanged.
+
+**Fenced qualification-run disposition (2026-10-26)**:
+
+- Review and explicit disposition are complete for the four earlier failed runs.
+  Each is retained as a failed qualification with cleanup unresolved, excluded
+  from passing acceptance evidence. This operator disposition preserves the
+  existing runtime records and consumed send authorizations. No run was marked
+  closed or cleanup complete, and no resource was relaunched to bypass uncertainty.
+- Strong reads and current ECS descriptions found:
+  - Production `fixture-8c26e3306b9486f9e5c5ae41e4a0a56c`: closing, revision 13.
+    Owner `c37d7a53250d46be83e92bbc7d33934f` and known worker
+    `8c27e55eb2364e9d8ea450e166daa390` both return MISSING. A retained earlier
+    local AWS-read artifact records both STOPPED, but the supported takeover path
+    cannot import that historical evidence. Preserve the closing record and payloads.
+  - Dev `fixture-6971fad4e69ebe024f46a2dd845a58d3`: closing, revision 5.
+    Send authorization is consumed without a task ID. The paginated CloudTrail
+    search found no child submission; absence does not prove never submitted.
+    The owner returns MISSING. Preserve the ambiguous launch and its fence.
+  - Dev `fixture-17ef0622b04e418b886461de82af1d83`: open, revision 27.
+    Its first child has persisted STOPPED evidence. The successor consumed send
+    authorization without a task ID; CloudTrail records a rejected RunTask against
+    captured `oitc-rp-dev:1`. The owner returns MISSING. Preserve the open record
+    and consumed successor authorization; no replacement or administrative reset.
+  - Dev `fixture-2d4ec39cd06f4d24c2422b357593544d`: closing, revision 13.
+    CloudTrail records a rejected RunTask against captured `oitc-rp-dev:1`, with
+    consumed authorization and no task ID. The owner returns MISSING. Preserve
+    the closing record and submission fence.
+- Paginated RunTask/StopTask history was checked from 2026-10-24 onward. Cluster
+  inventories covered desired RUNNING, PENDING and STOPPED, inspecting returned
+  current states and tags so a task transitioning to STOPPED was not overlooked.
+  No nonterminal task matched these runs. Dev had no nonterminal tasks; production
+  had two unrelated nonterminal tasks, which were untouched. Empty inventories,
+  provider rejection, and StopTask requests do not substitute for accepted stop
+  evidence or revoke a consumed send authorization.
+- No supported automated cleanup recovery was available during this read-only
+  audit: takeover requires a current, positively matching STOPPED owner, and every
+  owner returned MISSING. The engineer subsequently authorized manual cleanup;
+  its completion is recorded below. No automated recovery change was needed.
+- Resource metadata, opaque storage, task templates, tasks and IAM policies were
+  unchanged. Production access was read-only. A final strong read confirmed all
+  four owner epochs, revisions and cleanup flags unchanged. The safe disposition
+  report was stored and read back exactly in the dev qualification bucket at
+  `qualification/operator/m2-fenced-run-disposition-20261026.json`, SHA-256
+  `eedafb391a22dacef20973ef6112b210132e345230aa04882cb60264513dafd1`.
+  It retains current safe projections, CloudTrail evidence, prior local stop
+  observations, per-run dispositions and the limits of those observations.
+
+**Manual cleanup of failed qualification runs (2026-10-26)**:
+
+- The engineer explicitly instructed manual cleanup after the read-only disposition
+  above. All four failed runs are now manually retired with `closing: true`,
+  `closed: true`, and `cleanup_complete: true`. This supersedes the earlier
+  unresolved-cleanup disposition; no new automated recovery mechanism was needed.
+- Fresh ECS inventories found no matching nonterminal tasks before the changes.
+  Two unrelated production tasks were untouched. Administrative metadata writes
+  used conditions against the exact previously read metadata, first fencing all
+  runs closed with cleanup pending, then completing cleanup after object readback.
+  Both the JSON metadata and DynamoDB guard columns were updated consistently.
+- Fourteen run-scoped state/bootstrap objects were replaced with the existing
+  `resource-v1:closed` seal marker and read back exactly. This removes their payload
+  bytes while preventing delayed conditional uploads from recreating them. Both
+  buckets have versioning disabled; no older payload versions were retained.
+  Qualification reports and unrelated run objects were preserved.
+- Final strongly read metadata revisions are:
+  - Production `fixture-8c26e3306b9486f9e5c5ae41e4a0a56c`: revision 15.
+  - Dev `fixture-6971fad4e69ebe024f46a2dd845a58d3`: revision 7.
+  - Dev `fixture-17ef0622b04e418b886461de82af1d83`: revision 29.
+  - Dev `fixture-2d4ec39cd06f4d24c2422b357593544d`: revision 15.
+- Every non-metadata DynamoDB record is unchanged, verified by exact record-set
+  digests. Launch fences, receipts, owner identities/epochs, and original unknown
+  task observations are retained. Metadata explicitly records the operator,
+  manual authorization, completion time, and audit reference. No STOPPED evidence
+  was invented, and manual retirement does not turn these failed tests into passes.
+  No task, IAM policy, or task definition was created or changed.
+- The completion report was stored and read back exactly in the dev qualification
+  bucket at `qualification/operator/m2-manual-cleanup-20261026.json`, SHA-256
+  `b194127a7316068a0b136efa43d8d871bc796515381dfa5b9ac473cd3f4b5347`.
+  It records the pre-cleanup inventories, exact object scopes, final metadata,
+  preserved-record digests, and explicit administrative authority.
+
+**Dev sustained-blackhole drill (2026-10-26)**:
+
+- Run `fixture-f96774d43e14b5c81258dbbc7102afb2` completed all eight behavior
+  checks using existing `oitc-rc-dev:4` and `oitc-rp-dev:4` templates. The probe
+  established exact arbitrary-byte echo, left the client's stdin open, then held
+  the same narrowly scoped, cross-subnet packet drop through autonomous client
+  failure and positive worker STOPPED evidence. No task templates were registered,
+  replaced or deployed, and no socket/kernel settings were changed.
+- Two owned ACL denies blocked the established connection for 979,116 ms
+  (16 minutes 19 seconds). The independent watchdog was armed for 22 minutes;
+  the operator observation budget was 20 minutes. Restoration happened only after
+  the original helper had exited and the worker had stopped. Final AWS reads
+  confirmed the entire original ACL entry set restored, with both deny rules absent.
+- The initial 15,003 ms read deadline was operator-owned. During the outage,
+  replacement remained `pending / predecessor_live` while the worker was live;
+  no successor was reserved. Socket samples retained the same inode/client port,
+  51 unacknowledged bytes and advancing retransmission counters/timers.
+- The worker container exited 147,088 ms after the block began. ECS recorded the
+  task STOPPED at 171,616 ms (about 2 minutes 52 seconds), with
+  `EssentialContainerExited`, exit 1. It was observed STOPPED by the probe at
+  178,973 ms. Paginated CloudTrail evidence found no StopTask request for that
+  target from any principal in the inspected window.
+- The original client helper independently exited 1 at 970,776 ms (16 minutes
+  11 seconds), without stdin EOF, operator kill, reconnect or replay. Its CLI
+  diagnostic is generic and does not identify a timeout cause. Autonomous closure
+  plus TCP timer observations support a native transport-failure inference;
+  no application idle timeout or 65-second blackhole-detection guarantee is claimed.
+  This separates outage-detection delay from the previously qualified cleanup
+  bound after an observed disconnect.
+- After network restoration, the helper persisted positive predecessor STOPPED
+  evidence, admitted a successor, and verified successor echo. Independent AWS
+  timestamps confirmed successor creation followed predecessor termination.
+  The run closed at revision 41, state version 2, with cleanup complete. All four
+  tasks are STOPPED; CloudTrail confirmed three child launches (retired initial
+  fixture child, blackhole target, successor). The successor exited 0. The
+  temporary coordinator session-channel policy was removed, and both managed
+  template revisions remain ACTIVE at revision 4.
+- Preserve a harness reporting failure: after terminal closure, the probe resumed
+  the original fixture before publishing its dedicated `cloud-blackhole.json`.
+  The primary exited and the container terminated, interrupting publication. That
+  dedicated report is absent. The coordinator exited 1; the local ECS Exec client
+  remained hung and was terminated only after AWS independently confirmed the
+  coordinator STOPPED. No such termination caused the original connection failure.
+- The passing behavior evidence was recovered from the captured public event
+  stream, then independently checked against strong DynamoDB reads, ECS task
+  states/timestamps, ACL snapshots and paginated CloudTrail. The aggregate records
+  `original_probe_report_publication_passed: false` alongside the eight verified
+  behavior checks; it does not claim the interrupted publication succeeded. Store
+  the report before resuming the primary in future operator probes.
+- Aggregate evidence was stored and read back exactly in the dev bucket at
+  `qualification/operator/m2-blackhole-e6a94474.json`, SHA-256
+  `4f037528b70219d11973d19e114770dbc9b989a63eea35fcce93c8bea9733485`.
+  Operator Python/Bun syntax checks and all three rollback-ownership tests passed.
+  This qualifies the sustained blackhole through native closure, replacement
+  fencing, successor connectivity and terminal cleanup on the deployed dev path.
+
+**Production coding-worker qualification (2026-10-26)**:
+
+- The engineer selected an isolated drill on existing production coding resources
+  and authorized subsequent qualification tests in production. Run
+  `fixture-8eada264726502aa4133a62ba5f70112` passed all seven top-level checks using
+  existing `oitc-rc-production:32` and `oitc-rp-production:32`, image
+  `sha256:02a600be5ad7d5336e712529bd23f5ae4e571388cd666c36216c3a53c3042d81`.
+  No task definitions were registered/replaced and no coding permissions or secrets
+  were added. Existing live issue runners were not modified.
+- A real `preparation: coding` resource prepared its private workspace and manifest
+  input, logged into Codex, initialized its GitHub token file and development-role
+  profile, started the image-local services, and completed an exact echo check.
+  Operator checks ran as the same `runner` user as the resource child. Only the
+  isolated coding launch added ECS Exec's diagnostic flag; role, environment,
+  bootstrap, resource identity and one-send dispatch semantics were unchanged.
+- The native child used the expected development role, with a session bound to
+  task `8a5e2d91c7f147c4aa2ca84f99d8a011`, through the normal ECS-backed AWS profile.
+  No static AWS keys were installed. Workspace mode was 0700 and token-file mode
+  0600. Host bootstrap and raw API-key configuration were absent from child env.
+  Postgres, MinIO, local DynamoDB and local KMS readiness checks passed.
+- Codex CLI 0.156.1 performed a small actual coding task in a fresh local directory:
+  implement an ESM slug function and run an independent seven-case verifier.
+  Codex exited 0, the independent cases passed, and the verifier remained unchanged.
+  Generated-file and captured-output hashes are retained in the evidence. No commit,
+  push, issue update, or application-data change was part of the test.
+- The unmodified image host's default five-minute renewal loop atomically replaced
+  its token file after 300,001 ms; an authenticated GitHub read then succeeded.
+  The cached installation token may be reused before expiry. A separate real
+  `PrepareResourceWorkspace` check accelerated renewal to five seconds and created
+  a fresh GitHub client per renewal: both the original and a different newly minted
+  token authenticated successfully. No token or expiry was fabricated. This proves
+  actual rotation and the native scheduling cycle; a full natural token-lifetime
+  expiry was not awaited.
+- All seven additional workspace checks passed, including private files, native AWS
+  role assumption, child-env filtering, real token rotation without an issue poller,
+  and removal of the workspace, AWS profile and renewal task on close. Three
+  supplementary read-only checks also passed: private Git HTTPS authenticated via
+  the native token-file askpass helper, and both the source process role and the
+  assumed development role received actual AccessDenied responses for coordinator
+  state reads against this run.
+- Normal EOF completed cleanly and the coding worker exited 0. Strong reads
+  confirmed the run closed at revision 34, state version 2, with cleanup complete.
+  All three test tasks are STOPPED; CloudTrail confirmed exactly two child launches
+  (retired ordinary fixture child and coding resource), with no resubmission.
+  Both temporary session-channel policies were removed. Managed revisions 32
+  remained ACTIVE. The interrupted ordinary coordinator fixture exited 1; its
+  result is separate from the passing coding report.
+- An initial ECS Exec attachment was rejected before remote execution because a
+  sidecar agent became ready before the application agent. The operator readiness
+  check was scoped to `IssueRunnerWorker` and retried on the same coordinator/run.
+  The dedicated coding report was successfully published and read back before
+  resuming the primary, avoiding the earlier blackhole reporting race.
+- Aggregate evidence was stored and read back exactly in the production resource
+  bucket at `qualification/operator/m2-coding-dca657ee.json`, SHA-256
+  `10fe312553a6410ef48eb7b0ad9fed45cbcda576340dcff557e87751548e0572`.
+  It includes the immutable coding report, worker/workspace/authority checks,
+  final tasks and metadata, paginated CloudTrail, template/image identities and
+  permission cleanup. Operator race tests, vet and Python/Bun syntax checks passed;
+  architecture checking retained its four previously recorded baseline violations.
 
 **Definition of Done**:
 
@@ -295,29 +770,47 @@ use while retaining all worker-protocol and orchestration semantics.
 
 **Operator Actions Before Next Milestone**:
 
-- Deploy the helper and scoped infrastructure through the OITC release path. Obtain
-  the non-secret resource descriptor from the actual stack outputs and use the
-  dedicated qualifier task; the stack's current dev branch provisions only a bastion
-  and is not a resource qualification environment.
-- Run `issue-runner-bin resources fixture` in its documented cloud mode, using
-  `tools/issue-runner/resource-contract.md` for configuration and invocation details.
-  Use an isolated run and the image-local echo child, not an Onton scheduler.
-- Interrupt a successful launch response, pause a sender after send authorization,
-  and partition connectivity in separate scenarios. Repeat caller requests and
-  verify only one API submission; prove no successor starts before positive stop.
-  Unknown outcomes must remain pending/attention, not silently acquire a new token.
-- Exercise stale-owner writes, lost successful commits, wrong bearer/TLS trust,
-  simultaneous attachment, process cleanup and interrupted close/cleanup. Record
-  image/task identities, observation timelines, versions, byte digests and cleanup
-  outcomes without credentials or signed URLs. Proceed only when A06–A08 and the
-  M2 resource acceptance checks below pass against actual deployed services.
+- Completed: deploy the helper and isolated dev infrastructure through the OITC
+  release path, obtain the actual deployed descriptor, and run the image-local
+  echo fixture in a dedicated dev coordinator. Evidence is recorded above.
+- Completed: coding-worker preparation, an actual coding task, native renewal-cycle
+  observation and accelerated real-token rotation on isolated existing production
+  resources, with task-bound development access and coordinator-state denial checks.
+  Dev remains echo-only; future qualification tests may use production by explicit
+  engineer instruction. The template-replacement retention drill is waived by the
+  completion decision above.
+- Completed in the additional dev suite: lost successful launch/commit responses,
+  paused-send replacement fencing, wrong TLS/bearer, duplicate attachment, EOF and
+  disconnect, interrupted cleanup-upload retry, actual coordinator-loss takeover
+  and cleanup recovery, and real process-role permission checks. The normal fixture also rejected a stale-owner write.
+- Completed: bounded transient connectivity partition, same-socket recovery, and
+  replacement fencing during packet loss, as recorded above.
+- Completed: injected failed/missing provider observations against real dev tasks,
+  bounded attention, replacement/takeover fencing and recovery on positive stop
+  evidence, as recorded above. No native AWS outage was induced.
+- Completed: sustained blackhole through autonomous client failure and positive
+  worker stop, with replacement fencing and terminal cleanup. Behavior evidence
+  was independently recovered after the operator report-publication race above.
+- Accepted: the engineer closed the M2 cloud contract gate on 2026-10-26 with
+  the explicit retention-drill waiver below. Unknown launch outcomes must still
+  remain pending/attention; milestone acceptance grants no resubmission authority.
+- Completed: review and engineer-authorized manual cleanup of all four earlier
+  failed-run records. All are closed with cleanup complete; payloads are sealed,
+  and authority records and submission fences are retained. The failed tests remain
+  excluded from passing qualification evidence.
+- Waived at the engineer's explicit request on 2026-10-26: the template-retention
+  replacement drill. No template replacement was initiated and no pass is claimed.
+  This supersedes the earlier deferral and removes the remaining M2 acceptance gate.
 - Close qualification runs before rollback; do not delete active/ambiguous resource
   storage or relaunch their branches through the legacy route. This gate does not
   qualify Onton ACKs, scheduling or command replay; those remain M3 work.
 
 ### Milestone 3: distributed-gameplan-coordinator
 
-**Repository**: Onton. **Dependencies**: M2 and its cloud contract gate.
+**Repository**: Onton. **Dependencies**: M2 and its cloud contract gate — satisfied
+by the engineer's M2 completion decision above.
+
+**Status**: Ready for planning; implementation has not started.
 
 **Definition of Done**:
 
@@ -467,7 +960,8 @@ conditional patch inside that gameplan.
 | Feature construction is in scope | The inspected OITC multi-patch path uses it today; supporting only independent PR branches would miss the actual target workflow. |
 | Reuse branch reconciliation | Required repository architecture. No alternate remote-only rebase or publication path. Workspace loss becomes an explicit owner transition. |
 | Recover effects by observation | A repeated execution may re-run tests or agent work. The system does not promise exactly-once arbitrary shell/API side effects; it must reconcile owned Git, PR, and operation state before repeating them. |
-| Delivery status | M1 passed local build/tests/smoke; release/image qualification is engineer-confirmed, not independently verified here. M2's six-patch gameplan was finalized and validated on 2026-10-23; implementation and cloud qualification remain outstanding. M3–M4 remain milestone sketches. |
+| M2 acceptance and retention waiver | The engineer accepted M2 as complete on 2026-10-26 and explicitly waived the template-retention replacement drill. Existing deployed retention settings remain; the unperformed drill is not reported as a pass and does not gate M3. |
+| Delivery status | M1 passed local build/tests/smoke; release/image qualification is engineer-confirmed, not independently verified here. M2 is complete by engineer acceptance on 2026-10-26, with dev echo, cloud fault/permission, connectivity, observation-recovery and production coding evidence recorded above, and the retention drill explicitly waived. Earlier failed test runs were manually closed and cleaned up by explicit engineer instruction. M3 is ready for planning; M3–M4 are not implemented. |
 
 ## Definition of Done (Acceptance Suite)
 
@@ -476,8 +970,10 @@ The M4 driver invokes the public headless protocol, OITC admission, task APIs,
 Git, forge APIs, and durable state observations. Failure injection acts at those
 boundaries. Source text is never the behavioral oracle. Proposed fixture command
 names are finalized in the owning gameplans; owner files below identify the
-implementation boundary. M2's planned resource commands and files below are not yet
-implemented. Each assertion has one owning milestone. M1 fixtures are
+implementation boundary. M2's resource commands and files are implemented;
+its qualification evidence and explicit retention-drill waiver are recorded above.
+M2 acceptance does not claim a full distributed Onton acceptance run. Each
+assertion has one owning milestone. M1 fixtures are
 implemented: `dune build @worker-protocol-smoke` drives `onton-worker` through
 `test/test_worker_protocol.ml`; focused recovery fixtures are
 `test/test_worker_recovery_git.ml` and `test/test_worker_recovery_prompt.ml`.
