@@ -688,8 +688,10 @@ ${ledger}`,
         details: { path, target, module: moduleName, checked: params.check === true },
       };
     },
-    renderResult(result, _options, theme) {
-      return new Text(theme.fg(result.isError ? "error" : "success", textOf(result.content).split("\n")[0] ?? ""), 0, 0);
+    renderResult(result, options, theme) {
+      const text = textOf(result.content);
+      const visible = result.isError || options.expanded ? text : text.split("\n")[0] ?? "";
+      return new Text(theme.fg(result.isError ? "error" : "success", visible), 0, 0);
     },
   });
 
