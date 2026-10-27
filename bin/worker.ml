@@ -7,7 +7,8 @@ open Onton_core
 let usage () =
   prerr_endline
     "Usage: onton-worker --gameplan FILE --repo-root DIR --project-name NAME \
-     [--main-branch BRANCH] [--backend codex|claude] [--ack-timeout SECONDS]";
+     [--main-branch BRANCH] [--backend codex|claude] [--ack-timeout SECONDS] \
+     [--protocol-version 2]";
   exit 2
 
 let parse_args () =
@@ -34,6 +35,10 @@ let parse_args () =
     | "--backend" :: value :: rest ->
         backend := value;
         scan rest
+    | "--protocol-version" :: "2" :: rest -> scan rest
+    | "--protocol-version" :: "3" :: _ ->
+        prerr_endline "v3 execution is not enabled in this worker build";
+        exit 2
     | "--ack-timeout" :: value :: rest -> (
         match float_of_string_opt value with
         | Some seconds when seconds > 0. && seconds <= 60. ->
