@@ -455,41 +455,10 @@ let apply_replacement_pr t patch_id ~pr_number ~base_branch ~merged =
 
    With more than one open dep the expected base is not yet a single branch
    ([Graph.initial_base] would raise), so the fixpoint is unreachable: [false]. *)
+let scheduler_view = Orchestrator.scheduling_view
+
 let ready_for_review t patch_id =
-  let agent = Orchestrator.agent t patch_id in
-  let graph = Orchestrator.graph t in
-  let has_merged pid = (Orchestrator.agent t pid).Patch_agent.merged in
-  Patch_agent.forge_revision_pair_confirmed agent
-  && (not (Branch_reconcile.is_unsettled agent.Patch_agent.branch_reconcile))
-  && Option.is_none
-       (Branch_reconcile.unobserved_publication agent.branch_reconcile)
-  && List.length (Orchestrator.open_deps t patch_id) <= 1
-  &&
-  let expected_base =
-    Option.value
-      (Orchestrator.expected_base t patch_id)
-      ~default:(Orchestrator.terminal_branch t patch_id)
-  in
-  let rebase_pending =
-    match Patch_agent.branch_rebased_onto agent with
-    | Some b -> not (Branch.equal b expected_base)
-    | None -> true
-  in
-  (not (Orchestrator.is_feature_descendant t patch_id))
-  && ((not (Orchestrator.is_integration_root t patch_id))
-     || Option.equal Branch.equal agent.base_branch
-          (Some (Orchestrator.main_branch t))
-        && Execution_mode.root_ready
-             (Orchestrator.execution_mode t)
-             graph ~has_merged
-             ~pending_integrations:
-               (List.exists (Orchestrator.all_agents t) ~f:(fun a ->
-                    a.Patch_agent.automerge_inflight))
-             agent)
-  && Branch.equal expected_base (Orchestrator.main_branch t)
-  && agent.Patch_agent.pr_body_delivered
-  && (not (Patch_agent.has_conflict agent))
-  && (not rebase_pending) && agent.Patch_agent.checks_passing
+  Scheduler_decision.ready_for_review (scheduler_view t) patch_id
 
 (* The gate a child's Start waits on for its sole open-PR dependency: the
    dependency's PR body is delivered, no merge conflict is active, and CI is
@@ -504,15 +473,6 @@ let ready_for_review t patch_id =
    of the dependent, so gating introduces no wait cycle. Merged deps are exempt
    at the call site ([Graph.open_pr_deps] filters them out), so a human-merged
    parent that never delivered notes / went green cannot strand its child. *)
-let open_dep_review_ready t pid =
-  let a = Orchestrator.agent t pid in
-  a.Patch_agent.pr_body_delivered
-  && (Patch_agent.forge_revision_pair_confirmed a
-     || Orchestrator.branch_only_published t pid)
-  && Option.is_none (Branch_reconcile.unobserved_publication a.branch_reconcile)
-  && (not (Branch_reconcile.is_unsettled a.branch_reconcile))
-  && (not (Patch_agent.has_conflict a))
-  && a.Patch_agent.checks_passing
 
 (* PR base / draft reconciliation shared by gameplan and ad-hoc agents.
    [allow_draft_flip] scopes the mark-for-review ratchet to gameplan patches:
@@ -543,11 +503,9 @@ let reconcile_pr_settings t patch_id ~allow_draft_flip =
                  patch reaches the [ready_for_review] fixpoint and then never
                  flips back. *)
                 if
-                  allow_draft_flip && agent.is_draft
-                  && Scheduler_recovery.write_allowed agent.scheduler_recovery
-                       Scheduler_recovery.Pr_draft
-                  && (not (native_stack_base_mismatch t patch_id))
-                  && ready_for_review t patch_id
+                  allow_draft_flip
+                  && Scheduler_decision.draft_allowed (scheduler_view t)
+                       patch_id
                 then
                   effects :=
                     Set_pr_draft { patch_id; pr_number; draft = false }
@@ -628,114 +586,11 @@ let branch_map_of_patches patches =
                "Patch_controller.plan_actions: duplicate patch id %s"
                (Patch_id.to_string p.Patch.id)))
 
-let plan_action_for_patch t ~branch_map:_ patch_id =
-  let agent = Orchestrator.agent t patch_id in
-  let has_merged pid = (Orchestrator.agent t pid).Patch_agent.merged in
-  let has_pr pid =
-    (* Dependency satisfaction: a child cannot rebase onto a [Missing] parent
-       — the parent's branch may not exist on the remote. Gate on
-       is_pr_present rather than has_pr (which is true for [Missing] too). *)
-    let a = Orchestrator.agent t pid in
-    Patch_agent.is_pr_present a || Orchestrator.branch_only_published t pid
-  in
-  let open_deps = Orchestrator.open_deps t patch_id in
-  let dependencies_allow_start =
-    Graph.merge_deps_satisfied (Orchestrator.graph t) patch_id ~has_merged
-    && List.length open_deps <= 1
-    &&
-    match Patch_agent.worktree_state agent with
-    | Patch_agent.Materialized _ ->
-        (* Review-readiness protects the point where a dependency branch is
-           cloned into a new worktree. Once that worktree exists, a failed or
-           timed-out no-PR session retries in the same checkout; later CI,
-           conflict, or PR-state changes on the dependency cannot make that
-           already-materialized checkout less safe to reuse. The structural
-           cardinality guard remains because [Graph.initial_base] requires at
-           most one open dependency. *)
-        true
-    | Patch_agent.Unmaterialized ->
-        Execution_mode.deps_satisfied
-          (Orchestrator.execution_mode t)
-          (Orchestrator.graph t) patch_id ~has_merged ~has_pr
-        (* A child may materialize its worktree only once its sole open-PR
-           dependency is review-ready: PR body delivered, no conflict, CI
-           green. Merged deps are exempt because [open_pr_deps] filters them
-           out. *)
-        && List.for_all
-             (Graph.open_pr_deps (Orchestrator.graph t) patch_id ~has_merged)
-             ~f:(fun dep -> open_dep_review_ready t dep)
-  in
-  if Option.is_some (Patch_agent.reconciliation_hold_reason agent) then None
-  else if Branch_reconcile.is_pending agent.branch_reconcile then
-    if agent.busy || agent.automerge_inflight then None
-    else
-      Option.map (Branch_reconcile.operation agent.branch_reconcile)
-        ~f:(fun op -> Orchestrator.Reconcile_branch (patch_id, op.id))
-  else if
-    Option.is_some agent.wontdo_reason
-    || agent.automerge_inflight
-    || native_stack_base_mismatch t patch_id
-       && not
-            (List.mem agent.queue Operation_kind.Human
-               ~equal:Operation_kind.equal)
-  then None
-  else if
-    (not
-       (Patch_agent.has_pr agent
-       || Orchestrator.branch_only_published t patch_id))
-    && (not agent.Patch_agent.busy)
-    && (not agent.Patch_agent.merged)
-    && (not (Patch_agent.needs_intervention agent))
-    && dependencies_allow_start
-  then
-    let base =
-      Option.value
-        (Orchestrator.expected_base t patch_id)
-        ~default:(Orchestrator.terminal_branch t patch_id)
-    in
-    Some (Orchestrator.Start (patch_id, base))
-  else if
-    (* Rebase is exempt from [needs_intervention] because it is
-       orchestrator-executed (no LLM session) and does not mutate the
-       counters that triggered intervention. Otherwise a [needs-help] patch
-       would sit on a stale base until a human message happened to land and
-       flip the Human exemption inside [Patch_agent.needs_intervention]. A
-       conflict outcome still enqueues [Merge_conflict], which keeps the
-       patch blocked until an LLM session can run. Gate on [is_pr_present]
-       (not [has_pr]) so a [Missing] PR is excluded — rebase pushes against
-       a vanished PR would 404. *)
-    (Patch_agent.is_pr_present agent
-    || Orchestrator.branch_only_published t patch_id)
-    && Option.is_some (Orchestrator.expected_base t patch_id)
-    && (not agent.Patch_agent.merged)
-    && (not agent.Patch_agent.busy)
-    && (not agent.Patch_agent.branch_blocked)
-    && (not (Branch_reconcile.is_unsettled agent.branch_reconcile))
-    && Option.value_map
-         (Patch_agent.highest_priority agent)
-         ~default:false
-         ~f:(Operation_kind.equal Operation_kind.Rebase)
-  then
-    let new_base =
-      Option.value
-        (Orchestrator.expected_base t patch_id)
-        ~default:(Orchestrator.terminal_branch t patch_id)
-    in
-    Some (Orchestrator.Rebase (patch_id, new_base))
-  else if
-    (Patch_agent.is_pr_present agent
-    || Orchestrator.branch_only_published t patch_id)
-    && (not agent.Patch_agent.merged)
-    && (not agent.Patch_agent.busy)
-    && (not (Patch_agent.needs_intervention agent))
-    && not agent.Patch_agent.branch_blocked
-  then
-    Patch_agent.highest_priority agent
-    |> Option.bind ~f:(fun kind ->
-        if Priority.is_feedback kind then
-          Some (Orchestrator.Respond (patch_id, kind))
-        else None)
-  else None
+let action_of_decision = function
+  | Scheduler_decision.Start (id, base) -> Orchestrator.Start (id, base)
+  | Respond (id, kind) -> Orchestrator.Respond (id, kind)
+  | Rebase (id, base) -> Orchestrator.Rebase (id, base)
+  | Reconcile_branch (id, op) -> Orchestrator.Reconcile_branch (id, op)
 
 let reconcile_action_message t action =
   let patch_id =
@@ -786,16 +641,24 @@ let reconcile_messages t ~patches =
         Orchestrator.mark_patch_pending_messages_obsolete_except acc patch_id
           ~keep)
   in
+  (* [reconcile_message] below changes only the coordinator outbox; it cannot
+     change any owner or forge input to this shared pure scheduling pass. *)
+  let decisions = Scheduler_decision.plan (scheduler_view t) in
   let t, desired_ids =
     List.fold patch_ids ~init:(t, []) ~f:(fun (acc, ids) patch_id ->
         match Orchestrator.current_message acc patch_id with
         | Some msg when Orchestrator.equal_message_status msg.status Acked ->
             (acc, msg.message_id :: ids)
         | _ -> (
-            match plan_action_for_patch acc ~branch_map patch_id with
+            match
+              List.Assoc.find decisions patch_id ~equal:Patch_id.equal
+              |> Option.join
+            with
             | None -> (acc, ids)
-            | Some action ->
-                let acc, msg = reconcile_action_message acc action in
+            | Some decision ->
+                let acc, msg =
+                  reconcile_action_message acc (action_of_decision decision)
+                in
                 (acc, msg.message_id :: ids)))
   in
   let t =
@@ -819,21 +682,13 @@ let plan_actions t ~patches =
 
 let observe_scheduler t ~now ~gameplan =
   List.fold (Orchestrator.all_agents t) ~init:t ~f:(fun t agent ->
-      let pr_base_update =
-        (not agent.Patch_agent.native_stack)
-        && Option.value_map (expected_base_if_unique t agent.patch_id)
-             ~default:false ~f:(fun expected ->
-               Option.value_map agent.base_branch ~default:false
-                 ~f:(fun actual -> not (Branch.equal actual expected)))
-      in
-      let pr_draft_update =
+      let gameplan_patch =
         List.exists gameplan.Gameplan.patches ~f:(fun patch ->
             Patch_id.equal patch.Patch.id agent.patch_id)
-        && agent.is_draft
-        && (Scheduler_recovery.contains agent.scheduler_recovery
-              Scheduler_recovery.Pr_draft
-           || ready_for_review t agent.patch_id
-              && not (native_stack_base_mismatch t agent.patch_id))
+      in
+      let { Scheduler_decision.pr_base_update; pr_draft_update } =
+        Scheduler_decision.recovery_intent (scheduler_view t) ~gameplan_patch
+          agent.patch_id
       in
       Orchestrator.observe_scheduler t agent.patch_id ~now ~pr_base_update
         ~pr_draft_update)
@@ -930,30 +785,9 @@ let automerge_max_failures = 3
     as the underlying candidacy still holds (otherwise every merge call would be
     short-circuited by its own inflight flag). Making the safe option the
     default prevents a future caller from forgetting the inflight guard. *)
-let is_automerge_candidate ?(ignore_inflight = false) (agent : Patch_agent.t)
-    ~main_branch =
-  let enqueued_and_still_approved =
-    Option.is_some agent.Patch_agent.merge_queue_entry
-    && Patch_agent.is_approved agent ~main_branch
-  in
-  (ignore_inflight || not agent.Patch_agent.automerge_inflight)
-  (* [not merged] looks redundant with [reconcile_automerge]'s early-return
-     on [agent.merged], but it is specifically load-bearing for the executor
-     re-check in [reconcile_and_execute_automerge], which uses
-     [~ignore_inflight:true] and runs on a later snapshot — a concurrent
-     poller can mark the agent merged between reconcile and execute. Do not
-     remove this guard; [reconcile_automerge]'s early-return is not
-     sufficient on its own. *)
-  && (not agent.Patch_agent.merged)
-  && agent.Patch_agent.automerge_enabled
-  (* Native stacks require GitHub's asynchronous merge API; the Forge merge
-     operation still uses the synchronous PR endpoint. Never issue it here. *)
-  && (not agent.Patch_agent.native_stack)
-  && Patch_agent.is_approved agent ~main_branch
-  && (not enqueued_and_still_approved)
-  && agent.Patch_agent.checks_passing
-  && List.is_empty agent.Patch_agent.queue
-  && agent.Patch_agent.automerge_failure_count < automerge_max_failures
+let is_automerge_candidate ?(ignore_inflight = false) agent ~main_branch =
+  Scheduler_decision.automerge_candidate ~ignore_inflight agent
+    ~main:main_branch
 
 let apply_branch_observation ?confirmed_remote_head t patch_id ~head_sha ~checks
     =
