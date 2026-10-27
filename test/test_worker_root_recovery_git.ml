@@ -30,10 +30,12 @@ let () =
               let root_before =
                 F.commit old "root" "root content\n" "root work"
               in
-              Git.run_git ~cwd:remote [ "checkout"; "-q"; "-b"; "contributor" ];
+              Git.run_git ~cwd:remote [ "checkout"; "-q"; "-b"; "first-child" ];
               let first =
                 F.commit remote "child-one" "first sibling\n" "first child"
               in
+              Git.run_git ~cwd:remote [ "checkout"; "-q"; "main" ];
+              Git.run_git ~cwd:remote [ "checkout"; "-q"; "-b"; "second-child" ];
               let second =
                 F.commit remote "child-two" "second sibling\n" "second child"
               in
@@ -45,7 +47,7 @@ let () =
                 (fun () ->
                   let persist = F.persist checkpoint in
                   let io = make_io old in
-                  let request revision =
+                  let request contributor revision =
                     B.Request
                       B.
                         {
@@ -53,10 +55,12 @@ let () =
                           policy = Preserve_ancestry;
                           purpose =
                             Integrate_revision
-                              { contributor = "2"; revision = sha revision };
+                              { contributor; revision = sha revision };
                         }
                   in
-                  let first_result = run runtime persist io (request first) in
+                  let first_result =
+                    run runtime persist io (request "2" first)
+                  in
                   check "first captured contribution settled"
                     (first_result = R.Idle);
                   let lost =
@@ -71,7 +75,7 @@ let () =
                             | _ -> (code, out, err));
                       }
                   in
-                  let outcome = run runtime persist lost (request second) in
+                  let outcome = run runtime persist lost (request "3" second) in
                   check "lost successful push response remains pending"
                     (outcome = R.Waiting);
                   check "origin contains both captured contributions"
@@ -118,7 +122,7 @@ let () =
                         | Some op ->
                             op.B.intent.B.purpose
                             = B.Integrate_revision
-                                { contributor = "2"; revision = sha second }
+                                { contributor = "3"; revision = sha second }
                         | None -> false);
                       let outcome = run restored persist fresh_io B.Recover in
                       check "origin observation settles without reintegration"
@@ -137,7 +141,8 @@ let () =
                       let confirmed =
                         Git.git_capture ~cwd:remote [ "rev-parse"; "patch" ]
                       in
-                      ignore (run restored persist fresh_io (request second));
+                      ignore
+                        (run restored persist fresh_io (request "3" second));
                       check "duplicate captured request does not reintegrate"
                         (List.length (B.publications (F.state restored)) = 2
                         && Git.git_capture ~cwd:remote [ "rev-parse"; "patch" ]
