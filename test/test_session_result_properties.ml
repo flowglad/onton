@@ -44,6 +44,66 @@ let completion_gen =
 let () =
   QCheck_base_runner.run_tests_main
     [
+      QCheck2.Test.make ~count:500
+        ~name:
+          "Human Start reply acknowledgement requires exact accepted healthy \
+           delivery"
+        QCheck2.Gen.(pair string (list (int_range 0 7)))
+        (fun (guidance, mutations) ->
+          try
+            let message_id = Some (Types.Message_id.of_string "current") in
+            let original =
+              S.
+                {
+                  session_uuid = "reply";
+                  delivery_mode = Start;
+                  kind = Some Types.Operation_kind.Human;
+                  message_id;
+                  result = Session_ok;
+                  head = None;
+                  guidance = [ guidance ];
+                  turn_accepted = true;
+                }
+            in
+            let completion =
+              List.fold mutations ~init:original ~f:(fun c -> function
+                | 0 -> { c with S.turn_accepted = false }
+                | 1 ->
+                    {
+                      c with
+                      S.result =
+                        Session_failed { is_fresh = true; detail = None };
+                    }
+                | 2 -> { c with S.delivery_mode = Respond }
+                | 3 -> { c with S.kind = Some Types.Operation_kind.Ci }
+                | 4 -> { c with S.message_id = None }
+                | 5 ->
+                    {
+                      c with
+                      S.message_id = Some (Types.Message_id.of_string "stale");
+                    }
+                | 6 -> { c with S.guidance = [ guidance; "new guidance" ] }
+                | _ -> { c with S.result = Session_no_commits })
+            in
+            Bool.equal
+              (S.accepted_human_start_reply ~message_id ~guidance:[ guidance ]
+                 completion)
+              (List.is_empty mutations)
+            && not
+                 (S.accepted_human_start_reply ~message_id:None
+                    ~guidance:[ guidance ] original)
+          with _ -> false);
+      QCheck2.Test.make ~count:500
+        ~name:
+          "reply acknowledgement is total over arbitrary completion evidence"
+        QCheck2.Gen.(pair completion_gen (list string))
+        (fun (completion, guidance) ->
+          try
+            ignore
+              (S.accepted_human_start_reply ~message_id:completion.S.message_id
+                 ~guidance completion);
+            true
+          with _ -> false);
       QCheck2.Test.make ~count:200
         ~name:
           "verified legacy Start resumes PR creation without synthesizing a \

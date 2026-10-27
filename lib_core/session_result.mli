@@ -44,6 +44,15 @@ type completion = {
 val yojson_of_completion : completion -> Yojson.Safe.t
 val decode_completion : Yojson.Safe.t -> (completion, string) result
 
+val accepted_human_start_reply :
+  message_id:Types.Message_id.t option ->
+  guidance:string list ->
+  completion ->
+  bool
+(** A healthy, accepted Human Start answers exactly its captured guidance and
+    current delivery. This is message acknowledgement, not publication proof.
+    Use only after classifying the completed turn as no-work. *)
+
 val publication_intent :
   completion ->
   base:string ->

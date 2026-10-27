@@ -112,8 +112,8 @@ end
 let run_case ?(adopted = false) ?(cancel = false) ?(push_failure = false)
     ?(detect_pr = false) ?(advance_base = false) ?(ad_hoc = false)
     ?(delivery_mode = Onton_core.Patch_decision.Start) ?(kind = None)
-    ?(branch_role = `Mainline) ?resume_session ?(prompt = "Implement the patch")
-    env ~content ~commit ~expect_opt_out =
+    ?(branch_role = `Mainline) ?(reply = false) ?resume_session
+    ?(prompt = "Implement the patch") env ~content ~commit ~expect_opt_out =
   head := "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
   base_head :=
     if advance_base then "cccccccccccccccccccccccccccccccccccccccc"
@@ -215,7 +215,18 @@ let run_case ?(adopted = false) ?(cancel = false) ?(push_failure = false)
                 Orchestrator.send_human_message orch patch_id
                   "Original guidance"
               in
-              Orchestrator.fire orch (Orchestrator.Start (patch_id, main))
+              let message =
+                Orchestrator.message_of_action
+                  (Orchestrator.agent orch patch_id)
+                  (Orchestrator.Start (patch_id, main))
+              in
+              let orch = Orchestrator.reconcile_message orch message in
+              let orch, action =
+                Orchestrator.accept_message orch
+                  (Orchestrator.message_id message)
+              in
+              assert (Option.is_some action);
+              orch
           in
           let orch =
             match (delivery_mode, kind) with
@@ -305,6 +316,8 @@ let run_case ?(adopted = false) ?(cancel = false) ?(push_failure = false)
                 let oc = Stdlib.open_out_bin path in
                 Stdlib.output_string oc content;
                 Stdlib.close_out oc;
+                if reply then
+                  on_event (Stream_event.Text_delta "Here is the reasoning.\n");
                 if detect_pr then
                   on_event
                     (Stream_event.Text_delta
@@ -584,6 +597,24 @@ let run_case ?(adopted = false) ?(cancel = false) ?(push_failure = false)
       else (
         assert (Option.is_none after.wontdo_reason);
         assert (!pushes = if commit then 1 else 0);
+        if start_with_human && not commit then (
+          assert (Poly.equal result.disposition `No_commits);
+          assert (Bool.equal result.turn_accepted reply);
+          assert (Bool.equal (List.is_empty after.inflight_human_messages) reply);
+          let completed =
+            Orchestrator.apply_start_outcome snapshot.orchestrator patch_id
+              Orchestrator.Start_failed
+          in
+          let completed_agent = Orchestrator.agent completed patch_id in
+          assert (not completed_agent.busy);
+          assert (not (Onton_core.Patch_agent.is_pr_present completed_agent));
+          assert (not (Onton_core.Patch_agent.branch_published completed_agent));
+          assert (
+            Bool.equal (List.is_empty completed_agent.human_messages) reply);
+          assert (
+            Bool.equal
+              (List.mem completed_agent.queue Human ~equal:Operation_kind.equal)
+              (not reply)));
         if adopted && (not commit) && not detect_pr then (
           assert (Poly.equal result.disposition `No_commits);
           match after.session_completion with
@@ -727,6 +758,11 @@ let () =
                   in
                   run_case env ~branch_role ?resume_session ~prompt
                     ~delivery_mode:Onton_core.Patch_decision.Respond
+                    ~kind:(Some Human) ~content:"" ~commit:false
+                    ~expect_opt_out:false);
+              List.iter [ false; true ] ~f:(fun reply ->
+                  run_case env ~branch_role ?resume_session ~reply
+                    ~delivery_mode:Onton_core.Patch_decision.Start
                     ~kind:(Some Human) ~content:"" ~commit:false
                     ~expect_opt_out:false);
               run_case env ~branch_role ?resume_session
