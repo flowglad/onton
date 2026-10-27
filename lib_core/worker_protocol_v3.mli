@@ -73,8 +73,14 @@ type output =
   | Reject of string
 
 (* [step] delegates assignment, checkpoint, terminal and ACK transitions to
-    [Worker_protocol.step]. [Begin] still requires a committed admission receipt
-    and exact capsule before the caller performs any effect. *)
+    [Worker_protocol.step]. Bind fixes run/patch/config/plan/mode/role scope.
+    New executions carry current coordinator evidence, a non-regressing message
+    generation, and the desired base and version from the latest committed input
+    (or Bind when no input has committed). Context and envelope input versions
+    must agree. Exact historical assignments retain their original contexts for
+    replay and recovery, even after retargeting.
+    [Begin] still requires a committed admission receipt and exact capsule before
+    the caller performs any effect. *)
 val step : t -> event -> t * output list
 
 type note =

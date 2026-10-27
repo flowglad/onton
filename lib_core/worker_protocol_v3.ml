@@ -11,6 +11,8 @@ type execution_context = {
   bytes : string;
   run : string;
   patch : string;
+  config : string;
+  plan : string;
   base : string;
   mode : string;
   role : string;
@@ -149,8 +151,8 @@ let decode_context bytes =
             | ( Some (`Int 3),
                 Some run,
                 Some patch,
-                Some _,
-                Some _,
+                Some config,
+                Some plan,
                 Some _,
                 Some generation,
                 Some input_version,
@@ -167,6 +169,8 @@ let decode_context bytes =
                     bytes = Yojson.Safe.to_string json;
                     run;
                     patch;
+                    config;
+                    plan;
                     base;
                     mode;
                     role;
@@ -601,6 +605,29 @@ let desired_base t =
 
 let admission_receipt t = P.admission_receipt t.protocol
 
+(* Bind fixes the assignment scope, not the coordinator's per-operation
+   evidence. Only committed inputs advance the desired base and input version.
+   Historical executions bypass this check solely through exact receipt replay. *)
+let current_context t (bound : execution_context) e =
+  let context = e.context in
+  let version =
+    match t.current_input with
+    | Some input -> input.version
+    | None -> bound.input_version
+  in
+  bound.admitted && context.admitted && context.run = bound.run
+  && context.patch = bound.patch
+  && context.config = bound.config
+  && context.plan = bound.plan && context.mode = bound.mode
+  && context.role = bound.role
+  && context.generation >= bound.generation
+  && List.for_all
+       (fun (_, old) -> context.generation >= old.context.generation)
+       t.assignments
+  && Some context.base = desired_base t
+  && context.input_version = version
+  && e.input_version = version
+
 let shadow e =
   match encode_host (Execute e) with
   | Error err -> Error err
@@ -694,12 +721,7 @@ let step t event =
       match t.binding with
       | Some c
         when List.exists (fun (_, old) -> old = e) t.assignments
-             || c.bytes = e.context.bytes && c.admitted
-                && e.input_version
-                   =
-                   match t.current_input with
-                   | Some input -> input.version
-                   | None -> c.input_version -> (
+             || current_context t c e -> (
           match shadow e with
           | Error err -> reject err
           | Ok request -> (

@@ -8,7 +8,7 @@ module V = Worker_protocol_v3
 module P = Worker_protocol
 
 let context ?(generation = "1") ?(mode = "feature") ?(root = "patch")
-    ?(admitted = true) () =
+    ?(admitted = true) ?(base = "feature/root") ?(version = "0") () =
   Yojson.Safe.to_string
     (`Assoc
        [
@@ -29,13 +29,13 @@ let context ?(generation = "1") ?(mode = "feature") ?(root = "patch")
                    ("revision", `String "abc");
                  ];
              ] );
-         ("selected_base", `String "feature/root");
+         ("selected_base", `String base);
          ("execution_mode", `String mode);
          ("root_role", `String root);
          ("admitted", `Bool admitted);
          ("evidence_id", `String "ticket");
          ("guidance_ids", `List [ `String "g" ]);
-         ("input_version", `String "0");
+         ("input_version", `String version);
        ])
 
 let ok = function Ok x -> x | Error _ -> failwith "unexpected decode error"
@@ -183,6 +183,194 @@ let test_input () =
     (List.exists (function V.Reject _ -> true | _ -> false) out)
     "unmatched input commit"
 
+let has_reject outputs =
+  List.exists (function V.Reject _ -> true | _ -> false) outputs
+
+let restore t context =
+  let receipt = Option.get (V.admission_receipt t) in
+  let fields =
+    match Yojson.Safe.from_string (P.encode_host (bind ())) with
+    | `Assoc fields -> fields
+    | _ -> failwith "bind object"
+  in
+  let binding =
+    ok
+      (P.decode
+         (Yojson.Safe.to_string
+            (`Assoc
+               (("admission", receipt) :: List.remove_assoc "admission" fields))
+         ^ "\n"))
+  in
+  V.step (V.initial ()) (V.Host (V.Bind (binding, context)))
+
+let test_retarget () =
+  let identity = (request ()).identity in
+  let initial, _ = V.step (V.initial ()) (V.Host (V.Bind (bind (), ctx ()))) in
+  let input =
+    V.
+      {
+        input_id = "retarget";
+        version = 1L;
+        guidance = "move";
+        selected_base = "feature/next";
+      }
+  in
+  let current =
+    ok
+      (V.decode_context
+         (context ~generation:"2" ~base:input.selected_base ~version:"1" ()))
+  in
+  let e = { (execute ()) with context = current; input_version = 1L } in
+  let pending, _ = V.step initial (V.Host (V.Input (identity, input))) in
+  let _, outputs = V.step pending (V.Host (V.Execute e)) in
+  check (has_reject outputs && not (has_begin outputs)) "uncommitted retarget";
+  let committed, _ = V.step pending (V.Input_committed (input.input_id, 1L)) in
+  let reject_context context version label =
+    let _, outputs =
+      V.step committed
+        (V.Host (V.Execute { e with context; input_version = version }))
+    in
+    check (has_reject outputs && not (has_begin outputs)) label
+  in
+  reject_context (ctx ()) 1L "old base despite current envelope version";
+  reject_context current 0L "stale envelope version";
+  reject_context
+    (ok (V.decode_context (context ~base:input.selected_base ())))
+    1L "stale context version";
+  reject_context
+    (ok (V.decode_context (context ~base:"uncommitted" ~version:"1" ())))
+    1L "uncommitted base";
+  reject_context
+    (ok (V.decode_context (context ~base:input.selected_base ~version:"2" ())))
+    1L "future context version";
+  List.iter
+    (fun (key, value) ->
+      let fields =
+        match Yojson.Safe.from_string (V.context_bytes current) with
+        | `Assoc fields -> fields
+        | _ -> failwith "context object"
+      in
+      let changed =
+        ok
+          (V.decode_context
+             (Yojson.Safe.to_string
+                (`Assoc ((key, value) :: List.remove_assoc key fields))))
+      in
+      reject_context changed 1L ("changed scope: " ^ key))
+    [
+      ("run_id", `String "other");
+      ("patch_id", `String "other");
+      ("config_id", `String "other");
+      ("plan_id", `String "other");
+      ("execution_mode", `String "mainline");
+      ("root_role", `String "root");
+      ("admitted", `Bool false);
+      ("generation", `String "0");
+    ];
+  let admitted, outputs = V.step committed (V.Host (V.Execute e)) in
+  check (has_begin outputs) "current retarget execution admitted";
+  let _, outputs = V.step admitted (V.Host (V.Execute e)) in
+  check (not (has_begin outputs)) "retarget exact replay";
+  let later_input =
+    {
+      input with
+      input_id = "next";
+      version = 2L;
+      selected_base = "feature/later";
+    }
+  in
+  let later, _ = V.step admitted (V.Host (V.Input (identity, later_input))) in
+  let later, _ = V.step later (V.Input_committed ("next", 2L)) in
+  let _, outputs = V.step later (V.Host (V.Execute e)) in
+  check
+    ((not (has_begin outputs)) && not (has_reject outputs))
+    "historical exact replay after retarget";
+  let later_context =
+    ok
+      (V.decode_context
+         (context ~generation:"3" ~base:later_input.selected_base ~version:"2"
+            ()))
+  in
+  let restored, outputs = restore later later_context in
+  check (not (has_reject outputs)) "restore advanced binding";
+  check
+    (V.desired_base restored = Some later_input.selected_base)
+    "restore latest desired base";
+  let _, outputs = V.step restored V.Recover_unfinished in
+  check
+    (List.exists
+       (function V.Recover historical -> historical = e | _ -> false)
+       outputs)
+    "recovery retains historical context";
+  let _, outputs = V.step restored (V.Host (V.Execute e)) in
+  check
+    ((not (has_begin outputs)) && not (has_reject outputs))
+    "restored historical exact replay";
+  let _, outputs =
+    V.step restored
+      (V.Host (V.Execute { e with context = later_context; input_version = 2L }))
+  in
+  check (not (has_begin outputs)) "changed historical execution fenced";
+  let completed, _ =
+    V.step later
+      (V.Worker_event
+         (P.Propose_checkpoint { proposal_id = "cp"; capsule = "{}" }))
+  in
+  let completed, _ =
+    V.step completed
+      (V.Host
+         (V.Legacy_control
+            (ok
+               (P.decode
+                  "{\"version\":2,\"type\":\"checkpoint_ack\",\"run_id\":\"r\",\"patch_id\":\"p\",\"operation_id\":\"op\",\"attempt_id\":\"attempt\",\"assignment_seq\":\"1\",\"proposal_id\":\"cp\",\"state_version\":\"1\",\"capsule\":\"{}\",\"accepted\":true}\n"))))
+  in
+  let completed, _ = V.step completed (V.Worker_event P.Cleanup_complete) in
+  let completed, outputs =
+    V.step completed
+      (V.Worker_event
+         (P.Finish
+            { status = P.Completed_ok; diagnostics = "done"; renewal_id = None }))
+  in
+  check
+    (List.exists (function V.Send (P.Result _) -> true | _ -> false) outputs)
+    "retargeted assignment completed";
+  let completed, _ =
+    V.step completed
+      (V.Host
+         (V.Legacy_control
+            (ok
+               (P.decode
+                  "{\"version\":2,\"type\":\"result_ack\",\"run_id\":\"r\",\"patch_id\":\"p\",\"operation_id\":\"op\",\"attempt_id\":\"attempt\",\"assignment_seq\":\"1\",\"state_version\":\"1\"}\n"))))
+  in
+  let next =
+    {
+      e with
+      context = later_context;
+      input_version = 2L;
+      request =
+        {
+          e.request with
+          expected_state_version = 1L;
+          operation =
+            { operation_id = "next"; attempt_id = "next"; assignment_seq = 2L };
+        };
+    }
+  in
+  let regressed =
+    {
+      next with
+      context =
+        ok
+          (V.decode_context
+             (context ~generation:"1" ~base:later_input.selected_base
+                ~version:"2" ()));
+    }
+  in
+  let _, outputs = V.step completed (V.Host (V.Execute regressed)) in
+  check (has_reject outputs && not (has_begin outputs)) "generation regression";
+  let _, outputs = V.step completed (V.Host (V.Execute next)) in
+  check (has_begin outputs) "next assignment uses latest context"
+
 let test_boundaries () =
   check
     (Result.is_error (V.decode_context (context ~generation:"01" ())))
@@ -268,6 +456,7 @@ let () =
   test_lifecycle ();
   test_integration ();
   test_input ();
+  test_retarget ();
   test_boundaries ();
   let open QCheck2 in
   let total =
@@ -347,15 +536,51 @@ let () =
                   && List.exists
                        (function V.Apply_input _ -> true | _ -> false)
                        outputs
+                  &&
+                  let execution =
+                    {
+                      (execute ()) with
+                      context =
+                        ok
+                          (V.decode_context
+                             (context
+                                ~generation:(Int64.to_string (Int64.succ next))
+                                ~base:input.selected_base
+                                ~version:(Int64.to_string next) ()));
+                      input_version = next;
+                    }
+                  in
+                  let _, outputs = V.step t (V.Host (V.Execute execution)) in
+                  has_begin outputs
+                  && (let _, stale =
+                        V.step t
+                          (V.Host
+                             (V.Execute { execution with context = ctx () }))
+                      in
+                      has_reject stale && not (has_begin stale))
                   && loop t next rest
                 else
                   let _, outputs =
                     V.step t (V.Input_committed ("wrong", next))
                   in
-                  V.desired_base t
-                  = Some
-                      (if version = 0L then "feature/root"
-                       else "base-" ^ Int64.to_string version)
+                  let candidate =
+                    {
+                      (execute ()) with
+                      context =
+                        ok
+                          (V.decode_context
+                             (context ~base:input.selected_base
+                                ~version:(Int64.to_string next) ()));
+                      input_version = next;
+                    }
+                  in
+                  let _, premature = V.step t (V.Host (V.Execute candidate)) in
+                  has_reject premature
+                  && (not (has_begin premature))
+                  && V.desired_base t
+                     = Some
+                         (if version = 0L then "feature/root"
+                          else "base-" ^ Int64.to_string version)
                   && List.exists
                        (function V.Reject _ -> true | _ -> false)
                        outputs
