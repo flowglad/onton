@@ -362,6 +362,9 @@ let run_case ?(adopted = false) ?(cancel = false) ?(push_failure = false)
           | Start_initial -> failwith "Expected queued human guidance at start"
         else prompt
       in
+      let before_session =
+        Runtime.read runtime (fun snap -> snap.orchestrator)
+      in
       let result =
         Telemetry_dispatch.with_sinks
           ~sinks:
@@ -450,6 +453,17 @@ let run_case ?(adopted = false) ?(cancel = false) ?(push_failure = false)
         match (resume_session, branch_role) with
         | Some _, _ -> ()
         | None, `Mainline -> ()
+        | None, (`Integration_root | `Feature_descendant) when start_with_human
+          ->
+            assert (
+              not
+                (String.is_substring delivered_prompt
+                   ~substring:
+                     "Integration root: preserve all published history."));
+            assert (
+              not
+                (String.is_substring delivered_prompt
+                   ~substring:"Feature branch construction:"))
         | None, `Integration_root ->
             assert (
               String.is_substring delivered_prompt
@@ -665,9 +679,45 @@ let run_case ?(adopted = false) ?(cancel = false) ?(push_failure = false)
           assert (Poly.equal result.disposition `No_commits);
           assert (Bool.equal result.turn_accepted reply);
           assert (Bool.equal (List.is_empty after.inflight_human_messages) reply);
+          if reply then (
+            (* Restore the completion checkpoint before classification or publication. *)
+            let completion = Option.value_exn after.session_completion in
+            let interrupted =
+              Orchestrator.record_session_completion before_session patch_id
+                completion
+            in
+            Runtime.update_orchestrator runtime (fun _ -> interrupted);
+            let resumed = Orchestrator.agent interrupted patch_id in
+            let resumed_backend =
+              {
+                backend with
+                Llm_backend.run_streaming =
+                  (fun ~project_name:_
+                    ~cwd:_
+                    ~patch_id:_
+                    ~prompt:_
+                    ~resume_session:_
+                    ~session_uuid:_
+                    ~complexity:_
+                    ~on_event:_
+                  -> failwith "persisted completion invoked backend");
+              }
+            in
+            let resumed_result =
+              SD.run ~kind ~delivery_mode ~patch_id
+                ~prompt:
+                  (SD.create_prompt
+                     ~context:(fun ~worktree_path:_ -> "")
+                     ~turn:prompt)
+                ~agent:resumed
+                ~on_pr_detected:(fun _ -> assert false)
+                ~backend:resumed_backend ~complexity:None
+            in
+            assert (Poly.equal resumed_result.disposition `No_commits));
           let completed =
-            Orchestrator.apply_start_outcome snapshot.orchestrator patch_id
-              Orchestrator.Start_failed
+            Runtime.read runtime (fun snap ->
+                Orchestrator.apply_start_outcome snap.orchestrator patch_id
+                  Orchestrator.Start_failed)
           in
           let completed_agent = Orchestrator.agent completed patch_id in
           assert (not completed_agent.busy);

@@ -172,10 +172,20 @@ let pi_session_headers =
                (Session_prompt.create ~context:"FULL PATCH CONTEXT"
                   ~turn:"next turn")
              = "next turn"
-          && List.mem "--session"
-               (Pi_event_parser.build_args ~model:None ~effort:None
-                  ~cwd_path:"/tmp/work" ~patch_id:"1" ~prompt:"next turn"
-                  ~resume_session:(Some id))
+          && Pi_event_parser.build_args ~model:None ~effort:None
+               ~cwd_path:"/tmp/work" ~patch_id:"1" ~prompt:"next turn"
+               ~resume_session:(Some id)
+             = [
+                 "pi";
+                 "-p";
+                 "next turn";
+                 "--mode";
+                 "json";
+                 "--session";
+                 id;
+                 "--session-dir";
+                 "/tmp/work/.pi-sessions/1";
+               ]
       with _ -> false)
 
 let pi_malformed_session_headers =

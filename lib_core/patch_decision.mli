@@ -91,9 +91,9 @@ val session_allows_wontdo :
 
 val session_prompt_requires_patch_instructions :
   delivery_mode:delivery_mode -> kind:Types.Operation_kind.t option -> bool
-(** Human follow-ups pass through without branch-mode instructions. Starts,
-    including those carrying human guidance, and other Respond kinds retain
-    patch instructions. Independent of backend resume/fresh selection. *)
+(** Human turns pass through without branch-mode instructions, including Starts
+    carrying guidance. Other kinds retain patch instructions. Independent of
+    backend resume/fresh selection. *)
 
 val start_delivery : Patch_agent.t -> start_delivery
 (** Classify a fired Start action's turn payload. A Start that consumed queued

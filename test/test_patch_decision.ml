@@ -140,7 +140,7 @@ let () =
             (match delivery_mode with
             | Start -> is_gameplan_patch
             | Respond -> false));
-      Test.make ~name:"only Human Respond prompts omit patch instructions"
+      Test.make ~name:"Human Start and Respond prompts omit patch instructions"
         ~count:500
         Gen.(
           pair
@@ -153,10 +153,9 @@ let () =
                     ~f:Option.some)))
         (fun (delivery_mode, kind) ->
           let expected =
-            equal_delivery_mode delivery_mode Start
-            || not
-                 (Option.equal Operation_kind.equal kind
-                    (Some Operation_kind.Human))
+            not
+              (Option.equal Operation_kind.equal kind
+                 (Some Operation_kind.Human))
           in
           Bool.equal
             (session_prompt_requires_patch_instructions ~delivery_mode ~kind)

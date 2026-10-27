@@ -1180,6 +1180,23 @@ let apply_force_complete ?message_id t patch_id reason =
         complete t patch_id
       else complete_failed t patch_id
 
+let acknowledge_human_start_reply t patch_id =
+  update_agent t patch_id ~f:(fun a ->
+      let answered =
+        a.Patch_agent.busy
+        && Option.equal Operation_kind.equal a.current_op (Some Human)
+        && Option.exists a.session_completion
+             ~f:
+               (Session_result.accepted_human_start_reply
+                  ~message_id:a.current_message_id
+                  ~guidance:a.inflight_human_messages)
+      in
+      let a =
+        if answered then Patch_agent.mark_inflight_human_messages_delivered a
+        else a
+      in
+      a)
+
 let apply_session_result t patch_id result =
   match result with
   | Session_ok ->
@@ -1236,22 +1253,8 @@ let apply_session_result t patch_id result =
          Keep the no-commit outcome and counter: acknowledgement grants no
          publication/PR authority. Unaccepted or failed turns remain retryable. *)
       let t = clear_session_fallback t patch_id in
-      update_agent t patch_id ~f:(fun a ->
-          let answered =
-            a.Patch_agent.busy
-            && Option.equal Operation_kind.equal a.current_op (Some Human)
-            && Option.exists a.session_completion
-                 ~f:
-                   (Session_result.accepted_human_start_reply
-                      ~message_id:a.current_message_id
-                      ~guidance:a.inflight_human_messages)
-          in
-          let a =
-            if answered then
-              Patch_agent.mark_inflight_human_messages_delivered a
-            else a
-          in
-          Patch_agent.increment_no_commits_push_count a)
+      let t = acknowledge_human_start_reply t patch_id in
+      update_agent t patch_id ~f:Patch_agent.increment_no_commits_push_count
   | Session_context_exhausted ->
       (* The session overflowed the model's context window. [on_context_exhausted]
          bumps [context_exhaustion_count] and clears [llm_session_id] so the next

@@ -495,10 +495,16 @@ struct
     in
     match outcome with
     | Branch_reconcile_runner.Idle ->
-        Runtime.read Env.runtime (fun snap ->
-            Branch_reconcile.publication_status
-              (Orchestrator.agent snap.Runtime.orchestrator patch_id)
-                .branch_reconcile)
+        let status =
+          Runtime.read Env.runtime (fun snap ->
+              Branch_reconcile.publication_status
+                (Orchestrator.agent snap.Runtime.orchestrator patch_id)
+                  .branch_reconcile)
+        in
+        if Poly.equal status `No_work then
+          Runtime.update_orchestrator Env.runtime (fun orch ->
+              Orchestrator.acknowledge_human_start_reply orch patch_id);
+        status
     | Branch_reconcile_runner.Waiting | Branch_reconcile_runner.Repair_needed _
       ->
         `Pending
