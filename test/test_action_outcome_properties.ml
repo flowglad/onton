@@ -125,6 +125,63 @@ let accept_only_message orch gameplan =
       (orch, message_id)
   | _ -> failwith "expected exactly one runnable message"
 
+let () =
+  QCheck2.Test.check_exn
+    (QCheck2.Test.make ~count:200
+       ~name:
+         "Human Start acknowledgement requires exact accepted completion and \
+          is idempotent"
+       QCheck2.Gen.(pair bool (triple bool bool bool))
+       (fun (accepted, (healthy, matching_message, matching_guidance)) ->
+         try
+           let patches = mk_patches 1 in
+           let gameplan = make_gameplan patches in
+           let pid = pid_of_idx patches 0 in
+           let orch = Orchestrator.create ~patches ~main_branch:main in
+           let orch = Orchestrator.send_human_message orch pid "Explain why" in
+           let orch, message_id = accept_only_message orch gameplan in
+           let completion =
+             Session_result.
+               {
+                 session_uuid = "reply";
+                 delivery_mode = Start;
+                 kind = Some Operation_kind.Human;
+                 message_id =
+                   (if matching_message then Some message_id else None);
+                 result = (if healthy then Session_ok else Session_no_commits);
+                 head = None;
+                 guidance =
+                   (if matching_guidance then [ "Explain why" ]
+                    else [ "Other guidance" ]);
+                 turn_accepted = accepted;
+               }
+           in
+           let orch =
+             Orchestrator.record_session_completion orch pid completion
+           in
+           let before = Orchestrator.agent orch pid in
+           let acknowledged =
+             Orchestrator.acknowledge_human_start_reply orch pid
+           in
+           let after = Orchestrator.agent acknowledged pid in
+           let repeated =
+             Orchestrator.acknowledge_human_start_reply acknowledged pid
+           in
+           let expected =
+             accepted && healthy && matching_message && matching_guidance
+           in
+           Bool.equal
+             (List.is_empty after.Patch_agent.inflight_human_messages)
+             expected
+           && (expected || Patch_agent.equal before after)
+           && after.Patch_agent.busy
+           && Int.equal before.Patch_agent.no_commits_push_count
+                after.Patch_agent.no_commits_push_count
+           && (not (Patch_agent.is_pr_present after))
+           && (not (Patch_agent.branch_published after))
+           && Patch_agent.equal after (Orchestrator.agent repeated pid)
+         with _ -> false))
+
 (* ========== AO-1a: Start_failed produces busy=false ========== *)
 
 let () =
