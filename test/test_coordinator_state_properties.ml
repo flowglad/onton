@@ -46,6 +46,101 @@ let assignment ?(owner = patch) id op resource : S.assignment =
 
 let apply t e = fst (S.step t e)
 
+(* Exercise the public coordinator-state projection surface directly. The
+   Archlint boundary check intentionally does not infer API use through [S]. *)
+let () =
+  let main = Branch.of_string "main" in
+  let patch_spec : Patch.t =
+    Patch.
+      {
+        id = patch;
+        title = "a";
+        description = "";
+        branch = main;
+        dependencies = [];
+        spec = "";
+        acceptance_criteria = [];
+        files = [];
+        classification = "";
+        changes = [];
+        test_stubs_introduced = [];
+        test_stubs_implemented = [];
+        complexity = None;
+        precedents = [];
+        required_context = [];
+      }
+  in
+  let agent = Patch_agent.create ~branch:main patch in
+  let view : Scheduler_decision.input =
+    Scheduler_decision.
+      {
+        graph = Graph.of_patches [ patch_spec ];
+        mode = Execution_mode.mainline;
+        agents = [ agent ];
+        main;
+      }
+  in
+  let state =
+    initial () |> fun state -> apply state (S.Admit (operation "api"))
+  in
+  assert (String.equal (Coordinator_state.plan_bytes state) "frozen-plan");
+  assert (String.equal (Coordinator_state.config_bytes state) "nonsecret-config");
+  assert (List.length (Coordinator_state.operations state) = 1);
+  assert (List.is_empty (Coordinator_state.assignments state));
+  assert (List.is_empty (Coordinator_state.resources state));
+  assert (List.is_empty (Coordinator_state.resource_owners state));
+  assert (List.is_empty (Coordinator_state.terminal_patches state));
+  assert (List.is_empty (Coordinator_state.retired_resources state));
+  assert (List.is_empty (Coordinator_state.capsules state));
+  assert (List.is_empty (Coordinator_state.controls state));
+  assert (List.is_empty (Coordinator_state.inputs state));
+  assert (
+    match Coordinator_state.lifecycle state with
+    | Coordinator_state.Running -> true
+    | Coordinator_state.Draining _ | Coordinator_state.Sleeping _
+    | Coordinator_state.Cancelling _ ->
+        false);
+  assert (not (Coordinator_state.sleep_ready state));
+  assert (not (Coordinator_state.cancellation_complete state));
+  assert (Coordinator_state.reserved_count state = 0);
+  let op =
+    match Coordinator_state.operations state with
+    | [ op ] -> op
+    | _ -> failwith "expected the admitted operation"
+  in
+  assert (Coordinator_state.can_recover state op ~now:0L);
+  let context_input : Coordinator_state.context_input =
+    Coordinator_state.
+      {
+        run_id = "run";
+        config_id = "config";
+        plan_id = "plan";
+        message_id = "api";
+        generation = Int64.of_int agent.Patch_agent.generation;
+        patch_id = patch;
+        dependencies = [];
+        selected_base = main;
+        mode = "mainline";
+        root = false;
+        evidence_id =
+          Option.value
+            (Scheduler_decision.evidence_id view patch)
+            ~default:"missing-evidence";
+        guidance_ids = [];
+        input_version = 0L;
+      }
+  in
+  (match Coordinator_state.execution_context state view context_input with
+  | Ok context ->
+      assert (String.equal (Worker_protocol_v3.selected_base context) "main");
+      assert (
+        String.equal (Worker_protocol_v3.execution_mode context) "mainline")
+  | Error reason -> failwith reason);
+  assert (
+    Result.is_ok (Coordinator_state.decode (Coordinator_state.encode state)));
+  assert (Result.is_error (Coordinator_state.decode_control "not-json"));
+  Stdio.print_endline "coordinator public projections: OK"
+
 let has_rejection =
   List.exists ~f:(function
     | S.Rejected _ -> true

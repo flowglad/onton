@@ -39,6 +39,24 @@ let () =
         main = Orchestrator.main_branch t;
       }
   in
+  let main = Orchestrator.main_branch t in
+  let parent_agent = Orchestrator.agent t a.Patch.id in
+  assert (Scheduler_decision.dependencies_admitted view a.Patch.id);
+  assert (
+    Option.equal Branch.equal
+      (Scheduler_decision.selected_base view a.Patch.id)
+      (Some main));
+  assert (Option.is_some (Scheduler_decision.evidence_id view a.Patch.id));
+  assert (Option.is_some (Scheduler_decision.for_patch view a.Patch.id));
+  assert (not (Scheduler_decision.ready_for_review view a.Patch.id));
+  assert (not (Scheduler_decision.open_dependency_ready parent_agent));
+  assert (not (Scheduler_decision.draft_allowed view a.Patch.id));
+  let recovery =
+    Scheduler_decision.recovery_intent view ~gameplan_patch:true a.Patch.id
+  in
+  assert (not recovery.Scheduler_decision.pr_base_update);
+  assert (not recovery.Scheduler_decision.pr_draft_update);
+  assert (not (Scheduler_decision.automerge_candidate parent_agent ~main));
   let expected =
     Scheduler_decision.plan view
     |> List.filter_map ~f:(function
