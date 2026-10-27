@@ -1647,6 +1647,65 @@ let () =
            with exn -> QCheck2.Test.fail_report (Printexc.to_string exn));
        compatible_order B.Rewrite;
        workspace_loss_model;
+       QCheck2.Test.make
+         ~name:"model: captured root intent survives lost observation"
+         ~count:300
+         Gen.(pair bool bool)
+         (fun (probe_ok, present) ->
+           try
+             let intent =
+               B.
+                 {
+                   base = "main";
+                   policy = Preserve_ancestry;
+                   purpose =
+                     Integrate_revision
+                       { contributor = "sibling"; revision = source };
+                 }
+             in
+             let state, effects =
+               B.step B.empty
+                 (B.Workspace_lost_without_operation
+                    { request = "root-loss"; intent })
+             in
+             let pending = B.pending state in
+             let restored = roundtrip state in
+             let observed =
+               match pending with
+               | Some command ->
+                   fst
+                     (B.step restored
+                        (B.Result
+                           {
+                             token = command.token;
+                             at = 1.;
+                             result =
+                               (if probe_ok then
+                                  B.Workspace_observed
+                                    {
+                                      push_destination = destination;
+                                      patch_revision =
+                                        (if present then Some integrated
+                                         else None);
+                                      base_revision = Some base;
+                                    }
+                                else
+                                  B.Retryable
+                                    { reason = "network"; retry_after = None });
+                           }))
+               | None -> state
+             in
+             (match B.operation restored with
+               | Some op -> B.equal_intent op.intent intent && op.lost_workspace
+               | None -> false)
+             && List.length effects = 1
+             && B.workspace_outcome observed
+                = Some
+                    (if not probe_ok then B.Workspace_wait
+                     else if present then B.Workspace_patch (integrated, base)
+                     else B.Workspace_base base)
+             && B.equal observed (roundtrip observed)
+           with _ -> false);
        compatible_order B.Preserve_ancestry;
        Conflicting_sequencer.test B.Rewrite;
        Conflicting_sequencer.test B.Preserve_ancestry;

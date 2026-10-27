@@ -13,6 +13,7 @@ val execution_mode : execution_context -> string
 val assigned_patch : execution_context -> string
 val root_role : execution_context -> string
 val message_generation : execution_context -> int64
+val input_version : execution_context -> int64
 
 type work =
   | Session of Worker_protocol.phase * Types.Operation_kind.t option * string
@@ -50,6 +51,8 @@ type t
 
 val initial : unit -> t
 val admission_receipt : t -> Yojson.Safe.t option
+val is_stopped : t -> bool
+val recovery_pending : t -> bool
 
 (* Latest checkpointed input base, otherwise bound base; never recovered from
     a historical Execute or an uncommitted input. *)
@@ -60,6 +63,7 @@ type event =
   | Host of host_message
   | Worker_event of Worker_protocol.event
   | Input_committed of string * int64
+  | Restore_input of input
   | Recover_unfinished
   | Host_lost
 

@@ -246,6 +246,12 @@ let set_execution_mode t mode =
 let refresh_base_branch t patch_id =
   match find_agent t patch_id with
   | None -> t
+  | Some _
+    when List.exists (Graph.deps t.graph patch_id) ~f:(fun dep ->
+             not (Map.mem t.agents dep)) ->
+      (* Assigned workers have no peer snapshots. Their selected base is
+         supplied by the coordinator, not re-derived during completion. *)
+      t
   | Some _ -> (
       match expected_base t patch_id with
       | None -> t
@@ -1094,6 +1100,63 @@ let restore ?(promotion_claimed = false) ~graph ~agents ~outbox ~main_branch ()
           reconcile_message orch
             (message_of_action agent (Reconcile_branch (pid, op.id)))
       | Some _ | None -> orch)
+
+let restore_worker ~gameplan ~main_branch ~context ?input ~agent () =
+  let patch_id = agent.Patch_agent.patch_id in
+  let named = Patch_id.to_string patch_id in
+  if not (String.equal named (Worker_protocol_v3.assigned_patch context)) then
+    Error "worker context names another patch"
+  else if
+    not
+      (List.exists gameplan.Gameplan.patches ~f:(fun p ->
+           Patch_id.equal p.Patch.id patch_id))
+  then Error "worker patch absent from gameplan"
+  else
+    let mode = Worker_protocol_v3.execution_mode context in
+    let role = Worker_protocol_v3.root_role context in
+    let selected =
+      Branch.of_string
+        (match input with
+        | None -> Worker_protocol_v3.selected_base context
+        | Some input -> input.Worker_protocol_v3.selected_base)
+    in
+    let graph = Graph.of_gameplan gameplan in
+    let execution_mode =
+      if String.equal mode "mainline" then
+        if String.equal role "patch" then Ok Execution_mode.mainline
+        else Error "mainline cannot have a root worker"
+      else
+        Result.bind (Execution_mode.infer_gameplan gameplan) ~f:(fun inferred ->
+            if
+              Bool.equal
+                (Execution_mode.is_root inferred patch_id)
+                (String.equal role "root")
+            then Ok inferred
+            else Error "worker root role does not match gameplan")
+    in
+    Result.map execution_mode ~f:(fun execution_mode ->
+        (* The coordinator has already admitted this dependency-scoped patch.
+           Do not reconstruct missing peers as unmerged local agents. Only the
+           assigned patch can be mutated by this worker. *)
+        let agent = Patch_agent.set_base_branch agent selected in
+        let agents = Map.singleton (module Patch_id) patch_id agent in
+        {
+          execution_mode;
+          promotion_claimed = false;
+          promotion_inflight = false;
+          graph;
+          agents;
+          outbox = Map.empty (module Message_id);
+          main_branch;
+          max_ci_failures = agent.max_ci_failures;
+        })
+
+let start_assigned_worker t patch_id ~base =
+  match Map.find t.agents patch_id with
+  | Some agent when (not agent.busy) && not (Patch_agent.has_pr agent) ->
+      update_agent t patch_id ~f:(fun agent ->
+          Patch_agent.start agent ~base_branch:base)
+  | _ -> t
 
 let main_branch t = t.main_branch
 let set_main_branch t branch = { t with main_branch = branch }

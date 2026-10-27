@@ -33,6 +33,37 @@ val validate_binding :
   main_branch:Types.Branch.t ->
   (Patch_agent.t, string) result
 
+val with_v3_context : t -> Worker_protocol_v3.execution_context -> t
+val v3_context : t -> string option
+val v3_input : t -> Worker_protocol_v3.input option
+val with_v3_input : t -> Worker_protocol_v3.input -> t
+val note : t -> Worker_protocol_v3.note option
+val with_note : t -> Worker_protocol_v3.note -> t
+
+type projection = private {
+  patch_id : string;
+  state_version : int64;
+  selected_base : string;
+  execution_mode : string;
+  root_role : string;
+  publication : string option;
+  note_bytes : string option;
+  terminal_status : Worker_protocol.result_status option;
+}
+
+val project :
+  t ->
+  run_id:string ->
+  patch_id:Types.Patch_id.t ->
+  context:string ->
+  state_version:int64 ->
+  attention_id:string option ->
+  gameplan:Types.Gameplan.t ->
+  main_branch:Types.Branch.t ->
+  (projection, string) result
+(** Validate the exact capsule binding and expose only execution facts; a
+    previous assignment's notes cannot become this publication's notes. *)
+
 val version : t -> int64
 val workspace_id : t -> string
 val context : t -> string

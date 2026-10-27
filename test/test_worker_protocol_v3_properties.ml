@@ -598,5 +598,48 @@ let () =
           loop initial 0L commit_flags
         with _ -> false)
   in
+  let restored_inputs =
+    QCheck2.Test.make ~name:"v3 restored committed input fences next version"
+      ~count:200
+      QCheck2.Gen.(int_range 1 100)
+      (fun n ->
+        try
+          let bound = ctx () in
+          let state, _ =
+            V.step (V.initial ()) (V.Host (V.Bind (bind (), bound)))
+          in
+          let current : V.input =
+            {
+              input_id = "restored";
+              version = Int64.of_int n;
+              guidance = "current";
+              selected_base = "selected";
+            }
+          in
+          let state, output = V.step state (V.Restore_input current) in
+          let _, duplicate = V.step state (V.Restore_input current) in
+          let next : V.input =
+            {
+              current with
+              input_id = "next";
+              version = Int64.succ current.version;
+            }
+          in
+          let state, _ =
+            V.step state
+              (V.Host (V.Input (P.{ run_id = "r"; patch_id = "p" }, next)))
+          in
+          let state, applied =
+            V.step state (V.Input_committed (next.input_id, next.version))
+          in
+          output = []
+          && V.desired_base state = Some "selected"
+          && List.exists (function V.Reject _ -> true | _ -> false) duplicate
+          && List.exists
+               (function V.Apply_input _ -> true | _ -> false)
+               applied
+          && V.desired_base state = Some "selected"
+        with _ -> false)
+  in
   QCheck_base_runner.run_tests_main
-    [ total; frames; interleavings; public_api_coverage ]
+    [ total; frames; interleavings; restored_inputs; public_api_coverage ]

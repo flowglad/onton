@@ -16,6 +16,7 @@ type env = {
     branch:Types.Branch.t ->
     (Branch_reconcile.workspace_forge * Types.Pr_number.t option, string) result;
   ack_timeout : float;
+  protocol_version : int;
 }
 (** Explicit patch worker environment. No local scheduler, poller, control
     socket, or periodic snapshot fiber is constructed by this entry point. *)

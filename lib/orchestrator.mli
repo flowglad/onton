@@ -419,6 +419,20 @@ val restore :
   t
 (** Reconstruct orchestrator from persisted components. *)
 
+val restore_worker :
+  gameplan:Gameplan.t ->
+  main_branch:Branch.t ->
+  context:Worker_protocol_v3.execution_context ->
+  ?input:Worker_protocol_v3.input ->
+  agent:Patch_agent.t ->
+  unit ->
+  (t, string) Result.t
+(** Restore only the assigned patch using the coordinator's selected base and
+    gameplan-validated execution mode; never create default dependency peers. *)
+
+val start_assigned_worker : t -> Patch_id.t -> base:Branch.t -> t
+(** A coordinator-admitted Start does not re-check missing local peer agents. *)
+
 val start_eligibility :
   t ->
   base_contains_merged_siblings:bool ->

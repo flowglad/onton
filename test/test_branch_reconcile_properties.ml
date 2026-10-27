@@ -5049,6 +5049,41 @@ let creation_base_tests =
 let[@warning "-4"] workspace_state_tests =
   [
     QCheck2.Test.make ~count:200
+      ~name:
+        "BR root workspace loss seeds and retains captured contributor intent"
+      Gen.bool (fun malformed ->
+        try
+          let intent =
+            B.
+              {
+                base = "main";
+                policy = Preserve_ancestry;
+                purpose =
+                  Integrate_revision
+                    {
+                      contributor = (if malformed then "" else "sibling");
+                      revision = sha 'a';
+                    };
+              }
+          in
+          let state, _ =
+            B.step B.empty
+              (B.Workspace_lost_without_operation
+                 { request = "lost-root"; intent })
+          in
+          if malformed then B.equal state B.empty
+          else
+            let restored = restore state in
+            B.equal restored state
+            &&
+            match B.operation restored with
+            | Some op ->
+                B.equal_intent op.intent intent
+                && op.lost_workspace && op.source = None
+                && B.workspace_outcome restored = Some B.Workspace_wait
+            | None -> false
+        with _ -> false);
+    QCheck2.Test.make ~count:200
       ~name:"BR workspace loss roundtrip retains intent and fences old command"
       Gen.bool (fun captured ->
         try

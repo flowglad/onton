@@ -15,6 +15,9 @@ type t = {
   agent : Yojson.Safe.t;
   terminal : (Worker_protocol.result_status * string * string option) option;
   attention_id : string option;
+  v3_context : string option;
+  v3_input : Worker_protocol_v3.input option;
+  note : Worker_protocol_v3.note option;
 }
 
 let status_name = function
@@ -63,20 +66,56 @@ let encode t =
             ("renewal_id", option renewal_id);
           ]
   in
+  let v3_fields =
+    match t.v3_context with
+    | None -> []
+    | Some context ->
+        let input =
+          match t.v3_input with
+          | None -> `Null
+          | Some i ->
+              `Assoc
+                [
+                  ("input_id", string i.input_id);
+                  ("version", counter i.version);
+                  ("guidance", string i.guidance);
+                  ("selected_base", string i.selected_base);
+                ]
+        in
+        let note =
+          match t.note with
+          | None -> `Null
+          | Some Worker_protocol_v3.Missing -> `String "missing"
+          | Some Empty -> `String "empty"
+          | Some Oversized -> `String "oversized"
+          | Some Unreadable -> `String "unreadable"
+          | Some (Present { assignment; publication; bytes }) ->
+              `Assoc
+                [
+                  ("operation_id", string assignment.operation_id);
+                  ("attempt_id", string assignment.attempt_id);
+                  ("assignment_seq", counter assignment.assignment_seq);
+                  ("publication", string publication);
+                  ("bytes", string bytes);
+                ]
+        in
+        [ ("v3_context", string context); ("v3_input", input); ("note", note) ]
+  in
   `Assoc
-    [
-      ("version", `Int 1);
-      ("run_id", string t.run_id);
-      ("patch_id", string t.patch_id);
-      ("workspace_id", string t.workspace_id);
-      ("context", string t.context);
-      ("state_version", counter t.version);
-      ("operation", operation);
-      ("guidance", string t.guidance);
-      ("agent", t.agent);
-      ("terminal", terminal);
-      ("attention_id", option t.attention_id);
-    ]
+    ([
+       ("version", `Int (if Option.is_some t.v3_context then 2 else 1));
+       ("run_id", string t.run_id);
+       ("patch_id", string t.patch_id);
+       ("workspace_id", string t.workspace_id);
+       ("context", string t.context);
+       ("state_version", counter t.version);
+       ("operation", operation);
+       ("guidance", string t.guidance);
+       ("agent", t.agent);
+       ("terminal", terminal);
+       ("attention_id", option t.attention_id);
+     ]
+    @ v3_fields)
 
 let to_string t = Yojson.Safe.to_string (encode t)
 
@@ -208,25 +247,139 @@ let decode json =
   let invalid = Error "invalid patch-execution capsule" in
   if not (unique_keys 0 json) then invalid
   else
-    match
-      fields
-        [
-          "version";
-          "run_id";
-          "patch_id";
-          "workspace_id";
-          "context";
-          "state_version";
-          "operation";
-          "guidance";
-          "agent";
-          "terminal";
-          "attention_id";
-        ]
-        json
-    with
+    let schema =
+      [
+        "version";
+        "run_id";
+        "patch_id";
+        "workspace_id";
+        "context";
+        "state_version";
+        "operation";
+        "guidance";
+        "agent";
+        "terminal";
+        "attention_id";
+      ]
+    in
+    let shape =
+      match json with
+      | `Assoc values when Poly.equal (get values "version") (Some (`Int 2)) ->
+          fields (schema @ [ "v3_context"; "v3_input"; "note" ]) json
+      | _ -> fields schema json
+    in
+    match shape with
     | None -> invalid
     | Some values -> (
+        let v3 =
+          match get values "version" with
+          | Some (`Int 1) -> Some (None, None, None)
+          | Some (`Int 2) -> (
+              let context =
+                Option.bind (text values "v3_context") ~f:(fun bytes ->
+                    match Worker_protocol_v3.decode_context bytes with
+                    | Ok c ->
+                        if
+                          String.equal bytes
+                            (Worker_protocol_v3.context_bytes c)
+                        then Some bytes
+                        else None
+                    | Error _ -> None)
+              in
+              let input =
+                match get values "v3_input" with
+                | Some `Null -> Some None
+                | Some json -> (
+                    match
+                      fields
+                        [ "input_id"; "version"; "guidance"; "selected_base" ]
+                        json
+                    with
+                    | Some i -> (
+                        match
+                          ( id i "input_id",
+                            Option.bind (get i "version") ~f:read_counter,
+                            text i "guidance",
+                            id i "selected_base" )
+                        with
+                        | ( Some input_id,
+                            Some version,
+                            Some guidance,
+                            Some selected_base ) ->
+                            let input : Worker_protocol_v3.input =
+                              { input_id; version; guidance; selected_base }
+                            in
+                            Some (Some input)
+                        | _ -> None)
+                    | None -> None)
+                | None -> None
+              in
+              let note =
+                match get values "note" with
+                | Some `Null -> Some None
+                | Some (`String "missing") ->
+                    Some (Some Worker_protocol_v3.Missing)
+                | Some (`String "empty") -> Some (Some Empty)
+                | Some (`String "oversized") -> Some (Some Oversized)
+                | Some (`String "unreadable") -> Some (Some Unreadable)
+                | Some json -> (
+                    match
+                      fields
+                        [
+                          "operation_id";
+                          "attempt_id";
+                          "assignment_seq";
+                          "publication";
+                          "bytes";
+                        ]
+                        json
+                    with
+                    | Some n -> (
+                        match
+                          ( id n "operation_id",
+                            id n "attempt_id",
+                            Option.bind (get n "assignment_seq") ~f:read_counter,
+                            id n "publication",
+                            text n "bytes" )
+                        with
+                        | ( Some operation_id,
+                            Some attempt_id,
+                            Some assignment_seq,
+                            Some publication,
+                            Some bytes )
+                          when Int64.(assignment_seq > 0L)
+                               && String.length bytes > 0 ->
+                            Some
+                              (Some
+                                 (Worker_protocol_v3.Present
+                                    {
+                                      assignment =
+                                        Worker_protocol.
+                                          {
+                                            operation_id;
+                                            attempt_id;
+                                            assignment_seq;
+                                          };
+                                      publication;
+                                      bytes;
+                                    }))
+                        | _ -> None)
+                    | None -> None)
+                | None -> None
+              in
+              match (context, input, note) with
+              | Some context, Some input, Some note -> (
+                  match Worker_protocol_v3.decode_context context with
+                  | Ok bound
+                    when Option.for_all input ~f:(fun value ->
+                             Int64.(
+                               value.version
+                               > Worker_protocol_v3.input_version bound)) ->
+                      Some (Some context, input, note)
+                  | Ok _ | Error _ -> None)
+              | _ -> None)
+          | _ -> None
+        in
         let operation =
           match get values "operation" with
           | Some `Null -> Some None
@@ -281,9 +434,10 @@ let decode json =
             text values "guidance",
             get values "agent",
             terminal,
-            optional_id values "attention_id" )
+            optional_id values "attention_id",
+            v3 )
         with
-        | ( Some (`Int 1),
+        | ( Some (`Int (1 | 2)),
             Some run_id,
             Some patch_id,
             Some workspace_id,
@@ -293,7 +447,8 @@ let decode json =
             Some guidance,
             Some (`Assoc _ as agent),
             Some terminal,
-            Some attention_id )
+            Some attention_id,
+            Some (v3_context, v3_input, note) )
           when complete_agent agent
                && (Option.is_none operation && Int64.equal version 0L
                    && Option.is_none terminal
@@ -324,6 +479,9 @@ let decode json =
                 agent;
                 terminal;
                 attention_id;
+                v3_context;
+                v3_input;
+                note;
               }
         | _ -> invalid)
 
@@ -339,6 +497,9 @@ let initial ~run_id ~patch_id ~workspace_id ~context ~agent =
     agent = Persistence.patch_agent_to_yojson agent;
     terminal = None;
     attention_id = None;
+    v3_context = None;
+    v3_input = None;
+    note = None;
   }
 
 let validate_binding t ~run_id ~patch_id ~context ~state_version ~attention_id
@@ -387,6 +548,88 @@ let validate_binding t ~run_id ~patch_id ~context ~state_version ~attention_id
             else
               Error "capsule agent is noncanonical or has wrong patch identity")
     | _ -> Error "capsule agent missing required fields"
+
+let with_v3_context t context =
+  { t with v3_context = Some (Worker_protocol_v3.context_bytes context) }
+
+let v3_context t = t.v3_context
+let v3_input t = t.v3_input
+let note t = t.note
+let with_v3_input t input = { t with v3_input = Some input }
+let with_note t note = { t with note = Some note }
+
+type projection = {
+  patch_id : string;
+  state_version : int64;
+  selected_base : string;
+  execution_mode : string;
+  root_role : string;
+  publication : string option;
+  note_bytes : string option;
+  terminal_status : Worker_protocol.result_status option;
+}
+
+let project t ~run_id ~patch_id ~context ~state_version ~attention_id ~gameplan
+    ~main_branch =
+  match
+    validate_binding t ~run_id ~patch_id ~context ~state_version ~attention_id
+      ~gameplan ~main_branch
+  with
+  | Error reason -> Error reason
+  | Ok agent -> (
+      match t.v3_context with
+      | None -> Error "v3 context missing from capsule"
+      | Some bytes -> (
+          match Worker_protocol_v3.decode_context bytes with
+          | Error reason -> Error reason
+          | Ok execution
+            when not
+                   (String.equal
+                      (Worker_protocol_v3.assigned_patch execution)
+                      t.patch_id) ->
+              Error "v3 projection names another patch"
+          | Ok execution ->
+              let selected_base =
+                match t.v3_input with
+                | Some input -> input.selected_base
+                | None -> Worker_protocol_v3.selected_base execution
+              in
+              if
+                Int64.(t.version > 0L)
+                && not
+                     (Option.exists agent.base_branch ~f:(fun branch ->
+                          String.equal (Branch.to_string branch) selected_base))
+              then Error "owner desired base differs from validated input"
+              else
+                let publication =
+                  match
+                    Branch_reconcile.publications agent.branch_reconcile
+                  with
+                  | receipt :: _ ->
+                      Some
+                        (Branch_reconcile.Commit.to_string
+                           receipt.published_revision)
+                  | [] -> None
+                in
+                let note_bytes =
+                  match (t.note, t.operation, publication) with
+                  | Some artifact, Some assignment, Some publication ->
+                      Worker_protocol_v3.accept_note ~assignment ~publication
+                        artifact
+                  | _ -> None
+                in
+                Ok
+                  {
+                    patch_id = t.patch_id;
+                    state_version = t.version;
+                    selected_base;
+                    execution_mode = Worker_protocol_v3.execution_mode execution;
+                    root_role = Worker_protocol_v3.root_role execution;
+                    publication;
+                    note_bytes;
+                    terminal_status =
+                      Option.map t.terminal ~f:(fun (status, _, _) -> status);
+                  }))
 
 let version t = t.version
 let workspace_id t = t.workspace_id

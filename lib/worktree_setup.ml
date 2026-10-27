@@ -50,6 +50,7 @@ module type RECOVERY_S = sig
     owner:Runtime.patch_write ->
     request:string ->
     renewal_id:string option ->
+    ?intent:Branch_reconcile.intent ->
     ?observe_forge:
       (unit ->
       ( Branch_reconcile.workspace_forge * Types.Pr_number.t option,
@@ -365,8 +366,16 @@ module Make_impl
                     Eio.Fiber.yield ();
                     fetch_base (attempt + 1))
             in
+            let local_missing =
+              Option.is_none
+                (W.read_branch_sha ~path:(W.resolve_main_root ())
+                   ~ref_name:("refs/heads/" ^ base))
+            in
             let fetched_remote_sha =
-              if Option.is_some expected_revision || not base_is_main then None
+              if
+                Option.is_some expected_revision
+                || ((not base_is_main) && not local_missing)
+              then None
               else
                 match fetch_base 1 with
                 | Fetch_branch_ok ->
@@ -390,6 +399,13 @@ module Make_impl
             let start_point =
               match expected_revision with
               | Some sha -> Start_point_plan.Base_at_fetched_remote_sha { sha }
+              | None when (not base_is_main) && local_missing -> (
+                  match fetched_remote_sha with
+                  | Some sha ->
+                      Start_point_plan.Base_at_fetched_remote_sha { sha }
+                  | None ->
+                      Start_point_plan.base_start_point ~base_branch:base
+                        ~base_is_main ~fetched_remote_sha)
               | None ->
                   Start_point_plan.base_start_point ~base_branch:base
                     ~base_is_main ~fetched_remote_sha
@@ -668,7 +684,7 @@ module Make_impl
         in
         advance ())
 
-  let recover_owned ~owner ~request ~renewal_id ?observe_forge () =
+  let recover_owned ~owner ~request ~renewal_id ?intent ?observe_forge () =
     Runtime.with_owned_patch owner (fun runtime patch_id ->
         if not (phys_equal runtime Env.runtime) then
           invalid_arg "checkout ownership belongs to another runtime";
@@ -714,7 +730,9 @@ module Make_impl
                     Branch_reconcile.Workspace_lost { request }
                   else
                     let intent =
-                      provisioning_intent ~runtime ~patch_id ~request ()
+                      Option.value intent
+                        ~default:
+                          (provisioning_intent ~runtime ~patch_id ~request ())
                     in
                     Branch_reconcile.Workspace_lost_without_operation
                       { request; intent }

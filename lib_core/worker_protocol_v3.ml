@@ -27,6 +27,7 @@ let execution_mode c = c.mode
 let assigned_patch c = c.patch
 let root_role c = c.role
 let message_generation c = c.generation
+let input_version c = c.input_version
 let field k xs = List.assoc_opt k xs
 
 let keys expected = function
@@ -604,6 +605,8 @@ let desired_base t =
   | None, None -> None
 
 let admission_receipt t = P.admission_receipt t.protocol
+let is_stopped t = P.is_stopped t.protocol
+let recovery_pending t = P.recovery_pending t.protocol
 
 (* Bind fixes the assignment scope, not the coordinator's per-operation
    evidence. Only committed inputs advance the desired base and input version.
@@ -667,6 +670,7 @@ type event =
   | Host of host_message
   | Worker_event of P.event
   | Input_committed of string * int64
+  | Restore_input of input
   | Recover_unfinished
   | Host_lost
 
@@ -778,6 +782,15 @@ let step t event =
           ( { t with current_input = Some input; pending_input = None },
             [ Apply_input input ] )
       | _ -> reject "input commit not matching pending bytes")
+  | Restore_input input -> (
+      match t.binding with
+      | Some bound
+        when input.input_id <> ""
+             && String.length input.guidance <= 262144
+             && input.version > bound.input_version
+             && t.pending_input = None && t.current_input = None ->
+          ({ t with current_input = Some input }, [])
+      | Some _ | None -> reject "restored input scope or version")
   | Worker_event (P.Host _) -> reject "host commands require v3 envelope"
   | Worker_event e -> transition t e
   | Recover_unfinished -> transition t P.Recover_unfinished

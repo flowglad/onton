@@ -2052,7 +2052,16 @@ let[@warning "-4"] rec step_workspace t event =
   | Workspace_lost_without_operation { request; intent }, None, None
     when (not (String.is_empty request))
          && (not (String.is_empty intent.base))
-         && equal_purpose intent.purpose (Provision_checkout request)
+         && valid_intent intent
+         && (equal_purpose intent.purpose (Provision_checkout request)
+            ||
+            match intent.purpose with
+            | Integrate_revision _ ->
+                equal_policy intent.policy Preserve_ancestry
+            | Provision_checkout _ | Reconcile_base | Reconcile_request _
+            | Reconcile_scoped _ | Publish_revision _ | Publish_session _
+            | Verify_publication ->
+                false)
          && (not (List.mem t.workspace_requests request ~equal:String.equal))
          && t.next_operation < Int.max_value ->
       let seeded, _ = start { t with desired = Some intent } intent in

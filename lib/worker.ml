@@ -18,6 +18,7 @@ type env = {
     branch:Types.Branch.t ->
     (Branch_reconcile.workspace_forge * Types.Pr_number.t option, string) result;
   ack_timeout : float;
+  protocol_version : int;
 }
 
 exception Host_lost of string
@@ -30,7 +31,7 @@ let with_lock mutex f =
 let agent snapshot patch_id =
   Orchestrator.agent snapshot.Runtime.orchestrator patch_id
 
-let runtime_of_agent env patch_id restored =
+let runtime_of_agent env patch_id restored context input =
   let runtime =
     Runtime.create ~gameplan:env.gameplan ~main_branch:env.main_branch ()
   in
@@ -41,11 +42,20 @@ let runtime_of_agent env patch_id restored =
           ~key:patch_id ~data:restored
       in
       let orchestrator =
-        Orchestrator.restore
-          ~graph:(Orchestrator.graph snapshot.orchestrator)
-          ~agents
-          ~outbox:(Base.Map.empty (module Types.Message_id))
-          ~main_branch:env.main_branch ()
+        match context with
+        | None ->
+            Orchestrator.restore
+              ~graph:(Orchestrator.graph snapshot.orchestrator)
+              ~agents
+              ~outbox:(Base.Map.empty (module Types.Message_id))
+              ~main_branch:env.main_branch ()
+        | Some context -> (
+            match
+              Orchestrator.restore_worker ~gameplan:env.gameplan
+                ~main_branch:env.main_branch ~context ?input ~agent:restored ()
+            with
+            | Ok orch -> orch
+            | Error reason -> failwith reason)
       in
       { snapshot with Runtime.orchestrator });
   runtime
@@ -134,6 +144,12 @@ let capsule_matches_admission capsule receipt =
 let run env =
   let event_log_path = Filename.temp_file "onton-worker-" ".jsonl" in
   let protocol = ref (Worker_protocol.initial ()) in
+  let v3 = ref (Worker_protocol_v3.initial ()) in
+  let v3_assignment = ref None in
+  let pending_input = ref None in
+  let is_v3 = env.protocol_version = 3 in
+  if env.protocol_version <> 2 && not is_v3 then
+    invalid_arg "unsupported protocol version";
   let protocol_mutex = Eio.Mutex.create () in
   let output_mutex = Eio.Mutex.create () in
   let ack_mailbox = Eio.Stream.create 2 in
@@ -144,13 +160,81 @@ let run env =
   let stopped = ref false in
   let send message =
     with_lock output_mutex (fun () ->
-        Eio.Flow.copy_string (Worker_protocol.encode message) env.output)
+        let bytes =
+          if is_v3 then
+            match Worker_protocol_v3.encode_worker message with
+            | Ok bytes -> bytes
+            | Error reason -> failwith reason
+          else Worker_protocol.encode message
+        in
+        Eio.Flow.copy_string bytes env.output)
+  in
+  let convert_v3 outputs =
+    List.concat_map
+      (function
+        | Worker_protocol_v3.Send message -> [ Worker_protocol.Send message ]
+        | Begin e ->
+            v3_assignment := Some e;
+            [
+              Worker_protocol.Begin
+                (Option.get (Worker_protocol.execute_message e.request));
+            ]
+        | Recover e ->
+            v3_assignment := Some e;
+            [
+              Worker_protocol.Recover
+                (Option.get (Worker_protocol.execute_message e.request));
+            ]
+        | Cancel_active -> [ Worker_protocol.Cancel_active ]
+        | Stop -> [ Worker_protocol.Stop ]
+        | Reject reason ->
+            [
+              Worker_protocol.Send
+                (Worker_protocol.Protocol_error { identity = None; reason });
+            ]
+        | Apply_input input ->
+            pending_input := Some input;
+            [])
+      outputs
+  in
+  let transition_v3 event =
+    with_lock protocol_mutex (fun () ->
+        let next, output = Worker_protocol_v3.step !v3 event in
+        v3 := next;
+        convert_v3 output)
   in
   let transition event =
-    with_lock protocol_mutex (fun () ->
-        let next, output = Worker_protocol.step !protocol event in
-        protocol := next;
-        output)
+    if is_v3 then transition_v3 (Worker_protocol_v3.Worker_event event)
+    else
+      with_lock protocol_mutex (fun () ->
+          let next, output = Worker_protocol.step !protocol event in
+          protocol := next;
+          output)
+  in
+  let state_version () =
+    if is_v3 then Worker_protocol_v3.state_version !v3
+    else Worker_protocol.state_version !protocol
+  in
+  let is_stopped () =
+    if is_v3 then Worker_protocol_v3.is_stopped !v3
+    else Worker_protocol.is_stopped !protocol
+  in
+  let recovery_pending () =
+    if is_v3 then Worker_protocol_v3.recovery_pending !v3
+    else Worker_protocol.recovery_pending !protocol
+  in
+  let admission_receipt () =
+    if is_v3 then Worker_protocol_v3.admission_receipt !v3
+    else Worker_protocol.admission_receipt !protocol
+  in
+  let host_message msg =
+    if is_v3 then transition_v3 (Worker_protocol_v3.Host msg)
+    else
+      match msg with
+      | Worker_protocol_v3.Legacy_control msg ->
+          transition (Worker_protocol.Host msg)
+      | Worker_protocol_v3.Bind _ | Execute _ | Input _ ->
+          failwith "v3 frame in v2 worker"
   in
   let rec emit = function
     | [] -> ()
@@ -194,6 +278,26 @@ let run env =
     } =
       request
     in
+    let assigned =
+      if is_v3 then
+        match !v3_assignment with
+        | Some e when e.request = request -> Some e
+        | _ -> fail_host "missing exact v3 assignment"
+      else None
+    in
+    let guidance =
+      match (assigned, !pending_input) with
+      | Some _, Some input -> input.guidance
+      | Some _, None -> (
+          match
+            Worker_checkpoint.v3_input
+              (let _, capsule, _ = Option.get !binding in
+               !capsule)
+          with
+          | Some input -> input.guidance
+          | None -> guidance)
+      | None, _ -> guidance
+    in
     let renewal_id =
       match renewal with Ordinary -> None | Renewed id -> Some id
     in
@@ -209,12 +313,47 @@ let run env =
       && recovery_mode <> Worker_protocol.Lost_workspace
       && not interrupted
     then fail_host "retained workspace identity is unconfirmed";
+    let root_intent =
+      match assigned with
+      | Some
+          {
+            work =
+              Worker_protocol_v3.Integrate_revision { contributor; revision };
+            context;
+            _;
+          } -> (
+          if not (String.equal (Worker_protocol_v3.root_role context) "root")
+          then fail_host "integration requires root role";
+          match Branch_reconcile.Commit.make revision with
+          | None -> fail_host "invalid captured contributor revision"
+          | Some revision ->
+              Some
+                Branch_reconcile.
+                  {
+                    base = Worker_protocol_v3.selected_base context;
+                    policy = Preserve_ancestry;
+                    purpose = Integrate_revision { contributor; revision };
+                  })
+      | Some { work = Session _ | Reconcile; _ } | None -> None
+    in
+    let desired_base () =
+      match !pending_input with
+      | Some input -> input.selected_base
+      | None -> (
+          match Worker_checkpoint.v3_input !capsule with
+          | Some input -> input.selected_base
+          | None -> (
+              match assigned with
+              | Some e -> Worker_protocol_v3.selected_base e.context
+              | None -> Types.Branch.to_string env.main_branch))
+    in
     let proposal_number = ref 0 in
     let terminal = ref None in
+    let apply_input_at_boundary = ref true in
     let persist_unprotected snapshot =
       incr proposal_number;
       let version =
-        match Worker_protocol.state_version !protocol with
+        match state_version () with
         | Some version when Int64.compare version Int64.max_int < 0 ->
             Int64.succ version
         | _ -> fail_host "checkpoint version exhausted"
@@ -235,8 +374,11 @@ let run env =
             ~agent:current ~terminal:!terminal
         with
         | Ok candidate
-          when Int64.equal (Worker_checkpoint.version candidate) version ->
-            candidate
+          when Int64.equal (Worker_checkpoint.version candidate) version -> (
+            match !pending_input with
+            | Some input when !apply_input_at_boundary ->
+                Worker_checkpoint.with_v3_input candidate input
+            | Some _ | None -> candidate)
         | Ok _ -> fail_host "capsule and protocol state version differ"
         | Error reason -> fail_host reason
       in
@@ -275,9 +417,15 @@ let run env =
        host committed that receipt with these exact capsule bytes. *)
     (match
        Runtime.update_persisting runtime ~persist (fun snapshot ->
-           (snapshot, ()))
+           let orchestrator =
+             if is_v3 then
+               Orchestrator.set_base_branch snapshot.orchestrator patch_id
+                 (Types.Branch.of_string (desired_base ()))
+             else snapshot.orchestrator
+           in
+           ({ snapshot with Runtime.orchestrator }, ()))
      with
-    | Ok () -> ()
+    | Ok () -> apply_input_at_boundary := false
     | Error reason -> fail_host reason);
     let module C = struct
       let persist = persist
@@ -400,6 +548,10 @@ let run env =
           | Worker_protocol.Session { phase = Start; _ } ->
               let current = agent snapshot patch_id in
               if current.busy then snapshot.orchestrator
+              else if is_v3 then
+                Orchestrator.start_assigned_worker snapshot.orchestrator
+                  patch_id
+                  ~base:(Types.Branch.of_string (desired_base ()))
               else
                 Orchestrator.fire snapshot.orchestrator
                   (Start
@@ -454,7 +606,7 @@ let run env =
             then
               Some
                 (Setup.recover_owned ~owner ~request:request_id ~renewal_id
-                   ~observe_forge ())
+                   ?intent:root_intent ~observe_forge ())
             else None)
       in
       Option.iter
@@ -498,18 +650,24 @@ let run env =
                 | Worktree_setup.Unavailable failure ->
                     Error (Worktree_provision.message failure)
                 | Path _ ->
-                    let base =
-                      Option.value current.base_branch ~default:env.main_branch
+                    let intent =
+                      match root_intent with
+                      | Some intent -> intent
+                      | None ->
+                          Branch_reconcile.
+                            {
+                              base =
+                                Types.Branch.to_string
+                                  (Option.value current.base_branch
+                                     ~default:env.main_branch);
+                              policy = Rewrite;
+                              purpose = Reconcile_base;
+                            }
                     in
                     Ok
                       (Branch_reconcile_runner.run_owned ~owner ~persist ~now
                          ~execute:(Setup.execute_reconciliation ~patch_id)
-                         (Branch_reconcile.Request
-                            {
-                              base = Types.Branch.to_string base;
-                              policy = Rewrite;
-                              purpose = Reconcile_base;
-                            })))
+                         (Branch_reconcile.Request intent)))
           in
           let outcome =
             match outcome with
@@ -571,17 +729,63 @@ let run env =
       | exn -> (Worker_protocol.Failed, short_error exn, None)
     in
     Eio.Cancel.protect (fun () ->
+        (match assigned with
+        | Some { work = Worker_protocol_v3.Session _; _ } ->
+            let current =
+              Runtime.read runtime (fun snapshot -> agent snapshot patch_id)
+            in
+            let publication =
+              match Branch_reconcile.publications current.branch_reconcile with
+              | receipt :: _ ->
+                  Branch_reconcile.Commit.to_string receipt.published_revision
+              | [] -> "unpublished"
+            in
+            let path =
+              Project_store.pr_body_artifact_path ~project_name:env.project_name
+                ~patch_id
+            in
+            let artifact =
+              try
+                let channel = Stdlib.open_in_bin path in
+                Fun.protect
+                  ~finally:(fun () -> Stdlib.close_in_noerr channel)
+                  (fun () ->
+                    let size = Stdlib.in_channel_length channel in
+                    if size > 262144 then Worker_protocol_v3.Oversized
+                    else
+                      Worker_protocol_v3.note ~assignment:operation ~publication
+                        (Ok (Stdlib.really_input_string channel size)))
+              with Sys_error _ -> (
+                match Unix.stat path with
+                | _ -> Worker_protocol_v3.Unreadable
+                | exception Unix.Unix_error (Unix.ENOENT, _, _) ->
+                    Worker_protocol_v3.Missing
+                | exception _ -> Worker_protocol_v3.Unreadable)
+            in
+            capsule := Worker_checkpoint.with_note !capsule artifact
+        | Some { work = Reconcile | Integrate_revision _; _ } | None -> ());
         terminal := Some (status, diagnostics, renewal_id);
+        (* A newer input received during the captured turn becomes desired
+           context only at this checkpointed safe boundary. Its version and
+           base travel in the same capsule as the updated owner projection. *)
+        apply_input_at_boundary := true;
         (match
            Runtime.update_persisting runtime ~persist (fun snapshot ->
-               (snapshot, ()))
+               let orchestrator =
+                 match !pending_input with
+                 | Some input when is_v3 ->
+                     Orchestrator.set_base_branch snapshot.orchestrator patch_id
+                       (Types.Branch.of_string input.selected_base)
+                 | Some _ | None -> snapshot.orchestrator
+               in
+               ({ snapshot with Runtime.orchestrator }, ()))
          with
         | Ok () -> ()
         | Error reason -> fail_host reason);
         apply Worker_protocol.Cleanup_complete;
         apply (Worker_protocol.Finish { status; diagnostics; renewal_id }))
   in
-  let validate_bind message =
+  let validate_bind message context_v3 =
     match message with
     | Worker_protocol.Bind
         {
@@ -629,21 +833,53 @@ let run env =
                          ~main_branch:env.main_branch))
             | exception _ -> Error "malformed capsule JSON"
         in
+        let candidate =
+          match (candidate, context_v3) with
+          | Ok (capsule, agent), Some context -> (
+              match Worker_checkpoint.v3_context capsule with
+              | None when Int64.equal state_version 0L ->
+                  Ok (Worker_checkpoint.with_v3_context capsule context, agent)
+              | Some bytes
+                when String.equal bytes
+                       (Worker_protocol_v3.context_bytes context) ->
+                  Ok (capsule, agent)
+              | _ -> Error "v3 capsule context mismatch")
+          | Ok (capsule, agent), None
+            when Option.is_none (Worker_checkpoint.v3_context capsule) ->
+              Ok (capsule, agent)
+          | Ok _, None -> Error "v3 capsule bound by v2"
+          | Error reason, _ -> Error reason
+        in
         match candidate with
         | Error reason -> Error reason
         | Ok (capsule, restored) -> (
-            let outputs = transition (Worker_protocol.Host message) in
-            if Worker_protocol.is_stopped !protocol then (
+            let outputs =
+              host_message
+                (match context_v3 with
+                | Some context -> Worker_protocol_v3.Bind (message, context)
+                | None -> Worker_protocol_v3.Legacy_control message)
+            in
+            if is_stopped () then (
               emit outputs;
               Error "invalid admission receipt")
             else
-              match Worker_protocol.admission_receipt !protocol with
+              match admission_receipt () with
               | Some receipt when capsule_matches_admission capsule receipt ->
                   binding :=
                     Some
-                      ( runtime_of_agent env patch_id restored,
+                      ( runtime_of_agent env patch_id restored context_v3
+                          (Worker_checkpoint.v3_input capsule),
                         ref capsule,
                         workspace_id );
+                  (match Worker_checkpoint.v3_input capsule with
+                  | None -> ()
+                  | Some input ->
+                      if
+                        transition_v3 (Worker_protocol_v3.Restore_input input)
+                        <> []
+                      then
+                        fail_host "restored input does not match v3 admission";
+                      pending_input := Some input);
                   emit outputs;
                   Ok ()
               | Some _ | None -> Error "capsule and admission disagree"))
@@ -697,7 +933,17 @@ let run env =
               match line with
               | None -> fail_host "host disconnected"
               | Some line -> (
-                  match Worker_protocol.decode line with
+                  let decoded =
+                    if is_v3 then
+                      Result.map_error
+                        (fun reason -> Worker_protocol.Invalid reason)
+                        (Worker_protocol_v3.decode_host line)
+                    else
+                      Result.map
+                        (fun msg -> Worker_protocol_v3.Legacy_control msg)
+                        (Worker_protocol.decode line)
+                  in
+                  match decoded with
                   | Error (Worker_protocol.Invalid reason) ->
                       send
                         (Worker_protocol.Protocol_error
@@ -708,13 +954,26 @@ let run env =
                         (Worker_protocol.Protocol_error
                            { identity = None; reason });
                       fail_host reason
-                  | Ok (Worker_protocol.Bind _ as message) ->
+                  | Ok
+                      (( Worker_protocol_v3.Bind (Worker_protocol.Bind _, _)
+                       | Legacy_control (Worker_protocol.Bind _) ) as bound) ->
+                      let message, context =
+                        match bound with
+                        | Worker_protocol_v3.Bind (message, context) ->
+                            (message, Some context)
+                        | Legacy_control message -> (message, None)
+                        | Execute _ | Input _ -> assert false
+                      in
                       if Option.is_none !binding then (
-                        match validate_bind message with
+                        match validate_bind message context with
                         | Ok () ->
-                            if Worker_protocol.recovery_pending !protocol then
+                            if recovery_pending () then
                               List.iter dispatch
-                                (transition Worker_protocol.Recover_unfinished)
+                                (if is_v3 then
+                                   transition_v3
+                                     Worker_protocol_v3.Recover_unfinished
+                                 else
+                                   transition Worker_protocol.Recover_unfinished)
                         | Error reason ->
                             send
                               (Worker_protocol.Protocol_error
@@ -722,14 +981,34 @@ let run env =
                             fail_host reason)
                       else apply (Worker_protocol.Host message);
                       loop ()
+                  | Ok (Worker_protocol_v3.Execute _ as envelope) ->
+                      List.iter dispatch (host_message envelope);
+                      loop ()
+                  | Ok (Worker_protocol_v3.Input (_, input) as envelope) ->
+                      let already =
+                        Option.exists (fun old -> old = input) !pending_input
+                      in
+                      List.iter dispatch (host_message envelope);
+                      (if not already then
+                         let committed =
+                           transition_v3
+                             (Worker_protocol_v3.Input_committed
+                                (input.input_id, input.version))
+                         in
+                         match (committed, !pending_input) with
+                         | [], Some applied when applied = input -> ()
+                         | _ -> fail_host "input commit rejected");
+                      loop ()
                   | Ok
-                      (( Worker_protocol.Execute _ | Cancel _ | Checkpoint_ack _
-                       | Result_ack _ | Shutdown _ ) as message) ->
-                      let before = Worker_protocol.state_version !protocol in
-                      let outputs = transition (Worker_protocol.Host message) in
+                      (Legacy_control
+                         (( Worker_protocol.Execute _ | Cancel _
+                          | Checkpoint_ack _ | Result_ack _ | Shutdown _ ) as
+                          message) as envelope) ->
+                      let before = state_version () in
+                      let outputs = host_message envelope in
                       (match message with
                       | Worker_protocol.Shutdown _
-                        when Worker_protocol.is_stopped !protocol
+                        when is_stopped ()
                              && List.exists
                                   (function
                                     | Worker_protocol.Cancel_active -> true
@@ -745,14 +1024,14 @@ let run env =
                       List.iter dispatch outputs;
                       (match message with
                       | Worker_protocol.Checkpoint_ack { accepted; _ } ->
-                          let after = Worker_protocol.state_version !protocol in
-                          if
-                            before <> after
-                            || Worker_protocol.is_stopped !protocol
-                          then Eio.Stream.add ack_mailbox accepted
+                          let after = state_version () in
+                          if before <> after || is_stopped () then
+                            Eio.Stream.add ack_mailbox accepted
                       | Worker_protocol.Bind _ | Execute _ | Cancel _
                       | Result_ack _ | Shutdown _ ->
                           ());
-                      loop ())
+                      loop ()
+                  | Ok (Worker_protocol_v3.Bind _) ->
+                      fail_host "invalid binding")
           in
           loop ()))

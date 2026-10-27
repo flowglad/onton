@@ -80,6 +80,7 @@ module type RECOVERY_S = sig
     owner:Runtime.patch_write ->
     request:string ->
     renewal_id:string option ->
+    ?intent:Branch_reconcile.intent ->
     ?observe_forge:
       (unit ->
       ( Branch_reconcile.workspace_forge * Types.Pr_number.t option,
