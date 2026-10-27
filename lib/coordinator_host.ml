@@ -1,4 +1,4 @@
-(* @archlint.module shell
+(* @archlint.module state
    @archlint.domain coordinator-host *)
 
 open Base
