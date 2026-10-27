@@ -1,4 +1,4 @@
-(* @archlint.module implementation
+(* @archlint.module shell
    @archlint.domain coordinator-host *)
 
 open Base
