@@ -828,11 +828,13 @@ let public_codec_api =
           | Ok (P.Execute request) -> request
           | _ -> failwith "execute fixture"
         in
-        let frame = P.execute_frame request in
+        let frame = Onton_core.Worker_protocol.execute_frame request in
         check ~label:"codec assertion 68"
-          (match P.parse_frame frame with Ok _ -> true | Error _ -> false);
+          (match Onton_core.Worker_protocol.parse_frame frame with
+          | Ok _ -> true
+          | Error _ -> false);
         check ~label:"codec assertion 69"
-          (match P.execute_message request with
+          (match Onton_core.Worker_protocol.execute_message request with
           | Some (P.Execute decoded) -> decoded = request
           | Some
               ( P.Bind _ | P.Cancel _ | P.Checkpoint_ack _ | P.Result_ack _
@@ -845,7 +847,7 @@ let public_codec_api =
           | Error _ -> failwith "bind fixture"
         in
         check ~label:"codec assertion 70"
-          (match P.decode (P.encode_host binding) with
+          (match P.decode (Onton_core.Worker_protocol.encode_host binding) with
           | Ok (P.Bind _) -> true
           | Ok
               ( P.Execute _ | P.Cancel _ | P.Checkpoint_ack _ | P.Result_ack _

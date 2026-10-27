@@ -130,4 +130,32 @@ let () =
            ignore (decode_response s);
            true
          with _ -> false));
+  QCheck2.Test.check_exn
+    (QCheck2.Test.make ~name:"public resource codec helpers" ~count:1
+       QCheck2.Gen.unit (fun () ->
+         match Resource_protocol.make_request valid with
+         | Result.Error _ -> false
+         | Result.Ok request -> (
+             match Resource_protocol.encode_request request with
+             | Result.Error _ -> false
+             | Result.Ok encoded -> (
+                 let observed =
+                   Resource_protocol.decode_response
+                     {|{"status":"ok","reason":"none","resource_id":"p"}|}
+                 in
+                 String.equal encoded valid
+                 && String.equal
+                      (Resource_protocol.op_name Resource_protocol.Observe)
+                      "observe"
+                 &&
+                 match observed with
+                 | Result.Error _ -> false
+                 | Result.Ok response ->
+                     (not
+                        (Resource_protocol.retirement_evidence
+                           Resource_protocol.Observe ~process_exit:0
+                           ~matching:true response))
+                     && Resource_protocol.retirement_evidence
+                          Resource_protocol.Stop ~process_exit:0 ~matching:true
+                          response))));
   print_endline "resource protocol properties passed"

@@ -1,5 +1,5 @@
 (* @archlint.module test
-   @archlint.domain worker-transport *)
+   @archlint.domain worker-protocol-v3 *)
 open Onton_core
 
 [@@@warning "-4-40-42"]
