@@ -140,7 +140,8 @@ let () =
             (match delivery_mode with
             | Start -> is_gameplan_patch
             | Respond -> false));
-      Test.make ~name:"only Human Respond prompts omit patch instructions"
+      Test.make
+        ~name:"Starts retain role instructions; Human Respond prompts omit them"
         ~count:500
         Gen.(
           pair

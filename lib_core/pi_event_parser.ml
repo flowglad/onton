@@ -16,7 +16,7 @@ let build_args ~model ~effort ~cwd_path ~patch_id ~prompt ~resume_session =
   in
   let resume_args =
     match resume_session with
-    | Some session_id -> [ "--resume"; session_id ]
+    | Some session_id -> [ "--session"; session_id ]
     | None -> []
   in
   let effort_args =
@@ -31,6 +31,21 @@ let parse_event (line : string) : Types.Stream_event.t list =
   | json -> (
       let typ = Json.string_field "type" json in
       match typ with
+      | Some "session" -> (
+          match Json.string_field "id" json with
+          | Some session_id when not (String.is_empty (String.strip session_id))
+            ->
+              [
+                Types.Stream_event.Session_init
+                  {
+                    session_id;
+                    api_key_source = None;
+                    model = None;
+                    claude_code_version = None;
+                    permission_mode = None;
+                  };
+              ]
+          | _ -> [])
       | Some "message_update" -> (
           let evt = Json.field "assistantMessageEvent" json in
           let evt_type = Option.bind evt ~f:(Json.string_field "type") in
@@ -111,7 +126,7 @@ let%test "build_args with continue" =
       "do stuff";
       "--mode";
       "json";
-      "--resume";
+      "--session";
       "x";
       "--session-dir";
       "/tmp/work/.pi-sessions/patch-1";
@@ -142,11 +157,21 @@ let%test "parse_event agent_end" =
         { text = ""; stop_reason = Types.Stop_reason.End_turn };
     ]
 
-let%test "parse_event session is ignored" =
+let%test "parse_event session captures the conversation ID" =
   let line =
     {|{"type":"session","version":3,"id":"abc","timestamp":"2026-01-01T00:00:00Z","cwd":"/tmp"}|}
   in
-  List.is_empty (parse_event line)
+  List.equal Types.Stream_event.equal (parse_event line)
+    [
+      Types.Stream_event.Session_init
+        {
+          session_id = "abc";
+          api_key_source = None;
+          model = None;
+          claude_code_version = None;
+          permission_mode = None;
+        };
+    ]
 
 let%test "parse_event message_end stop is ignored" =
   let line =

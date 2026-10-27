@@ -116,18 +116,15 @@ let session_allows_wontdo ~delivery_mode ~is_gameplan_patch =
   is_gameplan_patch && equal_delivery_mode delivery_mode Start
 
 let session_prompt_requires_patch_instructions ~delivery_mode ~kind =
-  match delivery_mode with
-  | Start -> true
-  | Respond -> (
-      match kind with
-      | Some Operation_kind.Human -> false
-      | None
-      | Some
-          ( Operation_kind.Uncommitted_changes | Operation_kind.Rebase
-          | Operation_kind.Merge_conflict | Operation_kind.Ci
-          | Operation_kind.Review_comments | Operation_kind.Pr_body
-          | Operation_kind.Findings ) ->
-          true)
+  match kind with
+  | Some Operation_kind.Human -> equal_delivery_mode delivery_mode Start
+  | None
+  | Some
+      ( Operation_kind.Uncommitted_changes | Operation_kind.Rebase
+      | Operation_kind.Merge_conflict | Operation_kind.Ci
+      | Operation_kind.Review_comments | Operation_kind.Pr_body
+      | Operation_kind.Findings ) ->
+      true
 
 let start_delivery (agent : Patch_agent.t) : start_delivery =
   if

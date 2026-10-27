@@ -495,10 +495,16 @@ struct
     in
     match outcome with
     | Branch_reconcile_runner.Idle ->
-        Runtime.read Env.runtime (fun snap ->
-            Branch_reconcile.publication_status
-              (Orchestrator.agent snap.Runtime.orchestrator patch_id)
-                .branch_reconcile)
+        let status =
+          Runtime.read Env.runtime (fun snap ->
+              Branch_reconcile.publication_status
+                (Orchestrator.agent snap.Runtime.orchestrator patch_id)
+                  .branch_reconcile)
+        in
+        if Poly.equal status `No_work then
+          Runtime.update_orchestrator Env.runtime (fun orch ->
+              Orchestrator.acknowledge_human_start_reply orch patch_id);
+        status
     | Branch_reconcile_runner.Waiting | Branch_reconcile_runner.Repair_needed _
       ->
         `Pending
@@ -652,8 +658,10 @@ struct
                   in
                   let prompt =
                     if
-                      Patch_decision.session_prompt_requires_patch_instructions
-                        ~delivery_mode ~kind
+                      Option.is_none resume_session
+                      && Patch_decision
+                         .session_prompt_requires_patch_instructions
+                           ~delivery_mode ~kind
                     then
                       let mode_instructions =
                         Runtime.read runtime (fun snap ->
@@ -681,7 +689,7 @@ struct
                       prompt ^ mode_instructions
                     else prompt
                   in
-                  if allows_wontdo then
+                  if allows_wontdo && Option.is_none resume_session then
                     prompt
                     ^ Printf.sprintf
                         "\n\n\

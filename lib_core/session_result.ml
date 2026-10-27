@@ -46,6 +46,16 @@ let decode_completion json =
   try Ok (completion_of_yojson json)
   with _ -> Error "invalid session completion"
 
+let accepted_human_start_reply ~message_id ~guidance (completion : completion) =
+  equal_delivery_mode completion.delivery_mode Start
+  && Option.equal Types.Operation_kind.equal completion.kind
+       (Some Types.Operation_kind.Human)
+  && completion.turn_accepted
+  && equal completion.result Session_ok
+  && Option.is_some message_id
+  && Option.equal Types.Message_id.equal message_id completion.message_id
+  && List.equal String.equal guidance completion.guidance
+
 let publication_intent (completion : completion) ~base ~policy =
   Branch_reconcile.
     {

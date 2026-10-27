@@ -1527,45 +1527,40 @@ module Make (Forge : Forge.S) (W : Worktree.S) (Env : Runner_env.S) = struct
                                       | Worktree_setup.Path _wt_path ->
                                           (* Owned provisioning has already checkpointed the
                                            materialization receipt before session dispatch. *)
-                                          let initial_prompt =
-                                            let has_existing_changes =
-                                              match
-                                                W.has_uncommitted_changes
-                                                  ~path:_wt_path
-                                              with
-                                              | Ok changes -> changes
-                                              | Error first_error -> (
-                                                  log_event runtime ~patch_id
-                                                    (Printf.sprintf
-                                                       "Worktree status \
-                                                        failed; retrying: %s"
-                                                       first_error);
-                                                  match
-                                                    W.has_uncommitted_changes
-                                                      ~path:_wt_path
-                                                  with
-                                                  | Ok changes -> changes
-                                                  | Error error ->
-                                                      failwith error)
-                                            in
-                                            Prompt.render_turn_layer_start
-                                              ~project_name
-                                              ~has_existing_changes ()
-                                          in
-                                          let prompt, kind =
+                                          let has_existing_changes =
                                             match
-                                              Patch_decision.start_delivery
-                                                agent
+                                              W.has_uncommitted_changes
+                                                ~path:_wt_path
                                             with
+                                            | Ok changes -> changes
+                                            | Error first_error -> (
+                                                log_event runtime ~patch_id
+                                                  (Printf.sprintf
+                                                     "Worktree status failed; \
+                                                      retrying: %s"
+                                                     first_error);
+                                                match
+                                                  W.has_uncommitted_changes
+                                                    ~path:_wt_path
+                                                with
+                                                | Ok changes -> changes
+                                                | Error error -> failwith error)
+                                          in
+                                          let delivery =
+                                            Patch_decision.start_delivery agent
+                                          in
+                                          let prompt =
+                                            Prompt.render_start_delivery
+                                              ~project_name
+                                              ~has_existing_changes delivery
+                                          in
+                                          let kind =
+                                            match delivery with
                                             | Patch_decision.Start_initial ->
-                                                (initial_prompt, None)
-                                            | Patch_decision.Start_with_human
-                                                { messages } ->
-                                                ( initial_prompt ^ "\n\n"
-                                                  ^ Prompt
-                                                    .render_human_message_prompt
-                                                      ~project_name messages,
-                                                  Some Operation_kind.Human )
+                                                None
+                                            | Patch_decision.Start_with_human _
+                                              ->
+                                                Some Operation_kind.Human
                                           in
                                           (* PR detection from stream text is a hint
                                      only — always confirmed via the GitHub

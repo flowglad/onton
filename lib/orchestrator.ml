@@ -1109,8 +1109,9 @@ type session_result = Session_result.t =
 
 (** Complete a failed session, restoring still-inflight human messages to the
     inbox. PR-backed Human Respond messages leave the slot at backend
-    acceptance. Human-carrying Start messages deliberately remain until
-    successful post-PR completion, so every earlier failure restores them. *)
+    acceptance. Human-carrying Start messages remain until successful post-PR
+    completion, except healthy accepted no-work replies, which acknowledge their
+    guidance independently of implementation/publication success. *)
 let complete_failed t patch_id =
   let t =
     update_agent t patch_id ~f:(fun a ->
@@ -1179,6 +1180,23 @@ let apply_force_complete ?message_id t patch_id reason =
         complete t patch_id
       else complete_failed t patch_id
 
+let acknowledge_human_start_reply t patch_id =
+  update_agent t patch_id ~f:(fun a ->
+      let answered =
+        a.Patch_agent.busy
+        && Option.equal Operation_kind.equal a.current_op (Some Human)
+        && Option.exists a.session_completion
+             ~f:
+               (Session_result.accepted_human_start_reply
+                  ~message_id:a.current_message_id
+                  ~guidance:a.inflight_human_messages)
+      in
+      let a =
+        if answered then Patch_agent.mark_inflight_human_messages_delivered a
+        else a
+      in
+      a)
+
 let apply_session_result t patch_id result =
   match result with
   | Session_ok ->
@@ -1228,14 +1246,14 @@ let apply_session_result t patch_id result =
       in
       complete_failed t patch_id
   | Session_no_commits ->
-      (* The LLM session ran cleanly but left no commits on the branch (HEAD
-         == base), so the supervisor skipped the push. Clear session fallback
-         (the LLM itself was healthy), bump the no-commits counter (which
-         feeds [needs_intervention] at >= 2). Do NOT
-         complete here: a Respond caller uses its normal outcome transition,
-         while a Start caller uses [Start_failed], which restores retained
-         Human Start guidance. *)
+      (* A healthy Human Start can answer a question without implementing or
+         publishing anything. Consume only guidance proved answered by the
+         current accepted completion; otherwise [Start_failed] would restore it
+         forever, and the Human exemption would bypass the no-progress cap.
+         Keep the no-commit outcome and counter: acknowledgement grants no
+         publication/PR authority. Unaccepted or failed turns remain retryable. *)
       let t = clear_session_fallback t patch_id in
+      let t = acknowledge_human_start_reply t patch_id in
       update_agent t patch_id ~f:Patch_agent.increment_no_commits_push_count
   | Session_context_exhausted ->
       (* The session overflowed the model's context window. [on_context_exhausted]

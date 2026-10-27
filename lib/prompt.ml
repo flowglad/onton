@@ -1611,6 +1611,14 @@ let render_human_message_prompt ~(project_name : string)
             Printf.sprintf "# Message from Human\n\n%s" formatted_flat
           else Printf.sprintf "# Messages from Human\n\n%s" formatted_numbered)
 
+let render_start_delivery ~project_name ~has_existing_changes = function
+  | Patch_decision.Start_initial ->
+      render_turn_layer_start ~project_name ~has_existing_changes ()
+  | Patch_decision.Start_with_human { messages } ->
+      (* Start is a scheduler delivery mode, not permission to implement.
+         Human guidance may only ask a question, including after WONTDO. *)
+      render_human_message_prompt ~project_name messages
+
 let render_base_branch_changed ~old_base ~new_base =
   Printf.sprintf
     "**NOTICE: Your base branch has changed from `%s` to `%s`.** Your PR now \

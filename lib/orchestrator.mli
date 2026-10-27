@@ -304,6 +304,10 @@ type session_result = Session_result.t =
           intervention. *)
 [@@deriving show, eq, sexp_of]
 
+val acknowledge_human_start_reply : t -> Patch_id.t -> t
+(** Consume inflight Human Start guidance only when the current accepted
+    completion matches its message identity and exact guidance. *)
+
 val apply_session_result : t -> Patch_id.t -> session_result -> t
 (** Apply a Claude session outcome to the orchestrator. Pure function.
     [Session_ok] -> clear_session_fallback. [Session_process_error] ->
@@ -322,8 +326,11 @@ val apply_session_result : t -> Patch_id.t -> session_result -> t
     increments its implementation budget; two empty sessions need intervention.
     Publication failures belong to [Branch_reconcile] and cannot change the
     implementation-session budget. A completed PR-backed Human turn has already
-    consumed its guidance at acceptance; failed Start restores retained guidance
-    through [apply_start_outcome _ Start_failed]. *)
+    consumed its guidance at acceptance. A no-work Human Start consumes guidance
+    only when a healthy accepted completion matches the current message ID and
+    captured guidance. This acknowledges the reply without granting publication
+    or PR success; other failed Starts restore retained guidance through
+    [apply_start_outcome _ Start_failed]. *)
 
 type start_outcome = Start_ok | Start_failed | Start_stale
 [@@deriving show, eq, sexp_of]

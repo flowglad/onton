@@ -28,7 +28,9 @@ let pi_thinking_args =
       let expected =
         [ "pi"; "-p"; "do work"; "--mode"; "json" ]
         @ (match effort with None -> [] | Some e -> [ "--thinking"; e ])
-        @ (match resume_session with None -> [] | Some s -> [ "--resume"; s ])
+        @ (match resume_session with
+          | None -> []
+          | Some s -> [ "--session"; s ])
         @ [ "--session-dir"; "/tmp/work/.pi-sessions/1" ]
       in
       args = expected)
@@ -142,6 +144,64 @@ let pi_auto_tiers =
           "/tmp/work/.pi-sessions/1";
         ])
 
+let pi_session_headers =
+  QCheck2.Test.make ~count:500
+    ~name:
+      "Pi session headers retain exact nonblank IDs for context-free resumption"
+    QCheck2.Gen.string (fun id ->
+      try
+        let header =
+          Yojson.Safe.to_string
+            (`Assoc [ ("type", `String "session"); ("id", `String id) ])
+        in
+        let events = Pi_event_parser.parse_event header in
+        if String.trim id = "" then events = []
+        else
+          events
+          = [
+              Types.Stream_event.Session_init
+                {
+                  session_id = id;
+                  api_key_source = None;
+                  model = None;
+                  claude_code_version = None;
+                  permission_mode = None;
+                };
+            ]
+          && Session_prompt.render ~resume_session:(Some id)
+               (Session_prompt.create ~context:"FULL PATCH CONTEXT"
+                  ~turn:"next turn")
+             = "next turn"
+          && Pi_event_parser.build_args ~model:None ~effort:None
+               ~cwd_path:"/tmp/work" ~patch_id:"1" ~prompt:"next turn"
+               ~resume_session:(Some id)
+             = [
+                 "pi";
+                 "-p";
+                 "next turn";
+                 "--mode";
+                 "json";
+                 "--session";
+                 id;
+                 "--session-dir";
+                 "/tmp/work/.pi-sessions/1";
+               ]
+      with _ -> false)
+
+let pi_malformed_session_headers =
+  QCheck2.Test.make ~count:1
+    ~name:"Pi malformed session headers cannot establish a conversation"
+    QCheck2.Gen.unit (fun () ->
+      List.for_all
+        (fun json -> Pi_event_parser.parse_event json = [])
+        [
+          {|{"type":"session"}|};
+          {|{"type":"session","id":null}|};
+          {|{"type":"session","id":42}|};
+          {|{"type":"session","id":""}|};
+          {|{"type":"session","id":"  "}|};
+        ])
+
 let pi_parser_public_surface_is_linked =
   QCheck2.Test.make ~name:"pi parser public surface is linked" QCheck2.Gen.unit
     (fun () ->
@@ -157,4 +217,6 @@ let () =
   QCheck2.Test.check_exn pi_effort_config;
   QCheck2.Test.check_exn pi_parse_event_is_total;
   QCheck2.Test.check_exn pi_auto_tiers;
+  QCheck2.Test.check_exn pi_session_headers;
+  QCheck2.Test.check_exn pi_malformed_session_headers;
   QCheck2.Test.check_exn pi_parser_public_surface_is_linked

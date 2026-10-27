@@ -112,8 +112,9 @@ end
 let run_case ?(adopted = false) ?(cancel = false) ?(push_failure = false)
     ?(detect_pr = false) ?(advance_base = false) ?(ad_hoc = false)
     ?(delivery_mode = Onton_core.Patch_decision.Start) ?(kind = None)
-    ?(branch_role = `Mainline) ?resume_session ?(prompt = "Implement the patch")
-    env ~content ~commit ~expect_opt_out =
+    ?(branch_role = `Mainline) ?(reply = false) ?(pi_session = false)
+    ?resume_session ?(prompt = "Implement the patch") env ~content ~commit
+    ~expect_opt_out =
   head := "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
   base_head :=
     if advance_base then "cccccccccccccccccccccccccccccccccccccccc"
@@ -215,7 +216,18 @@ let run_case ?(adopted = false) ?(cancel = false) ?(push_failure = false)
                 Orchestrator.send_human_message orch patch_id
                   "Original guidance"
               in
-              Orchestrator.fire orch (Orchestrator.Start (patch_id, main))
+              let message =
+                Orchestrator.message_of_action
+                  (Orchestrator.agent orch patch_id)
+                  (Orchestrator.Start (patch_id, main))
+              in
+              let orch = Orchestrator.reconcile_message orch message in
+              let orch, action =
+                Orchestrator.accept_message orch
+                  (Orchestrator.message_id message)
+              in
+              assert (Option.is_some action);
+              orch
           in
           let orch =
             match (delivery_mode, kind) with
@@ -302,9 +314,16 @@ let run_case ?(adopted = false) ?(cancel = false) ?(push_failure = false)
                 ~on_event
               ->
                 delivered := Some (prompt, resume_session);
+                if pi_session then
+                  List.iter
+                    (Onton_core.Pi_event_parser.parse_event
+                       {|{"type":"session","version":3,"id":"pi-conversation"}|})
+                    ~f:on_event;
                 let oc = Stdlib.open_out_bin path in
                 Stdlib.output_string oc content;
                 Stdlib.close_out oc;
+                if reply then
+                  on_event (Stream_event.Text_delta "Here is the reasoning.\n");
                 if detect_pr then
                   on_event
                     (Stream_event.Text_delta
@@ -343,6 +362,9 @@ let run_case ?(adopted = false) ?(cancel = false) ?(push_failure = false)
           | Start_initial -> failwith "Expected queued human guidance at start"
         else prompt
       in
+      let before_session =
+        Runtime.read runtime (fun snap -> snap.orchestrator)
+      in
       let result =
         Telemetry_dispatch.with_sinks
           ~sinks:
@@ -356,7 +378,8 @@ let run_case ?(adopted = false) ?(cancel = false) ?(push_failure = false)
               SD.run ~kind ~delivery_mode ~patch_id
                 ~prompt:
                   (SD.create_prompt
-                     ~context:(fun ~worktree_path:_ -> "")
+                     ~context:(fun ~worktree_path:_ ->
+                       if pi_session then "FULL PATCH CONTEXT\n" else "")
                      ~turn:prompt)
                 ~agent
                 ~on_pr_detected:(fun pr_number ->
@@ -421,20 +444,36 @@ let run_case ?(adopted = false) ?(cancel = false) ?(push_failure = false)
         assert (String.equal delivered_prompt prompt);
         assert (Poly.equal result.disposition `Ok))
       else (
-        assert (String.is_prefix delivered_prompt ~prefix:prompt);
-        match branch_role with
-        | `Mainline -> ()
-        | `Integration_root ->
+        assert (
+          String.is_prefix delivered_prompt
+            ~prefix:
+              (if pi_session && Option.is_none resume_session then
+                 "FULL PATCH CONTEXT\n" ^ prompt
+               else prompt));
+        match (resume_session, branch_role) with
+        | Some _, _ ->
+            assert (
+              not
+                (String.is_substring delivered_prompt
+                   ~substring:
+                     "Integration root: preserve all published history."));
+            assert (
+              not
+                (String.is_substring delivered_prompt
+                   ~substring:"Feature branch construction:"))
+        | None, `Mainline -> ()
+        | None, `Integration_root ->
             assert (
               String.is_substring delivered_prompt
                 ~substring:"Integration root: preserve all published history.")
-        | `Feature_descendant ->
+        | None, `Feature_descendant ->
             assert (
               String.is_substring delivered_prompt
                 ~substring:"Feature branch construction:"));
       let expect_wontdo_prompt =
         (not ad_hoc)
         && Onton_core.Patch_decision.equal_delivery_mode delivery_mode Start
+        && Option.is_none resume_session
       in
       assert (
         Bool.equal expect_wontdo_prompt
@@ -444,6 +483,56 @@ let run_case ?(adopted = false) ?(cancel = false) ?(push_failure = false)
           (String.is_substring delivered_prompt ~substring:"without committing"));
       let snapshot = Runtime.read runtime Fn.id in
       let after = Orchestrator.agent snapshot.orchestrator patch_id in
+      if pi_session then (
+        assert (
+          Option.equal String.equal after.llm_session_id
+            (Some "pi-conversation"));
+        let next_backend =
+          {
+            backend with
+            Llm_backend.run_streaming =
+              (fun ~project_name:_
+                ~cwd:_
+                ~patch_id:_
+                ~prompt
+                ~resume_session
+                ~session_uuid:_
+                ~complexity:_
+                ~on_event
+              ->
+                assert (
+                  Option.equal String.equal resume_session
+                    (Some "pi-conversation"));
+                assert (String.equal prompt "Next turn only");
+                List.iter
+                  (Onton_core.Pi_event_parser.parse_event
+                     {|{"type":"session","version":3,"id":"pi-conversation"}|})
+                  ~f:on_event;
+                List.iter
+                  (Onton_core.Pi_event_parser.parse_event
+                     {|{"type":"agent_end","messages":[]}|})
+                  ~f:on_event;
+                {
+                  Llm_backend.exit_code = 0;
+                  stdout = "";
+                  stderr = "";
+                  got_events = true;
+                  saw_final_result = true;
+                  timed_out = false;
+                });
+          }
+        in
+        let next =
+          SD.run ~kind ~delivery_mode ~patch_id ~agent:after
+            ~prompt:
+              (SD.create_prompt
+                 ~context:(fun ~worktree_path:_ ->
+                   failwith "resume rebuilt preamble")
+                 ~turn:"Next turn only")
+            ~on_pr_detected:(fun _ -> assert false)
+            ~backend:next_backend ~complexity:None
+        in
+        assert (Poly.equal next.disposition `No_commits));
       if detect_pr then (
         assert (Onton_core.Patch_agent.has_pr after);
         assert (not (Onton_core.Patch_agent.needs_intervention after)));
@@ -584,6 +673,60 @@ let run_case ?(adopted = false) ?(cancel = false) ?(push_failure = false)
       else (
         assert (Option.is_none after.wontdo_reason);
         assert (!pushes = if commit then 1 else 0);
+        if start_with_human && not commit then (
+          assert (Poly.equal result.disposition `No_commits);
+          assert (Bool.equal result.turn_accepted reply);
+          assert (Bool.equal (List.is_empty after.inflight_human_messages) reply);
+          if reply then (
+            (* Restore the completion checkpoint before classification or publication. *)
+            let completion = Option.value_exn after.session_completion in
+            let interrupted =
+              Orchestrator.record_session_completion before_session patch_id
+                completion
+            in
+            Runtime.update_orchestrator runtime (fun _ -> interrupted);
+            let resumed = Orchestrator.agent interrupted patch_id in
+            let resumed_backend =
+              {
+                backend with
+                Llm_backend.run_streaming =
+                  (fun ~project_name:_
+                    ~cwd:_
+                    ~patch_id:_
+                    ~prompt:_
+                    ~resume_session:_
+                    ~session_uuid:_
+                    ~complexity:_
+                    ~on_event:_
+                  -> failwith "persisted completion invoked backend");
+              }
+            in
+            let resumed_result =
+              SD.run ~kind ~delivery_mode ~patch_id
+                ~prompt:
+                  (SD.create_prompt
+                     ~context:(fun ~worktree_path:_ -> "")
+                     ~turn:prompt)
+                ~agent:resumed
+                ~on_pr_detected:(fun _ -> assert false)
+                ~backend:resumed_backend ~complexity:None
+            in
+            assert (Poly.equal resumed_result.disposition `No_commits));
+          let completed =
+            Runtime.read runtime (fun snap ->
+                Orchestrator.apply_start_outcome snap.orchestrator patch_id
+                  Orchestrator.Start_failed)
+          in
+          let completed_agent = Orchestrator.agent completed patch_id in
+          assert (not completed_agent.busy);
+          assert (not (Onton_core.Patch_agent.is_pr_present completed_agent));
+          assert (not (Onton_core.Patch_agent.branch_published completed_agent));
+          assert (
+            Bool.equal (List.is_empty completed_agent.human_messages) reply);
+          assert (
+            Bool.equal
+              (List.mem completed_agent.queue Human ~equal:Operation_kind.equal)
+              (not reply)));
         if adopted && (not commit) && not detect_pr then (
           assert (Poly.equal result.disposition `No_commits);
           match after.session_completion with
@@ -712,6 +855,9 @@ let () =
             ~expect_opt_out:false);
       List.iter [ `Mainline; `Integration_root; `Feature_descendant ]
         ~f:(fun branch_role ->
+          run_case env ~branch_role ~pi_session:true ~reply:true
+            ~delivery_mode:Onton_core.Patch_decision.Start ~kind:(Some Human)
+            ~content:"" ~commit:false ~expect_opt_out:false;
           run_case env ~adopted:true ~branch_role ~content:"" ~commit:false
             ~expect_opt_out:false;
           List.iter [ None; Some "existing-thread" ] ~f:(fun resume_session ->
@@ -727,6 +873,11 @@ let () =
                   in
                   run_case env ~branch_role ?resume_session ~prompt
                     ~delivery_mode:Onton_core.Patch_decision.Respond
+                    ~kind:(Some Human) ~content:"" ~commit:false
+                    ~expect_opt_out:false);
+              List.iter [ false; true ] ~f:(fun reply ->
+                  run_case env ~branch_role ?resume_session ~reply
+                    ~delivery_mode:Onton_core.Patch_decision.Start
                     ~kind:(Some Human) ~content:"" ~commit:false
                     ~expect_opt_out:false);
               run_case env ~branch_role ?resume_session
