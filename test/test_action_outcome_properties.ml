@@ -1787,3 +1787,83 @@ let () =
                     (Worker_protocol_v3.execution_mode context)
                     "mainline"
          with _ -> false))
+
+let () =
+  QCheck2.Test.check_exn
+    (QCheck2.Test.make
+       ~name:"assigned worker restore and start preserve coordinator scope"
+       ~count:50 QCheck2.Gen.bool (fun choose_alternate_base ->
+         try
+           let patches = mk_patches 1 in
+           let gameplan = make_gameplan patches in
+           let patch_id = pid_of_idx patches 0 in
+           let selected_base =
+             if choose_alternate_base then Branch.of_string "selected-base"
+             else main
+           in
+           let orch = Orchestrator.create ~patches ~main_branch:selected_base in
+           let message =
+             Orchestrator.message_of_action
+               (Orchestrator.agent orch patch_id)
+               (Orchestrator.Start (patch_id, selected_base))
+           in
+           let orch = Orchestrator.reconcile_message orch message in
+           let state =
+             Coordinator_state.create ~run_id:"run" ~config_id:"config"
+               ~plan_id:"plan" ~plan_bytes:"plan" ~config_bytes:"config"
+               ~capacity:1 ~budget_bytes:8388608
+           in
+           let operation : Coordinator_state.operation =
+             Coordinator_state.
+               {
+                 id = Message_id.to_string (Orchestrator.message_id message);
+                 patch = patch_id;
+                 used = 0;
+                 budget = 1;
+                 retry_after = 0L;
+                 attention = false;
+                 unfinished = true;
+                 maintenance = false;
+               }
+           in
+           let state =
+             fst
+               (Coordinator_state.step state (Coordinator_state.Admit operation))
+           in
+           match
+             Orchestrator.assigned_context orch state ~run_id:"run"
+               ~config_id:"config" ~plan_id:"plan" ~message
+           with
+           | Error _ -> false
+           | Ok context -> (
+               let original_agent = Orchestrator.agent orch patch_id in
+               match
+                 Orchestrator.restore_worker ~gameplan
+                   ~main_branch:selected_base ~context ~agent:original_agent ()
+               with
+               | Error _ -> false
+               | Ok restored ->
+                   let restored_agent = Orchestrator.agent restored patch_id in
+                   let started =
+                     Orchestrator.start_assigned_worker orch patch_id
+                       ~base:selected_base
+                   in
+                   let started_agent = Orchestrator.agent started patch_id in
+                   let repeated =
+                     Orchestrator.start_assigned_worker started patch_id
+                       ~base:selected_base
+                   in
+                   Patch_agent.equal started_agent
+                     (Orchestrator.agent repeated patch_id)
+                   && started_agent.Patch_agent.busy
+                   && Option.equal Branch.equal
+                        started_agent.Patch_agent.base_branch
+                        (Some selected_base)
+                   && Option.equal Branch.equal
+                        restored_agent.Patch_agent.base_branch
+                        (Some selected_base)
+                   && List.length (Orchestrator.all_agents restored) = 1
+                   && List.equal Patch_id.equal
+                        (Graph.deps (Orchestrator.graph restored) patch_id)
+                        (Graph.deps (Orchestrator.graph orch) patch_id))
+         with _ -> false))

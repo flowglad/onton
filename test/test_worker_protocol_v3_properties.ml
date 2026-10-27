@@ -72,8 +72,10 @@ let has_recover outputs =
 let check cond label = if not cond then failwith label
 
 let test_lifecycle () =
+  let initial = V.initial () in
+  check (not (V.is_stopped initial)) "initial worker is live";
   let b = V.Bind (bind (), ctx ()) in
-  let t, ready = V.step (V.initial ()) (V.Host b) in
+  let t, ready = V.step initial (V.Host b) in
   check
     (List.exists (function V.Send (P.Ready _) -> true | _ -> false) ready)
     "bind";
@@ -112,8 +114,12 @@ let test_lifecycle () =
     "restore receipt";
   let restored, outputs = V.step restored (V.Host (V.Execute e)) in
   check (not (has_begin outputs)) "restored replay";
-  let _, outputs = V.step restored V.Recover_unfinished in
+  check (V.recovery_pending restored) "restored assignment needs recovery";
+  let recovered, outputs = V.step restored V.Recover_unfinished in
   check (has_recover outputs) "unfinished recovery";
+  check (not (V.recovery_pending recovered)) "recovery request is one-shot";
+  let stopped, _ = V.step recovered V.Host_lost in
+  check (V.is_stopped stopped) "host loss stops the worker state";
   ignore receipt_bytes
 
 let test_integration () =
@@ -372,6 +378,9 @@ let test_retarget () =
   check (has_begin outputs) "next assignment uses latest context"
 
 let test_boundaries () =
+  check
+    (V.input_version (ctx ()) = 0L)
+    "context exposes committed input version";
   check
     (Result.is_error (V.decode_context (context ~generation:"01" ())))
     "canonical counter";
