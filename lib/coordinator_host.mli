@@ -43,7 +43,7 @@ val retired :
   (transition, error) result
 
 val result :
-  t -> assignment:string -> request:string -> (transition, error) result
+  t -> assignment:string -> frame:string -> (transition, error) result
 
 val cleanup :
   t -> assignment:string -> request:string -> (transition, error) result

@@ -405,7 +405,15 @@ let test_capacity_and_retirement () =
     "positive retirement did not release reservation";
   check
     (apply (Assign (assignment 3, 0L)) = [ Dispatch "assignment-3" ])
-    "unrelated eligible patch did not progress after retirement"
+    "unrelated eligible patch did not progress after retirement";
+  (match
+     Coordinator_host.result host ~assignment:"assignment-3" ~frame:"{}\n"
+   with
+  | Error (Coordinator_host.Invalid _) -> ()
+  | _ -> fail "unbound result was adopted");
+  check
+    (Coordinator_state.reserved_count (Coordinator_host.state host) = 2)
+    "unbound result released capacity"
 
 let () =
   test_capacity_and_retirement ();

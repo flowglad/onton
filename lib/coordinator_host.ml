@@ -222,8 +222,46 @@ let retired t ~resource_id ~(stop_request : Resource_protocol.request) ~response
     | Some launch ->
         apply t (Coordinator_state.Resource_stopped (resource_id, launch))
 
-let result t ~assignment ~request =
-  apply t (Coordinator_state.Result_committed (assignment, request))
+let result t ~assignment ~frame =
+  let assignment_record =
+    List.find
+      (Coordinator_state.assignments (state t))
+      ~f:(fun a -> String.equal a.id assignment)
+  in
+  let capsule =
+    Coordinator_state.capsules (state t)
+    |> List.filter ~f:(fun (c : Coordinator_state.capsule) ->
+        String.equal c.assignment assignment)
+    |> List.max_elt ~compare:(fun (a : Coordinator_state.capsule) b ->
+        Int64.compare a.version b.version)
+  in
+  match
+    (Worker_protocol_v3.decode_worker frame, assignment_record, capsule)
+  with
+  | Ok (Worker_protocol.Result msg), Some a, Some c -> (
+      let decoded =
+        try Worker_checkpoint.decode (Yojson.Safe.from_string c.bytes)
+        with _ -> Error "invalid terminal capsule"
+      in
+      match decoded with
+      | Error e -> Error (Invalid e)
+      | Ok checkpoint -> (
+          match
+            ( Worker_checkpoint.latest_operation checkpoint,
+              Worker_checkpoint.terminal checkpoint )
+          with
+          | Some op, Some (status, _, renewal)
+            when Poly.equal op msg.operation
+                 && Poly.equal status msg.status
+                 && Poly.equal renewal msg.renewal_id
+                 && Int64.equal msg.state_version c.version
+                 && String.equal msg.identity.patch_id
+                      (Patch_id.to_string a.patch)
+                 && String.equal a.id assignment ->
+              apply t
+                (Coordinator_state.Result_committed (assignment, a.request))
+          | _ -> Error (Invalid "result not bound to terminal capsule")))
+  | _ -> Error (Invalid "invalid or stale worker result")
 
 let cleanup t ~assignment ~request =
   apply t (Coordinator_state.Cleanup_confirmed (assignment, request))
