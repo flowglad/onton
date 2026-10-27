@@ -434,8 +434,12 @@ let public_api_coverage =
     (QCheck2.Gen.int_bound 1_000_000) (fun seed ->
       try
         let generation = Int64.of_int (seed + 1) in
+        let input_version = Int64.of_int (seed mod 1000) in
         let encoded_context =
-          context ~generation:(Int64.to_string generation) ()
+          context
+            ~generation:(Int64.to_string generation)
+            ~version:(Int64.to_string input_version)
+            ()
         in
         let decoded_context = ok (V.decode_context encoded_context) in
         let assignment = (request ()).operation in
@@ -456,8 +460,11 @@ let public_api_coverage =
         && V.assigned_patch decoded_context = "p"
         && V.root_role decoded_context = "patch"
         && V.message_generation decoded_context = generation
+        && V.input_version decoded_context = input_version
         && Option.is_some (V.admission_receipt state)
         && V.state_version state = Some 0L
+        && (not (V.is_stopped state))
+        && (not (V.recovery_pending state))
         && accepted = Some note_bytes && Result.is_ok encoded
       with _ -> false)
 
