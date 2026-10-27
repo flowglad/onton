@@ -6,7 +6,7 @@ type t
 
 type error =
   | Transport of string
-  | Invalid_response of string
+  | Invalid_response of int * string
   | Helper_exit of int * Resource_protocol.response
 
 val create : helper:string -> transport:transport -> t

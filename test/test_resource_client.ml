@@ -65,6 +65,17 @@ let () =
   check
     (Result.is_error (Onton.Resource_client.request bad req))
     "malformed response";
+  let broken =
+    Onton.Resource_client.create ~helper:"fixture"
+      ~transport:(fun ~argv:_ ~input:_ -> Ok (7, "{", "diagnostic"))
+  in
+  (match Onton.Resource_client.request broken req with
+  | Error (Onton.Resource_client.Invalid_response (exit, _)) ->
+      check (exit = 7) "malformed response retains independent process exit"
+  | Error
+      (Onton.Resource_client.Transport _ | Onton.Resource_client.Helper_exit _)
+  | Ok _ ->
+      failwith "invalid JSON must not erase exit status");
   let script = Filename.temp_file "onton-resource-helper" ".sh" in
   Fun.protect
     ~finally:(fun () -> Sys.remove script)

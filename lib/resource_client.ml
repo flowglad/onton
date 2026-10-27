@@ -124,7 +124,7 @@ let subprocess ~argv ~input =
 
 type error =
   | Transport of string
-  | Invalid_response of string
+  | Invalid_response of int * string
   | Helper_exit of int * Resource_protocol.response
 
 let worker_manifest ~executable ~args ~inputs =
@@ -193,7 +193,7 @@ let request t req =
           | Error e -> Error (Transport e)
           | Ok (exit, stdout, _stderr) -> (
               match Resource_protocol.decode_response stdout with
-              | Error e -> Error (Invalid_response e)
+              | Error e -> Error (Invalid_response (exit, e))
               | Ok r when exit <> 0 -> Error (Helper_exit (exit, r))
               | Ok r -> Ok r)))
 
