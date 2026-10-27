@@ -3,10 +3,12 @@
 
 open Onton_core
 
-let request op extra =
+let request ?(request_id = "id") op extra =
   Printf.sprintf
-    {|{"version":"resource-v1","op":"%s","run_id":"r","request_id":"id","coordinator_id":"c","owner_epoch":"0","revision":"0"%s}|}
-    op extra
+    {|{"version":"resource-v1","op":"%s","run_id":"r","request_id":%s,"coordinator_id":"c","owner_epoch":"0","revision":"0"%s}|}
+    op
+    (Yojson.Safe.to_string (`String request_id))
+    extra
 
 let check condition message = if not condition then failwith message
 
@@ -130,32 +132,36 @@ let () =
            ignore (decode_response s);
            true
          with _ -> false));
-  QCheck2.Test.check_exn
-    (QCheck2.Test.make ~name:"public resource codec helpers" ~count:1
-       QCheck2.Gen.unit (fun () ->
-         match Resource_protocol.make_request valid with
-         | Result.Error _ -> false
-         | Result.Ok request -> (
-             match Resource_protocol.encode_request request with
-             | Result.Error _ -> false
-             | Result.Ok encoded -> (
-                 let observed =
-                   Resource_protocol.decode_response
-                     {|{"status":"ok","reason":"none","resource_id":"p"}|}
-                 in
-                 String.equal encoded valid
-                 && String.equal
-                      (Resource_protocol.op_name Resource_protocol.Observe)
-                      "observe"
-                 &&
-                 match observed with
-                 | Result.Error _ -> false
-                 | Result.Ok response ->
-                     (not
-                        (Resource_protocol.retirement_evidence
-                           Resource_protocol.Observe ~process_exit:0
-                           ~matching:true response))
-                     && Resource_protocol.retirement_evidence
-                          Resource_protocol.Stop ~process_exit:0 ~matching:true
-                          response))));
-  print_endline "resource protocol properties passed"
+  print_endline "resource protocol properties passed";
+  QCheck_base_runner.run_tests_main
+    [
+      QCheck2.Test.make ~name:"public resource codec helpers" ~count:100
+        (QCheck2.Gen.int_bound 1_000_000) (fun seed ->
+          let open Resource_protocol in
+          let bytes =
+            request
+              ~request_id:("request-" ^ string_of_int seed)
+              "state-write" {|,"write_id":"w","state_version":"0","payload":""|}
+          in
+          match make_request bytes with
+          | Result.Error _ -> false
+          | Result.Ok request -> (
+              match encode_request request with
+              | Result.Error _ -> false
+              | Result.Ok encoded -> (
+                  let observed =
+                    decode_response
+                      {|{"status":"ok","reason":"none","resource_id":"p"}|}
+                  in
+                  String.equal encoded bytes
+                  && String.equal (op_name State_write) "state-write"
+                  &&
+                  match observed with
+                  | Result.Error _ -> false
+                  | Result.Ok response ->
+                      (not
+                         (retirement_evidence Observe ~process_exit:0
+                            ~matching:true response))
+                      && retirement_evidence Stop ~process_exit:0 ~matching:true
+                           response)));
+    ]

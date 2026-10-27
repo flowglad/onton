@@ -232,6 +232,38 @@ let test_boundaries () =
     = V.Oversized)
     "oversize note"
 
+let public_api_coverage =
+  QCheck2.Test.make ~count:100 ~name:"v3 public execution and note API"
+    (QCheck2.Gen.int_bound 1_000_000) (fun seed ->
+      try
+        let generation = Int64.of_int (seed + 1) in
+        let encoded_context =
+          context ~generation:(Int64.to_string generation) ()
+        in
+        let decoded_context = ok (V.decode_context encoded_context) in
+        let assignment = (request ()).operation in
+        let publication = "pr-" ^ string_of_int seed in
+        let note_bytes = "note-" ^ string_of_int seed in
+        let note = V.note ~assignment ~publication (Ok note_bytes) in
+        let accepted = V.accept_note ~assignment ~publication note in
+        let execution = execute () in
+        let request =
+          { execution.request with guidance = "guidance-" ^ string_of_int seed }
+        in
+        let execution = { execution with request; context = decoded_context } in
+        let encoded = V.encode_host (V.Execute execution) in
+        let bound = V.Bind (bind (), decoded_context) in
+        let state, _ = V.step (V.initial ()) (V.Host bound) in
+        V.context_bytes decoded_context = encoded_context
+        && V.execution_mode decoded_context = "feature"
+        && V.assigned_patch decoded_context = "p"
+        && V.root_role decoded_context = "patch"
+        && V.message_generation decoded_context = generation
+        && Option.is_some (V.admission_receipt state)
+        && V.state_version state = Some 0L
+        && accepted = Some note_bytes && Result.is_ok encoded
+      with _ -> false)
+
 let () =
   test_lifecycle ();
   test_integration ();
@@ -341,4 +373,5 @@ let () =
           loop initial 0L commit_flags
         with _ -> false)
   in
-  QCheck_base_runner.run_tests_main [ total; frames; interleavings ]
+  QCheck_base_runner.run_tests_main
+    [ total; frames; interleavings; public_api_coverage ]

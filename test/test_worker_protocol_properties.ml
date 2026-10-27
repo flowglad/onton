@@ -820,12 +820,14 @@ let bound_receipt_pair =
       with _ -> false)
 
 let public_codec_api =
-  QCheck2.Test.make ~name:"public codec constructors round-trip" ~count:1
-    QCheck2.Gen.unit (fun () ->
+  QCheck2.Test.make ~name:"public codec constructors round-trip" ~count:100
+    (QCheck2.Gen.int_bound 1_000_000) (fun seed ->
       try
         let request =
           match P.decode (execute ()) with
-          | Ok (P.Execute request) -> request
+          | Ok (P.Execute request) ->
+              let open P in
+              { request with guidance = "property-" ^ string_of_int seed }
           | _ -> failwith "execute fixture"
         in
         let frame = Onton_core.Worker_protocol.execute_frame request in
