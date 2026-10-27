@@ -1,3 +1,6 @@
+(* @archlint.module core
+   @archlint.domain scheduler-decision *)
+
 open Base
 open Types
 

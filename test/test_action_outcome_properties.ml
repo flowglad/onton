@@ -1681,3 +1681,50 @@ let () =
                 after.Patch_agent.branch_reconcile
            && Patch_agent.equal peer (Orchestrator.agent recovered other)
          with _ -> false))
+
+let () =
+  let patches = mk_patches 1 in
+  let patch_id = pid_of_idx patches 0 in
+  let orch = Orchestrator.create ~patches ~main_branch:main in
+  let message =
+    Orchestrator.message_of_action
+      (Orchestrator.agent orch patch_id)
+      (Orchestrator.Start (patch_id, main))
+  in
+  let orch = Orchestrator.reconcile_message orch message in
+  let state =
+    Coordinator_state.create ~run_id:"run" ~config_id:"config" ~plan_id:"plan"
+      ~plan_bytes:"plan" ~config_bytes:"config" ~capacity:1
+      ~budget_bytes:8388608
+  in
+  let operation : Coordinator_state.operation =
+    Coordinator_state.
+      {
+        id = Message_id.to_string (Orchestrator.message_id message);
+        patch = patch_id;
+        used = 0;
+        budget = 1;
+        retry_after = 0L;
+        attention = false;
+        unfinished = true;
+        maintenance = false;
+      }
+  in
+  let state =
+    fst (Coordinator_state.step state (Coordinator_state.Admit operation))
+  in
+  let view = Orchestrator.scheduling_view orch in
+  assert (List.length view.Scheduler_decision.agents = 1);
+  assert (Branch.equal view.Scheduler_decision.main main);
+  match
+    Orchestrator.assigned_context orch state ~run_id:"run" ~config_id:"config"
+      ~plan_id:"plan" ~message
+  with
+  | Error reason -> failwith reason
+  | Ok context ->
+      assert (
+        String.equal
+          (Worker_protocol_v3.selected_base context)
+          (Branch.to_string main));
+      assert (
+        String.equal (Worker_protocol_v3.execution_mode context) "mainline")

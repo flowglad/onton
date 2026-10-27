@@ -1,3 +1,6 @@
+(* @archlint.module test
+   @archlint.domain scheduler-decision *)
+
 open Base
 open Onton_core
 open Types

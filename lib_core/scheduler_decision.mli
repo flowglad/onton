@@ -1,3 +1,6 @@
+(* @archlint.module interface
+   @archlint.domain scheduler-decision *)
+
 open Types
 
 type input = {

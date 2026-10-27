@@ -1,3 +1,6 @@
+(* @archlint.module interface
+   @archlint.domain coordinator-state *)
+
 open Types
 
 type t

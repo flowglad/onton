@@ -1,3 +1,6 @@
+(* @archlint.module test
+   @archlint.domain coordinator-state *)
+
 open Base
 open Onton_core
 open Types
