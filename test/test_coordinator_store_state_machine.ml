@@ -173,9 +173,19 @@ let histories =
             in
             if
               (not
-                 (String.equal
-                    (Coordinator_store.encode committed)
-                    (Coordinator_store.encode restored)))
+                 (Int64.equal
+                    (Coordinator_store.version committed)
+                    (Coordinator_store.version restored)))
+              || (not
+                    (String.equal
+                       (Coordinator_store.write_id committed)
+                       (Coordinator_store.write_id restored)))
+              || (not
+                    (String.equal
+                       (Coordinator_state.encode
+                          (Coordinator_store.state committed))
+                       (Coordinator_state.encode
+                          (Coordinator_store.state restored))))
               || not
                    (Int64.equal
                       (Coordinator_store.version restored)
