@@ -1315,7 +1315,7 @@
 (test
  (name test_scheduler_adapter)
  (modules test_scheduler_adapter)
- (libraries onton onton_core))
+ (libraries onton onton_core qcheck-core))
 
 (test
  (name test_resource_protocol_properties)

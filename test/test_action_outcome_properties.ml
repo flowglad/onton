@@ -1728,3 +1728,62 @@ let () =
           (Branch.to_string main));
       assert (
         String.equal (Worker_protocol_v3.execution_mode context) "mainline")
+
+let () =
+  QCheck2.Test.check_exn
+    (QCheck2.Test.make
+       ~name:"assigned contexts use the current scheduling projection" ~count:50
+       QCheck2.Gen.bool (fun use_main_base ->
+         try
+           let selected_base =
+             if use_main_base then main else Branch.of_string "alternate-base"
+           in
+           let patches = mk_patches 1 in
+           let patch_id = pid_of_idx patches 0 in
+           let orch = Orchestrator.create ~patches ~main_branch:selected_base in
+           let message =
+             Orchestrator.message_of_action
+               (Orchestrator.agent orch patch_id)
+               (Orchestrator.Start (patch_id, selected_base))
+           in
+           let orch = Orchestrator.reconcile_message orch message in
+           let view = Orchestrator.scheduling_view orch in
+           let state =
+             Coordinator_state.create ~run_id:"run" ~config_id:"config"
+               ~plan_id:"plan"
+               ~plan_bytes:(if use_main_base then "plan-main" else "plan-alt")
+               ~config_bytes:"config" ~capacity:1 ~budget_bytes:8388608
+           in
+           let operation : Coordinator_state.operation =
+             Coordinator_state.
+               {
+                 id = Message_id.to_string (Orchestrator.message_id message);
+                 patch = patch_id;
+                 used = 0;
+                 budget = 1;
+                 retry_after = 0L;
+                 attention = false;
+                 unfinished = true;
+                 maintenance = false;
+               }
+           in
+           let state =
+             fst
+               (Coordinator_state.step state (Coordinator_state.Admit operation))
+           in
+           List.length view.Scheduler_decision.agents = 1
+           && Branch.equal view.Scheduler_decision.main selected_base
+           &&
+           match
+             Orchestrator.assigned_context orch state ~run_id:"run"
+               ~config_id:"config" ~plan_id:"plan" ~message
+           with
+           | Error _ -> false
+           | Ok context ->
+               String.equal
+                 (Worker_protocol_v3.selected_base context)
+                 (Branch.to_string selected_base)
+               && String.equal
+                    (Worker_protocol_v3.execution_mode context)
+                    "mainline"
+         with _ -> false))

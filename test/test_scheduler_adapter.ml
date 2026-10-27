@@ -169,3 +169,45 @@ let () =
       assert (String.equal (Worker_protocol_v3.root_role c) "root")
   | Error reason -> failwith reason);
   Stdio.printf "local scheduler shared planning parity: OK\n"
+
+let () =
+  QCheck2.Test.check_exn
+    (QCheck2.Test.make
+       ~name:"scheduler decision API covers generated patch identities"
+       ~count:100 (QCheck2.Gen.int_range 1 100_000) (fun seed ->
+         try
+           let suffix = Int.to_string seed in
+           let root = patch ("root-" ^ suffix) [] in
+           let child = patch ("child-" ^ suffix) [ root.Patch.id ] in
+           let patches = [ root; child ] in
+           let main = Branch.of_string "main" in
+           let orchestrator = Orchestrator.create ~patches ~main_branch:main in
+           let view : Scheduler_decision.input =
+             Scheduler_decision.
+               {
+                 graph = Orchestrator.graph orchestrator;
+                 mode = Orchestrator.execution_mode orchestrator;
+                 agents = Orchestrator.all_agents orchestrator;
+                 main;
+               }
+           in
+           let agent = Orchestrator.agent orchestrator root.Patch.id in
+           let recovery =
+             Scheduler_decision.recovery_intent view ~gameplan_patch:true
+               root.Patch.id
+           in
+           let base = Scheduler_decision.selected_base view root.Patch.id in
+           let evidence = Scheduler_decision.evidence_id view root.Patch.id in
+           let decisions = Scheduler_decision.plan view in
+           let decision = Scheduler_decision.for_patch view root.Patch.id in
+           List.length decisions = List.length patches
+           && Scheduler_decision.dependencies_admitted view root.Patch.id
+           && Option.equal Branch.equal base (Some main)
+           && Option.is_some evidence && Option.is_some decision
+           && (not (Scheduler_decision.ready_for_review view root.Patch.id))
+           && (not (Scheduler_decision.open_dependency_ready agent))
+           && (not (Scheduler_decision.draft_allowed view root.Patch.id))
+           && (not recovery.Scheduler_decision.pr_base_update)
+           && (not recovery.Scheduler_decision.pr_draft_update)
+           && not (Scheduler_decision.automerge_candidate agent ~main)
+         with _ -> false))

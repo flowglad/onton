@@ -454,9 +454,113 @@ let () =
           true
         with _ -> false)
   in
+  let public_api_coverage =
+    QCheck2.Test.make
+      ~name:"coordinator public projections over generated run identities"
+      ~count:100 (QCheck2.Gen.int_range 1 1_000_000) (fun seed ->
+        try
+          let suffix = Int.to_string seed in
+          let patch_id = Patch_id.of_string ("coverage-" ^ suffix) in
+          let main = Branch.of_string "main" in
+          let patch_spec : Patch.t =
+            Patch.
+              {
+                id = patch_id;
+                title = suffix;
+                description = "";
+                branch = main;
+                dependencies = [];
+                spec = "";
+                acceptance_criteria = [];
+                files = [];
+                classification = "";
+                changes = [];
+                test_stubs_introduced = [];
+                test_stubs_implemented = [];
+                complexity = None;
+                precedents = [];
+                required_context = [];
+              }
+          in
+          let agent = Patch_agent.create ~branch:main patch_id in
+          let view : Scheduler_decision.input =
+            Scheduler_decision.
+              {
+                graph = Graph.of_patches [ patch_spec ];
+                mode = Execution_mode.mainline;
+                agents = [ agent ];
+                main;
+              }
+          in
+          let operation = operation ~owner:patch_id ("coverage-" ^ suffix) in
+          let state =
+            initial () |> fun state -> apply state (S.Admit operation)
+          in
+          let projections =
+            String.equal (Coordinator_state.plan_bytes state) "frozen-plan"
+            && String.equal
+                 (Coordinator_state.config_bytes state)
+                 "nonsecret-config"
+            && List.length (Coordinator_state.operations state) = 1
+            && List.is_empty (Coordinator_state.assignments state)
+            && List.is_empty (Coordinator_state.resources state)
+            && List.is_empty (Coordinator_state.resource_owners state)
+            && List.is_empty (Coordinator_state.terminal_patches state)
+            && List.is_empty (Coordinator_state.retired_resources state)
+            && List.is_empty (Coordinator_state.capsules state)
+            && List.is_empty (Coordinator_state.controls state)
+            && List.is_empty (Coordinator_state.inputs state)
+            && (match Coordinator_state.lifecycle state with
+              | Coordinator_state.Running -> true
+              | Coordinator_state.Draining _ | Coordinator_state.Sleeping _
+              | Coordinator_state.Cancelling _ ->
+                  false)
+            && (not (Coordinator_state.sleep_ready state))
+            && (not (Coordinator_state.cancellation_complete state))
+            && Coordinator_state.reserved_count state = 0
+            && Coordinator_state.can_recover state operation ~now:0L
+            && Result.is_ok
+                 (Coordinator_state.decode (Coordinator_state.encode state))
+            && Result.is_error (Coordinator_state.decode_control "not-json")
+          in
+          let context_input : Coordinator_state.context_input =
+            Coordinator_state.
+              {
+                run_id = "run";
+                config_id = "config";
+                plan_id = "plan";
+                message_id = operation.id;
+                generation = Int64.of_int agent.Patch_agent.generation;
+                patch_id;
+                dependencies = [];
+                selected_base = main;
+                mode = "mainline";
+                root = false;
+                evidence_id =
+                  Option.value
+                    (Scheduler_decision.evidence_id view patch_id)
+                    ~default:"missing-evidence";
+                guidance_ids = [];
+                input_version = 0L;
+              }
+          in
+          let context_ok =
+            match
+              Coordinator_state.execution_context state view context_input
+            with
+            | Ok context ->
+                String.equal (Worker_protocol_v3.selected_base context) "main"
+                && String.equal
+                     (Worker_protocol_v3.execution_mode context)
+                     "mainline"
+            | Error _ -> false
+          in
+          projections && context_ok
+        with _ -> false)
+  in
   let rc =
     QCheck_base_runner.run_tests ~verbose:true
-      [ property; decoder; state_decoder ]
+      [ property; decoder; state_decoder; public_api_coverage ]
   in
   if rc <> 0 then Stdlib.exit rc;
   Stdio.printf "coordinator independent lifecycle model: OK\n"
