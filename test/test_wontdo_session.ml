@@ -451,10 +451,7 @@ let run_case ?(adopted = false) ?(cancel = false) ?(push_failure = false)
                  "FULL PATCH CONTEXT\n" ^ prompt
                else prompt));
         match (resume_session, branch_role) with
-        | Some _, _ -> ()
-        | None, `Mainline -> ()
-        | None, (`Integration_root | `Feature_descendant) when start_with_human
-          ->
+        | Some _, _ ->
             assert (
               not
                 (String.is_substring delivered_prompt
@@ -464,6 +461,7 @@ let run_case ?(adopted = false) ?(cancel = false) ?(push_failure = false)
               not
                 (String.is_substring delivered_prompt
                    ~substring:"Feature branch construction:"))
+        | None, `Mainline -> ()
         | None, `Integration_root ->
             assert (
               String.is_substring delivered_prompt
