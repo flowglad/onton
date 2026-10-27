@@ -112,8 +112,9 @@ end
 let run_case ?(adopted = false) ?(cancel = false) ?(push_failure = false)
     ?(detect_pr = false) ?(advance_base = false) ?(ad_hoc = false)
     ?(delivery_mode = Onton_core.Patch_decision.Start) ?(kind = None)
-    ?(branch_role = `Mainline) ?(reply = false) ?resume_session
-    ?(prompt = "Implement the patch") env ~content ~commit ~expect_opt_out =
+    ?(branch_role = `Mainline) ?(reply = false) ?(pi_session = false)
+    ?resume_session ?(prompt = "Implement the patch") env ~content ~commit
+    ~expect_opt_out =
   head := "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
   base_head :=
     if advance_base then "cccccccccccccccccccccccccccccccccccccccc"
@@ -313,6 +314,11 @@ let run_case ?(adopted = false) ?(cancel = false) ?(push_failure = false)
                 ~on_event
               ->
                 delivered := Some (prompt, resume_session);
+                if pi_session then
+                  List.iter
+                    (Onton_core.Pi_event_parser.parse_event
+                       {|{"type":"session","version":3,"id":"pi-conversation"}|})
+                    ~f:on_event;
                 let oc = Stdlib.open_out_bin path in
                 Stdlib.output_string oc content;
                 Stdlib.close_out oc;
@@ -369,7 +375,8 @@ let run_case ?(adopted = false) ?(cancel = false) ?(push_failure = false)
               SD.run ~kind ~delivery_mode ~patch_id
                 ~prompt:
                   (SD.create_prompt
-                     ~context:(fun ~worktree_path:_ -> "")
+                     ~context:(fun ~worktree_path:_ ->
+                       if pi_session then "FULL PATCH CONTEXT\n" else "")
                      ~turn:prompt)
                 ~agent
                 ~on_pr_detected:(fun pr_number ->
@@ -434,20 +441,27 @@ let run_case ?(adopted = false) ?(cancel = false) ?(push_failure = false)
         assert (String.equal delivered_prompt prompt);
         assert (Poly.equal result.disposition `Ok))
       else (
-        assert (String.is_prefix delivered_prompt ~prefix:prompt);
-        match branch_role with
-        | `Mainline -> ()
-        | `Integration_root ->
+        assert (
+          String.is_prefix delivered_prompt
+            ~prefix:
+              (if pi_session && Option.is_none resume_session then
+                 "FULL PATCH CONTEXT\n" ^ prompt
+               else prompt));
+        match (resume_session, branch_role) with
+        | Some _, _ -> ()
+        | None, `Mainline -> ()
+        | None, `Integration_root ->
             assert (
               String.is_substring delivered_prompt
                 ~substring:"Integration root: preserve all published history.")
-        | `Feature_descendant ->
+        | None, `Feature_descendant ->
             assert (
               String.is_substring delivered_prompt
                 ~substring:"Feature branch construction:"));
       let expect_wontdo_prompt =
         (not ad_hoc)
         && Onton_core.Patch_decision.equal_delivery_mode delivery_mode Start
+        && Option.is_none resume_session
       in
       assert (
         Bool.equal expect_wontdo_prompt
@@ -457,6 +471,56 @@ let run_case ?(adopted = false) ?(cancel = false) ?(push_failure = false)
           (String.is_substring delivered_prompt ~substring:"without committing"));
       let snapshot = Runtime.read runtime Fn.id in
       let after = Orchestrator.agent snapshot.orchestrator patch_id in
+      if pi_session then (
+        assert (
+          Option.equal String.equal after.llm_session_id
+            (Some "pi-conversation"));
+        let next_backend =
+          {
+            backend with
+            Llm_backend.run_streaming =
+              (fun ~project_name:_
+                ~cwd:_
+                ~patch_id:_
+                ~prompt
+                ~resume_session
+                ~session_uuid:_
+                ~complexity:_
+                ~on_event
+              ->
+                assert (
+                  Option.equal String.equal resume_session
+                    (Some "pi-conversation"));
+                assert (String.equal prompt "Next turn only");
+                List.iter
+                  (Onton_core.Pi_event_parser.parse_event
+                     {|{"type":"session","version":3,"id":"pi-conversation"}|})
+                  ~f:on_event;
+                List.iter
+                  (Onton_core.Pi_event_parser.parse_event
+                     {|{"type":"agent_end","messages":[]}|})
+                  ~f:on_event;
+                {
+                  Llm_backend.exit_code = 0;
+                  stdout = "";
+                  stderr = "";
+                  got_events = true;
+                  saw_final_result = true;
+                  timed_out = false;
+                });
+          }
+        in
+        let next =
+          SD.run ~kind ~delivery_mode ~patch_id ~agent:after
+            ~prompt:
+              (SD.create_prompt
+                 ~context:(fun ~worktree_path:_ ->
+                   failwith "resume rebuilt preamble")
+                 ~turn:"Next turn only")
+            ~on_pr_detected:(fun _ -> assert false)
+            ~backend:next_backend ~complexity:None
+        in
+        assert (Poly.equal next.disposition `No_commits));
       if detect_pr then (
         assert (Onton_core.Patch_agent.has_pr after);
         assert (not (Onton_core.Patch_agent.needs_intervention after)));
@@ -743,6 +807,9 @@ let () =
             ~expect_opt_out:false);
       List.iter [ `Mainline; `Integration_root; `Feature_descendant ]
         ~f:(fun branch_role ->
+          run_case env ~branch_role ~pi_session:true ~reply:true
+            ~delivery_mode:Onton_core.Patch_decision.Start ~kind:(Some Human)
+            ~content:"" ~commit:false ~expect_opt_out:false;
           run_case env ~adopted:true ~branch_role ~content:"" ~commit:false
             ~expect_opt_out:false;
           List.iter [ None; Some "existing-thread" ] ~f:(fun resume_session ->

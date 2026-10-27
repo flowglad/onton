@@ -652,8 +652,10 @@ struct
                   in
                   let prompt =
                     if
-                      Patch_decision.session_prompt_requires_patch_instructions
-                        ~delivery_mode ~kind
+                      Option.is_none resume_session
+                      && Patch_decision
+                         .session_prompt_requires_patch_instructions
+                           ~delivery_mode ~kind
                     then
                       let mode_instructions =
                         Runtime.read runtime (fun snap ->
@@ -681,7 +683,7 @@ struct
                       prompt ^ mode_instructions
                     else prompt
                   in
-                  if allows_wontdo then
+                  if allows_wontdo && Option.is_none resume_session then
                     prompt
                     ^ Printf.sprintf
                         "\n\n\
