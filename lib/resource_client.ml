@@ -1,5 +1,5 @@
 (* @archlint.module exempt
-   @archlint.exempt-reason effectful-resource-helper-adapter *)
+   @archlint.exempt-reason effect-boundary *)
 
 open Base
 
