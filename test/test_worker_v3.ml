@@ -1,4 +1,5 @@
-(* @archlint.module test *)
+(* @archlint.module test
+   @archlint.domain worker-transport *)
 
 let () =
   print_endline

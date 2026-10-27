@@ -1,4 +1,5 @@
-(* @archlint.module test *)
+(* @archlint.module test
+   @archlint.domain distributed-coordinator *)
 
 let () =
   print_endline

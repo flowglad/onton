@@ -1,4 +1,5 @@
-(* @archlint.module test *)
+(* @archlint.module test
+   @archlint.domain branch-reconcile *)
 
 let () =
   print_endline

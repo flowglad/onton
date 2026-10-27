@@ -1,4 +1,5 @@
-(* @archlint.module test *)
+(* @archlint.module test
+   @archlint.domain resource-protocol *)
 
 let () =
   print_endline

@@ -1,4 +1,5 @@
-(* @archlint.module test *)
+(* @archlint.module test
+   @archlint.domain scheduler-decision *)
 
 let () =
   print_endline

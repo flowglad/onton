@@ -1,4 +1,5 @@
-(* @archlint.module test *)
+(* @archlint.module test
+   @archlint.domain coordinator-forge *)
 
 let () =
   print_endline
