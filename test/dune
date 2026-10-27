@@ -1347,6 +1347,16 @@
  (libraries onton onton_core onton_test_support eio_main unix))
 
 (test
+ (name test_coordinator_host_state_machine)
+ (modules test_coordinator_host_state_machine)
+ (libraries onton onton_core qcheck-core qcheck-core.runner))
+
+(test
+ (name test_coordinator_store_state_machine)
+ (modules test_coordinator_store_state_machine)
+ (libraries onton onton_core qcheck-core qcheck-core.runner))
+
+(test
  (name test_coordinator_recovery)
  (modules test_coordinator_recovery)
  (libraries onton onton_core onton_test_support eio_main unix))
