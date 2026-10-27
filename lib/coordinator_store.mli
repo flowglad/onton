@@ -1,5 +1,5 @@
 (* @archlint.module interface
-   @archlint.domain coordinator-store *)
+   @archlint.domain coordinator-state *)
 
 type envelope = private {
   version : int64;

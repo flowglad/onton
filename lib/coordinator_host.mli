@@ -1,5 +1,5 @@
 (* @archlint.module interface
-   @archlint.domain coordinator-host *)
+   @archlint.domain coordinator-state *)
 
 type t
 (** A single serial coordinator epoch. Prospective decisions cannot be used as

@@ -1,5 +1,5 @@
 (* @archlint.module state
-   @archlint.domain coordinator-store *)
+   @archlint.domain coordinator-state *)
 
 open Base
 

@@ -1,5 +1,5 @@
 (* @archlint.module stateTest
-   @archlint.domain coordinator-store *)
+   @archlint.domain coordinator-state *)
 
 open Base
 open Onton
@@ -131,11 +131,33 @@ let histories =
         let current =
           ref (Coordinator_store.committed initial initial_receipt)
         in
+        let pure_state = ref state in
         let valid = ref true in
-        List.iteri history ~f:(fun index _command ->
+        List.iteri history ~f:(fun index command ->
+            let operation : Coordinator_state.operation =
+              Coordinator_state.
+                {
+                  id = "operation-" ^ Int.to_string index;
+                  patch =
+                    Types.Patch_id.of_string ("patch-" ^ Int.to_string command);
+                  used = 0;
+                  budget = 3;
+                  retry_after = 0L;
+                  attention = false;
+                  unfinished = true;
+                  maintenance = false;
+                }
+            in
+            let next_state, outcomes =
+              Coordinator_state.step !pure_state
+                (Coordinator_state.Admit operation)
+            in
+            if not (Poly.equal outcomes [ Coordinator_state.Accepted ]) then
+              valid := false;
+            pure_state := next_state;
             let expected = Coordinator_store.version !current in
             let write_id = "write-" ^ Int.to_string index in
-            let candidate = Coordinator_store.with_state !current state in
+            let candidate = Coordinator_store.with_state !current !pure_state in
             let receipt : Coordinator_store.receipt =
               Coordinator_store.commit store ~expected_version:expected
                 ~write_id candidate

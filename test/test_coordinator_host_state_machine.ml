@@ -1,5 +1,5 @@
 (* @archlint.module stateTest
-   @archlint.domain coordinator-host *)
+   @archlint.domain coordinator-state *)
 
 open Base
 open Onton
@@ -163,6 +163,11 @@ let histories =
                   | None -> Coordinator_state.Loss ("unknown-resource", 0L))
               | _ -> Coordinator_state.Loss ("unknown-resource", 0L)
             in
+            let pure_next, _ =
+              Coordinator_state.step
+                (Coordinator_host.state !current_host)
+                event
+            in
             let before =
               Coordinator_state.encode (Coordinator_host.state !current_host)
             in
@@ -175,8 +180,10 @@ let histories =
             let after =
               Coordinator_state.encode (Coordinator_host.state !current_host)
             in
-            if (not (String.equal before after)) && command <> 0 then
-              valid := false;
+            if
+              (not (String.equal after (Coordinator_state.encode pure_next)))
+              || ((not (String.equal before after)) && command <> 0)
+            then valid := false;
             let restored =
               match Coordinator_host.restore ~store ~next_write_id:next_id with
               | Ok restored -> restored
