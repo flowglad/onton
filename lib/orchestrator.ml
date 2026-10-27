@@ -523,6 +523,87 @@ let current_message t patch_id =
   | None -> None
   | Some message_id -> Map.find t.outbox message_id
 
+let scheduling_view t : Scheduler_decision.input =
+  {
+    graph = t.graph;
+    mode = t.execution_mode;
+    agents = Map.data t.agents;
+    main = t.main_branch;
+  }
+
+let assigned_context t state ~run_id ~config_id ~plan_id ~message =
+  let patch_id = message.patch_id in
+  let view = scheduling_view t in
+  match (Map.find t.outbox message.message_id, Map.find t.agents patch_id) with
+  | None, _ | _, None -> Error "no current scheduling message"
+  | Some stored, Some agent
+    when (not (equal_patch_agent_message stored message))
+         || (not (Int.equal message.generation agent.generation))
+         || equal_message_status stored.status Obsolete
+         || equal_message_status stored.status Completed ->
+      Error "stale scheduling message"
+  | Some _, Some agent -> (
+      let dependency_ids = Graph.deps t.graph patch_id in
+      let rec revisions = function
+        | [] -> Ok []
+        | id :: rest -> (
+            match Map.find t.agents id with
+            | None -> Error "missing dependency agent"
+            | Some dep -> (
+                let revision =
+                  if dep.merged then dep.merge_commit_sha else dep.head_oid
+                in
+                match (revision, revisions rest) with
+                | Some rev, Ok xs -> Ok ((id, true, rev) :: xs)
+                | None, Ok _ | _, Error _ ->
+                    Error "dependency revision unconfirmed"))
+      in
+      match
+        ( revisions dependency_ids,
+          Scheduler_decision.selected_base view patch_id,
+          Scheduler_decision.evidence_id view patch_id )
+      with
+      | Ok dependencies, Some selected_base, Some evidence_id
+        when match message.action with
+             | Start (_, base) | Rebase (_, base) ->
+                 Branch.equal base selected_base
+             | Respond _ | Reconcile_branch _ -> true ->
+          let unconsumed =
+            Coordinator_state.inputs state
+            |> List.filter ~f:(fun (_, p, _, _, used) ->
+                String.equal p (Patch_id.to_string patch_id) && not used)
+          in
+          let input_version =
+            List.fold (Coordinator_state.inputs state) ~init:0L
+              ~f:(fun n (_, p, v, _, _) ->
+                if String.equal p (Patch_id.to_string patch_id) && Int64.(v > n)
+                then v
+                else n)
+          in
+          let context : Coordinator_state.context_input =
+            {
+              run_id;
+              config_id;
+              plan_id;
+              message_id = Message_id.to_string message.message_id;
+              generation = Int64.of_int agent.generation;
+              patch_id;
+              dependencies;
+              selected_base;
+              mode =
+                (if Option.is_some (Execution_mode.root t.execution_mode) then
+                   "feature"
+                 else "mainline");
+              root = Execution_mode.is_root t.execution_mode patch_id;
+              evidence_id;
+              guidance_ids = List.map unconsumed ~f:(fun (id, _, _, _, _) -> id);
+              input_version;
+            }
+          in
+          Coordinator_state.execution_context state view context
+      | Error _, _, _ | _, None, _ | _, _, None | Ok _, Some _, Some _ ->
+          Error "incomplete current scheduling projection")
+
 let find_patch_by_branch t branch =
   Map.to_alist t.agents
   |> List.find ~f:(fun (_, a) -> Branch.equal a.Patch_agent.branch branch)
