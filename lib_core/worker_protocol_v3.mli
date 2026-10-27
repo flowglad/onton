@@ -1,3 +1,6 @@
+(* @archlint.module interface
+   @archlint.domain worker-protocol-v3 *)
+
 type execution_context
 (** Opt-in, pure v3 boundary. The host stores [admission_receipt] beside the
     exact worker capsule; neither a receipt nor a prospective transition proves

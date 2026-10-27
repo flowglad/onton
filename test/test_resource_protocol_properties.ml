@@ -1,3 +1,6 @@
+(* @archlint.module test
+   @archlint.domain resource-protocol *)
+
 open Onton_core
 
 let request op extra =
@@ -51,9 +54,20 @@ let () =
   check
     (retirement_evidence Stop ~process_exit:0 ~matching:true read)
     "matching stop is retirement";
+  let task = decode {|{"status":"ok","reason":"none","resource_id":"p"}|} in
+  check
+    (retirement_evidence Replace ~process_exit:0 ~matching:true task)
+    "guarded replacement confirms predecessor retirement";
+  check
+    (not (retirement_evidence Replace ~process_exit:0 ~matching:false task))
+    "replacement needs the matching guard";
   check
     (not (retirement_evidence Stop ~process_exit:1 ~matching:true read))
     "nonzero exit";
+  let pending = decode {|{"status":"pending","reason":"cleanup_pending"}|} in
+  check
+    (not (retirement_evidence Stop ~process_exit:0 ~matching:true pending))
+    "pending stop does not confirm retirement";
   let reasons =
     [
       "none";

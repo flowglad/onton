@@ -1,3 +1,6 @@
+(* @archlint.module interface
+   @archlint.domain resource-protocol *)
+
 (* Strict public resource-v1 wire contract. No provider authority is carried by these values. *)
 type operation =
   | Open

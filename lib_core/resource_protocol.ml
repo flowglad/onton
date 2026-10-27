@@ -1,3 +1,6 @@
+(* @archlint.module core
+   @archlint.domain resource-protocol *)
+
 open Base
 
 type operation =

@@ -1,3 +1,6 @@
+(* @archlint.module core
+   @archlint.domain worker-protocol-v3 *)
+
 open Stdlib
 
 [@@@warning "-4"]

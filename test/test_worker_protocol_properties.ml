@@ -819,6 +819,42 @@ let bound_receipt_pair =
         true
       with _ -> false)
 
+let public_codec_api =
+  QCheck2.Test.make ~name:"public codec constructors round-trip" ~count:1
+    QCheck2.Gen.unit (fun () ->
+      try
+        let request =
+          match P.decode (execute ()) with
+          | Ok (P.Execute request) -> request
+          | _ -> failwith "execute fixture"
+        in
+        let frame = P.execute_frame request in
+        check ~label:"codec assertion 68"
+          (match P.parse_frame frame with Ok _ -> true | Error _ -> false);
+        check ~label:"codec assertion 69"
+          (match P.execute_message request with
+          | Some (P.Execute decoded) -> decoded = request
+          | Some
+              ( P.Bind _ | P.Cancel _ | P.Checkpoint_ack _ | P.Result_ack _
+              | P.Shutdown _ )
+          | None ->
+              false);
+        let binding =
+          match P.decode (bind ()) with
+          | Ok binding -> binding
+          | Error _ -> failwith "bind fixture"
+        in
+        check ~label:"codec assertion 70"
+          (match P.decode (P.encode_host binding) with
+          | Ok (P.Bind _) -> true
+          | Ok
+              ( P.Execute _ | P.Cancel _ | P.Checkpoint_ack _ | P.Result_ack _
+              | P.Shutdown _ )
+          | Error _ ->
+              false);
+        true
+      with _ -> false)
+
 let committed_before_delivery =
   QCheck2.Test.make
     ~name:
@@ -891,4 +927,5 @@ let () =
       attention_transition;
       bounded_encode;
       generated_wire_state;
+      public_codec_api;
     ]

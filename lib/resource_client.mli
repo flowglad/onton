@@ -1,3 +1,6 @@
+(* @archlint.module interface
+   @archlint.domain resource-client *)
+
 (* Image-local public helper adapter. Transport retains exit independently of JSON. *)
 type transport =
   argv:string list -> input:string -> (int * string * string, string) Result.t

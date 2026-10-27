@@ -1,3 +1,6 @@
+(* @archlint.module test
+   @archlint.domain resource-client *)
+
 open Onton_core
 
 let check ok msg = if not ok then failwith msg

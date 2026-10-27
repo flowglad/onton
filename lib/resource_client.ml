@@ -1,3 +1,6 @@
+(* @archlint.module exempt
+   @archlint.exempt-reason effectful-resource-helper-adapter *)
+
 open Base
 
 type transport =
