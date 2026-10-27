@@ -1294,3 +1294,69 @@
   (setenv ONTON_WORKER_BINARY_DEFAULT %{exe:../bin/worker.exe}
    (setenv ONTON_SETSID_EXEC %{bin:onton-setsid-exec}
     (run %{exe:test_worker_protocol.exe})))))
+
+; Patch 1 creates executable pending suites for their owning implementation
+; patches. A passing stub only reports PENDING; it is not qualification evidence.
+(test
+ (name test_worker_protocol_v3_properties)
+ (modules test_worker_protocol_v3_properties)
+ (libraries onton_core qcheck-core qcheck-core.runner))
+
+(test
+ (name test_coordinator_state_properties)
+ (modules test_coordinator_state_properties)
+ (libraries onton_core qcheck-core qcheck-core.runner))
+
+(test
+ (name test_scheduler_decision_properties)
+ (modules test_scheduler_decision_properties)
+ (libraries onton_core qcheck-core qcheck-core.runner))
+
+(test
+ (name test_scheduler_adapter)
+ (modules test_scheduler_adapter)
+ (libraries onton onton_core))
+
+(test
+ (name test_resource_protocol_properties)
+ (modules test_resource_protocol_properties)
+ (libraries onton_core qcheck-core qcheck-core.runner))
+
+(test
+ (name test_resource_client)
+ (modules test_resource_client)
+ (libraries onton onton_core eio eio_main unix))
+
+(test
+ (name test_worker_v3)
+ (modules test_worker_v3)
+ (deps ../bin/worker.exe (package onton))
+ (action
+  (setenv ONTON_WORKER_BINARY_DEFAULT %{exe:../bin/worker.exe}
+   (setenv ONTON_SETSID_EXEC %{bin:onton-setsid-exec}
+    (run %{test}))))
+ (libraries onton onton_core onton_test_support eio_main unix yojson))
+
+(test
+ (name test_worker_root_recovery_git)
+ (modules test_worker_root_recovery_git)
+ (deps (package onton))
+ (action
+  (setenv ONTON_SETSID_EXEC %{bin:onton-setsid-exec}
+   (run %{test})))
+ (libraries onton onton_core onton_test_support eio_main unix))
+
+(test
+ (name test_coordinator_recovery)
+ (modules test_coordinator_recovery)
+ (libraries onton onton_core onton_test_support eio_main unix))
+
+(test
+ (name test_coordinator_controls_forge)
+ (modules test_coordinator_controls_forge)
+ (libraries onton onton_core onton_test_support eio_main unix))
+
+(test
+ (name test_distributed_coordinator)
+ (modules test_distributed_coordinator)
+ (libraries onton onton_core onton_test_support eio_main unix yojson))
