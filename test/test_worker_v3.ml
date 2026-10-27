@@ -1,3 +1,5 @@
+(* @archlint.module test *)
+
 let () =
   print_endline
     "PENDING Patch 5: actual v3 worker execution context, current base/mode, \

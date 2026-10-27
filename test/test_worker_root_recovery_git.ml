@@ -1,3 +1,5 @@
+(* @archlint.module test *)
+
 let () =
   print_endline
     "PENDING Patch 5: root contribution/integration recovery after destroying \

@@ -1,3 +1,5 @@
+(* @archlint.module test *)
+
 let () =
   print_endline
     "PENDING Patch 3: pure shared scheduler totality, interleavings, and \

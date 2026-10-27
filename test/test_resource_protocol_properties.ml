@@ -1,3 +1,5 @@
+(* @archlint.module test *)
+
 let () =
   print_endline
     "PENDING Patch 4: strict resource-v1 codec totality, int64 counters, \

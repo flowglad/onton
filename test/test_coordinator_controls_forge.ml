@@ -1,3 +1,5 @@
+(* @archlint.module test *)
+
 let () =
   print_endline
     "PENDING Patch 7: durable controls, current forge/Git evidence, ambiguous \

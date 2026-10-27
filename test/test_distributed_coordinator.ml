@@ -1,3 +1,5 @@
+(* @archlint.module test *)
+
 let () =
   print_endline
     "PENDING Patch 8: composed distributed scheduling, faults, capacity, stale \

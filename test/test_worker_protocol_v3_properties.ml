@@ -1,3 +1,5 @@
+(* @archlint.module test *)
+
 let () =
   print_endline
     "PENDING Patch 2: v3 codec totality, context binding, versioned inputs, \
