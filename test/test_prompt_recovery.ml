@@ -6,6 +6,34 @@ open Onton
 
 (** Tests for live worktree guidance in implementation and cleanup sessions. *)
 
+let () =
+  let question =
+    "Can you explain why you won't implement Patch 5, if no dependency is \
+     missing?"
+  in
+  List.iter [ false; true ] ~f:(fun has_existing_changes ->
+      List.iter
+        [ [ question ]; [ question; "Which branch are you on?" ] ]
+        ~f:(fun messages ->
+          let prompt =
+            Prompt.render_start_delivery ~project_name:"" ~has_existing_changes
+              (Onton_core.Patch_decision.Start_with_human { messages })
+          in
+          let expected =
+            Prompt.render_human_message_prompt ~project_name:"" messages
+          in
+          if not (String.equal prompt expected) then
+            failwith "human-guided start must deliver only human guidance");
+      let initial =
+        Prompt.render_start_delivery ~project_name:"" ~has_existing_changes
+          Onton_core.Patch_decision.Start_initial
+      in
+      let expected =
+        Prompt.render_turn_layer_start ~project_name:"" ~has_existing_changes ()
+      in
+      if not (String.equal initial expected) then
+        failwith "ordinary start must preserve implementation guidance")
+
 let assert_contains label haystack ~substring =
   if not (String.is_substring haystack ~substring) then (
     Stdlib.print_endline ("FAIL: " ^ label);

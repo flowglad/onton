@@ -269,5 +269,13 @@ val render_uncommitted_changes_prompt :
 
 val render_human_message_prompt : project_name:string -> string list -> string
 
+val render_start_delivery :
+  project_name:string ->
+  has_existing_changes:bool ->
+  Patch_decision.start_delivery ->
+  string
+(** Human-guided starts deliver only the human messages, without implicit
+    implementation or worktree-cleanup instructions. *)
+
 val render_base_branch_changed : old_base:string -> new_base:string -> string
 (** One-time notification that the agent's base branch has changed. *)
