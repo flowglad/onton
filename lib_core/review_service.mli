@@ -11,7 +11,7 @@
 (** {2 Wire types} *)
 
 type severity = Must_fix | Should_fix | Note
-[@@deriving show, eq, sexp_of, compare]
+[@@deriving show, eq, sexp_of, compare, yojson]
 
 (** Severity classification on a finding. Decoded case-sensitively from the spec
     strings ["must-fix"], ["should-fix"], ["note"]. *)
@@ -28,10 +28,10 @@ type outcome_kind =
   | Wontfix
       (** Caller actively dismissed via the resolve API. Distinct from [Ignored]
           (PR-close), distinct from [Addressed] (caller fixed it). *)
-[@@deriving show, eq, sexp_of, compare]
+[@@deriving show, eq, sexp_of, compare, yojson]
 
 type last_reply = { author : string; at : string; body : string }
-[@@deriving show, eq, sexp_of, compare]
+[@@deriving show, eq, sexp_of, compare, yojson]
 
 type outcome = {
   kind : outcome_kind;
@@ -40,7 +40,7 @@ type outcome = {
   reason : string option;
   last_reply : last_reply option;
 }
-[@@deriving show, eq, sexp_of, compare]
+[@@deriving show, eq, sexp_of, compare, yojson]
 
 type finding = {
   id : string;
@@ -54,7 +54,7 @@ type finding = {
   created_at : string;
   outcome : outcome;
 }
-[@@deriving show, eq, sexp_of, compare]
+[@@deriving show, eq, sexp_of, compare, yojson]
 (** A single finding from the review-service.
 
     [id] is a UUID, stable across re-fetches. [github_comment_id] is [None] when

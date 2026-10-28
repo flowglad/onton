@@ -73,14 +73,7 @@ let encode t =
         let input =
           match t.v3_input with
           | None -> `Null
-          | Some i ->
-              `Assoc
-                [
-                  ("input_id", string i.input_id);
-                  ("version", counter i.version);
-                  ("guidance", string i.guidance);
-                  ("selected_base", string i.selected_base);
-                ]
+          | Some i -> Worker_protocol_v3.input_json i
         in
         let note =
           match t.note with
@@ -290,28 +283,9 @@ let decode json =
                 match get values "v3_input" with
                 | Some `Null -> Some None
                 | Some json -> (
-                    match
-                      fields
-                        [ "input_id"; "version"; "guidance"; "selected_base" ]
-                        json
-                    with
-                    | Some i -> (
-                        match
-                          ( id i "input_id",
-                            Option.bind (get i "version") ~f:read_counter,
-                            text i "guidance",
-                            id i "selected_base" )
-                        with
-                        | ( Some input_id,
-                            Some version,
-                            Some guidance,
-                            Some selected_base ) ->
-                            let input : Worker_protocol_v3.input =
-                              { input_id; version; guidance; selected_base }
-                            in
-                            Some (Some input)
-                        | _ -> None)
-                    | None -> None)
+                    match Worker_protocol_v3.decode_input json with
+                    | Ok input -> Some (Some input)
+                    | Error _ -> None)
                 | None -> None
               in
               let note =

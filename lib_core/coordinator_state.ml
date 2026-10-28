@@ -79,6 +79,9 @@ type t = {
   input_floors : (string * string * int64) list;
   lifecycle : lifecycle;
   cancel_cleanup : bool;
+  journal : Coordinator_journal.t;
+  merge_windows : (Patch_id.t * string * int64) list;
+  forge_failures : (Patch_id.t * int) list;
 }
 [@@deriving yojson]
 
@@ -102,6 +105,11 @@ type event =
   | Input_consumed of string * string * int64
   | Sleep_ready of string
   | Cancel_cleanup_confirmed
+  | Journal_attempt of string * string
+  | Journal_settle of string * string option
+  | Operation_attention of string
+  | Policy_tick of Scheduler_decision.input * int64
+  | Forge_wait of Patch_id.t * bool
 
 type outcome =
   | Accepted
@@ -139,6 +147,9 @@ let create ~run_id ~config_id ~plan_id ~plan_bytes ~config_bytes ~capacity
     input_floors = [];
     lifecycle = Running;
     cancel_cleanup = false;
+    journal = Coordinator_journal.empty;
+    merge_windows = [];
+    forge_failures = [];
   }
 
 let operations t = t.operations
@@ -155,6 +166,7 @@ let config_id (t : t) = t.config_id
 let plan_id t = t.plan_id
 let capsules t = t.capsules
 let results t = t.results
+let journal t = t.journal
 let controls t = t.controls
 let inputs t = t.inputs
 let lifecycle t = t.lifecycle
@@ -324,7 +336,14 @@ let known_status = function
   | _ -> false
 
 let valid (t : t) =
-  unique (List.map t.results ~f:fst)
+  Coordinator_journal.valid t.journal
+  && unique (List.map t.forge_failures ~f:(fun (p, _) -> Patch_id.to_string p))
+  && List.for_all t.forge_failures ~f:(fun (_, n) -> n >= 0 && n <= 3)
+  && unique
+       (List.map t.merge_windows ~f:(fun (p, _, _) -> Patch_id.to_string p))
+  && List.for_all t.merge_windows ~f:(fun (_, id, deadline) ->
+      (not (String.is_empty id)) && Int64.(deadline >= 0L))
+  && unique (List.map t.results ~f:fst)
   && List.for_all t.results ~f:(fun (id, status) ->
       known_status status
       && List.exists t.assignments ~f:(fun a ->
@@ -444,8 +463,9 @@ let emergency_event = function
       match Resource_protocol.make_request bytes with
       | Ok request -> Poly.equal request.operation Resource_protocol.Stop
       | Error _ -> false)
-  | Resource_stopped _ | Loss _ | Advance_receipt _ | Cleanup_confirmed _
-  | Sleep_ready _ | Cancel_cleanup_confirmed ->
+  | Journal_settle _ | Operation_attention _ | Resource_stopped _ | Loss _
+  | Advance_receipt _ | Cleanup_confirmed _ | Sleep_ready _
+  | Cancel_cleanup_confirmed ->
       true
   | Control c -> String.equal c.kind "cancel" || String.equal c.kind "sleep"
   | _ -> false
@@ -457,9 +477,156 @@ let commit ~emergency t next effects =
   then (next, effects)
   else reject "state reserve exhausted" t
 
+let scheduling_view t (view : Scheduler_decision.input) =
+  let agents =
+    List.map view.agents ~f:(fun agent ->
+        let patch = Patch_id.to_string agent.Patch_agent.patch_id in
+        let agent =
+          List.fold
+            (List.rev (Coordinator_journal.entries t.journal))
+            ~init:agent
+            ~f:(fun agent entry ->
+              if String.is_prefix entry.id ~prefix:"observation:" then
+                match entry.phase with
+                | Coordinator_journal.Applied bytes -> (
+                    match Coordinator_observation.decode bytes with
+                    | Ok evidence
+                      when (not
+                              (List.exists t.inputs
+                                 ~f:(fun (id, _, _, _, used) ->
+                                   String.equal id
+                                     ("evidence:" ^ evidence.scope.ticket)
+                                   && used)))
+                           && List.exists t.controls ~f:(fun c ->
+                               String.equal c.id evidence.scope.ticket
+                               && Option.equal String.equal c.patch_id
+                                    (Some patch)) ->
+                        Coordinator_observation.apply agent evidence
+                    | Ok _ | Error _ -> agent)
+                | Pending | Attention -> agent
+              else agent)
+        in
+        List.fold (List.rev t.controls) ~init:agent ~f:(fun agent c ->
+            if not (Option.equal String.equal c.patch_id (Some patch)) then
+              agent
+            else
+              match c.kind with
+              | "guidance"
+                when List.exists t.inputs ~f:(fun (id, _, _, _, used) ->
+                         String.equal c.id id && not used) ->
+                  Patch_agent.enqueue
+                    (Patch_agent.add_human_message agent c.payload)
+                    Types.Operation_kind.Human
+              | "automerge" ->
+                  Patch_agent.set_automerge_enabled agent
+                    (String.equal c.payload "true")
+              | "bump"
+                when List.exists t.inputs ~f:(fun (id, _, _, _, used) ->
+                         String.equal c.id id && not used) ->
+                  Patch_agent.reset_intervention_state agent
+              | _ -> agent))
+  in
+  let agents =
+    List.map agents ~f:(fun a ->
+        let a =
+          if
+            List.exists t.operations ~f:(fun op ->
+                Patch_id.equal op.patch a.Patch_agent.patch_id && op.attention)
+          then
+            Patch_agent.set_wontdo a
+              "Coordinator operation requires explicit renewal"
+          else a
+        in
+        match
+          List.find t.merge_windows ~f:(fun (patch, evidence, _) ->
+              Patch_id.equal patch a.Patch_agent.patch_id
+              && Option.equal String.equal
+                   (Scheduler_decision.evidence_id { view with agents } patch)
+                   (Some evidence))
+        with
+        | Some (_, _, deadline)
+          when Scheduler_decision.automerge_candidate a ~main:view.main ->
+            Patch_agent.set_automerge_deadline a (Int64.to_float deadline)
+        | Some _ | None -> Patch_agent.clear_automerge_deadline a)
+  in
+  { view with agents }
+
 let rec step t event =
   let commit = commit ~emergency:(emergency_event event) in
   match event with
+  | Forge_wait (patch, confirmed) ->
+      let failures =
+        Option.value
+          (List.Assoc.find t.forge_failures patch ~equal:Patch_id.equal)
+          ~default:0
+      in
+      let failures = if confirmed then 0 else Int.min 3 (failures + 1) in
+      let forge_failures =
+        (patch, failures)
+        :: List.Assoc.remove t.forge_failures patch ~equal:Patch_id.equal
+      in
+      let next =
+        {
+          t with
+          forge_failures;
+          operations =
+            List.map t.operations ~f:(fun op ->
+                if Patch_id.equal op.patch patch && failures = 3 then
+                  { op with attention = true }
+                else op);
+        }
+      in
+      commit t next
+        (if failures = 3 then
+           List.filter_map next.operations ~f:(fun op ->
+               if Patch_id.equal op.patch patch then Some (Attention op.id)
+               else None)
+         else [ Accepted ])
+  | Policy_tick (view, now) ->
+      if Int64.(now < 0L) then reject "invalid scheduler clock" t
+      else
+        let view = scheduling_view t view in
+        let merge_windows =
+          match t.lifecycle with
+          | Running ->
+              List.filter_map view.agents ~f:(fun a ->
+                  if
+                    Scheduler_decision.dependencies_admitted view
+                      a.Patch_agent.patch_id
+                    && Scheduler_decision.automerge_candidate a ~main:view.main
+                  then
+                    Option.map (Scheduler_decision.evidence_id view a.patch_id)
+                      ~f:(fun evidence ->
+                        match
+                          List.find t.merge_windows ~f:(fun (patch, old, _) ->
+                              Patch_id.equal patch a.patch_id
+                              && String.equal old evidence)
+                        with
+                        | Some window -> window
+                        | None ->
+                            ( a.patch_id,
+                              evidence,
+                              if Int64.(now > max_value - 120L) then
+                                Int64.max_value
+                              else Int64.(now + 120L) ))
+                  else None)
+          | _ -> []
+        in
+        commit t { t with merge_windows } [ Accepted ]
+  | Operation_attention id ->
+      if List.exists t.operations ~f:(fun op -> String.equal op.id id) then
+        commit t
+          (update_op t id ~f:(fun op -> { op with attention = true }))
+          [ Attention id ]
+      else reject "unknown attention operation" t
+  | Journal_attempt (id, scope) -> (
+      match Coordinator_journal.begin_attempt t.journal ~id ~scope with
+      | Error reason -> reject reason t
+      | Ok journal -> commit t { t with journal } [ Accepted ])
+  | Journal_settle (id, result) -> (
+      match Coordinator_journal.settle t.journal ~id ~result with
+      | Error reason -> reject reason t
+      | Ok journal -> commit t { t with journal } [ Accepted ])
   | Resource_request (id, request) -> (
       if (not (valid_id id)) || String.is_empty request then
         reject "invalid resource request" t
@@ -908,19 +1075,32 @@ let rec step t event =
                   (not (String.is_empty (String.strip c.payload)))
                   && not (Int64.equal latest_input Int64.max_value)
               | "automerge" ->
-                  String.equal c.payload "true"
-                  || String.equal c.payload "false"
-              | "renewal" ->
+                  (not (Int64.equal latest_input Int64.max_value))
+                  && (String.equal c.payload "true"
+                     || String.equal c.payload "false")
+              | "renewal" -> (
                   List.exists t.operations ~f:(fun o ->
                       String.equal (Patch_id.to_string o.patch) target
                       && o.attention
                       && String.equal o.id c.payload)
+                  ||
+                  match
+                    Coordinator_journal.find t.journal ("effect:" ^ c.payload)
+                  with
+                  | Some { phase = Attention; _ } ->
+                      List.exists t.controls ~f:(fun old ->
+                          String.equal old.id c.payload
+                          && Option.equal String.equal old.patch_id c.patch_id)
+                  | _ -> false)
               | "forge_create" | "forge_ticket" | "forge_effect" ->
                   String.length c.payload > 0
                   && String.length c.payload <= 131072
               | "cancel" ->
                   String.is_empty c.payload || String.equal c.payload "cancel"
-              | "bump" | "sleep" | "wake" -> String.is_empty c.payload
+              | "bump" ->
+                  String.is_empty c.payload
+                  && not (Int64.equal latest_input Int64.max_value)
+              | "sleep" | "wake" -> String.is_empty c.payload
               | _ -> false
             in
             if
@@ -933,7 +1113,11 @@ let rec step t event =
             else
               let lifecycle = Option.value lifecycle ~default:t.lifecycle in
               let inputs, input_floors =
-                if String.equal c.kind "guidance" then
+                if
+                  List.mem
+                    [ "guidance"; "automerge"; "bump" ]
+                    c.kind ~equal:String.equal
+                then
                   let floor =
                     List.find t.assignments ~f:(fun (a : assignment) ->
                         String.equal (Patch_id.to_string a.patch) target
@@ -953,6 +1137,25 @@ let rec step t event =
                 {
                   t with
                   controls = c :: t.controls;
+                  forge_failures =
+                    (if String.equal c.kind "renewal" then
+                       List.map t.forge_failures ~f:(fun (patch, n) ->
+                           if String.equal (Patch_id.to_string patch) target
+                           then (patch, 0)
+                           else (patch, n))
+                     else t.forge_failures);
+                  operations =
+                    (if String.equal c.kind "renewal" then
+                       List.map t.operations ~f:(fun op ->
+                           if String.equal op.id c.payload && op.attention then
+                             {
+                               op with
+                               attention = false;
+                               used = 0;
+                               retry_after = 0L;
+                             }
+                           else op)
+                     else t.operations);
                   lifecycle;
                   inputs;
                   input_floors;
@@ -1078,6 +1281,7 @@ type context_input = {
 }
 
 let execution_context t view (c : context_input) =
+  let view = scheduling_view t view in
   let id = c.patch_id in
   let dependency_ids =
     if

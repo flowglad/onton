@@ -85,6 +85,11 @@ type event =
       (** Checkpoint-attested assignment, input ID and input version. *)
   | Sleep_ready of string
   | Cancel_cleanup_confirmed
+  | Journal_attempt of string * string
+  | Journal_settle of string * string option
+  | Operation_attention of string
+  | Policy_tick of Scheduler_decision.input * int64
+  | Forge_wait of Patch_id.t * bool
 
 type outcome =
   | Accepted
@@ -138,6 +143,7 @@ val config_id : t -> string
 val plan_id : t -> string
 val capsules : t -> capsule list
 val results : t -> (string * string) list
+val journal : t -> Coordinator_journal.t
 val controls : t -> control list
 val inputs : t -> (string * string * int64 * string * bool) list
 val lifecycle : t -> lifecycle
@@ -163,6 +169,10 @@ type context_input = {
 }
 (** Strict context projection: admission, message scope, selected base, mode,
     evidence and guidance are supplied from the current scheduling view. *)
+
+val scheduling_view : t -> Scheduler_decision.input -> Scheduler_decision.input
+(** Overlay committed forge snapshots and durable controls on owner projections.
+    Recomputable after restart; never writes a worker-owned capsule. *)
 
 val execution_context :
   t ->

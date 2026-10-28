@@ -99,6 +99,61 @@ let () =
           ignore (H.command H.initial bytes);
           ignore (H.receive (active ()) bytes);
           true);
+      property
+        "checkpoint input history retains older exact packets across restart"
+        QCheck2.Gen.(int_range 1 10)
+        (fun count ->
+          let packet n : V.input =
+            {
+              input_id = "input-" ^ string_of_int n;
+              version = Int64.of_int n;
+              guidance = "";
+              selected_base = "feature/root";
+              evidence = [];
+              controls = [];
+              covered = [];
+            }
+          in
+          let rec deliver state n =
+            if n > count then state
+            else
+              let frame = ok (V.encode_host (V.Input (identity, packet n))) in
+              deliver (fst (ok (H.command state frame))) (n + 1)
+          in
+          let state = deliver (bound ()) 1 in
+          let restored = ok (H.decode (H.encode state)) in
+          List.for_all
+            (fun n ->
+              H.delivered_input restored (packet n)
+              && not
+                   (H.delivered_input restored
+                      { (packet n) with guidance = "changed" }))
+            (List.init count (fun n -> n + 1)));
+      property
+        "cumulative input gaps require coverage of every intervening version"
+        QCheck2.Gen.(int_range 2 10)
+        (fun count ->
+          let covered =
+            List.init count (fun n ->
+                ("input-" ^ string_of_int (n + 1), Int64.of_int (n + 1)))
+          in
+          let packet : V.input =
+            {
+              input_id = "input-" ^ string_of_int count;
+              version = Int64.of_int count;
+              guidance = "all guidance";
+              selected_base = "feature/root";
+              evidence = [];
+              controls = [];
+              covered;
+            }
+          in
+          let command input =
+            H.command (bound ())
+              (ok (V.encode_host (V.Input (identity, input))))
+          in
+          Result.is_ok (command packet)
+          && Result.is_error (command { packet with covered = List.tl covered }));
       property "inbound checkpoint cannot skip the closed next-version boundary"
         QCheck2.Gen.(int_range 2 10000)
         (fun n ->

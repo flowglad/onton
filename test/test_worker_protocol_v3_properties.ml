@@ -162,6 +162,9 @@ let test_input () =
     V.
       {
         input_id = "g1";
+        evidence = [];
+        controls = [];
+        covered = [];
         version = 1L;
         guidance = "new";
         selected_base = "feature/next";
@@ -216,6 +219,9 @@ let test_retarget () =
     V.
       {
         input_id = "retarget";
+        evidence = [];
+        controls = [];
+        covered = [];
         version = 1L;
         guidance = "move";
         selected_base = "feature/next";
@@ -281,6 +287,9 @@ let test_retarget () =
     {
       input with
       input_id = "next";
+      evidence = [];
+      controls = [];
+      covered = [];
       version = 2L;
       selected_base = "feature/later";
     }
@@ -535,6 +544,9 @@ let () =
                   V.
                     {
                       input_id = "g-" ^ Int64.to_string next;
+                      evidence = [];
+                      controls = [];
+                      covered = [];
                       version = next;
                       guidance = "guidance";
                       selected_base = "base-" ^ Int64.to_string next;
@@ -627,6 +639,9 @@ let () =
           let current : V.input =
             {
               input_id = "restored";
+              evidence = [];
+              controls = [];
+              covered = [];
               version = Int64.of_int n;
               guidance = "current";
               selected_base = "selected";
@@ -638,6 +653,9 @@ let () =
             {
               current with
               input_id = "next";
+              evidence = [];
+              controls = [];
+              covered = [];
               version = Int64.succ current.version;
             }
           in

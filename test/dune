@@ -1386,6 +1386,16 @@
  (libraries onton_core qcheck-core qcheck-core.runner))
 
 (test
+ (name test_coordinator_control_socket)
+ (modules test_coordinator_control_socket)
+ (libraries onton onton_core onton_test_support eio_main unix yojson))
+
+(test
+ (name test_coordinator_resource)
+ (modules test_coordinator_resource)
+ (libraries onton onton_core onton_test_support unix))
+
+(test
  (name test_coordinator_recovery)
  (modules test_coordinator_recovery)
  (libraries onton onton_core onton_test_support eio_main unix))
@@ -1394,6 +1404,22 @@
  (name test_coordinator_controls_forge)
  (modules test_coordinator_controls_forge)
  (libraries onton onton_core onton_test_support eio_main unix))
+
+
+(test
+ (name test_coordinator_journal_properties)
+ (modules test_coordinator_journal_properties)
+ (libraries onton_core qcheck-core qcheck-core.runner))
+
+(test
+ (name test_coordinator_observation_properties)
+ (modules test_coordinator_observation_properties)
+ (libraries onton_core qcheck-core qcheck-core.runner))
+
+(test
+ (name test_coordinator_inputs_properties)
+ (modules test_coordinator_inputs_properties)
+ (libraries onton_core qcheck-core qcheck-core.runner))
 
 (test
  (name test_distributed_coordinator)

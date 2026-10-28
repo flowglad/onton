@@ -191,7 +191,135 @@ type input = {
   version : int64;
   guidance : string;
   selected_base : string;
+  evidence : Coordinator_observation.t list;
+  controls : (string * string) list;
+  covered : (string * int64) list;
 }
+
+let input_json i =
+  `Assoc
+    [
+      ("input_id", `String i.input_id);
+      ("input_version", `String (Int64.to_string i.version));
+      ("guidance", `String i.guidance);
+      ("selected_base", `String i.selected_base);
+      ( "evidence",
+        `List
+          (List.map
+             (fun e -> `String (Coordinator_observation.encode e))
+             i.evidence) );
+      ( "controls",
+        `List
+          (List.map (fun (k, v) -> `List [ `String k; `String v ]) i.controls)
+      );
+      ( "covered",
+        `List
+          (List.map
+             (fun (id, v) -> `List [ `String id; `String (Int64.to_string v) ])
+             i.covered) );
+    ]
+
+let decode_input json =
+  let open Result in
+  let ( let* ) = bind in
+  let rec collect f = function
+    | [] -> Ok []
+    | x :: xs ->
+        let* x = f x in
+        let* xs = collect f xs in
+        Ok (x :: xs)
+  in
+  match
+    keys
+      [
+        "input_id";
+        "input_version";
+        "guidance";
+        "selected_base";
+        "evidence";
+        "controls";
+        "covered";
+      ]
+      json
+  with
+  | None -> Error "input schema"
+  | Some xs -> (
+      match
+        ( str xs "input_id",
+          counter xs "input_version",
+          text xs "guidance",
+          str xs "selected_base",
+          field "evidence" xs,
+          field "controls" xs,
+          field "covered" xs )
+      with
+      | ( Some input_id,
+          Some version,
+          Some guidance,
+          Some selected_base,
+          Some (`List evidence),
+          Some (`List controls),
+          Some (`List covered) ) ->
+          let* evidence =
+            collect
+              (function
+                | `String bytes -> Coordinator_observation.decode bytes
+                | _ -> Error "input evidence")
+              evidence
+          in
+          let* controls =
+            collect
+              (function
+                | `List
+                    [
+                      `String "automerge"; `String (("true" | "false") as value);
+                    ] ->
+                    Ok ("automerge", value)
+                | `List [ `String "bump"; `String "" ] -> Ok ("bump", "")
+                | _ -> Error "input control")
+              controls
+          in
+          let* covered =
+            collect
+              (function
+                | `List [ `String id; `String value ] -> (
+                    match Int64.of_string_opt value with
+                    | Some n when id <> "" && n > 0L && n <= version ->
+                        Ok (id, n)
+                    | _ -> Error "input coverage")
+                | _ -> Error "input coverage")
+              covered
+          in
+          Ok
+            {
+              input_id;
+              version;
+              guidance;
+              selected_base;
+              evidence;
+              controls;
+              covered;
+            }
+      | _ -> Error "input fields")
+
+let apply_input agent input =
+  let agent =
+    List.fold_left Coordinator_observation.apply agent input.evidence
+  in
+  let agent =
+    if String.trim input.guidance = "" then agent
+    else
+      Patch_agent.enqueue
+        (Patch_agent.add_human_message agent input.guidance)
+        Types.Operation_kind.Human
+  in
+  List.fold_left
+    (fun agent -> function
+      | "automerge", value ->
+          Patch_agent.set_automerge_enabled agent (value = "true")
+      | "bump", "" -> Patch_agent.reset_intervention_state agent
+      | _ -> agent)
+    agent input.controls
 
 type execute = {
   request : P.execute_request;
@@ -341,39 +469,18 @@ let decode_host line =
                   | _ -> Error "execute context or work mismatch"))
           | _ -> Error "execute schema")
       | Some (`String "input") -> (
-          match
-            ( keys
-                [
-                  "version";
-                  "type";
-                  "run_id";
-                  "patch_id";
-                  "input_id";
-                  "input_version";
-                  "guidance";
-                  "selected_base";
-                ]
-                json,
-              str xs "run_id",
-              str xs "patch_id",
-              str xs "input_id",
-              counter xs "input_version",
-              field "guidance" xs,
-              str xs "selected_base" )
-          with
-          | ( Some _,
-              Some run_id,
-              Some patch_id,
-              Some input_id,
-              Some version,
-              Some (`String guidance),
-              Some selected_base )
-            when String.length guidance <= 262144 ->
-              Ok
-                (Input
-                   ( { run_id; patch_id },
-                     { input_id; version; guidance; selected_base } ))
-          | _ -> Error "input schema")
+          match (str xs "run_id", str xs "patch_id") with
+          | Some run_id, Some patch_id -> (
+              let fields =
+                List.filter
+                  (fun (k, _) ->
+                    not (List.mem k [ "version"; "type"; "run_id"; "patch_id" ]))
+                  xs
+              in
+              match decode_input (`Assoc fields) with
+              | Ok input -> Ok (Input ({ run_id; patch_id }, input))
+              | Error e -> Error e)
+          | _ -> Error "input identity")
       | _ -> (
           match decode_v2 json with
           | Ok m -> Ok (Legacy_control m)
@@ -556,16 +663,13 @@ let encode_host msg =
             :: base)
       | Input (identity, i) ->
           `Assoc
-            [
-              ("version", `Int 3);
-              ("type", `String "input");
-              ("run_id", `String identity.run_id);
-              ("patch_id", `String identity.patch_id);
-              ("input_id", `String i.input_id);
-              ("input_version", `String (Int64.to_string i.version));
-              ("guidance", `String i.guidance);
-              ("selected_base", `String i.selected_base);
-            ]
+            ([
+               ("version", `Int 3);
+               ("type", `String "input");
+               ("run_id", `String identity.run_id);
+               ("patch_id", `String identity.patch_id);
+             ]
+            @ obj (input_json i))
       | Legacy_control host -> v3 (Yojson.Safe.from_string (P.encode_host host))
     in
     let line = json_line json in
@@ -761,7 +865,29 @@ let step t event =
               | Some old when old = input -> (t, [])
               | Some _ -> reject "uncommitted input pending"
               | None ->
+                  let previous =
+                    match t.current_input with
+                    | None -> c.input_version
+                    | Some old -> old.version
+                  in
+                  let covered =
+                    input.covered |> List.map snd
+                    |> List.filter (fun v -> v > previous)
+                    |> List.sort Int64.compare
+                  in
+                  let rec contiguous expected = function
+                    | [] -> expected = input.version
+                    | v :: rest ->
+                        expected < Int64.max_int
+                        && v = Int64.succ expected
+                        && contiguous v rest
+                  in
+                  let cumulative =
+                    input.version > previous && contiguous previous covered
+                  in
                   let next =
+                    cumulative
+                    ||
                     match t.current_input with
                     | None ->
                         c.input_version < Int64.max_int

@@ -353,6 +353,18 @@ let run env =
     let proposal_number = ref 0 in
     let terminal = ref None in
     let apply_input_at_boundary = ref true in
+    let apply_pending_input orchestrator =
+      match !pending_input with
+      | Some input
+        when is_v3
+             && not
+                  (Option.exists
+                     (fun old ->
+                       old.Worker_protocol_v3.version >= input.version)
+                     (Worker_checkpoint.v3_input !capsule)) ->
+          Orchestrator.apply_worker_input orchestrator patch_id input
+      | Some _ | None -> orchestrator
+    in
     let persist_unprotected snapshot =
       incr proposal_number;
       let version =
@@ -426,6 +438,7 @@ let run env =
                  (Types.Branch.of_string (desired_base ()))
              else snapshot.orchestrator
            in
+           let orchestrator = apply_pending_input orchestrator in
            ({ snapshot with Runtime.orchestrator }, ()))
      with
     | Ok () -> apply_input_at_boundary := false
@@ -781,6 +794,7 @@ let run env =
                        (Types.Branch.of_string input.selected_base)
                  | Some _ | None -> snapshot.orchestrator
                in
+               let orchestrator = apply_pending_input orchestrator in
                ({ snapshot with Runtime.orchestrator }, ()))
          with
         | Ok () -> ()

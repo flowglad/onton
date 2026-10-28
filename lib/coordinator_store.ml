@@ -49,6 +49,7 @@ let create ~client ~run_id ~coordinator_id ~owner_epoch ~revision ~next_id =
     pending = None;
   }
 
+let authority t = (t.run_id, t.coordinator_id, t.owner_epoch, t.revision)
 let state e = e.state
 let version e = e.version
 let write_id (e : envelope) = e.write_id

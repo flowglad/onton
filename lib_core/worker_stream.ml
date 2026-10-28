@@ -58,6 +58,26 @@ let binding t =
       | _ -> None)
     t.history
 
+let delivered_input t input =
+  t.input = Some input
+  || List.exists
+       (function
+         | Command bytes -> (
+             match V.decode_host bytes with
+             | Ok (V.Input (_, old)) -> old = input
+             | Ok (V.Bind (P.Bind b, _)) -> (
+                 try
+                   match Yojson.Safe.from_string b.capsule with
+                   | `Assoc fields -> (
+                       match List.assoc_opt "v3_input" fields with
+                       | Some json -> V.decode_input json = Ok input
+                       | None -> false)
+                   | _ -> false
+                 with _ -> false)
+             | _ -> false)
+         | _ -> false)
+       t.history
+
 let remember t action = { t with history = action :: t.history }
 
 let valid outputs =
@@ -131,25 +151,8 @@ let command t bytes =
         let* protocol, input =
           match List.assoc_opt "v3_input" fields with
           | None | Some `Null -> Ok (protocol, None)
-          | Some (`Assoc fields) ->
-              let str name =
-                match List.assoc_opt name fields with
-                | Some (`String s) -> s
-                | _ -> ""
-              in
-              let* version =
-                match Int64.of_string_opt (str "version") with
-                | Some n -> Ok n
-                | None -> Error "invalid restored input"
-              in
-              let input : V.input =
-                {
-                  input_id = str "input_id";
-                  version;
-                  guidance = str "guidance";
-                  selected_base = str "selected_base";
-                }
-              in
+          | Some (`Assoc _ as json) ->
+              let* input = V.decode_input json in
               let* next, _ = transition protocol (V.Restore_input input) in
               Ok (next, Some input)
           | Some _ -> Error "invalid restored input"

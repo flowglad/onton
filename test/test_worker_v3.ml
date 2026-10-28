@@ -217,6 +217,9 @@ let () =
   let input_frame =
     frame "input"
       [
+        ("evidence", `List []);
+        ("controls", `List []);
+        ("covered", `List []);
         ("input_id", `String "input-1");
         ("input_version", `String "1");
         ("guidance", `String "new guidance");

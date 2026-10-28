@@ -325,6 +325,9 @@ let () =
   let input_frame =
     frame "input"
       [
+        ("evidence", `List []);
+        ("controls", `List []);
+        ("covered", `List []);
         ("input_id", `String "input-1");
         ("input_version", `String "1");
         ("guidance", `String "current durable guidance");
@@ -610,7 +613,25 @@ let () =
   let loop_fixture = F.fixture () in
   let _, initial, loop_id = F.setup ~run_id:"run-1" loop_fixture in
   let client =
-    Resource_client.create ~helper ~transport:(F.transport loop_fixture)
+    Resource_client.create ~helper ~transport:(fun ~argv ~input ->
+        let fields =
+          match Yojson.Safe.from_string input with
+          | `Assoc fields -> fields
+          | _ -> []
+        in
+        match List.assoc_opt "op" fields with
+        | Some (`String "launch") ->
+            check "launch uses post-intent metadata guard"
+              (List.assoc_opt "revision" fields
+              = Some (`String (string_of_int loop_fixture.revision)));
+            loop_fixture.revision <- loop_fixture.revision + 1;
+            Ok
+              ( 0,
+                Printf.sprintf
+                  {|{"status":"ok","reason":"none","run_id":"run-1","resource_id":"loop-resource","revision":%d,"owner_epoch":1}|}
+                  loop_fixture.revision,
+                "" )
+        | _ -> F.transport loop_fixture ~argv ~input)
   in
   let store =
     Coordinator_store.create ~client ~run_id:"run-1" ~coordinator_id:"c"
@@ -627,8 +648,10 @@ let () =
   let loop_execute =
     execute 1 (`Assoc [ ("type", `String "reconcile") ])
     |> replace "expected_state_version" (`String "0")
-    |> replace "execution_context" (`String bind_context)
-    |> replace "input_version" (`String "0")
+    |> replace "execution_context"
+         (`String
+            (context ~base:"v3-test/patch-1" ~generation:1 ~input_version:1))
+    |> replace "input_version" (`String "1")
   in
   let control_response = ref None in
   let control =
@@ -650,24 +673,32 @@ let () =
         [
           Intent (Admit (operation 1));
           Control_line (control, fun result -> control_response := Some result);
-          Intent (Resource_request ("loop-resource", launch "loop-resource"));
-          Intent (Bind_resource ("loop-resource", patch));
-          Intent (Assign (assignment 1 "loop-resource", 0L));
-          Attach
-            ( "assignment-1",
-              {
-                run_id = "run-1";
-                coordinator_id = "c";
-                owner_epoch = 1L;
-                revision = 1L;
-                request_id = "attach-loop";
-                resource_id = "loop-resource";
-              } );
+          Provision
+            {
+              request =
+                (match
+                   Resource_protocol.make_request (launch "loop-resource")
+                 with
+                | Ok r -> r
+                | Error why -> failwith why);
+              assignment = assignment 1 "loop-resource";
+              recovery = None;
+              connection =
+                {
+                  run_id = "run-1";
+                  coordinator_id = "c";
+                  owner_epoch = 1L;
+                  revision = 1L;
+                  request_id = "attach-loop";
+                  resource_id = "loop-resource";
+                };
+            };
           Command ("assignment-1", wire loop_bind);
           Command ("assignment-1", wire loop_execute);
         ]
   in
   let shutdown = ref false and reads = ref 0 in
+  let late_guidance = ref false in
   let readable = ref (fun () -> false) in
   let rec next_event () =
     match !events with
@@ -690,6 +721,29 @@ let () =
           shutdown := true;
           Some
             (Coordinator.Command ("assignment-1", wire (frame "shutdown" []))))
+        else if
+          (not !late_guidance)
+          && Coordinator_state.capsules (Coordinator_store.state current) <> []
+        then (
+          late_guidance := true;
+          Some
+            (Coordinator.Control_line
+               ( Yojson.Safe.to_string
+                   (`Assoc
+                      [
+                        ("version", `Int 3);
+                        ("id", `String "late-guidance");
+                        ("run_id", `String "run-1");
+                        ("config_id", `String "cfg");
+                        ("kind", `String "guidance");
+                        ("patch_id", `String "2");
+                        ( "payload",
+                          `String
+                            "keep this guidance across the captured \
+                             checkpoint/result" );
+                      ]),
+                 fun status ->
+                   check "late guidance accepted" (status = "accepted") )))
         else if !readable () then (
           incr reads;
           check "loop bounded" (!reads < 200);
@@ -724,6 +778,41 @@ let () =
     (List.exists
        (fun (c : Coordinator_state.control) -> String.equal c.id "toggle-loop")
        (Coordinator_state.controls committed));
+  check "cumulative control input checkpointed"
+    (List.exists
+       (fun (id, _, _, _, used) -> id = "toggle-loop" && used)
+       (Coordinator_state.inputs committed));
+  let latest = List.hd (Coordinator_state.capsules committed) in
+  let capsule =
+    match Worker_checkpoint.decode (Yojson.Safe.from_string latest.bytes) with
+    | Ok capsule -> capsule
+    | Error why -> failwith why
+  in
+  let owner =
+    match
+      Worker_checkpoint.validate_binding capsule ~run_id:"run-1" ~patch_id:patch
+        ~context:(Worker_checkpoint.context capsule)
+        ~state_version:(Worker_checkpoint.version capsule)
+        ~attention_id:(Worker_checkpoint.attention_id capsule)
+        ~gameplan ~main_branch
+    with
+    | Ok owner -> owner
+    | Error why -> failwith why
+  in
+  check "real worker applied committed automerge control"
+    owner.automerge_enabled;
+  let queued =
+    List.exists
+      (Types.Operation_kind.equal Types.Operation_kind.Human)
+      owner.queue
+  in
+  let retained =
+    List.exists
+      (fun (id, _, _, _, used) -> id = "late-guidance" && not used)
+      (Coordinator_state.inputs committed)
+  in
+  check "late guidance neither discarded nor consumed by an old result"
+    (queued || retained);
   print_endline
     "coordinator raw attachment loop: real v3 Bind/Execute/Input-capable host \
      and confirmed ACK delivery"

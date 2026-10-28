@@ -28,6 +28,7 @@ val create :
   next_id:(unit -> string) ->
   t
 
+val authority : t -> string * string * int64 * int64
 val state : envelope -> Coordinator_state.t
 val version : envelope -> int64
 val write_id : envelope -> string

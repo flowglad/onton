@@ -147,6 +147,11 @@ val accept_forge_observation :
   t * (Poll_outcome.t, string) Result.t
 
 val defer_forge_revision_pair : t -> Patch_id.t -> t
+
+val apply_worker_input : t -> Patch_id.t -> Worker_protocol_v3.input -> t
+(** Safe-boundary ingestion; caller checkpoints the input and owner together.
+    Forge bookkeeping never changes implementation message generation. *)
+
 val set_base_branch : t -> Patch_id.t -> Branch.t -> t
 val set_notified_base_branch : t -> Patch_id.t -> Branch.t -> t
 val increment_ci_failure_count : t -> Patch_id.t -> t

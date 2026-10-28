@@ -25,7 +25,14 @@ type input = {
   version : int64;
   guidance : string;
   selected_base : string;
+  evidence : Coordinator_observation.t list;
+  controls : (string * string) list;
+  covered : (string * int64) list;
 }
+
+val input_json : input -> Yojson.Safe.t
+val decode_input : Yojson.Safe.t -> (input, string) result
+val apply_input : Patch_agent.t -> input -> Patch_agent.t
 
 type execute = {
   request : Worker_protocol.execute_request;

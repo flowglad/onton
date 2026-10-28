@@ -12,56 +12,117 @@ type transition =
   | Applied of Coordinator_state.outcome list
   | Rejected of string
 
+let ( let* ) value f = Result.bind value ~f
+
 type t = {
   store : Coordinator_store.t;
   next_write_id : unit -> string;
   mutable current : Coordinator_store.envelope;
   mutable pending : (string * string) option;
+  mutable closed_state : Coordinator_state.t option;
 }
 
 let restore ~store ~next_write_id =
   match Coordinator_store.load store with
   | Error e -> Error (Store e)
-  | Ok current -> Ok { store; next_write_id; current; pending = None }
+  | Ok current ->
+      Ok { store; next_write_id; current; pending = None; closed_state = None }
+
+let authority t = Coordinator_store.authority t.store
+
+let refresh t =
+  match Coordinator_store.load t.store with
+  | Ok current
+    when String.equal
+           (Coordinator_store.encode current)
+           (Coordinator_store.encode t.current) ->
+      Ok ()
+  | Ok _ -> Error (Invalid "resource effect changed opaque coordinator state")
+  | Error error -> Error (Store error)
+
+let resource_request t (request : Resource_protocol.request) =
+  if
+    not
+      (String.equal request.Resource_protocol.run_id
+         (Coordinator_store.state t.current |> Coordinator_state.run_id))
+  then Error (Invalid "resource request belongs to another run")
+  else
+    let* () = refresh t in
+    let run, coordinator, epoch, revision = authority t in
+    if Int64.equal revision Int64.max_value then
+      Error (Invalid "resource revision exhausted")
+    else
+      try
+        match Yojson.Safe.from_string request.Resource_protocol.bytes with
+        | `Assoc fields -> (
+            let fields =
+              List.filter fields ~f:(fun (k, _) ->
+                  not
+                    (List.mem
+                       [ "run_id"; "coordinator_id"; "owner_epoch"; "revision" ]
+                       k ~equal:String.equal))
+            in
+            match
+              Resource_protocol.make_request
+                (Yojson.Safe.to_string
+                   (`Assoc
+                      (fields
+                      @ [
+                          ("run_id", `String run);
+                          ("coordinator_id", `String coordinator);
+                          ("owner_epoch", `String (Int64.to_string epoch));
+                          ( "revision",
+                            `String (Int64.to_string (Int64.succ revision)) );
+                        ])))
+            with
+            | Ok request -> Ok request
+            | Error reason -> Error (Invalid reason))
+        | _ -> Error (Invalid "invalid resource request")
+      with _ -> Error (Invalid "invalid resource request")
 
 let envelope t = t.current
-let state t = Coordinator_store.state t.current
+
+let state t =
+  Option.value t.closed_state ~default:(Coordinator_store.state t.current)
 
 let commit_envelope ?(emergency = false) t candidate outcomes =
-  let bytes = Coordinator_store.encode candidate in
-  if String.length bytes > (8 * 1024 * 1024) - if emergency then 0 else 65536
-  then Error (Invalid "run envelope reserve exhausted")
+  if Option.is_some t.closed_state then
+    Error (Invalid "run is terminally closed")
   else
-    let id =
-      match t.pending with
-      | Some (id, old) when String.equal old bytes -> Ok id
-      | Some _ -> Error (Invalid "previous transition unresolved")
-      | None ->
-          let id = t.next_write_id () in
-          t.pending <- Some (id, bytes);
-          Ok id
-    in
-    match id with
-    | Error e -> Error e
-    | Ok id -> (
-        match
-          Coordinator_store.commit ~emergency t.store
-            ~expected_version:(Coordinator_store.version t.current)
-            ~write_id:id candidate
-        with
-        | Error e -> Error (Store e)
-        | Ok receipt ->
-            if
-              not
-                (Int64.equal receipt.state_version
-                   Int64.(succ (Coordinator_store.version t.current)))
-            then Error (Invalid "unexpected write receipt")
-            else (
-              (* No mutable coordinator intent, ACK or resource effect is visible
+    let bytes = Coordinator_store.encode candidate in
+    if String.length bytes > (8 * 1024 * 1024) - if emergency then 0 else 65536
+    then Error (Invalid "run envelope reserve exhausted")
+    else
+      let id =
+        match t.pending with
+        | Some (id, old) when String.equal old bytes -> Ok id
+        | Some _ -> Error (Invalid "previous transition unresolved")
+        | None ->
+            let id = t.next_write_id () in
+            t.pending <- Some (id, bytes);
+            Ok id
+      in
+      match id with
+      | Error e -> Error e
+      | Ok id -> (
+          match
+            Coordinator_store.commit ~emergency t.store
+              ~expected_version:(Coordinator_store.version t.current)
+              ~write_id:id candidate
+          with
+          | Error e -> Error (Store e)
+          | Ok receipt ->
+              if
+                not
+                  (Int64.equal receipt.state_version
+                     Int64.(succ (Coordinator_store.version t.current)))
+              then Error (Invalid "unexpected write receipt")
+              else (
+                (* No mutable coordinator intent, ACK or resource effect is visible
            before current bytes and the receipt have been confirmed. *)
-              t.current <- Coordinator_store.committed candidate receipt;
-              t.pending <- None;
-              Ok (Applied outcomes)))
+                t.current <- Coordinator_store.committed candidate receipt;
+                t.pending <- None;
+                Ok (Applied outcomes)))
 
 let commit t event next outcomes =
   commit_envelope
@@ -88,9 +149,10 @@ let apply t event =
   then Ok (Applied outcomes)
   else commit t event next outcomes
 
-let resource_binding id bytes =
+let resource_binding run_id id bytes =
   match Resource_protocol.make_request bytes with
   | Error _ -> false
+  | Ok request when not (String.equal request.run_id run_id) -> false
   | Ok request -> (
       match request.operation with
       | Resource_protocol.Launch | Replace -> (
@@ -107,16 +169,72 @@ let resource_binding id bytes =
       | Stop | Close -> String.equal request.request_id id
       | _ -> false)
 
+let transaction t events =
+  let rec collect state outcomes = function
+    | [] ->
+        commit_envelope
+          ~emergency:(List.for_all events ~f:Coordinator_state.emergency_event)
+          t
+          (Coordinator_store.with_state t.current state)
+          outcomes
+    | ( Coordinator_state.Owner_receipt _ | Advance_receipt _
+      | Result_committed _ | Worker_result _ | Cleanup_confirmed _
+      | Stop_confirmed _ | Resource_stopped _ | Input_consumed _
+      | Cancel_cleanup_confirmed | Terminal_patch _ )
+      :: _ ->
+        Error (Invalid "external evidence requires a bound submission")
+    | Coordinator_state.Resource_request (id, bytes) :: _
+      when not (resource_binding (Coordinator_state.run_id state) id bytes) ->
+        Error (Invalid "resource request identity or schema")
+    | event :: rest -> (
+        let next, effects = Coordinator_state.step state event in
+        match
+          List.find_map effects ~f:(function
+            | Coordinator_state.Rejected s -> Some s
+            | _ -> None)
+        with
+        | Some reason -> Ok (Rejected reason)
+        | None -> collect next (outcomes @ effects) rest)
+  in
+  collect (state t) [] events
+
 let submit t event =
   match event with
   | Coordinator_state.Resource_request (id, bytes)
-    when not (resource_binding id bytes) ->
+    when not (resource_binding (Coordinator_state.run_id (state t)) id bytes) ->
       Error (Invalid "resource request identity or schema")
   | Coordinator_state.Owner_receipt _ | Advance_receipt _ | Result_committed _
   | Worker_result _ | Cleanup_confirmed _ | Stop_confirmed _
-  | Resource_stopped _ | Input_consumed _ | Cancel_cleanup_confirmed ->
+  | Resource_stopped _ | Input_consumed _ | Cancel_cleanup_confirmed
+  | Terminal_patch _ ->
       Error (Invalid "external evidence requires a bound submission")
   | _ -> apply t event
+
+let terminal_from_forge t ~patch ~ticket =
+  let current =
+    List.find
+      (Coordinator_state.controls (state t))
+      ~f:(fun c ->
+        String.equal c.Coordinator_state.kind "forge_ticket"
+        && Option.equal String.equal c.patch_id
+             (Some (Patch_id.to_string patch)))
+  in
+  match
+    ( current,
+      Coordinator_journal.find
+        (Coordinator_state.journal (state t))
+        ("observation:" ^ ticket) )
+  with
+  | Some current, Some { phase = Applied bytes; _ }
+    when String.equal current.id ticket -> (
+      match Coordinator_observation.decode bytes with
+      | Ok { state = Some pr; _ } when Pr_state.merged pr ->
+          apply t (Coordinator_state.Terminal_patch patch)
+      | _ ->
+          Error
+            (Invalid "terminal patch requires current committed merge evidence")
+      )
+  | _ -> Error (Invalid "terminal forge evidence missing or superseded")
 
 let cancel_closed t ~(close_request : Resource_protocol.request)
     ~(response : Resource_protocol.response) =
@@ -143,19 +261,34 @@ let cancel_closed t ~(close_request : Resource_protocol.request)
          (Option.value_map response.run_id ~default:true
             ~f:(String.equal (Coordinator_state.run_id state)))
   then Error (Invalid "close did not prove matching terminal cleanup")
-  else apply t Coordinator_state.Cancel_cleanup_confirmed
+  else
+    let next, outcomes =
+      Coordinator_state.step state Coordinator_state.Cancel_cleanup_confirmed
+    in
+    if not (Coordinator_state.cancellation_complete next) then
+      Error (Invalid "close preceded retirement")
+    else (
+      (* Close seals opaque storage. The helper's durable close tombstone is
+         the settlement evidence; attempting another state-write here is wrong. *)
+      t.closed_state <- Some next;
+      Ok (Applied outcomes))
 
 let retired t ~resource_id ~(stop_request : Resource_protocol.request) ~response
     =
   let matches =
-    try
-      match Yojson.Safe.from_string stop_request.bytes with
-      | `Assoc fields -> (
-          match List.Assoc.find fields "resource_id" ~equal:String.equal with
-          | Some (`String id) -> String.equal id resource_id
-          | _ -> false)
-      | _ -> false
-    with _ -> false
+    Option.value_map response.Resource_protocol.resource_id ~default:true
+      ~f:(String.equal resource_id)
+    && Option.value_map response.run_id ~default:true
+         ~f:(String.equal (Coordinator_state.run_id (state t)))
+    &&
+      try
+        match Yojson.Safe.from_string stop_request.bytes with
+        | `Assoc fields -> (
+            match List.Assoc.find fields "resource_id" ~equal:String.equal with
+            | Some (`String id) -> String.equal id resource_id
+            | _ -> false)
+        | _ -> false
+      with _ -> false
   in
   if
     (not
@@ -179,7 +312,6 @@ let retired t ~resource_id ~(stop_request : Resource_protocol.request) ~response
     | Some launch ->
         apply t (Coordinator_state.Resource_stopped (resource_id, launch))
 
-let ( let* ) value f = Result.bind value ~f
 let invalid reason = Error (Invalid reason)
 let protocol = function Ok x -> Ok x | Error e -> invalid e
 let stream t assignment = Coordinator_store.stream t.current assignment
@@ -351,14 +483,70 @@ let command t ~assignment ~frame =
           else Ok ()
       | Input (identity, input) ->
           let* () = check_scope t a identity in
+          let evidence_backed =
+            List.for_all input.evidence ~f:(fun evidence ->
+                match
+                  Coordinator_journal.find
+                    (Coordinator_state.journal (state t))
+                    ("observation:"
+                   ^ evidence.Coordinator_observation.scope.ticket)
+                with
+                | Some { phase = Applied bytes; _ } ->
+                    String.equal bytes (Coordinator_observation.encode evidence)
+                | _ -> false)
+          in
+          let controls_backed =
+            List.for_all input.controls ~f:(fun (kind, value) ->
+                List.exists
+                  (Coordinator_state.controls (state t))
+                  ~f:(fun c ->
+                    String.equal c.kind kind
+                    && String.equal c.payload value
+                    && Option.equal String.equal c.patch_id
+                         (Some identity.patch_id)
+                    && List.exists input.covered ~f:(fun (id, _) ->
+                        String.equal id c.id)))
+          in
+          let* () =
+            if evidence_backed && controls_backed then Ok ()
+            else invalid "worker evidence/control lacks a committed source"
+          in
+          let base =
+            match Worker_stream.input previous with
+            | Some input -> input.selected_base
+            | None -> (
+                match Worker_stream.binding previous with
+                | Some (Worker_protocol_v3.Bind (_, context)) ->
+                    Worker_protocol_v3.selected_base context
+                | _ -> "")
+          in
+          let cumulative =
+            Option.value_map
+              (Coordinator_inputs.pending (state t) a.patch ~selected_base:base)
+              ~default:false ~f:(Poly.equal input)
+          in
           if
-            List.exists
-              (Coordinator_state.inputs (state t))
-              ~f:(fun (id, patch, version, payload, _) ->
-                String.equal id input.input_id
-                && String.equal patch identity.patch_id
-                && Int64.equal version input.version
-                && String.equal payload frame)
+            cumulative
+            || List.exists
+                 (Coordinator_state.inputs (state t))
+                 ~f:(fun (id, patch, version, payload, _) ->
+                   String.equal id input.input_id
+                   && String.equal patch identity.patch_id
+                   && Int64.equal version input.version
+                   && (String.equal payload frame
+                      || List.is_empty input.evidence
+                         && List.exists
+                              (Coordinator_state.controls (state t))
+                              ~f:(fun c ->
+                                String.equal c.id input.input_id
+                                &&
+                                match (c.kind, input.controls) with
+                                | "guidance", [] ->
+                                    String.equal payload input.guidance
+                                | ("automerge" | "bump"), [ (kind, value) ] ->
+                                    String.equal c.kind kind
+                                    && String.equal payload value
+                                | _ -> false)))
           then Ok ()
           else invalid "input is not exact committed coordinator intent"
       | Legacy_control (Worker_protocol.Cancel c) ->
@@ -426,11 +614,13 @@ let receive t ~assignment ~frame ~gameplan ~main_branch ~now =
                  (Some m.operation))
           then invalid "capsule operation does not match checkpoint"
           else if
-            Option.is_some consumed
-            && not (Poly.equal consumed (Worker_stream.input previous))
-            || (Option.is_some prior_input && Option.is_none consumed)
-            || Option.is_some (Worker_checkpoint.terminal capsule)
-               && not (Poly.equal consumed (Worker_stream.input previous))
+            Option.value_map consumed ~default:false ~f:(fun input ->
+                not (Worker_stream.delivered_input previous input))
+            ||
+            match (prior_input, consumed) with
+            | Some old, Some current -> Int64.(current.version < old.version)
+            | Some _, None -> true
+            | None, _ -> false
           then invalid "capsule input differs from exact delivered intent"
           else
             let* receipt =
@@ -452,9 +642,19 @@ let receive t ~assignment ~frame ~gameplan ~main_branch ~now =
               match Worker_checkpoint.v3_input capsule with
               | None -> Ok (next_state, [])
               | Some input ->
-                  step_state next_state
-                    (Coordinator_state.Input_consumed
-                       (assignment, input.input_id, input.version))
+                  let covered =
+                    match input.covered with
+                    | [] -> [ (input.input_id, input.version) ]
+                    | xs -> xs
+                  in
+                  List.fold_result covered ~init:(next_state, [])
+                    ~f:(fun (state, outcomes) (id, version) ->
+                      let* state, effects =
+                        step_state state
+                          (Coordinator_state.Input_consumed
+                             (assignment, id, version))
+                      in
+                      Ok (state, outcomes @ effects))
             in
             Ok (next_state, outcomes @ input_outcomes)
       | Result m ->

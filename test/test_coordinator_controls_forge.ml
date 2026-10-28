@@ -234,6 +234,7 @@ let test_scope () =
       head_revision = "aaa";
       base_revision = "bbb";
       push_destination = "push-url";
+      generation = 0;
     }
   in
   let stale = { scope with ticket = "ticket-0" } in
@@ -293,6 +294,11 @@ let test_scope () =
 
 let creates = ref 0
 let provider_reads = ref 0
+let provider_state : Pr_state.t option ref = ref None
+let mutations = ref []
+let lose_effect = ref false
+let after_read = ref (fun () -> ())
+let after_effect = ref (fun () -> ())
 
 module Fake_forge : Forge.S with type error = string = struct
   type error = string
@@ -322,13 +328,23 @@ module Fake_forge : Forge.S with type error = string = struct
 
   let pr_state _ =
     incr provider_reads;
-    Error "unavailable"
+    let result =
+      match !provider_state with
+      | Some pr -> Ok pr
+      | None -> Error "unavailable"
+    in
+    !after_read ();
+    result
 
   let merge_queue_removal_checks ~pr_number:_ = Error "unused"
   let check_failure_details ~check:_ = Error "unused"
   let rerun_failed_jobs_for_check ~check:_ = Error "unused"
   let list_prs ~branch:_ ?base:_ ~state:_ () = Ok []
-  let update_pr_body ~pr_number:_ ~body:_ = Ok ()
+
+  let update_pr_body ~pr_number:_ ~body:_ =
+    mutations := "body" :: !mutations;
+    !after_effect ();
+    if !lose_effect then Error "lost body response" else Ok ()
 
   let reply_to_review_comment ~pr_number:_ ~comment_id:_ ~body:_ =
     Error "unused"
@@ -343,7 +359,17 @@ module Fake_forge : Forge.S with type error = string = struct
   let update_pr_base ~pr_number:_ ~base:_ = Ok ()
   let request_review ~pr_number:_ ~team_slug:_ = Ok ()
   let set_draft ~pr_number:_ ~draft:_ = Ok ()
-  let merge_pr ~pr_number:_ = Error "unused"
+
+  let merge_pr ~pr_number:_ =
+    mutations := "merge" :: !mutations;
+    if !lose_effect then Error "lost merge response"
+    else (
+      provider_state :=
+        Option.map
+          (fun pr -> { pr with Pr_state.status = Merged })
+          !provider_state;
+      Ok Merge_succeeded)
+
   let enqueue_pr ~pr_number:_ = Error "unused"
   let dequeue_pr ~pr_number:_ = Error "unused"
   let check_repo_access () = Ok ()
@@ -383,13 +409,22 @@ let test_ambiguous_create () =
       pr = Types.Pr_number.of_int 0;
       head_branch = Types.Branch.of_string "feature";
       base_branch = Types.Branch.of_string "main";
-      head_revision = "aaa";
-      base_revision = "bbb";
+      head_revision = String.make 40 'a';
+      base_revision = String.make 40 'b';
       push_destination = "push";
+      generation = 0;
     }
   in
   let io : Branch_reconcile_executor.io =
-    { git = (fun _ -> (2, "", "missing")) }
+    {
+      git =
+        (fun args ->
+          let revision =
+            if List.mem "refs/heads/feature" args then String.make 40 'a'
+            else String.make 40 'b'
+          in
+          (0, revision ^ "\t" ^ List.hd (List.rev args) ^ "\n", ""));
+    }
   in
   let call host scope =
     Coordinator_forge.create_or_discover
@@ -425,8 +460,15 @@ let test_ambiguous_create () =
     (match
        Coordinator_forge.change
          (module Fake_forge)
-         ~host ~io ~scope ~patch ~effect_id:"draft-1" ~policy_ready:true
-         (Coordinator_forge.Set_draft true)
+         ~host ~io ~scope ~patch ~effect_id:"draft-1"
+         ~view:
+           {
+             Scheduler_decision.graph = Graph.of_patches [];
+             mode = Execution_mode.mainline;
+             agents = [];
+             main = Types.Branch.of_string "main";
+           }
+         ~now:0. (Coordinator_forge.Set_draft true)
      with
     | Coordinator_forge.Change_pending _ -> true
     | _ -> false)
@@ -477,7 +519,306 @@ let test_ambiguous_create () =
     "disappeared publication recreated without explicit renewal";
   check (!creates = 1) "unrenewed create wrote to provider"
 
+let test_committed_evidence_and_effects () =
+  let module F = Onton_test_support.Coordinator_store_fixture in
+  let f = F.fixture () in
+  let store, state, next = F.setup f in
+  let patch = Types.Patch_id.of_string "patch" in
+  let branch = Types.Branch.of_string in
+  let number = Types.Pr_number.of_int 1 in
+  let head = String.make 40 'a' and base = String.make 40 'b' in
+  let scope : Coordinator_forge.scope =
+    {
+      ticket = "poll";
+      pr = number;
+      head_branch = branch "feature";
+      base_branch = branch "main";
+      head_revision = head;
+      base_revision = base;
+      push_destination = "push";
+      generation = 0;
+    }
+  in
+  let pr : Pr_state.t =
+    {
+      pr_number = Some number;
+      status = Open;
+      is_draft = false;
+      merge_state = Mergeable;
+      merge_ready = true;
+      merge_ready_divergence = None;
+      review_decision = Some "APPROVED";
+      check_status = Passing;
+      ci_checks = [];
+      ci_checks_truncated = false;
+      comments = [];
+      unresolved_comment_count = 0;
+      findings = [];
+      node_id = Some "node";
+      merge_queue_required = false;
+      merge_queue_entry = None;
+      native_stack = false;
+      head_branch = Some (branch "feature");
+      head_oid = Some head;
+      base_oid = Some base;
+      merge_commit_sha = None;
+      base_branch = Some (branch "main");
+      is_fork = false;
+    }
+  in
+  let agent =
+    Patch_agent.create_adhoc ~complexity:None ~patch_id:patch
+      ~branch:(branch "feature") ~pr_number:number ~max_ci_failures:3
+    |> fun a ->
+    Patch_agent.set_base_branch a (branch "main") |> fun a ->
+    Patch_agent.set_head_oid a (Some head) |> fun a ->
+    Patch_agent.set_automerge_enabled a true
+  in
+  let view : Scheduler_decision.input =
+    {
+      graph =
+        Graph.of_patches
+          [
+            {
+              Types.Patch.id = patch;
+              title = "patch";
+              description = "patch";
+              branch = branch "feature";
+              dependencies = [];
+              spec = "";
+              acceptance_criteria = [];
+              files = [];
+              classification = "";
+              changes = [];
+              test_stubs_introduced = [];
+              test_stubs_implemented = [];
+              complexity = None;
+              precedents = [];
+              required_context = [];
+            };
+          ];
+      mode = Execution_mode.mainline;
+      agents = [ agent ];
+      main = branch "main";
+    }
+  in
+  let op : Coordinator_state.operation =
+    {
+      id = "work";
+      patch;
+      used = 0;
+      budget = 3;
+      retry_after = 0L;
+      attention = false;
+      unfinished = true;
+      maintenance = false;
+    }
+  in
+  let state, _ = Coordinator_state.step state (Admit op) in
+  ignore
+    (F.committed
+       (Coordinator_store.commit store ~expected_version:0L ~write_id:"initial"
+          (Coordinator_store.initial state)));
+  let restore () =
+    let client =
+      Resource_client.create ~helper:"fixture" ~transport:(F.transport f)
+    in
+    let store =
+      Coordinator_store.create ~client ~run_id:"r" ~coordinator_id:"c"
+        ~owner_epoch:1L ~revision:1L ~next_id:next
+    in
+    match Coordinator_host.restore ~store ~next_write_id:next with
+    | Ok h -> h
+    | Error _ -> failwith "restore"
+  in
+  let io : Branch_reconcile_executor.io =
+    {
+      git =
+        (fun args ->
+          let revision =
+            if List.mem "refs/heads/feature" args then head else base
+          in
+          (0, revision ^ "\t" ^ List.hd (List.rev args) ^ "\n", ""));
+    }
+  in
+  let observe host ticket =
+    Coordinator_forge.observe_committed
+      (module Fake_forge)
+      ~host ~io ~patch ~scope:{ scope with ticket }
+  in
+  let host = restore () in
+  provider_state := Some pr;
+  (after_read := fun () -> f.reject_write <- true);
+  check
+    (match observe host "rejected-result" with
+    | Unavailable _ -> true
+    | _ -> false)
+    "uncommitted observation returned as proof";
+  check
+    (Coordinator_state.inputs (Coordinator_host.state host) = [])
+    "uncommitted evidence queued";
+  (after_read := fun () -> ());
+  f.reject_write <- false;
+  let host = restore () in
+  (match observe host "committed-result" with
+  | Confirmed _ -> ()
+  | Unavailable why | Unconfirmed why ->
+      failwith ("observation result not committed: " ^ why));
+  let projected =
+    Coordinator_state.scheduling_view (Coordinator_host.state host) view
+  in
+  check
+    (Patch_agent.forge_revision_pair_confirmed (List.hd projected.agents))
+    "durable evidence not used for policy";
+  let pending =
+    match
+      Coordinator_inputs.pending
+        (Coordinator_host.state host)
+        patch ~selected_base:"main"
+    with
+    | Some i -> i
+    | None -> failwith "versioned worker evidence absent"
+  in
+  check
+    (pending.evidence <> [] && pending.version = 1L)
+    "worker evidence not versioned";
+  check
+    (Patch_agent.forge_revision_pair_confirmed
+       (Worker_protocol_v3.apply_input agent pending))
+    "worker owner did not adopt evidence";
+  let reads = !provider_reads in
+  ignore (observe (restore ()) "committed-result");
+  check (!provider_reads = reads)
+    "same immutable observation ticket reread provider";
+  mutations := [];
+  let change host ~id ~now action =
+    Coordinator_forge.change
+      (module Fake_forge)
+      ~host ~io ~scope ~patch ~effect_id:id ~view ~now action
+  in
+  check
+    (change host ~id:"merge" ~now:0. Merge
+    = Change_pending "current shared scheduler policy/idle window not ready")
+    "merge skipped durable idle window";
+  check (!mutations = []) "merge before idle window";
+  check
+    (match change host ~id:"merge" ~now:119. Merge with
+    | Change_pending _ -> true
+    | _ -> false)
+    "open idle boundary";
+  let host = restore () in
+  (match change host ~id:"merge" ~now:120. Merge with
+  | Applied -> ()
+  | Change_pending why | Change_blocked why ->
+      let current =
+        List.hd
+          (Coordinator_state.scheduling_view (Coordinator_host.state host) view)
+            .agents
+      in
+      failwith
+        (Printf.sprintf
+           "closed idle boundary/restart: %s candidate=%b deadline=%s queue=%d \
+            proof=%b"
+           why
+           (Scheduler_decision.automerge_candidate current ~main:view.main)
+           (match current.automerge_deadline with
+           | None -> "none"
+           | Some f -> string_of_float f)
+           (List.length current.queue)
+           (Patch_agent.forge_revision_pair_confirmed current)));
+  check (!mutations = [ "merge" ]) "merge count";
+  check
+    (change (restore ()) ~id:"merge" ~now:121. Merge = Applied)
+    "committed effect result not retained";
+  check (!mutations = [ "merge" ]) "successful effect replayed";
+  provider_state := Some pr;
+  check
+    (change host ~id:"body-ok" ~now:122. (Set_body "notes") = Applied)
+    "body result not committed";
+  check
+    (change (restore ()) ~id:"body-ok" ~now:123. (Set_body "notes") = Applied)
+    "body success lost at restart";
+  check (List.length !mutations = 2) "body success replayed";
+  check
+    (match change host ~id:"body-ok" ~now:124. (Set_body "changed") with
+    | Change_blocked _ -> true
+    | _ -> false)
+    "changed immutable effect accepted";
+  lose_effect := true;
+  check
+    (match change host ~id:"body-lost" ~now:125. (Set_body "unknown") with
+    | Change_pending _ -> true
+    | _ -> false)
+    "ambiguous body effect not pending";
+  let count = List.length !mutations in
+  ignore (change (restore ()) ~id:"body-lost" ~now:126. (Set_body "unknown"));
+  ignore (change (restore ()) ~id:"body-lost" ~now:127. (Set_body "unknown"));
+  check
+    (match
+       Coordinator_journal.find
+         (Coordinator_state.journal (Coordinator_host.state (restore ())))
+         "effect:body-lost"
+     with
+    | Some { phase = Attention; _ } -> true
+    | _ -> false)
+    "ambiguous effect never reaches durable attention";
+  check
+    (match
+       change (restore ()) ~id:"new-body" ~now:128. (Set_body "unknown")
+     with
+    | Change_blocked _ -> true
+    | _ -> false)
+    "new ID bypassed unresolved effect";
+  check (List.length !mutations = count) "ambiguous body resubmitted";
+  lose_effect := false;
+  provider_state := Some { pr with check_status = Failing; merge_ready = false };
+  let host = restore () in
+  ignore (observe host "failing");
+  let projected =
+    Coordinator_state.scheduling_view (Coordinator_host.state host) view
+  in
+  check
+    (not (List.hd projected.agents).checks_passing)
+    "current failing checks ignored";
+  provider_state := Some pr;
+  provider_state := None;
+  for n = 1 to 3 do
+    ignore (observe (restore ()) ("unavailable-" ^ string_of_int n))
+  done;
+  let host = restore () in
+  check
+    (List.exists
+       (fun (op : Coordinator_state.operation) -> op.attention)
+       (Coordinator_state.operations (Coordinator_host.state host)))
+    "unavailable forge observations wait forever";
+  check
+    (String.equal
+       (applied host "bump-after-wait" "bump" (`String "patch") "")
+       "accepted")
+    "bump not accepted";
+  let projected =
+    Coordinator_state.scheduling_view (Coordinator_host.state host) view
+  in
+  check
+    (Patch_agent.needs_intervention (List.hd projected.agents))
+    "bump renewed the coordinator observation allowance";
+  check
+    (String.equal
+       (applied host "renew-wait" "renewal" (`String "patch") "work")
+       "accepted")
+    "matching explicit observation renewal rejected";
+  check
+    (not
+       (List.exists
+          (fun (op : Coordinator_state.operation) -> op.attention)
+          (Coordinator_state.operations (Coordinator_host.state host))))
+    "renewal did not release attention";
+  print_endline
+    "forge: result commit barrier, durable scheduling/evidence, idle-window \
+     restart and applied/ambiguous effect settlement"
+
 let () =
+  test_committed_evidence_and_effects ();
   test_control_store ();
   test_guidance_atomic ();
   test_stop_request_is_not_container ();

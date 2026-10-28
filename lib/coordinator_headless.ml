@@ -14,7 +14,44 @@ let json state =
   in
   let assignments = assignments state in
   let operations = operations state in
-  let attention = List.count operations ~f:(fun o -> o.attention) in
+  let attention =
+    List.count operations ~f:(fun o -> o.attention)
+    + List.count
+        (Coordinator_journal.entries (journal state))
+        ~f:(fun e ->
+          match e.phase with Attention -> true | Pending | Applied _ -> false)
+  in
+  let operation_rows =
+    List.take operations 128
+    |> List.map ~f:(fun (op : operation) ->
+        let current =
+          List.find assignments ~f:(fun a ->
+              String.equal a.operation op.id && not a.retired)
+        in
+        let status =
+          if op.attention then "attention"
+          else if
+            Option.value_map current ~default:false ~f:(fun a -> a.reserved)
+          then "executing"
+          else if op.maintenance || (op.used > 0 && op.unfinished) then
+            "recovery"
+          else if op.unfinished then "capacity_wait"
+          else "idle"
+        in
+        `Assoc
+          [
+            ("patch_id", str (Types.Patch_id.to_string op.patch));
+            ("operation_id", str op.id);
+            ("status", str status);
+            ("attempts", `Int op.used);
+            ("budget", `Int op.budget);
+            ( "assignment_id",
+              Option.value_map current ~default:`Null ~f:(fun a -> str a.id) );
+            ( "resource_id",
+              Option.value_map current ~default:`Null ~f:(fun a ->
+                  str a.resource) );
+          ])
+  in
   let executing = reserved_count state in
   let idle =
     List.count (resource_owners state) ~f:(fun (id, _) ->
@@ -36,6 +73,8 @@ let json state =
       ("attention", `Int attention);
       ("resource_count", `Int (List.length (resource_owners state)));
       ("operation_count", `Int (List.length operations));
+      ("operations", `List operation_rows);
+      ("operations_truncated", `Bool (List.length operations > 128));
     ]
 
 let emit ~write state = write (Yojson.Safe.to_string (json state) ^ "\n")

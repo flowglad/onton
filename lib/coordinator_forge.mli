@@ -3,7 +3,7 @@
 
 open Types
 
-type scope = {
+type scope = Coordinator_observation.scope = {
   ticket : string;
   pr : Pr_number.t;
   head_branch : Branch.t;
@@ -11,6 +11,7 @@ type scope = {
   head_revision : string;
   base_revision : string;
   push_destination : string;
+  generation : int;
 }
 
 type observation =
@@ -29,6 +30,7 @@ val observe :
     observation. An unavailable probe never proves a missing ref. *)
 
 val observe_committed :
+  ?now:float ->
   (module Forge.S with type error = 'e) ->
   host:Coordinator_host.t ->
   io:Branch_reconcile_executor.io ->
@@ -36,14 +38,16 @@ val observe_committed :
   scope:scope ->
   observation
 (** Commit an immutable scoped observation ticket in the coordinator envelope
-    before network reads. Reject changed ticket reuse and superseded tickets;
-    neither a request nor a provider response grants Git/worker authority. *)
+    before network reads, then atomically commit the result and versioned worker
+    input. Reject changed ticket reuse and superseded tickets; a repeated ticket
+    returns its committed snapshot, not a new read. Neither a request nor an
+    uncommitted provider response grants Git/worker authority. *)
 
 val ready :
   expected:scope -> current:scope -> policy_ready:bool -> observation -> bool
-(** Policy readiness is supplied by the shared scheduler, never derived from a
-    forge's candidate flag. Changed ticket/identity/revision denies readiness.
-*)
+(** Diagnostic predicate only, not a mutation authorization API. Changed
+    ticket/identity/revision denies readiness; [change] recomputes shared policy
+    and its durable idle window instead of accepting this boolean. *)
 
 val contribution_credit :
   expected:scope ->
@@ -97,13 +101,17 @@ val change :
   scope:scope ->
   patch:Patch_id.t ->
   effect_id:string ->
-  policy_ready:bool ->
+  ?renewal_id:string ->
+  view:Scheduler_decision.input ->
+  now:float ->
   change ->
   change_result
-(** Commit the exact effect identity and target before provider IO. Direct
-    current pair proof and caller-supplied shared-policy readiness gate a first
-    merge/queue attempt. Replay discovers actual provider state and never
-    replays an ambiguous mutation just because the read appears unchanged. *)
+(** Commit the exact effect identity and target before provider IO. Fresh
+    committed pair proof, shared scheduler policy and the persisted idle window
+    gate a first merge/queue attempt. Successful outcomes commit before return;
+    unresolved effects reach durable attention. Replay discovers actual provider
+    state and never repeats an ambiguous mutation because a read is unchanged. A
+    new identity cannot bypass unresolved intent without explicit renewal. *)
 
 val render_notes :
   gameplan:Gameplan.t ->

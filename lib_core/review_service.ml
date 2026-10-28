@@ -2,15 +2,16 @@
    @archlint.domain review-service *)
 
 open Base
+open Ppx_yojson_conv_lib.Yojson_conv.Primitives
 
 type severity = Must_fix | Should_fix | Note
-[@@deriving show, eq, sexp_of, compare]
+[@@deriving show, eq, sexp_of, compare, yojson]
 
 type outcome_kind = Outstanding | Discussed | Addressed | Ignored | Wontfix
-[@@deriving show, eq, sexp_of, compare]
+[@@deriving show, eq, sexp_of, compare, yojson]
 
 type last_reply = { author : string; at : string; body : string }
-[@@deriving show, eq, sexp_of, compare]
+[@@deriving show, eq, sexp_of, compare, yojson]
 
 type outcome = {
   kind : outcome_kind;
@@ -19,7 +20,7 @@ type outcome = {
   reason : string option;
   last_reply : last_reply option;
 }
-[@@deriving show, eq, sexp_of, compare]
+[@@deriving show, eq, sexp_of, compare, yojson]
 
 type finding = {
   id : string;
@@ -33,7 +34,7 @@ type finding = {
   created_at : string;
   outcome : outcome;
 }
-[@@deriving show, eq, sexp_of, compare]
+[@@deriving show, eq, sexp_of, compare, yojson]
 
 type finding_parse_error = { index : int; error : string; json : string }
 [@@deriving show, eq, sexp_of, compare]

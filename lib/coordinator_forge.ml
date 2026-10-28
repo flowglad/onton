@@ -5,7 +5,7 @@ open Types
 
 [@@@warning "-4"]
 
-type scope = {
+type scope = Coordinator_observation.scope = {
   ticket : string;
   pr : Pr_number.t;
   head_branch : Branch.t;
@@ -13,6 +13,7 @@ type scope = {
   head_revision : string;
   base_revision : string;
   push_destination : string;
+  generation : int;
 }
 
 type observation =
@@ -21,7 +22,8 @@ type observation =
   | Unavailable of string
 
 let same_scope a b =
-  String.equal a.ticket b.ticket
+  a.generation = b.generation
+  && String.equal a.ticket b.ticket
   && Pr_number.equal a.pr b.pr
   && Branch.equal a.head_branch b.head_branch
   && Branch.equal a.base_branch b.base_branch
@@ -39,6 +41,10 @@ let observe (type e) (module F : Forge.S with type error = e) ~io scope =
   else
     match F.pr_state scope.pr with
     | Error e -> Unavailable (F.show_error e)
+    | Ok pr
+      when (Pr_state.merged pr || Pr_state.closed pr)
+           && Option.equal Pr_number.equal pr.pr_number (Some scope.pr) ->
+        Confirmed pr
     | Ok pr -> (
         if
           Pr_state.merged pr || Pr_state.closed pr
@@ -80,8 +86,8 @@ let observe (type e) (module F : Forge.S with type error = e) ~io scope =
               Confirmed pr
           | _ -> Unconfirmed "remote revision pair not confirmed")
 
-let observe_committed (type e) (module F : Forge.S with type error = e) ~host
-    ~io ~patch ~scope =
+let observe_committed ?(now = 0.) (type e)
+    (module F : Forge.S with type error = e) ~host ~io ~patch ~scope =
   let state = Coordinator_host.state host in
   let payload =
     Yojson.Safe.to_string
@@ -94,6 +100,7 @@ let observe_committed (type e) (module F : Forge.S with type error = e) ~host
            `String scope.head_revision;
            `String scope.base_revision;
            `String scope.push_destination;
+           `Int scope.generation;
          ])
   in
   let ticket : Coordinator_state.control =
@@ -120,10 +127,85 @@ let observe_committed (type e) (module F : Forge.S with type error = e) ~host
   | Ok (Coordinator_host.Applied _) -> (
       match latest (Coordinator_host.state host) with
       | Some current when Poly.equal current ticket -> (
-          let observed = observe (module F) ~io scope in
-          match latest (Coordinator_host.state host) with
-          | Some current when Poly.equal current ticket -> observed
-          | _ -> Unconfirmed "observation ticket superseded")
+          let id = "observation:" ^ scope.ticket in
+          let from_evidence evidence =
+            match evidence.Coordinator_observation.state with
+            | Some pr -> Confirmed pr
+            | None -> Unavailable evidence.diagnostic
+          in
+          match
+            Coordinator_journal.find
+              (Coordinator_state.journal (Coordinator_host.state host))
+              id
+          with
+          | Some { phase = Applied bytes; _ } -> (
+              match Coordinator_observation.decode bytes with
+              | Ok evidence -> from_evidence evidence
+              | Error reason -> Unconfirmed reason)
+          | Some _ ->
+              Unavailable "observation result unresolved; use a fresh ticket"
+          | None -> (
+              match
+                Coordinator_host.transaction host
+                  [ Journal_attempt (id, payload) ]
+              with
+              | Error _ | Ok (Rejected _) ->
+                  Unavailable "observation read intent unconfirmed"
+              | Ok (Applied _) -> (
+                  let observed = observe (module F) ~io scope in
+                  let pr, diagnostic =
+                    match observed with
+                    | Confirmed pr -> (Some pr, "")
+                    | Unconfirmed reason | Unavailable reason -> (None, reason)
+                  in
+                  let removal_checks =
+                    match pr with
+                    | Some pr when not (Pr_state.enqueued pr) ->
+                        Result.ok
+                          (F.merge_queue_removal_checks ~pr_number:scope.pr)
+                    | _ -> None
+                  in
+                  match
+                    Coordinator_observation.make ?removal_checks
+                      ~observed_at:now scope pr ~diagnostic
+                  with
+                  | Error reason -> Unconfirmed reason
+                  | Ok evidence -> (
+                      match latest (Coordinator_host.state host) with
+                      | Some current when Poly.equal current ticket -> (
+                          match
+                            Coordinator_host.transaction host
+                              (let state = Coordinator_host.state host in
+                               let version =
+                                 List.fold (Coordinator_state.inputs state)
+                                   ~init:0L ~f:(fun v (_, p, n, _, _) ->
+                                     if
+                                       String.equal p (Patch_id.to_string patch)
+                                     then Int64.max v n
+                                     else v)
+                               in
+                               [
+                                 Journal_settle
+                                   ( id,
+                                     Some
+                                       (Coordinator_observation.encode evidence)
+                                   );
+                                 Forge_wait
+                                   (patch, Option.is_some evidence.state);
+                                 Input
+                                   ( "evidence:" ^ scope.ticket,
+                                     Patch_id.to_string patch,
+                                     (if Int64.equal version Int64.max_value
+                                      then version
+                                      else Int64.succ version),
+                                     Coordinator_observation.encode evidence );
+                               ])
+                          with
+                          | Ok (Applied _) -> observed
+                          | Ok (Rejected _) | Error _ ->
+                              Unavailable
+                                "observation result commit unconfirmed")
+                      | _ -> Unconfirmed "observation ticket superseded"))))
       | _ -> Unconfirmed "observation ticket superseded")
 
 let ready ~expected ~current ~policy_ready observation =
@@ -139,8 +221,8 @@ type create_result =
   | Pending of string
   | Blocked of string
 
-let create_or_discover (type e) (module F : Forge.S with type error = e) ~host
-    ~io ~scope ~patch ~effect_id ~renewal_id ~title ~body ~draft =
+let create_unsettled (type e) (module F : Forge.S with type error = e) ~host ~io
+    ~scope ~patch ~effect_id ~renewal_id ~title ~body ~draft =
   let state = Coordinator_host.state host in
   let bytes =
     Yojson.Safe.to_string
@@ -235,12 +317,34 @@ let create_or_discover (type e) (module F : Forge.S with type error = e) ~host
                       "create outcome unresolved; absence is not no-effect \
                        proof"
                 | None -> (
-                    match
-                      F.create_pull_request ~title ~head:scope.head_branch
-                        ~base:scope.base_branch ~body ~draft
-                    with
-                    | Ok number -> Found number
-                    | Error e -> Pending (F.show_error e))))
+                    let head =
+                      Branch_reconcile_executor.remote_head_at io
+                        ~destination:scope.push_destination
+                        ~branch:(Branch.to_string scope.head_branch)
+                    in
+                    let base =
+                      Branch_reconcile_executor.remote_head_at io
+                        ~destination:"origin"
+                        ~branch:(Branch.to_string scope.base_branch)
+                    in
+                    let matches revision = function
+                      | Ok (Some commit) ->
+                          String.equal revision
+                            (Branch_reconcile.Commit.to_string commit)
+                      | _ -> false
+                    in
+                    if
+                      not
+                        (matches scope.head_revision head
+                        && matches scope.base_revision base)
+                    then Pending "publication pair not directly confirmed"
+                    else
+                      match
+                        F.create_pull_request ~title ~head:scope.head_branch
+                          ~base:scope.base_branch ~body ~draft
+                      with
+                      | Ok number -> Found number
+                      | Error e -> Pending (F.show_error e))))
 
 type change =
   | Set_body of string
@@ -256,8 +360,8 @@ type change_result =
   | Change_pending of string
   | Change_blocked of string
 
-let change (type e) (module F : Forge.S with type error = e) ~host ~io ~scope
-    ~patch ~effect_id ~policy_ready action =
+let change_unsettled (type e) (module F : Forge.S with type error = e) ~host ~io
+    ~scope ~patch ~effect_id ~policy_ready ~expected action =
   let state = Coordinator_host.state host in
   let action_bytes =
     match action with
@@ -311,8 +415,7 @@ let change (type e) (module F : Forge.S with type error = e) ~host ~io ~scope
         ~f:(fun (c : Coordinator_state.control) -> String.equal c.id effect_id)
     in
     let proof =
-      if pending then None
-      else Some (observe_committed (module F) ~host ~io ~patch ~scope)
+      if pending then None else Option.map expected ~f:(fun pr -> Confirmed pr)
     in
     match proof with
     | Some (Unavailable reason) -> Change_pending reason
@@ -339,6 +442,14 @@ let change (type e) (module F : Forge.S with type error = e) ~host ~io ~scope
             else
               match F.pr_state scope.pr with
               | Error e -> Change_pending (F.show_error e)
+              | Ok pr
+                when Option.value_map expected ~default:false ~f:(fun old ->
+                         not
+                           (Pr_state.equal
+                              { pr with merge_ready_divergence = None }
+                              { old with merge_ready_divergence = None })) ->
+                  Change_pending
+                    "provider evidence changed after committed policy proof"
               | Ok pr
                 when not
                        (Option.value_map pr.pr_number ~default:false
@@ -368,6 +479,15 @@ let change (type e) (module F : Forge.S with type error = e) ~host ~io ~scope
                     match observe (module F) ~io scope with
                     | Unavailable reason -> Change_pending reason
                     | Unconfirmed reason -> Change_blocked reason
+                    | Confirmed pr
+                      when Option.value_map expected ~default:false
+                             ~f:(fun old ->
+                               not
+                                 (Pr_state.equal
+                                    { pr with merge_ready_divergence = None }
+                                    { old with merge_ready_divergence = None }))
+                      ->
+                        Change_pending "provider evidence changed before effect"
                     | Confirmed _ -> (
                         let result =
                           match action with
@@ -399,6 +519,215 @@ let change (type e) (module F : Forge.S with type error = e) ~host ~io ~scope
                             match result with
                             | Ok () -> Applied
                             | Error e -> Change_pending (F.show_error e))))))
+
+let journal_attempt host id scope =
+  match
+    Coordinator_journal.find
+      (Coordinator_state.journal (Coordinator_host.state host))
+      id
+  with
+  | Some entry when not (String.equal entry.scope scope) ->
+      Error "changed effect identity"
+  | Some { phase = Applied bytes; _ } -> Ok (Some bytes)
+  | Some { phase = Attention; _ } -> Error "effect requires operator attention"
+  | Some { attempts = 3; _ } ->
+      ignore (Coordinator_host.transaction host [ Journal_settle (id, None) ]);
+      Error "effect requires operator attention"
+  | Some _ | None -> (
+      match
+        Coordinator_host.transaction host [ Journal_attempt (id, scope) ]
+      with
+      | Ok (Applied _) -> Ok None
+      | Ok (Rejected reason) -> Error reason
+      | Error _ -> Error "effect attempt commit unconfirmed")
+
+let settle_effect host id result =
+  match Coordinator_host.transaction host [ Journal_settle (id, result) ] with
+  | Ok (Applied _) -> true
+  | Ok (Rejected _) | Error _ -> false
+
+let create_or_discover forge ~host ~io ~scope ~patch ~effect_id ~renewal_id
+    ~title ~body ~draft =
+  let id = "effect:" ^ effect_id in
+  let bytes =
+    Yojson.Safe.to_string
+      (`List
+         [
+           Coordinator_observation.yojson_of_scope scope;
+           `String (Patch_id.to_string patch);
+           `String title;
+           `String body;
+           `Bool draft;
+           (match renewal_id with None -> `Null | Some s -> `String s);
+         ])
+  in
+  match journal_attempt host id bytes with
+  | Error reason -> Blocked reason
+  | Ok (Some bytes) -> (
+      match Int.of_string_opt bytes with
+      | Some number when number > 0 -> Found (Pr_number.of_int number)
+      | _ -> Blocked "invalid committed publication result")
+  | Ok None ->
+      let result =
+        create_unsettled forge ~host ~io ~scope ~patch ~effect_id ~renewal_id
+          ~title ~body ~draft
+      in
+      let stored =
+        match result with
+        | Found number -> Some (Int.to_string (Pr_number.to_int number))
+        | _ -> None
+      in
+      if settle_effect host id stored then result
+      else Blocked "publication result commit unconfirmed"
+
+let change forge ~host ~io ~scope ~patch ~effect_id ?renewal_id ~view ~now
+    action =
+  let state = Coordinator_host.state host in
+  let id = "effect:" ^ effect_id in
+  let action_bytes =
+    match action with
+    | Set_body s -> "body:" ^ s
+    | Set_base b -> "base:" ^ Branch.to_string b
+    | Set_draft b -> "draft:" ^ Bool.to_string b
+    | Request_review s -> "review:" ^ s
+    | Enqueue -> "enqueue"
+    | Dequeue -> "dequeue"
+    | Merge -> "merge"
+  in
+  let bytes =
+    Yojson.Safe.to_string
+      (`List
+         [
+           Coordinator_observation.yojson_of_scope scope;
+           `String (Patch_id.to_string patch);
+           `String action_bytes;
+         ])
+  in
+  let entry = Coordinator_journal.find (Coordinator_state.journal state) id in
+  let replay =
+    List.exists (Coordinator_state.controls state) ~f:(fun c ->
+        String.equal c.Coordinator_state.id effect_id
+        && String.equal c.kind "forge_effect")
+  in
+  let unresolved =
+    List.exists (Coordinator_state.controls state) ~f:(fun c ->
+        String.equal c.Coordinator_state.kind "forge_effect"
+        && Option.equal String.equal c.patch_id
+             (Some (Patch_id.to_string patch))
+        && (not (String.equal c.id effect_id))
+        &&
+        match
+          Coordinator_journal.find
+            (Coordinator_state.journal state)
+            ("effect:" ^ c.id)
+        with
+        | Some { phase = Applied _; _ } -> false
+        | _ -> true)
+  in
+  let renewed =
+    Option.value_map renewal_id ~default:false ~f:(fun renewal ->
+        String.equal effect_id ("renewed:" ^ renewal)
+        && List.exists (Coordinator_state.controls state) ~f:(fun c ->
+            String.equal c.Coordinator_state.id renewal
+            && String.equal c.kind "renewal"
+            && Option.equal String.equal c.patch_id
+                 (Some (Patch_id.to_string patch))))
+  in
+  if
+    (not (Float.is_finite now))
+    || Float.(now < 0. || now >= Int64.to_float Int64.max_value)
+  then Change_blocked "invalid scheduler clock"
+  else if
+    Option.value_map entry ~default:false ~f:(fun e ->
+        not (String.equal e.scope bytes))
+  then Change_blocked "changed effect identity"
+  else if unresolved && (not renewed) && not replay then
+    Change_blocked "unresolved effect requires explicit renewal"
+  else
+    match entry with
+    | Some { phase = Applied _; _ } -> Applied
+    | Some { phase = Attention; _ } ->
+        Change_blocked "effect requires operator attention"
+    | _ -> (
+        let attempt =
+          Option.value_map entry ~default:0 ~f:(fun e -> e.attempts)
+        in
+        let proof_scope =
+          {
+            scope with
+            ticket =
+              scope.ticket ^ "/" ^ effect_id ^ "/" ^ Int.to_string attempt ^ "/"
+              ^ Float.to_string now;
+          }
+        in
+        let observation =
+          if replay then None
+          else
+            Some
+              (observe_committed ~now forge ~host ~io ~patch ~scope:proof_scope)
+        in
+        let tick =
+          Coordinator_host.submit host (Policy_tick (view, Int64.of_float now))
+        in
+        let view =
+          Coordinator_state.scheduling_view (Coordinator_host.state host) view
+        in
+        let agent =
+          List.find view.agents ~f:(fun a ->
+              Patch_id.equal a.Patch_agent.patch_id patch)
+        in
+        let policy_ready =
+          match (action, agent) with
+          | (Merge | Enqueue), Some a ->
+              Scheduler_decision.dependencies_admitted view patch
+              && Scheduler_decision.automerge_candidate a ~main:view.main
+              && Option.value_map a.automerge_deadline ~default:false
+                   ~f:(fun deadline -> Float.(deadline <= now))
+          | Set_draft false, _ | Request_review _, _ ->
+              Scheduler_decision.ready_for_review view patch
+          | Set_base base, _ ->
+              Option.equal Branch.equal
+                (Scheduler_decision.selected_base view patch)
+                (Some base)
+          | (Set_body _ | Set_draft true | Dequeue), Some _ -> true
+          | _, None -> false
+        in
+        match tick with
+        | Error _ | Ok (Rejected _) ->
+            Change_blocked "policy commit unconfirmed"
+        | Ok (Applied _) -> (
+            if
+              (not replay)
+              &&
+              match observation with
+              | Some (Confirmed _) -> not policy_ready
+              | _ -> false
+            then
+              Change_pending
+                "current shared scheduler policy/idle window not ready"
+            else
+              match journal_attempt host id bytes with
+              | Error why -> Change_blocked why
+              | Ok (Some _) -> Applied
+              | Ok None ->
+                  let expected =
+                    match observation with
+                    | Some (Confirmed pr) -> Some pr
+                    | _ -> None
+                  in
+                  let result =
+                    match observation with
+                    | None | Some (Confirmed _) ->
+                        change_unsettled forge ~host ~io ~scope ~patch
+                          ~effect_id ~policy_ready:true ~expected action
+                    | Some (Unconfirmed why) -> Change_blocked why
+                    | Some (Unavailable why) -> Change_pending why
+                  in
+                  let stored =
+                    match result with Applied -> Some "applied" | _ -> None
+                  in
+                  if settle_effect host id stored then result
+                  else Change_blocked "effect result commit unconfirmed"))
 
 let render_notes ~gameplan ~patches ~publications ~projections =
   List.map patches ~f:(fun patch ->

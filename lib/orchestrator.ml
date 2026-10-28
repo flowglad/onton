@@ -897,6 +897,13 @@ let accept_forge_observation ?confirmed_base t patch_id ~ticket ~confirmed_head
 let defer_forge_revision_pair t patch_id =
   update_agent t patch_id ~f:Patch_agent.defer_forge_revision_pair
 
+let apply_worker_input t patch_id input =
+  match find_agent t patch_id with
+  | None -> t
+  | Some agent ->
+      let agent = Worker_protocol_v3.apply_input agent input in
+      { t with agents = Map.set t.agents ~key:patch_id ~data:agent }
+
 let set_base_branch t patch_id branch =
   update_agent t patch_id ~f:(fun a -> Patch_agent.set_base_branch a branch)
 

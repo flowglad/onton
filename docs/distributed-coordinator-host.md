@@ -1,8 +1,10 @@
 # Distributed coordinator: host boundary for Patch 7
 
-This repairs the missing Patch 6 worker-stream prerequisite. It is not
-qualification of the Patch 7 forge/control suite or the Patch 8 composed/cloud
-suite. Those suites remain explicitly pending. The frozen gameplan is unchanged.
+The original repair supplied the missing Patch 6 worker-stream prerequisite.
+The follow-up closes resource execution, durable forge-result, worker-input and
+serialized control/status seams; see [the composition contract](design/distributed-coordinator.md).
+Patch 8's pending composed/cloud qualification is not implied. The frozen
+gameplan is unchanged.
 
 ## Owned guarantees
 
@@ -75,9 +77,15 @@ nonblocking readiness so quiet workers do not monopolize control/event selection
 Sequential assignments can reuse their existing attachment.
 `Coordinator_stream_io` bounds frame reads and writes,
 retains buffered complete frames, and reports partial/timeout sends as uncertain.
-The loop closes attachments on errors/exit. Resource provisioning and event
-selection remain injected capabilities; cloud launch/takeover qualification is
-not inferred from the local stream fixture.
+The loop closes attachments on errors/exit. Provision drives exact persisted
+resource intent through helper execution, settlement, attachment and optional
+recovery; resource loss drives persisted Stop and requires positive retirement.
+Observe/Forge_create/Forge_change execute through the same host. The optional
+serve composition runs the actual control socket, event source and worker
+readability with committed headless output. Provider capabilities/configuration
+remain injected; resource lifecycle and forge policy are no longer left for
+packaging to implement. Cloud launch/takeover qualification is not inferred from
+these local fixtures.
 
 Two worker-side boundary fixes accompany the host:
 
@@ -104,5 +112,7 @@ Two worker-side boundary fixes accompany the host:
   through a raw public-helper attachment to the real worker.
 - `test_coordinator_stream_io`: buffered framing, EOF, partial-frame timeout and
   bounded uncertain sends under backpressure.
+- Resource lifecycle, durable forge/effect, cumulative input and actual socket
+  coverage is listed in the composition contract above.
 - Existing coordinator storage/state-machine, worker v3 and public-worker suites
   remain regression coverage. Passing pending stubs is not acceptance evidence.

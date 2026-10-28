@@ -16,6 +16,31 @@ type connection = {
 
 type event =
   | Intent of Coordinator_state.event
+  | Provision of {
+      request : Resource_protocol.request;
+      assignment : Coordinator_state.assignment;
+      connection : connection;
+      recovery : (string * string * string) option;
+    }
+  | Observe of Types.Patch_id.t * Coordinator_forge.scope
+  | Forge_change of {
+      patch : Types.Patch_id.t;
+      scope : Coordinator_forge.scope;
+      effect_id : string;
+      view : Scheduler_decision.input;
+      renewal_id : string option;
+      action : Coordinator_forge.change;
+    }
+  | Forge_create of {
+      patch : Types.Patch_id.t;
+      scope : Coordinator_forge.scope;
+      effect_id : string;
+      renewal_id : string option;
+      title : string;
+      body : string;
+      draft : bool;
+    }
+  | Read_resource of string
   | Control_line of string * (string -> unit)
   | Close_run of Resource_protocol.request
   | Attach of string * connection
@@ -82,7 +107,13 @@ let stop env host resource_id =
   let request =
     match persisted with
     | Some r -> Ok r
-    | None -> env.stop_request ~resource_id
+    | None -> (
+        match env.stop_request ~resource_id with
+        | Error why -> Error why
+        | Ok request -> (
+            match Coordinator_host.resource_request host request with
+            | Ok request -> Ok request
+            | Error _ -> Error "stop guard capture failed"))
   in
   match request with
   | Error reason -> env.blocked reason
@@ -96,7 +127,9 @@ let stop env host resource_id =
                       (request.request_id, request.bytes))))
       then env.blocked "stop request not durably authorized"
       else
-        match Resource_client.request env.client request with
+        let response = Resource_client.request env.client request in
+        ignore (Coordinator_host.refresh host);
+        match response with
         | Error _ -> env.blocked "stop response unconfirmed"
         | Ok response ->
             ignore
@@ -127,7 +160,7 @@ let restore_inventory env host =
       | Ok _ -> ()
       | Error _ -> env.blocked "corrupt persisted resource inventory")
 
-let run env =
+let run ?forge ?git ?(write_status = fun _ -> ()) env =
   match
     Coordinator_host.restore ~store:env.store ~next_write_id:env.next_write_id
   with
@@ -158,6 +191,36 @@ let run env =
                     then Some io
                     else None))
       in
+      let lost assignment reason =
+        env.blocked reason;
+        match
+          List.find
+            (Coordinator_state.assignments (Coordinator_host.state host))
+            ~f:(fun a -> String.equal a.id assignment)
+        with
+        | None -> false
+        | Some owner ->
+            if
+              report env
+                (submit host
+                   (Coordinator_state.Loss (owner.resource, env.now ())))
+            then (
+              Hashtbl.to_alist attachments
+              |> List.iter ~f:(fun (id, io) ->
+                  if
+                    List.exists
+                      (Coordinator_state.assignments
+                         (Coordinator_host.state host))
+                      ~f:(fun a ->
+                        String.equal a.id id
+                        && String.equal a.resource owner.resource)
+                  then (
+                    Hashtbl.remove attachments id;
+                    close io));
+              stop env host owner.resource;
+              true)
+            else false
+      in
       let frames assignment result =
         match result with
         | Error _ ->
@@ -175,9 +238,7 @@ let run env =
                     frames
                 with
                 | Ok () -> true
-                | Error reason ->
-                    env.blocked reason;
-                    false))
+                | Error reason -> lost assignment reason))
       in
       let attach assignment (c : connection) =
         let owner =
@@ -231,11 +292,103 @@ let run env =
             env.blocked "attachment not bound to current live assignment";
             false
       in
+      let deliver_inputs () =
+        let state = Coordinator_host.state host in
+        List.iter (Coordinator_state.assignments state) ~f:(fun a ->
+            if
+              (not a.retired)
+              && Option.is_some (find_attachment a.id)
+              && Option.value_map
+                   (List.find (Coordinator_state.assignments state)
+                      ~f:(fun other ->
+                        String.equal other.resource a.resource
+                        && not other.retired))
+                   ~default:false
+                   ~f:(fun current -> String.equal current.id a.id)
+            then
+              match Coordinator_host.stream host a.id with
+              | None -> ()
+              | Some stream -> (
+                  let base =
+                    match Worker_stream.input stream with
+                    | Some i -> i.selected_base
+                    | None -> (
+                        match Worker_stream.binding stream with
+                        | Some (Worker_protocol_v3.Bind (_, c)) ->
+                            Worker_protocol_v3.selected_base c
+                        | _ -> "")
+                  in
+                  match
+                    Coordinator_inputs.pending state a.patch ~selected_base:base
+                  with
+                  | None -> ()
+                  | Some input when not (String.is_empty base) -> (
+                      let already =
+                        Option.value_map (Worker_stream.input stream)
+                          ~default:false ~f:(fun old ->
+                            Int64.(old.version >= input.version))
+                      in
+                      if not already then
+                        let identity : Worker_protocol.identity =
+                          {
+                            run_id = Coordinator_state.run_id state;
+                            patch_id = Types.Patch_id.to_string a.patch;
+                          }
+                        in
+                        match
+                          Worker_protocol_v3.encode_host
+                            (Input (identity, input))
+                        with
+                        | Error why -> env.blocked why
+                        | Ok frame ->
+                            ignore
+                              (frames a.id
+                                 (Coordinator_host.command host ~assignment:a.id
+                                    ~frame)))
+                  | Some _ -> ()))
+      in
       let settle_lifecycle () =
         let state = Coordinator_host.state host in
         match Coordinator_state.lifecycle state with
         | Coordinator_state.Running -> true
         | Draining generation | Sleeping generation | Cancelling generation ->
+            (match Coordinator_state.lifecycle state with
+            | Cancelling _ ->
+                List.iter (Coordinator_state.assignments state) ~f:(fun a ->
+                    if a.reserved && not a.retired then
+                      match Coordinator_host.stream host a.id with
+                      | Some stream -> (
+                          match
+                            ( Worker_stream.operation stream,
+                              Worker_stream.identity stream )
+                          with
+                          | Some operation, Some identity ->
+                              let frame =
+                                Yojson.Safe.to_string
+                                  (`Assoc
+                                     [
+                                       ("version", `Int 3);
+                                       ("type", `String "cancel");
+                                       ("run_id", `String identity.run_id);
+                                       ("patch_id", `String identity.patch_id);
+                                       ( "operation_id",
+                                         `String operation.operation_id );
+                                       ( "attempt_id",
+                                         `String operation.attempt_id );
+                                       ( "assignment_seq",
+                                         `String
+                                           (Int64.to_string
+                                              operation.assignment_seq) );
+                                     ])
+                                ^ "\n"
+                              in
+                              ignore
+                                (frames a.id
+                                   (Coordinator_host.command host
+                                      ~assignment:a.id ~frame))
+                          | _ -> ())
+                      | None -> ())
+            | _ -> ());
             let resources = Coordinator_state.resource_owners state in
             List.iter resources ~f:(fun (resource_id, _) ->
                 if
@@ -271,53 +424,191 @@ let run env =
             let continue =
               match event with
               | Intent event -> report env (submit host event)
+              | Provision p -> (
+                  match
+                    Coordinator_resource.provision ~host ~client:env.client
+                      ~request:p.request ~assignment:p.assignment
+                      ~now:(env.now ())
+                  with
+                  | Pending ->
+                      env.blocked "resource launch unresolved";
+                      true
+                  | Attention ->
+                      env.blocked "resource launch requires operator attention";
+                      true
+                  | Blocked why ->
+                      env.blocked why;
+                      false
+                  | Ready -> (
+                      let run_id, coordinator_id, owner_epoch, revision =
+                        Coordinator_host.authority host
+                      in
+                      let connection =
+                        {
+                          p.connection with
+                          run_id;
+                          coordinator_id;
+                          owner_epoch;
+                          revision;
+                        }
+                      in
+                      if not (attach p.assignment.id connection) then false
+                      else
+                        match p.recovery with
+                        | None -> true
+                        | Some (predecessor, worker_id, workspace_id) ->
+                            frames p.assignment.id
+                              (Coordinator_host.recover host ~predecessor
+                                 ~assignment:p.assignment.id ~worker_id
+                                 ~workspace_id)))
+              | Observe (patch, scope) -> (
+                  match (forge, git) with
+                  | Some forge, Some io ->
+                      (match
+                         Coordinator_forge.observe_committed
+                           ~now:(Int64.to_float (env.now ()))
+                           forge ~host ~io ~patch ~scope
+                       with
+                      | Confirmed pr -> (
+                          if Pr_state.merged pr then
+                            match
+                              Coordinator_host.terminal_from_forge host ~patch
+                                ~ticket:scope.ticket
+                            with
+                            | Ok _ -> ()
+                            | Error _ ->
+                                env.blocked "terminal patch awaits settlement")
+                      | Unconfirmed why | Unavailable why -> env.blocked why);
+                      true
+                  | _ ->
+                      env.blocked "forge adapter not configured";
+                      false)
+              | Forge_create c -> (
+                  match (forge, git) with
+                  | Some forge, Some io ->
+                      (match
+                         Coordinator_forge.create_or_discover forge ~host ~io
+                           ~scope:c.scope ~patch:c.patch ~effect_id:c.effect_id
+                           ~renewal_id:c.renewal_id ~title:c.title ~body:c.body
+                           ~draft:c.draft
+                       with
+                      | Found _ -> ()
+                      | Pending why | Blocked why -> env.blocked why);
+                      true
+                  | _ ->
+                      env.blocked "forge adapter not configured";
+                      false)
+              | Forge_change c -> (
+                  match (forge, git) with
+                  | Some forge, Some io ->
+                      (match
+                         Coordinator_forge.change forge ~host ~io ~scope:c.scope
+                           ~patch:c.patch ~effect_id:c.effect_id
+                           ?renewal_id:c.renewal_id ~view:c.view
+                           ~now:(Int64.to_float (env.now ()))
+                           c.action
+                       with
+                      | Applied -> ()
+                      | Change_pending why | Change_blocked why ->
+                          env.blocked why);
+                      true
+                  | _ ->
+                      env.blocked "forge adapter not configured";
+                      false)
+              | Read_resource resource -> (
+                  match
+                    List.find
+                      (Coordinator_state.assignments
+                         (Coordinator_host.state host))
+                      ~f:(fun a ->
+                        String.equal a.resource resource && not a.retired)
+                  with
+                  | None -> true
+                  | Some a -> (
+                      match find_attachment a.id with
+                      | Some (_, io) when Coordinator_stream_io.ready io -> (
+                          match
+                            Coordinator_stream_io.read io
+                              ~timeout:env.stream_timeout
+                          with
+                          | Error why -> lost a.id why
+                          | Ok frame ->
+                              frames a.id
+                                (Coordinator_host.receive host ~assignment:a.id
+                                   ~frame ~gameplan:env.gameplan
+                                   ~main_branch:env.main_branch
+                                   ~now:(env.now ())))
+                      | _ -> true))
               | Control_line (bytes, response) ->
                   response (Coordinator_control.handle host bytes);
                   true
-              | Close_run request -> (
-                  let state = Coordinator_host.state host in
-                  let cancelling =
-                    match Coordinator_state.lifecycle state with
-                    | Cancelling _ -> true
-                    | _ -> false
+              | Close_run template -> (
+                  let persisted =
+                    List.Assoc.find
+                      (Coordinator_state.resources
+                         (Coordinator_host.state host))
+                      template.request_id ~equal:String.equal
                   in
-                  if
-                    (not cancelling)
-                    || (not
-                          (List.for_all (Coordinator_state.resources state)
-                             ~f:(fun (id, bytes) ->
-                               match Resource_protocol.make_request bytes with
-                               | Ok r
-                                 when Poly.equal r.operation
-                                        Resource_protocol.Stop
-                                      || Poly.equal r.operation
-                                           Resource_protocol.Close ->
-                                   true
-                               | Ok _ | Error _ ->
-                                   List.mem
-                                     (Coordinator_state.retired_resources state)
-                                     id ~equal:String.equal)))
-                    || not
-                         (Poly.equal request.operation Resource_protocol.Close)
-                  then (
-                    env.blocked "cancel close awaits confirmed retirement";
-                    false)
-                  else if
-                    not
-                      (report env
-                         (submit host
-                            (Coordinator_state.Resource_request
-                               (request.request_id, request.bytes))))
-                  then false
-                  else
-                    match Resource_client.request env.client request with
-                    | Error _ ->
-                        env.blocked "cancel close response unconfirmed";
-                        false
-                    | Ok response ->
-                        report env
-                          (Coordinator_host.cancel_closed host
-                             ~close_request:request ~response))
+                  let request =
+                    match persisted with
+                    | Some bytes -> (
+                        match Resource_protocol.make_request bytes with
+                        | Ok r -> Ok r
+                        | Error why -> Error (Coordinator_host.Invalid why))
+                    | None -> Coordinator_host.resource_request host template
+                  in
+                  match request with
+                  | Error _ ->
+                      env.blocked "close guards unavailable";
+                      false
+                  | Ok request -> (
+                      let state = Coordinator_host.state host in
+                      let cancelling =
+                        match Coordinator_state.lifecycle state with
+                        | Cancelling _ -> true
+                        | _ -> false
+                      in
+                      if
+                        (not cancelling)
+                        || (not
+                              (List.for_all (Coordinator_state.resources state)
+                                 ~f:(fun (id, bytes) ->
+                                   match
+                                     Resource_protocol.make_request bytes
+                                   with
+                                   | Ok r
+                                     when Poly.equal r.operation
+                                            Resource_protocol.Stop
+                                          || Poly.equal r.operation
+                                               Resource_protocol.Close ->
+                                       true
+                                   | Ok _ | Error _ ->
+                                       List.mem
+                                         (Coordinator_state.retired_resources
+                                            state)
+                                         id ~equal:String.equal)))
+                        || not
+                             (Poly.equal request.operation
+                                Resource_protocol.Close)
+                      then (
+                        env.blocked "cancel close awaits confirmed retirement";
+                        false)
+                      else if
+                        not
+                          (report env
+                             (submit host
+                                (Coordinator_state.Resource_request
+                                   (request.request_id, request.bytes))))
+                      then false
+                      else
+                        match Resource_client.request env.client request with
+                        | Error _ ->
+                            env.blocked "cancel close response unconfirmed";
+                            false
+                        | Ok response ->
+                            report env
+                              (Coordinator_host.cancel_closed host
+                                 ~close_request:request ~response)))
               | Attach (assignment, connection) -> attach assignment connection
               | Command (assignment, frame) ->
                   frames assignment
@@ -337,17 +628,63 @@ let run env =
                         Coordinator_stream_io.read io
                           ~timeout:env.stream_timeout
                       with
-                      | Error reason ->
-                          env.blocked reason;
-                          false
+                      | Error reason -> lost assignment reason
                       | Ok frame ->
                           frames assignment
                             (Coordinator_host.receive host ~assignment ~frame
                                ~gameplan:env.gameplan
                                ~main_branch:env.main_branch ~now:(env.now ()))))
             in
-            if continue && settle_lifecycle () then loop ()
+            if continue then (
+              deliver_inputs ();
+              let continue = settle_lifecycle () in
+              Coordinator_headless.emit ~write:write_status
+                (Coordinator_host.state host);
+              if continue then loop ())
       in
       Exn.protect
         ~finally:(fun () -> Hashtbl.iter attachments ~f:close)
-        ~f:(fun () -> if settle_lifecycle () then loop ())
+        ~f:(fun () ->
+          Coordinator_headless.emit ~write:write_status
+            (Coordinator_host.state host);
+          if settle_lifecycle () then loop ())
+
+let serve ?forge ?git ?write_status ~net ~clock ~control_path env =
+  let queue = Eio.Stream.create 64 in
+  let readers = Hashtbl.create (module String) in
+  let submit bytes =
+    let promise, resolver = Eio.Promise.create () in
+    Eio.Stream.add queue
+      (Some
+         (Control_line (bytes, fun status -> Eio.Promise.resolve resolver status)));
+    Eio.Promise.await promise
+  in
+  let rec events () =
+    let event = env.next_event () in
+    Eio.Stream.add queue event;
+    if Option.is_some event then events ()
+  in
+  let rec readable () =
+    Eio.Time.sleep clock 0.02;
+    Hashtbl.iteri readers ~f:(fun ~key:resource ~data:ready ->
+        if ready () then Eio.Stream.add queue (Some (Read_resource resource)));
+    readable ()
+  in
+  Eio.Fiber.first
+    (fun () ->
+      run ?forge ?git ?write_status
+        {
+          env with
+          next_event = (fun () -> Eio.Stream.take queue);
+          attached =
+            (fun ~resource_id ~readable ->
+              Hashtbl.set readers ~key:resource_id ~data:readable;
+              env.attached ~resource_id ~readable);
+        })
+    (fun () ->
+      Eio.Fiber.all
+        [
+          (fun () -> Coordinator_control.run ~net ~path:control_path ~submit ());
+          events;
+          readable;
+        ])

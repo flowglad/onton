@@ -12,6 +12,31 @@ type connection = {
 
 type event =
   | Intent of Coordinator_state.event
+  | Provision of {
+      request : Resource_protocol.request;
+      assignment : Coordinator_state.assignment;
+      connection : connection;
+      recovery : (string * string * string) option;
+    }
+  | Observe of Types.Patch_id.t * Coordinator_forge.scope
+  | Forge_change of {
+      patch : Types.Patch_id.t;
+      scope : Coordinator_forge.scope;
+      effect_id : string;
+      view : Scheduler_decision.input;
+      renewal_id : string option;
+      action : Coordinator_forge.change;
+    }
+  | Forge_create of {
+      patch : Types.Patch_id.t;
+      scope : Coordinator_forge.scope;
+      effect_id : string;
+      renewal_id : string option;
+      title : string;
+      body : string;
+      draft : bool;
+    }
+  | Read_resource of string
   | Control_line of string * (string -> unit)
       (** The authorized socket queues the exact bytes and waits for this
           serialized commit response; no concurrent host writes. *)
@@ -51,7 +76,24 @@ type env = {
     All descriptors close on failure/cancellation; EOF/send failure does not
     prove retirement. *)
 
-val run : env -> unit
+val run :
+  ?forge:(module Forge.S with type error = 'e) ->
+  ?git:Branch_reconcile_executor.io ->
+  ?write_status:(string -> unit) ->
+  env ->
+  unit
+
+val serve :
+  ?forge:(module Forge.S with type error = 'e) ->
+  ?git:Branch_reconcile_executor.io ->
+  ?write_status:(string -> unit) ->
+  net:_ Eio.Net.t ->
+  clock:_ Eio.Time.clock ->
+  control_path:string ->
+  env ->
+  unit
+(** Actual same-UID control intake, worker readability and external intents all
+    feed the same serialized host. The socket is closed when the host exits. *)
 
 val submit :
   Coordinator_host.t ->

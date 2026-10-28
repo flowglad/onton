@@ -16,9 +16,24 @@ val restore :
   next_write_id:(unit -> string) ->
   (t, error) result
 
+val authority : t -> string * string * int64 * int64
+
+val refresh : t -> (unit, error) result
+(** Refresh helper metadata guards through exact current-envelope readback. *)
+
+val resource_request :
+  t -> Resource_protocol.request -> (Resource_protocol.request, error) result
+(** Capture guards for the metadata revision immediately after one intent
+    commit. Replays use persisted bytes instead; no guard rewriting on retry. *)
+
 val state : t -> Coordinator_state.t
 val envelope : t -> Coordinator_store.envelope
 val stream : t -> string -> Worker_stream.t option
+
+val transaction :
+  t -> Coordinator_state.event list -> (transition, error) result
+(** Serialized adapter transaction. Every event is checked before one envelope
+    commit; no partial binding, input or journal intent escapes a rejection. *)
 
 val submit : t -> Coordinator_state.event -> (transition, error) result
 (** Coordinator intent only. Dispatch reserves capacity; it does not authorize
@@ -60,14 +75,20 @@ val recover :
     idle recovery requires a fresh operation. No caller-supplied receipt enters
     this path. *)
 
+val terminal_from_forge :
+  t -> patch:Types.Patch_id.t -> ticket:string -> (transition, error) result
+(** A worker's merged-observed result alone cannot terminate a patch. *)
+
 val cancel_closed :
   t ->
   close_request:Resource_protocol.request ->
   response:Resource_protocol.response ->
   (transition, error) result
 (** Only a persisted close request and matching successful helper response may
-    mark terminal cancellation cleanup. A caller-supplied state event is not
-    evidence of close; retirement is checked separately by the state gate. *)
+    project terminal cancellation cleanup from the helper's durable tombstone,
+    without writing to sealed opaque storage. A caller-supplied state event is
+    not evidence of close; retirement is checked separately by the state gate.
+*)
 
 val retired :
   t ->
