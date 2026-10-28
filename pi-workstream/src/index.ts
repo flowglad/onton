@@ -1,5 +1,6 @@
 /** Lean workstream authoring: the skill owns judgment, dialogs record user choices. */
-import { readFile } from "node:fs/promises";
+import { lstat } from "node:fs/promises";
+import { readDraft } from "./files.js";
 import { createHash } from "node:crypto";
 import { dirname, extname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -33,10 +34,15 @@ export default function workstream(pi: ExtensionAPI) {
   function requireMode() {
     if (!state.enabled) throw new Error("Workstream mode is off. Run /workstream on first.");
   }
-  function documentPath(ctx: ExtensionContext, path: string): string {
+  async function documentPath(ctx: ExtensionContext, path: string): Promise<string> {
     const absolute = resolve(ctx.cwd, path);
     if (dirname(absolute) !== resolve(ctx.cwd, state.directory) || extname(absolute) !== ".md") {
       throw new Error(`Choose a Markdown file directly in ${state.directory}.`);
+    }
+    try {
+      if (!(await lstat(absolute)).isFile()) throw new Error("The workstream draft must be a regular file.");
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
     }
     return absolute;
   }
@@ -46,7 +52,7 @@ export default function workstream(pi: ExtensionAPI) {
   async function refresh(ctx: ExtensionContext) {
     if (!state.finalized) return;
     try {
-      if (digest(await readFile(state.finalized.path)) !== state.finalized.digest) invalidate(ctx);
+      if (digest(await readDraft(await documentPath(ctx, state.finalized.path))) !== state.finalized.digest) invalidate(ctx);
     } catch { invalidate(ctx); }
   }
   async function restore(ctx: ExtensionContext) {
@@ -103,7 +109,7 @@ ${describeDecisions(state.decisions)}` } };
     async execute(_id, params, signal, _update, ctx) {
       requireMode();
       if (!ctx.hasUI) throw new Error("Opening a workstream requires an interactive user.");
-      const path = documentPath(ctx, params.path);
+      const path = await documentPath(ctx, params.path);
       if (state.path === path) return result(`Already authoring ${path}; decisions preserved.`);
       const before = state;
       const accepted = await ctx.ui.confirm("Open workstream?", `${path}\nStart with an empty decision ledger. Existing files remain unchanged; any existing implementation choices must be discussed again before adopting them.`, { signal });
@@ -139,7 +145,7 @@ ${describeDecisions(state.decisions)}` } };
         if (text?.trim()) answer = { kind: "discussion", text: text.trim() };
       } else if (selected === DELEGATE) {
         const scope = await ctx.ui.input("Scope of delegation (cancel to leave unresolved)", "e.g. keep storage local", { signal });
-        if (scope !== undefined) answer = { kind: "delegated", scope: scope.trim() };
+        if (scope?.trim()) answer = { kind: "delegated", scope: scope.trim() };
       } else {
         const index = selected === undefined ? -1 : labels.indexOf(selected);
         if (index >= 0) answer = { kind: "selected", index };
@@ -163,12 +169,12 @@ ${describeDecisions(state.decisions)}` } };
       const unresolved = state.decisions.filter((d) => d.resolution.kind === "unresolved");
       if (unresolved.length) throw new Error(`Unresolved decisions: ${unresolved.map((d) => d.id).join(", ")}. Discuss them before finalizing.`);
       const before = state;
-      const bytes = await readFile(state.path);
+      const bytes = await readDraft(await documentPath(ctx, state.path));
       if (!bytes.toString("utf8").trim()) throw new Error("The workstream draft is empty.");
       const accepted = await ctx.ui.confirm(`Finalize ${state.path}?`, `${bytes.toString("utf8")}\n\nRecorded decisions:\n${describeDecisions(state.decisions)}\n\nConfirm this draft, including any explicitly deferred questions?`, { signal });
       signal?.throwIfAborted();
       if (!accepted) return result("Not finalized. Ask the user what should change.");
-      if (state !== before || !(await readFile(before.path!)).equals(bytes)) {
+      if (state !== before || !(await readDraft(await documentPath(ctx, before.path!))).equals(bytes)) {
         throw new Error("Draft or decisions changed during review; review again.");
       }
       state = { ...state, finalized: { path: before.path!, digest: digest(bytes) } }; save(ctx);

@@ -40,9 +40,9 @@ export function answerDecision(question: Question, answer: Answer): Decision {
       break;
     }
     case "delegated":
-      resolution = recommended
-        ? { kind: "delegated", choice: recommended.choice, scope: answer.scope }
-        : { kind: "unresolved", reason: "No valid recommendation to delegate." };
+      resolution = recommended && answer.scope.trim()
+        ? { kind: "delegated", choice: recommended.choice, scope: answer.scope.trim() }
+        : { kind: "unresolved", reason: "Delegation requires a valid recommendation and a non-empty scope." };
       break;
     case "discussion": resolution = { kind: "unresolved", reason: answer.text }; break;
     case "cancelled": resolution = { kind: "unresolved", reason: "Dismissed without answering." }; break;

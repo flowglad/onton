@@ -104,7 +104,7 @@ Most non-trivial workstreams cross territory that has well-known solutions in th
 Work through these prompts with the user:
 
 - For each key challenge from Phase 2, ask: **has someone already solved this?** Is there a named algorithm, a maintained library, a documented pattern, an RFC, or an audited reference implementation?
-- For cross-cutting concerns (concurrency, persistence, auth, crypto, schema migration, distributed coordination, parsing, scheduling), discuss which approaches fit the agreed project context. Record an approach as adopted only after the user chooses it; prior art is an option to evaluate, not a requirement to add architecture.
+- For cross-cutting concerns (concurrency, persistence, auth, crypto, schema migration, distributed coordination, parsing, scheduling), discuss which approaches fit the agreed project context. Record an approach as adopted only after the user chooses it, explicitly delegates a bounded choice, or binding constraints leave one reasonable design; record that basis. Prior art is an option to evaluate, not a requirement to add architecture.
 - For any "we're going to roll our own X" answer, push back: is there a real reason to roll our own, or is it just unfamiliarity with the prior art? Rolling your own is sometimes correct, but the decision should be conscious.
 
 **What counts as a workstream-level precedent**:
@@ -244,7 +244,7 @@ Write the workstream-level precedents once, in this skill's output. Do not dupli
 
 6. **Don't over-plan.** Later milestones can be less detailed than early ones. You'll learn things as you go.
 
-7. **Evaluate precedents with the user.** Prefer reusing suitable existing solutions, but weigh their complexity and maintenance costs against the agreed requirements. Only user-agreed choices belong in `Established Precedents`; a proven pattern does not justify an unrequested layer.
+7. **Evaluate precedents with the user.** Prefer reusing suitable existing solutions, but weigh their complexity and maintenance costs against the agreed requirements. Only choices settled by user agreement, explicit bounded delegation, or binding constraints leaving one reasonable design belong in `Established Precedents`; record that basis. A proven pattern does not justify an unrequested layer.
 
 8. **The workstream ends with a provable Definition of Done.** The terminal acceptance suite is not optional decoration — it is the contract that says the workstream actually delivered. Every assertion must be observable (api / db / ux / cmd), independently checkable, and traced back to the code change that makes it true, so a failing assertion root-causes itself. If a promised capability has no assertion that would catch its absence, the workstream is not done — it is untested.
 

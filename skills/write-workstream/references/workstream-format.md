@@ -19,7 +19,7 @@
 
 ## Established Precedents
 
-Cross-cutting prior art (libraries, algorithms, patterns, papers, RFCs, canonical docs) the user has agreed this workstream adopts. Unselected proposals belong in Open Questions, while explicitly rejected alternatives belong in Decisions Made. Each entry is consumed by `write-gameplan` when a milestone is unpacked into patches — the relevant precedents are then attached to the specific patches that depend on them. Use the same four-field shape as per-patch precedents.
+Cross-cutting prior art (libraries, algorithms, patterns, papers, RFCs, canonical docs) adopted through user agreement, explicit bounded delegation, or binding constraints that leave one reasonable design. Record the agreement, delegation scope, or constraints that settled each choice. Unselected proposals belong in Open Questions, while explicitly rejected alternatives belong in Decisions Made. Each entry is consumed by `write-gameplan` when a milestone is unpacked into patches — the relevant precedents are then attached to the specific patches that depend on them. Use the same four-field shape as per-patch precedents.
 
 - **[kind] Name** — [URL if a stable one exists]
   [1-2 sentences: how this precedent applies across milestones and the concrete shape it imposes on implementation.]
@@ -211,7 +211,6 @@ The OCaml project has a build skeleton (dune 3.21, OCaml 5.4, Jane Street ppx ec
 
 | Question | Notes | Resolve By |
 |----------|-------|------------|
-| TUI library vs raw ANSI | Decided: raw ANSI. No OCaml TUI library met requirements. | Milestone 1 (resolved) |
 | bisect_ppx compatibility | Incompatible with OCaml 5.4. Revisit when updated. | Deferred |
 | JSON gameplan format | v1 is markdown. v2 JSON format designed later. | Post-workstream |
 

@@ -1,11 +1,13 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ExtensionAPI, ExtensionToolContext } from "@earendil-works/pi-coding-agent";
 import workstream from "../src/index.js";
-import { ENTRY, fromEntries, type Question, type State } from "../src/state.js";
+import { answerDecision, ENTRY, fromEntries, type Question, type State } from "../src/state.js";
 
 const question: Question = {
   id: "AD-1", topic: "Storage", question: "How should the spike store its data?",
@@ -75,7 +77,7 @@ test("mode toggles only its own tools, advertises the skill, and restores branch
     const enabled = saved.at(-1)!;
     assert.match(JSON.stringify(await emit("before_agent_start")), /lifespan/);
     await command("off");
-    assert.ok(!active().includes("workstream_decide"));
+    assert.ok(!active().some((name) => ["workstream_open", "workstream_decide", "workstream_finalize"].includes(name)));
     assert.ok(active().includes("gameplan_decide"));
     assert.equal(await emit("before_agent_start"), undefined);
     await restore(enabled, "session_tree");
@@ -110,7 +112,13 @@ test("dismissal and cancelled delegation never grant approval", async () => {
     ctx.ui.input = async () => undefined;
     await call("workstream_decide", question);
     assert.equal(saved.at(-1)!.decisions[0]!.resolution.kind, "unresolved");
-    ctx.ui.input = async () => "local file only";
+    for (const scope of ["", "   ", "\t\n"]) {
+      ctx.ui.input = async () => scope;
+      await call("workstream_decide", question);
+      assert.equal(saved.at(-1)!.decisions[0]!.resolution.kind, "unresolved");
+      await assert.rejects(call("workstream_finalize"), /Unresolved decisions/);
+    }
+    ctx.ui.input = async () => "  local file only  ";
     await call("workstream_decide", question);
     assert.deepEqual(saved.at(-1)!.decisions[0]!.resolution, { kind: "delegated", choice: "Local file", scope: "local file only" });
   });
@@ -199,3 +207,48 @@ test("malformed session entries are ignored, and only active branch entries rest
   assert.deepEqual(fromEntries([{ type: "custom", customType: ENTRY, data: valid }, { type: "custom", customType: ENTRY, data: {} }]), valid);
   assert.equal(fromEntries([]).enabled, false);
 });
+
+
+test("the decision reducer rejects blank delegation scopes", () => {
+  for (const scope of ["", " ", "\t\n"]) {
+    assert.equal(answerDecision(question, { kind: "delegated", scope }).resolution.kind, "unresolved");
+  }
+  assert.deepEqual(answerDecision(question, { kind: "delegated", scope: " local only " }).resolution,
+    { kind: "delegated", choice: "Local file", scope: "local only" });
+});
+
+for (const kind of ["symlink", "fifo", "directory", "oversized"] as const) {
+  test(`draft admission and review reject ${kind} entries`, { timeout: 10_000 }, async () => {
+    await fixture(async ({ call, path, ctx, saved, confirm, emit, restore }) => {
+      const outside = join(ctx.cwd, "outside.md");
+      await writeFile(outside, "Outside content must not appear in review");
+      const replace = async () => {
+        await rm(path, { recursive: true, force: true });
+        if (kind === "symlink") await symlink(outside, path);
+        else if (kind === "fifo") await promisify(execFile)("mkfifo", [path], { timeout: 2000 });
+        else if (kind === "directory") await mkdir(path);
+        else await writeFile(path, Buffer.alloc(16 * 1024 * 1024 + 1, 65));
+      };
+      await call("workstream_open", { path });
+      await call("workstream_finalize");
+      const approved = saved.at(-1)!;
+      await replace();
+      let reviews = 0;
+      confirm(async () => { reviews++; return true; });
+      await assert.rejects(call("workstream_finalize"), /regular file|exceeds 16 MiB/);
+      assert.equal(reviews, 0);
+      await emit("tool_result");
+      assert.equal(saved.at(-1)!.finalized, undefined);
+      await restore(approved);
+      assert.equal(saved.at(-1)!.finalized, undefined);
+      if (kind !== "oversized") {
+        await assert.rejects(call("workstream_open", { path }), /regular file/);
+      }
+      await rm(path, { recursive: true, force: true });
+      await writeFile(path, "# Regular draft");
+      confirm(async () => { await replace(); return true; });
+      await assert.rejects(call("workstream_finalize"), /regular file|exceeds 16 MiB/);
+      assert.equal(saved.at(-1)!.finalized, undefined);
+    });
+  });
+}
