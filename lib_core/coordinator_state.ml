@@ -166,7 +166,9 @@ let all_retired t =
       (* A retained stop request is not itself a container. Its matching
          response retires the launch/replace identity, not its request ID. *)
       match Resource_protocol.make_request bytes with
-      | Ok request when Poly.equal request.operation Resource_protocol.Stop ->
+      | Ok request
+        when Poly.equal request.operation Resource_protocol.Stop
+             || Poly.equal request.operation Resource_protocol.Close ->
           true
       | Ok _ | Error _ -> List.mem t.retired_resources id ~equal:String.equal)
 

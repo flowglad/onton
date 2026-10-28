@@ -12,6 +12,12 @@ type connection = {
 
 type event =
   | Intent of Coordinator_state.event
+  | Control_line of string * (string -> unit)
+      (** The authorized socket queues the exact bytes and waits for this
+          serialized commit response; no concurrent host writes. *)
+  | Close_run of Resource_protocol.request
+      (** Terminal cancellation only; commit the exact close request first, then
+          accept only matching successful helper cleanup evidence. *)
   | Attach of string * connection
   | Command of string * string
   | Read of string

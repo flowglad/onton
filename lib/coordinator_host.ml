@@ -104,7 +104,7 @@ let resource_binding id bytes =
                 | _ -> false)
             | _ -> false
           with _ -> false)
-      | Stop -> String.equal request.request_id id
+      | Stop | Close -> String.equal request.request_id id
       | _ -> false)
 
 let submit t event =
@@ -114,9 +114,36 @@ let submit t event =
       Error (Invalid "resource request identity or schema")
   | Coordinator_state.Owner_receipt _ | Advance_receipt _ | Result_committed _
   | Worker_result _ | Cleanup_confirmed _ | Stop_confirmed _
-  | Resource_stopped _ | Input_consumed _ ->
+  | Resource_stopped _ | Input_consumed _ | Cancel_cleanup_confirmed ->
       Error (Invalid "external evidence requires a bound submission")
   | _ -> apply t event
+
+let cancel_closed t ~(close_request : Resource_protocol.request)
+    ~(response : Resource_protocol.response) =
+  let state = state t in
+  let persisted =
+    Option.value_map
+      (List.Assoc.find
+         (Coordinator_state.resources state)
+         close_request.request_id ~equal:String.equal)
+      ~default:false
+      ~f:(String.equal close_request.bytes)
+  in
+  let is_cancelling =
+    match Coordinator_state.lifecycle state with
+    | Cancelling _ -> true
+    | _ -> false
+  in
+  if
+    (not is_cancelling) || (not persisted)
+    || (not
+          (Poly.equal close_request.operation Resource_protocol.Close
+          && Poly.equal response.status Resource_protocol.Ok))
+    || not
+         (Option.value_map response.run_id ~default:true
+            ~f:(String.equal (Coordinator_state.run_id state)))
+  then Error (Invalid "close did not prove matching terminal cleanup")
+  else apply t Coordinator_state.Cancel_cleanup_confirmed
 
 let retired t ~resource_id ~(stop_request : Resource_protocol.request) ~response
     =

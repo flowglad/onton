@@ -67,6 +67,52 @@ let test_control_store () =
     (String.equal (applied restarted "late-sleep" "sleep" none "") "rejected")
     "cancel must dominate sleep";
   check
+    (match Coordinator_host.submit restarted Cancel_cleanup_confirmed with
+    | Error (Coordinator_host.Invalid _) -> true
+    | _ -> false)
+    "unbound close attestation admitted";
+  let close =
+    match
+      Resource_protocol.make_request
+        {|{"version":"resource-v1","op":"close","run_id":"r","request_id":"close-1","coordinator_id":"c","owner_epoch":"1","revision":"1"}|}
+    with
+    | Ok request -> request
+    | Error e -> failwith e
+  in
+  let response =
+    match
+      Resource_protocol.decode_response
+        {|{"status":"ok","reason":"none","run_id":"r","owner_epoch":1,"revision":1}|}
+    with
+    | Ok reply -> reply
+    | Error e -> failwith e
+  in
+  check
+    (match
+       Coordinator_host.cancel_closed restarted ~close_request:close ~response
+     with
+    | Error (Coordinator_host.Invalid _) -> true
+    | _ -> false)
+    "unpersisted close acknowledged";
+  check
+    (match
+       Coordinator_host.submit restarted
+         (Resource_request (close.request_id, close.bytes))
+     with
+    | Ok (Coordinator_host.Applied [ Accepted ]) -> true
+    | _ -> false)
+    "close request not committed";
+  check
+    (match
+       Coordinator_host.cancel_closed restarted ~close_request:close ~response
+     with
+    | Ok (Coordinator_host.Applied [ Cancel_complete ]) -> true
+    | _ -> false)
+    "matching close not confirmed";
+  check
+    (Coordinator_state.cancellation_complete (Coordinator_host.state restarted))
+    "cancel not complete after confirmed cleanup";
+  check
     (String.equal
        (applied restarted "guidance" "guidance" (`String "unknown") "fix")
        "rejected")

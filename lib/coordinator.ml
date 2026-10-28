@@ -16,6 +16,8 @@ type connection = {
 
 type event =
   | Intent of Coordinator_state.event
+  | Control_line of string * (string -> unit)
+  | Close_run of Resource_protocol.request
   | Attach of string * connection
   | Command of string * string
   | Read of string
@@ -269,6 +271,53 @@ let run env =
             let continue =
               match event with
               | Intent event -> report env (submit host event)
+              | Control_line (bytes, response) ->
+                  response (Coordinator_control.handle host bytes);
+                  true
+              | Close_run request -> (
+                  let state = Coordinator_host.state host in
+                  let cancelling =
+                    match Coordinator_state.lifecycle state with
+                    | Cancelling _ -> true
+                    | _ -> false
+                  in
+                  if
+                    (not cancelling)
+                    || (not
+                          (List.for_all (Coordinator_state.resources state)
+                             ~f:(fun (id, bytes) ->
+                               match Resource_protocol.make_request bytes with
+                               | Ok r
+                                 when Poly.equal r.operation
+                                        Resource_protocol.Stop
+                                      || Poly.equal r.operation
+                                           Resource_protocol.Close ->
+                                   true
+                               | Ok _ | Error _ ->
+                                   List.mem
+                                     (Coordinator_state.retired_resources state)
+                                     id ~equal:String.equal)))
+                    || not
+                         (Poly.equal request.operation Resource_protocol.Close)
+                  then (
+                    env.blocked "cancel close awaits confirmed retirement";
+                    false)
+                  else if
+                    not
+                      (report env
+                         (submit host
+                            (Coordinator_state.Resource_request
+                               (request.request_id, request.bytes))))
+                  then false
+                  else
+                    match Resource_client.request env.client request with
+                    | Error _ ->
+                        env.blocked "cancel close response unconfirmed";
+                        false
+                    | Ok response ->
+                        report env
+                          (Coordinator_host.cancel_closed host
+                             ~close_request:request ~response))
               | Attach (assignment, connection) -> attach assignment connection
               | Command (assignment, frame) ->
                   frames assignment

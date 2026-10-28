@@ -40,17 +40,20 @@ idle, attention, lifecycle and sleep generation) without capsule, request,
 notes, secret or authority bytes. It never changes scheduling state. On explicit
 drain/cancellation, the coordinator attempts matching stop for non-executing
 resources; an active assignment and a generic observe-ok cannot prove
-retirement. A sleeping run is unsealed and awaits authorized wake. Terminal
-cancel cleanup still needs the external close/cleanup authority; absence of a
-close response must not emit `Cancel_cleanup_confirmed`.
+retirement. A sleeping run is unsealed and awaits authorized wake. Terminal cancellation
+accepts a caller-provided M2 close request only after confirmed retirement;
+its exact request commits before IO, and only a matching successful helper
+response permits `Cancel_cleanup_confirmed`. A lost close response stays pending,
+not complete. Retained stop/close request IDs are not live containers.
 
 ## Not yet qualified
 
 This patch's local seams do **not** complete FC-11–FC-14: the Patch 8 entrypoint
 has not wired the control socket/committed telemetry into the serialized loop;
 forge polling tickets, metadata/review/queue/merge reconciliation and versioned
-worker evidence delivery are not implemented here. Cancellation has no terminal
-close driver. The implemented test verifies immutable control receipts, uncertain
+worker evidence delivery are not implemented here. The caller must supply the
+terminal close request and route authorized control lines through the serialized
+loop. The implemented test verifies immutable control receipts, uncertain
 writes, sleep/wake/cancel dominance, changed create identity and ambiguous
 creation without blind resubmission, scoped credit and direct probe semantics.
 It is not a cloud deployment test or a passing claim for those missing clauses.

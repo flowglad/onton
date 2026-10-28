@@ -630,11 +630,26 @@ let () =
     |> replace "execution_context" (`String bind_context)
     |> replace "input_version" (`String "0")
   in
+  let control_response = ref None in
+  let control =
+    Yojson.Safe.to_string
+      (`Assoc
+         [
+           ("version", `Int 3);
+           ("id", `String "toggle-loop");
+           ("run_id", `String "run-1");
+           ("config_id", `String "cfg");
+           ("kind", `String "automerge");
+           ("patch_id", `String "2");
+           ("payload", `String "true");
+         ])
+  in
   let events =
     ref
       Coordinator.
         [
           Intent (Admit (operation 1));
+          Control_line (control, fun result -> control_response := Some result);
           Intent (Resource_request ("loop-resource", launch "loop-resource"));
           Intent (Bind_resource ("loop-resource", patch));
           Intent (Assign (assignment 1 "loop-resource", 0L));
@@ -699,6 +714,16 @@ let () =
       blocked = (fun reason -> failwith ("coordinator loop: " ^ reason));
     };
   check "actual loop completed and shut down" !shutdown;
+  check "serialized control committed" (!control_response = Some "accepted");
+  let committed =
+    match Coordinator_store.load store with
+    | Ok e -> Coordinator_store.state e
+    | Error _ -> failwith "control readback"
+  in
+  check "control persists across worker lifecycle"
+    (List.exists
+       (fun (c : Coordinator_state.control) -> String.equal c.id "toggle-loop")
+       (Coordinator_state.controls committed));
   print_endline
     "coordinator raw attachment loop: real v3 Bind/Execute/Input-capable host \
      and confirmed ACK delivery"

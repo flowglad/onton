@@ -60,6 +60,15 @@ val recover :
     idle recovery requires a fresh operation. No caller-supplied receipt enters
     this path. *)
 
+val cancel_closed :
+  t ->
+  close_request:Resource_protocol.request ->
+  response:Resource_protocol.response ->
+  (transition, error) result
+(** Only a persisted close request and matching successful helper response may
+    mark terminal cancellation cleanup. A caller-supplied state event is not
+    evidence of close; retirement is checked separately by the state gate. *)
+
 val retired :
   t ->
   resource_id:string ->
