@@ -61,10 +61,17 @@ type event =
   | Admit of operation
   | Assign of assignment * int64
   | Result_committed of string * string
+  | Worker_result of string * string * string * int64
+      (** Validated assignment/request/status and current time. Retryable/failed
+          retain intent within the budget; attention is sticky; cancellation
+          only completes intent under persisted cancellation context. *)
   | Cleanup_confirmed of string * string
   | Stop_confirmed of string * string
   | Resource_stopped of string * string
   | Owner_receipt of capsule
+  | Advance_receipt of capsule * string
+      (** Validated protocol transition for unchanged capsule bytes/version;
+          includes the exact predecessor receipt. Host barrier only. *)
   | Resource_request of string * string
   | Bind_resource of string * Patch_id.t
   | Terminal_patch of Patch_id.t
@@ -110,6 +117,9 @@ val encode : t -> string
 val decode : string -> (t, string) result
 val step : t -> event -> t * outcome list
 
+val emergency_event : event -> bool
+(** Only settlement/retirement/lifecycle work may consume emergency headroom. *)
+
 (* Pure prospective transition only. The host must commit the exact resulting
     state, capsule and protocol receipt together before an ACK or Dispatch.
     [Owner_receipt] and [Input_consumed] are attestations from the validated
@@ -122,7 +132,12 @@ val resources : t -> (string * string) list
 val resource_owners : t -> (string * Patch_id.t) list
 val terminal_patches : t -> Patch_id.t list
 val retired_resources : t -> string list
+val lost_resources : t -> string list
+val run_id : t -> string
+val config_id : t -> string
+val plan_id : t -> string
 val capsules : t -> capsule list
+val results : t -> (string * string) list
 val controls : t -> control list
 val inputs : t -> (string * string * int64 * string * bool) list
 val lifecycle : t -> lifecycle

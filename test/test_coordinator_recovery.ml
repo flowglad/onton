@@ -407,7 +407,8 @@ let test_capacity_and_retirement () =
     (apply (Assign (assignment 3, 0L)) = [ Dispatch "assignment-3" ])
     "unrelated eligible patch did not progress after retirement";
   (match
-     Coordinator_host.result host ~assignment:"assignment-3" ~frame:"{}\n"
+     Coordinator_host.submit host
+       (Result_committed ("assignment-3", "execute-3"))
    with
   | Error (Coordinator_host.Invalid _) -> ()
   | _ -> fail "unbound result was adopted");

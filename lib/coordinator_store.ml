@@ -9,6 +9,7 @@ type envelope = {
   version : int64;
   write_id : string;
   state : Coordinator_state.t;
+  streams : (string * Worker_stream.t) list;
 }
 
 type receipt = { write_id : string; state_version : int64 }
@@ -51,7 +52,19 @@ let create ~client ~run_id ~coordinator_id ~owner_epoch ~revision ~next_id =
 let state e = e.state
 let version e = e.version
 let write_id (e : envelope) = e.write_id
-let initial state = { version = 0L; write_id = "initial"; state }
+let initial state = { version = 0L; write_id = "initial"; state; streams = [] }
+
+let stream e assignment =
+  List.Assoc.find e.streams assignment ~equal:String.equal
+
+let with_stream e assignment stream =
+  {
+    e with
+    streams =
+      (assignment, stream)
+      :: List.Assoc.remove e.streams assignment ~equal:String.equal;
+  }
+
 let with_state e state = { e with state }
 
 let committed e (receipt : receipt) =
@@ -61,10 +74,15 @@ let encode e =
   Yojson.Safe.to_string
     (`Assoc
        [
-         ("schema", `String "onton-coordinator-1");
+         ("schema", `String "onton-coordinator-2");
          ("version", `String (Int64.to_string e.version));
          ("write_id", `String e.write_id);
          ("state", `String (Coordinator_state.encode e.state));
+         ( "streams",
+           `List
+             (List.map e.streams ~f:(fun (id, stream) ->
+                  `List [ `String id; `String (Worker_stream.encode stream) ]))
+         );
        ])
 
 let decode bytes =
@@ -72,21 +90,74 @@ let decode bytes =
     Error (Invalid "oversized state")
   else
     try
-      match Yojson.Safe.from_string bytes with
-      | `Assoc
-          [
-            ("schema", `String "onton-coordinator-1");
-            ("version", `String version);
-            ("write_id", `String write_id);
-            ("state", `String raw);
-          ] -> (
+      let fields =
+        match Yojson.Safe.from_string bytes with `Assoc xs -> xs | _ -> []
+      in
+      let streams =
+        match List.Assoc.find fields "streams" ~equal:String.equal with
+        | None -> failwith "missing streams"
+        | Some (`List xs) ->
+            List.map xs ~f:(function
+              | `List [ `String id; `String bytes ] -> (
+                  match Worker_stream.decode bytes with
+                  | Ok stream -> (id, stream)
+                  | Error _ -> failwith "invalid stream")
+              | _ -> failwith "invalid stream record")
+        | Some _ -> failwith "invalid streams"
+      in
+      if List.contains_dup (List.map streams ~f:fst) ~compare:String.compare
+      then failwith "duplicate stream";
+      match List.Assoc.remove fields "streams" ~equal:String.equal with
+      | [
+       ("schema", `String "onton-coordinator-2");
+       ("version", `String version);
+       ("write_id", `String write_id);
+       ("state", `String raw);
+      ] -> (
           match Int64.of_string_opt version with
           | None -> Error (Invalid "invalid coordinator version")
           | Some version -> (
               match Coordinator_state.decode raw with
               | Ok state
                 when Int64.(version > 0L) && not (String.is_empty write_id) ->
-                  Ok { version; write_id; state }
+                  let bound =
+                    List.for_all streams ~f:(fun (id, stream) ->
+                        match
+                          ( List.find (Coordinator_state.assignments state)
+                              ~f:(fun a -> String.equal a.id id),
+                            Worker_stream.identity stream,
+                            Worker_stream.capsule stream,
+                            Worker_stream.receipt stream )
+                        with
+                        | ( Some assignment,
+                            Some identity,
+                            Some bytes,
+                            Some receipt ) -> (
+                            String.equal identity.run_id
+                              (Coordinator_state.run_id state)
+                            && String.equal identity.patch_id
+                                 (Types.Patch_id.to_string assignment.patch)
+                            &&
+                            match
+                              Coordinator_state.capsules state
+                              |> List.filter
+                                   ~f:(fun (c : Coordinator_state.capsule) ->
+                                     String.equal c.assignment id)
+                              |> List.max_elt
+                                   ~compare:(fun
+                                       (a : Coordinator_state.capsule) b ->
+                                     Int64.compare a.version b.version)
+                            with
+                            | None -> true
+                            | Some capsule ->
+                                String.equal capsule.bytes bytes
+                                && String.equal capsule.receipt receipt)
+                        | _ -> false)
+                  in
+                  if bound then Ok { version; write_id; state; streams }
+                  else
+                    Error
+                      (Invalid "stream and coordinator owner artifacts disagree")
               | Ok _ | Error _ -> Error (Invalid "invalid coordinator envelope")
               ))
       | _ -> Error (Invalid "incompatible coordinator envelope")
@@ -181,7 +252,7 @@ let confirm t pending =
         | Error (Invalid reason) -> Error (Invalid reason)
         | Error _ -> Error (Uncertain "current bytes unavailable"))
 
-let commit t ~expected_version ~write_id e =
+let commit ?(emergency = false) t ~expected_version ~write_id e =
   if
     Int64.(expected_version < 0L || expected_version = max_value)
     || String.is_empty write_id
@@ -189,8 +260,9 @@ let commit t ~expected_version ~write_id e =
   else
     let next = { e with version = Int64.succ expected_version; write_id } in
     let payload = encode next in
-    if String.length payload > (8 * 1024 * 1024) - 65536 then
-      Error (Invalid "emergency state reserve exhausted")
+    if
+      String.length payload > (8 * 1024 * 1024) - if emergency then 0 else 65536
+    then Error (Invalid "emergency state reserve exhausted")
     else
       let prospective =
         match t.pending with

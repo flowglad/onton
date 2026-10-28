@@ -336,7 +336,9 @@ let run env =
                   })
       | Some { work = Session _ | Reconcile; _ } | None -> None
     in
-    let desired_base () =
+    (* Freeze this turn's base with its admitted guidance. Inputs received while
+       it runs become desired context only at the terminal safe checkpoint. *)
+    let captured_base =
       match !pending_input with
       | Some input -> input.selected_base
       | None -> (
@@ -347,6 +349,7 @@ let run env =
               | Some e -> Worker_protocol_v3.selected_base e.context
               | None -> Types.Branch.to_string env.main_branch))
     in
+    let desired_base () = captured_base in
     let proposal_number = ref 0 in
     let terminal = ref None in
     let apply_input_at_boundary = ref true in

@@ -648,8 +648,7 @@ let advance t ~operation ~guidance ~workspace_id ~agent ~terminal =
           _,
           _ ) ->
         None
-    | None ->
-        if Poly.equal t.operation (Some operation) then t.attention_id else None
+    | None -> None
   in
   if Int64.equal t.version Int64.max_value then
     Error "capsule state version exhausted"

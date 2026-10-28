@@ -1357,6 +1357,35 @@
  (libraries onton onton_core qcheck-core qcheck-core.runner))
 
 (test
+ (name test_coordinator_stream_io)
+ (modules test_coordinator_stream_io)
+ (deps (package onton))
+ (action
+  (setenv ONTON_SETSID_EXEC %{bin:onton-setsid-exec}
+   (run %{test})))
+ (libraries onton unix))
+
+(test
+ (name test_coordinator_stream)
+ (modules test_coordinator_stream)
+ (deps ../bin/worker.exe (package onton))
+ (action
+  (setenv ONTON_WORKER_BINARY_DEFAULT %{exe:../bin/worker.exe}
+   (setenv ONTON_SETSID_EXEC %{bin:onton-setsid-exec}
+    (run %{test}))))
+ (libraries onton onton_core onton_test_support eio_main unix yojson))
+
+(test
+ (name test_coordinator_result_properties)
+ (modules test_coordinator_result_properties)
+ (libraries onton_core qcheck-core qcheck-core.runner))
+
+(test
+ (name test_worker_stream_properties)
+ (modules test_worker_stream_properties)
+ (libraries onton_core qcheck-core qcheck-core.runner))
+
+(test
  (name test_coordinator_recovery)
  (modules test_coordinator_recovery)
  (libraries onton onton_core onton_test_support eio_main unix))

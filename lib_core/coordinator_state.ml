@@ -73,6 +73,7 @@ type t = {
   retired_resources : string list;
   lost_resources : string list;
   capsules : capsule list;
+  results : (string * string) list;
   controls : control list;
   inputs : (string * string * int64 * string * bool) list;
   input_floors : (string * string * int64) list;
@@ -85,10 +86,12 @@ type event =
   | Admit of operation
   | Assign of assignment * int64
   | Result_committed of string * string
+  | Worker_result of string * string * string * int64
   | Cleanup_confirmed of string * string
   | Stop_confirmed of string * string
   | Resource_stopped of string * string
   | Owner_receipt of capsule
+  | Advance_receipt of capsule * string
   | Resource_request of string * string
   | Bind_resource of string * Patch_id.t
   | Terminal_patch of Patch_id.t
@@ -130,6 +133,7 @@ let create ~run_id ~config_id ~plan_id ~plan_bytes ~config_bytes ~capacity
     retired_resources = [];
     lost_resources = [];
     capsules = [];
+    results = [];
     controls = [];
     inputs = [];
     input_floors = [];
@@ -145,7 +149,12 @@ let resources t = t.resources
 let resource_owners t = t.resource_owners
 let terminal_patches t = t.terminal_patches
 let retired_resources t = t.retired_resources
+let lost_resources t = t.lost_resources
+let run_id (t : t) = t.run_id
+let config_id (t : t) = t.config_id
+let plan_id t = t.plan_id
 let capsules t = t.capsules
+let results t = t.results
 let controls t = t.controls
 let inputs t = t.inputs
 let lifecycle t = t.lifecycle
@@ -194,13 +203,16 @@ let can_recover t o ~now =
       || List.mem t.retired_resources id ~equal:String.equal)
 
 let maintenance_id t patch =
-  let last =
-    List.find t.operations ~f:(fun o ->
-        Patch_id.equal o.patch patch && not o.maintenance)
-    |> Option.value_map ~default:"initial" ~f:(fun (o : operation) -> o.id)
-  in
-  let patch = Patch_id.to_string patch in
-  Printf.sprintf "maintenance:%d:%s:%s" (String.length patch) patch last
+  match List.find t.operations ~f:(fun o -> Patch_id.equal o.patch patch) with
+  | Some o when o.maintenance -> o.id
+  | _ ->
+      let rec unused sequence =
+        let id = "maintenance:" ^ Int.to_string sequence in
+        if List.exists t.operations ~f:(fun o -> String.equal o.id id) then
+          unused (sequence + 1)
+        else id
+      in
+      unused (List.length t.operations)
 
 let valid_id s =
   String.length s > 0
@@ -295,8 +307,19 @@ let unique ids =
   List.length ids
   = List.length (List.dedup_and_sort ids ~compare:String.compare)
 
+let known_status = function
+  | "completed_ok" | "completed_no_commits" | "failed" | "cancelled"
+  | "retryable" | "attention" | "merged_observed" ->
+      true
+  | _ -> false
+
 let valid (t : t) =
-  valid_id t.run_id && valid_id t.config_id && valid_id t.plan_id
+  unique (List.map t.results ~f:fst)
+  && List.for_all t.results ~f:(fun (id, status) ->
+      known_status status
+      && List.exists t.assignments ~f:(fun a ->
+          String.equal a.id id && a.result_committed))
+  && valid_id t.run_id && valid_id t.config_id && valid_id t.plan_id
   && (not (String.is_empty t.plan_bytes))
   && (not (String.is_empty t.config_bytes))
   && t.capacity > 0
@@ -304,7 +327,8 @@ let valid (t : t) =
     | Sleeping _ ->
         reserved_count t = 0 && all_retired t && settled_assignments t
     | Running | Draining _ | Cancelling _ -> true)
-  && t.budget_bytes <= 8388608 && fits t
+  && t.budget_bytes <= 8388608
+  && String.length (encode t) <= t.budget_bytes
   && reserved_count t <= t.capacity
   && unique (List.map t.operations ~f:(fun o -> o.id))
   && unique (List.map t.assignments ~f:(fun a -> a.id))
@@ -357,7 +381,7 @@ let valid (t : t) =
          && not (String.contains o.id '\000'))
       && ((not o.maintenance) || String.is_prefix o.id ~prefix:"maintenance:")
       && o.used >= 0 && o.budget > 0 && o.used <= o.budget
-      && Bool.equal o.attention (o.used >= o.budget))
+      && (o.used < o.budget || o.attention))
   && List.for_all t.assignments ~f:(fun a ->
       valid_id a.id && valid_id a.request
       && Option.value_map
@@ -405,10 +429,26 @@ let update_assignment t id ~f =
 
 let reject reason t = (t, [ Rejected reason ])
 
-let commit t next effects =
-  if fits next then (next, effects) else reject "state reserve exhausted" t
+let emergency_event = function
+  | Resource_request (_, bytes) -> (
+      match Resource_protocol.make_request bytes with
+      | Ok request -> Poly.equal request.operation Resource_protocol.Stop
+      | Error _ -> false)
+  | Resource_stopped _ | Loss _ | Advance_receipt _ | Cleanup_confirmed _
+  | Sleep_ready _ | Cancel_cleanup_confirmed ->
+      true
+  | Control c -> String.equal c.kind "cancel" || String.equal c.kind "sleep"
+  | _ -> false
 
-let step t event =
+let commit ~emergency t next effects =
+  if
+    if emergency then String.length (encode next) <= next.budget_bytes
+    else fits next
+  then (next, effects)
+  else reject "state reserve exhausted" t
+
+let rec step t event =
+  let commit = commit ~emergency:(emergency_event event) in
   match event with
   | Resource_request (id, request) -> (
       if (not (valid_id id)) || String.is_empty request then
@@ -507,9 +547,7 @@ let step t event =
             && (String.equal prior.resource a.resource
                || Patch_id.equal prior.patch a.patch))
         || Option.value_map op ~default:true ~f:(fun o ->
-            o.maintenance
-            || (not (Patch_id.equal o.patch a.patch))
-            || not (can_recover t o ~now))
+            (not (Patch_id.equal o.patch a.patch)) || not (can_recover t o ~now))
         ||
         match t.lifecycle with
         | Running -> false
@@ -522,6 +560,81 @@ let step t event =
       then reject "assignment not authorized" t
       else
         commit t { t with assignments = a :: t.assignments } [ Dispatch a.id ]
+  | Worker_result (id, request, status, now) -> (
+      if (not (known_status status)) || Int64.(now < 0L) then
+        reject "invalid result status/time" t
+      else
+        match List.Assoc.find t.results id ~equal:String.equal with
+        | Some old when not (String.equal old status) ->
+            reject "changed result status" t
+        | Some _ -> step t (Result_committed (id, request))
+        | None -> (
+            let next, outcomes = step t (Result_committed (id, request)) in
+            if
+              List.exists outcomes ~f:(function
+                | Rejected _ -> true
+                | _ -> false)
+            then (t, outcomes)
+            else
+              match
+                List.find next.assignments ~f:(fun a -> String.equal a.id id)
+              with
+              | None -> reject "missing result assignment" t
+              | Some a ->
+                  let next =
+                    update_op
+                      { next with results = (id, status) :: next.results }
+                      a.operation
+                      ~f:(fun o ->
+                        match status with
+                        | "completed_ok" | "completed_no_commits"
+                        | "merged_observed" ->
+                            { o with unfinished = false; attention = false }
+                        | "retryable" | "failed" ->
+                            let used =
+                              if o.used >= o.budget then o.budget
+                              else o.used + 1
+                            in
+                            {
+                              o with
+                              unfinished = true;
+                              used;
+                              retry_after = next_retry now;
+                              attention = used >= o.budget;
+                            }
+                        | "attention" ->
+                            { o with unfinished = true; attention = true }
+                        | "cancelled" ->
+                            {
+                              o with
+                              unfinished =
+                                (match t.lifecycle with
+                                | Cancelling _ -> false
+                                | _ -> true);
+                            }
+                        | _ -> o)
+                  in
+                  commit t next outcomes))
+  | Advance_receipt (c, previous) -> (
+      match
+        List.find t.capsules ~f:(fun old ->
+            String.equal old.assignment c.assignment
+            && Int64.equal old.version c.version)
+      with
+      | Some old when Poly.equal old c -> (t, [ Already_applied ])
+      | Some old
+        when String.equal old.bytes c.bytes
+             && String.equal old.receipt previous
+             && not (String.is_empty c.receipt) ->
+          commit t
+            {
+              t with
+              capsules =
+                List.map t.capsules ~f:(fun current ->
+                    if Poly.equal current old then c else current);
+            }
+            [ Accepted ]
+      | _ -> reject "receipt does not advance an exact committed capsule" t)
   | Owner_receipt (c : capsule) -> (
       if
         (not (valid_id c.assignment))
@@ -584,7 +697,8 @@ let step t event =
                   else { a with cleanup = true; reserved = false })
             in
             let next =
-              if result then next
+              if result || List.Assoc.mem t.results a.id ~equal:String.equal
+              then next
               else
                 update_op next a.operation ~f:(fun o ->
                     { o with unfinished = false })
@@ -695,6 +809,7 @@ let step t event =
                           used;
                           retry_after = next_retry now;
                           attention = used >= o.budget;
+                          unfinished = true;
                         })
                   else
                     {

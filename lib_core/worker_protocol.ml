@@ -758,6 +758,20 @@ type event =
   | Recover_unfinished
   | Host_lost
 
+(* Attention is part of the exact checkpoint capsule, not a later inference
+   from Result. Keeping its committed projection at the checkpoint barrier lets
+   an interrupted terminal checkpoint bind before Result has been delivered. The
+   effectful host separately validates the complete owner capsule. *)
+let checkpoint_attention capsule =
+  try
+    match Yojson.Safe.from_string capsule with
+    | `Assoc fields -> (
+        match List.assoc_opt "attention_id" fields with
+        | Some (`String id) when valid_id id -> Some id
+        | _ -> None)
+    | _ -> None
+  with _ -> None
+
 let rec step t event =
   if t.stopped then (t, [])
   else
@@ -939,6 +953,7 @@ let rec step t event =
                       t with
                       version = state_version;
                       capsule;
+                      attention = checkpoint_attention capsule;
                       active =
                         Some
                           {
@@ -1131,11 +1146,12 @@ and restore base initial_version initial_attention entries =
             when rest = []
                  && (not receipt.result_acknowledged)
                  && Int64.compare base.version admitted.version >= 0
-                 && base.attention = None ->
+                 && base.attention = checkpoint_attention base.capsule ->
               Some
                 {
                   admitted with
                   version = base.version;
+                  attention = base.attention;
                   restored_unfinished = true;
                 }
           | Some terminal, Some active
