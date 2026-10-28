@@ -252,3 +252,29 @@ for (const kind of ["symlink", "fifo", "directory", "oversized"] as const) {
     });
   });
 }
+
+
+test("directory changes affect new selections while retaining the admitted draft across reloads", async () => {
+  await fixture(async ({ call, path, command, saved, restore, emit, ctx }) => {
+    await call("workstream_open", { path });
+    await call("workstream_decide", question);
+    await command("dir docs/roadmaps");
+    await restore(saved.at(-1)!);
+    await call("workstream_finalize");
+    const finalized = saved.at(-1)!.finalized;
+    assert.equal(finalized!.path, path);
+    await command("dir docs/plans");
+    await emit("tool_result");
+    await command("status");
+    await restore(saved.at(-1)!, "session_tree");
+    assert.deepEqual(saved.at(-1)!.finalized, finalized);
+    assert.equal(saved.at(-1)!.decisions[0]!.resolution.kind, "approved");
+    await call("workstream_finalize");
+    await assert.rejects(call("workstream_open", { path }), /Markdown file directly in docs\/plans/);
+    const next = join(ctx.cwd, "docs/plans/next.md");
+    await call("workstream_open", { path: next });
+    assert.equal(saved.at(-1)!.path, next);
+    assert.equal(saved.at(-1)!.finalized, undefined);
+    assert.deepEqual(saved.at(-1)!.decisions, []);
+  });
+});
