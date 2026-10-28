@@ -1,0 +1,30 @@
+{
+  "name": "pi-workstream",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Pi extension: interactive workstream authoring with user decisions and final review",
+  "type": "module",
+  "keywords": [
+    "pi-package"
+  ],
+  "pi": {
+    "extensions": [
+      "./src/index.ts"
+    ]
+  },
+  "scripts": {
+    "check": "tsc --noEmit",
+    "test": "tsx --test test/*.test.ts"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*",
+    "typebox": "*"
+  },
+  "devDependencies": {
+    "@earendil-works/pi-coding-agent": "1.2.0",
+    "@types/node": "^22.0.0",
+    "tsx": "^4.20.0",
+    "typebox": "^1.1.38",
+    "typescript": "^5.9.3"
+  }
+}
