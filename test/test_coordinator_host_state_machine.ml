@@ -163,14 +163,28 @@ let histories =
                   | None -> Coordinator_state.Loss ("unknown-resource", 0L))
               | _ -> Coordinator_state.Loss ("unknown-resource", 0L)
             in
-            let pure_next, _ =
-              Coordinator_state.step
-                (Coordinator_host.state !current_host)
-                event
+            let current_state = Coordinator_host.state !current_host in
+            let core_api_surface =
+              String.equal (Coordinator_state.run_id current_state) "run"
+              && String.equal
+                   (Coordinator_state.config_id current_state)
+                   "config"
+              && String.equal (Coordinator_state.plan_id current_state) "plan"
+              && List.is_empty (Coordinator_state.lost_resources current_state)
+              && List.is_empty (Coordinator_state.results current_state)
             in
-            let before =
-              Coordinator_state.encode (Coordinator_host.state !current_host)
+            let expected_emergency =
+              match event with Coordinator_state.Loss _ -> true | _ -> false
             in
+            if
+              (not core_api_surface)
+              || not
+                   (Bool.equal
+                      (Coordinator_state.emergency_event event)
+                      expected_emergency)
+            then valid := false;
+            let pure_next, _ = Coordinator_state.step current_state event in
+            let before = Coordinator_state.encode current_state in
             (match Coordinator_host.submit !current_host event with
             | Ok (Coordinator_host.Applied [ Coordinator_state.Accepted ]) ->
                 if command = 0 then Int.incr accepted else valid := false
