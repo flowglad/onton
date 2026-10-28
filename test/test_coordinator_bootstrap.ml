@@ -29,6 +29,13 @@ let () =
           ( 0,
             {|{"status":"ok","reason":"none","run_id":"r","owner_epoch":1,"revision":1}|},
             "" )
+    | "takeover" ->
+        check (F.string "owner_epoch" fields = "1") "wrong predecessor epoch";
+        check (F.string "revision" fields = "1") "wrong predecessor revision";
+        Ok
+          ( 0,
+            {|{"status":"ok","reason":"none","run_id":"r","owner_epoch":1,"revision":1}|},
+            "" )
     | _ -> F.transport f ~argv ~input
   in
   let client = Resource_client.create ~helper:"fixture" ~transport in
@@ -55,6 +62,9 @@ let () =
           ~next_id:next))
     "changed capacity accepted";
   check (Result.is_error (start ~fresh:false ())) "unguarded takeover accepted";
+  check
+    (Result.is_ok (start ~fresh:false ~guards:(Some (1L, 1L)) ()))
+    "confirmed guarded takeover lost existing state";
   check
     (Result.is_error (start ~guards:(Some (1L, 1L)) ()))
     "open accepted takeover guards";
