@@ -24,11 +24,11 @@ Compose the workstream through an interactive interview. Ask a small set of focu
 
 Before proposing implementation approaches, establish the project's intended lifespan and stakes: is this a disposable spike, a maintained product feature, long-lived mission-critical infrastructure, or something in between? Ask what it needs to prove or deliver now, who will operate it, what failures would cost, and what time, maintenance, and complexity budgets apply. Ask follow-ups where these answers affect the design; do not infer production requirements from the project's technical subject alone.
 
-**Implementation decisions belong to the user.** Inspect the code and research options independently, but consult the user before committing to an architecture, abstraction, dependency, persistence model, security mechanism, or reliability strategy. Explain the concrete need, the simplest viable approach, and the costs and benefits of alternatives in terms of the agreed project goals. Offer a recommendation, then wait for the user's choice before treating it as settled. Existing code establishes facts and constraints; it does not establish what the user wants to build next.
+**Implementation decisions belong to the user.** Inspect the code and research options independently, but consult the user before committing to an architecture, abstraction, dependency, persistence model, security mechanism, or reliability strategy. Explain the concrete need, the simplest viable approach, and the costs and benefits of alternatives in terms of the agreed project goals. Offer a recommendation, then wait for the user's choice before treating it as settled, unless the user explicitly delegates a bounded choice or binding repository/external constraints leave one reasonable design; record that basis. Existing code establishes facts and constraints; it does not establish what the user wants to build next.
 
 Do not add layers for supposed correctness, security, future scale, or generality without validating that the user wants their guarantees and accepts their costs. For example, a recovery subsystem, capability layer, or audit pipeline needs an agreed requirement; calling it “safer” is not sufficient. Surface concrete risks and binding repository or external constraints, and discuss how to satisfy them proportionately. Match implementation rigor and verification effort to the agreed lifespan and consequences of failure.
 
-Summarize agreed goals, constraints, non-goals, and design choices before composing milestones. Keep unchosen approaches as proposals or open questions, never as commitments hidden in milestone deliverables, precedents, or acceptance criteria. If a choice blocks milestone composition, ask about it and wait; defer choices that do not yet need resolution. Silence is not agreement.
+Ask explicitly what is out of scope, including capabilities, users, environments, or guarantees the project will not support; do not infer non-goals from silence. Summarize agreed goals, constraints, non-goals, and design choices before composing milestones. Keep unchosen approaches as proposals or open questions, never as commitments hidden in milestone deliverables, precedents, or acceptance criteria. If a choice blocks milestone composition, ask about it and wait; defer choices that do not yet need resolution. Silence is not agreement.
 
 ## What is a Workstream?
 
@@ -209,7 +209,7 @@ Once the interview has established the goals and the user has agreed to the impl
 
 Key sections:
 - **Vision** — 2-4 sentences describing end state and why it matters
-- **Project Context and Scope** — agreed lifespan, stakes, failure tolerance, time and maintenance budgets, and explicit non-goals
+- **Project Context and Scope** — agreed lifespan, stakes, what the project must prove or deliver now, operators and maintainers, failure tolerance, time, maintenance, and complexity budgets, and explicit non-goals
 - **Current State** — where the codebase is today relative to the vision
 - **Key Challenges** — hardest parts or biggest unknowns
 - **Established Precedents** — cross-cutting libraries, algorithms, patterns, papers, or RFCs the workstream adopts; each with kind, name, URL, and why applicable

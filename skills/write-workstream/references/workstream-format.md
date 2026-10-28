@@ -9,7 +9,7 @@
 [2-4 sentences describing the end state and why it matters]
 
 ## Project Context and Scope
-[User-agreed project lifespan and stakes (spike, maintained feature, mission-critical infrastructure, or another context), failure tolerance, time and maintenance budgets, and explicit non-goals. These guide the implementation and verification rigor.]
+[User-agreed project lifespan and stakes (spike, maintained feature, mission-critical infrastructure, or another context), what it must prove or deliver now, operators and maintainers, failure tolerance, time, maintenance, and complexity budgets, and explicit non-goals. These guide the implementation and verification rigor.]
 
 ## Current State
 [Brief description of where the codebase is today relative to this vision. Ground this in the actual code — read the subsystems the workstream touches and state what you verified, not how you assume the architecture is wired. This section is the foundation every milestone rests on; a wrong claim here ("there is no X", "every Y works via Z") propagates into invented milestones. See "Ground the Workstream in the Real Codebase" in SKILL.md.]
@@ -19,7 +19,7 @@
 
 ## Established Precedents
 
-Cross-cutting prior art (libraries, algorithms, patterns, papers, RFCs, canonical docs) the user has agreed this workstream adopts. Unchosen candidates belong in Open Questions, not here. Each entry is consumed by `write-gameplan` when a milestone is unpacked into patches — the relevant precedents are then attached to the specific patches that depend on them. Use the same four-field shape as per-patch precedents.
+Cross-cutting prior art (libraries, algorithms, patterns, papers, RFCs, canonical docs) the user has agreed this workstream adopts. Unselected proposals belong in Open Questions, while explicitly rejected alternatives belong in Decisions Made. Each entry is consumed by `write-gameplan` when a milestone is unpacked into patches — the relevant precedents are then attached to the specific patches that depend on them. Use the same four-field shape as per-patch precedents.
 
 - **[kind] Name** — [URL if a stable one exists]
   [1-2 sentences: how this precedent applies across milestones and the concrete shape it imposes on implementation.]
@@ -88,6 +88,12 @@ Below is a real-world workstream demonstrating all sections. Onton is an OCaml o
 ## Vision
 
 Build a standalone OCaml binary that parses gameplans, builds dependency graphs, and spawns concurrent coding agents in isolated git worktrees. It polls GitHub for PR status and reacts to merges, reviews, and CI. The type system and a formal specification (Pantagruel) serve as correctness tools, with property-based tests derived from the spec.
+
+## Project Context and Scope
+
+For this example, the agreed context is a maintained developer tool operated by repository maintainers, who also maintain the binary and its GitHub integration. The immediate deliverable is an end-to-end orchestrator for the five milestones below, with observable scheduling, restart recovery, and review handling. Incorrect dependency ordering or lost persisted state is unacceptable; transient GitHub or agent failures may pause progress for operator intervention.
+
+The time budget is the five-milestone sequence; later capabilities are deferred. Maintenance and complexity budgets favor a standalone binary, a pure decision core, and a thin I/O shell, with property tests for the formal invariants. Non-goals are a hosted multi-tenant service, unattended operation without a repository maintainer, and a JSON gameplan format in this workstream.
 
 ## Current State
 
