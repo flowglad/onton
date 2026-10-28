@@ -8,6 +8,9 @@
 ## Vision
 [2-4 sentences describing the end state and why it matters]
 
+## Project Context and Scope
+[User-agreed project lifespan and stakes (spike, maintained feature, mission-critical infrastructure, or another context), failure tolerance, time and maintenance budgets, and explicit non-goals. These guide the implementation and verification rigor.]
+
 ## Current State
 [Brief description of where the codebase is today relative to this vision. Ground this in the actual code — read the subsystems the workstream touches and state what you verified, not how you assume the architecture is wired. This section is the foundation every milestone rests on; a wrong claim here ("there is no X", "every Y works via Z") propagates into invented milestones. See "Ground the Workstream in the Real Codebase" in SKILL.md.]
 
@@ -16,7 +19,7 @@
 
 ## Established Precedents
 
-Cross-cutting prior art (libraries, algorithms, patterns, papers, RFCs, canonical docs) this workstream adopts. Each entry is consumed by `write-gameplan` when a milestone is unpacked into patches — the relevant precedents are then attached to the specific patches that depend on them. Use the same four-field shape as per-patch precedents.
+Cross-cutting prior art (libraries, algorithms, patterns, papers, RFCs, canonical docs) the user has agreed this workstream adopts. Unchosen candidates belong in Open Questions, not here. Each entry is consumed by `write-gameplan` when a milestone is unpacked into patches — the relevant precedents are then attached to the specific patches that depend on them. Use the same four-field shape as per-patch precedents.
 
 - **[kind] Name** — [URL if a stable one exists]
   [1-2 sentences: how this precedent applies across milestones and the concrete shape it imposes on implementation.]
@@ -53,7 +56,7 @@ Cross-cutting prior art (libraries, algorithms, patterns, papers, RFCs, canonica
 [Questions that apply to the workstream as a whole, not yet resolved]
 
 ## Decisions Made
-[Key technical or product decisions made during planning, with rationale]
+[Technical or product choices agreed with the user during the interview, with rationale tied to the project context. Do not record agent recommendations as settled decisions.]
 
 ## Definition of Done (Acceptance Suite)
 
