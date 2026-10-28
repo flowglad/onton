@@ -34,7 +34,15 @@ an empty eventual-consistency read is *not* evidence to submit again. Changed
 reuse and a new effect identity without a matching explicit renewal are
 blocked. Ambiguous create remains pending. The first successful provider reply
 can identify the created PR; readiness still requires current direct proof.
-This does not claim exactly-once backend shell/API effects. The configured M2
+`Coordinator_forge.change` supports PR body/base/draft, review request, queue
+entry/removal and merge through `Forge.S`. It requires current pair proof
+before first mutation, commits exact effect identity/parameters before IO,
+and reads actual PR state before treating a retry as applied; an ambiguous
+write cannot be repeated merely because a read still appears unchanged.
+Review requests and body updates without independently readable post-state
+remain pending on replay. Merge/queue first attempts additionally require the
+shared scheduler's current policy result. This does not claim exactly-once
+backend shell/API effects. The configured M2
 8 MiB envelope and emergency headroom apply to control/forge intent; attempts
 that cannot fit are rejected without evicting history.
 
@@ -53,8 +61,9 @@ not complete. Retained stop/close request IDs are not live containers.
 
 This patch's local seams do **not** complete FC-11–FC-14: the Patch 8 entrypoint
 has not wired the control socket/committed telemetry into the serialized loop;
-durable *results* of forge observation, metadata/review/queue/merge
-reconciliation and versioned worker evidence delivery are not implemented here. The caller must supply the
+durable *results* of forge observation, complete metadata/review/queue/merge
+reconciliation (including bounded attention for permanently ambiguous writes),
+and versioned worker evidence delivery are not implemented here. The caller must supply the
 terminal close request and route authorized control lines through the serialized
 loop. The implemented test verifies immutable control receipts, uncertain
 writes, sleep/wake/cancel dominance, changed create identity and ambiguous

@@ -242,6 +242,164 @@ let create_or_discover (type e) (module F : Forge.S with type error = e) ~host
                     | Ok number -> Found number
                     | Error e -> Pending (F.show_error e))))
 
+type change =
+  | Set_body of string
+  | Set_base of Branch.t
+  | Set_draft of bool
+  | Request_review of string
+  | Enqueue
+  | Dequeue
+  | Merge
+
+type change_result =
+  | Applied
+  | Change_pending of string
+  | Change_blocked of string
+
+let change (type e) (module F : Forge.S with type error = e) ~host ~io ~scope
+    ~patch ~effect_id ~policy_ready action =
+  let state = Coordinator_host.state host in
+  let action_bytes =
+    match action with
+    | Set_body body -> `List [ `String "body"; `String body ]
+    | Set_base base -> `List [ `String "base"; `String (Branch.to_string base) ]
+    | Set_draft draft -> `List [ `String "draft"; `Bool draft ]
+    | Request_review team -> `List [ `String "review"; `String team ]
+    | Enqueue -> `String "enqueue"
+    | Dequeue -> `String "dequeue"
+    | Merge -> `String "merge"
+  in
+  let payload =
+    Yojson.Safe.to_string
+      (`List
+         [
+           `String scope.ticket;
+           `Int (Pr_number.to_int scope.pr);
+           `String (Branch.to_string scope.head_branch);
+           `String (Branch.to_string scope.base_branch);
+           `String scope.head_revision;
+           `String scope.base_revision;
+           `String scope.push_destination;
+           action_bytes;
+         ])
+  in
+  let intent : Coordinator_state.control =
+    {
+      id = effect_id;
+      run_id = Coordinator_state.run_id state;
+      config_id = Coordinator_state.config_id state;
+      patch_id = Some (Patch_id.to_string patch);
+      kind = "forge_effect";
+      payload;
+    }
+  in
+  if
+    String.is_empty scope.ticket
+    || String.is_empty scope.push_destination
+    || String.is_empty scope.head_revision
+    || String.is_empty scope.base_revision
+    ||
+    match action with
+    | Request_review team -> String.is_empty team
+    | _ -> false
+  then Change_blocked "incomplete effect scope"
+  else if match action with Merge | Enqueue -> not policy_ready | _ -> false
+  then Change_blocked "current scheduler policy not ready"
+  else
+    let pending =
+      List.exists (Coordinator_state.controls state)
+        ~f:(fun (c : Coordinator_state.control) -> String.equal c.id effect_id)
+    in
+    let proof =
+      if pending then None
+      else Some (observe_committed (module F) ~host ~io ~patch ~scope)
+    in
+    match proof with
+    | Some (Unavailable reason) -> Change_pending reason
+    | Some (Unconfirmed reason) -> Change_blocked reason
+    | Some (Confirmed _) | None -> (
+        match
+          Coordinator_host.submit host (Coordinator_state.Control intent)
+        with
+        | Error _ -> Change_blocked "effect intent commit unconfirmed"
+        | Ok (Coordinator_host.Rejected reason) -> Change_blocked reason
+        | Ok (Coordinator_host.Applied effects) -> (
+            let first =
+              match effects with
+              | [ Coordinator_state.Accepted ] -> true
+              | _ -> false
+            in
+            if
+              (not first)
+              && not
+                   (match effects with
+                   | [ Coordinator_state.Already_applied ] -> true
+                   | _ -> false)
+            then Change_blocked "effect intent rejected"
+            else
+              match F.pr_state scope.pr with
+              | Error e -> Change_pending (F.show_error e)
+              | Ok pr
+                when not
+                       (Option.value_map pr.pr_number ~default:false
+                          ~f:(Pr_number.equal scope.pr)
+                       && Option.value_map pr.head_oid ~default:false
+                            ~f:(String.equal scope.head_revision)
+                       && Option.value_map pr.head_branch ~default:false
+                            ~f:(Branch.equal scope.head_branch)) ->
+                  Change_pending "provider PR or contributor revision changed"
+              | Ok pr -> (
+                  let observed =
+                    match action with
+                    | Set_base base ->
+                        Option.value_map pr.base_branch ~default:false
+                          ~f:(Branch.equal base)
+                    | Set_draft draft -> Bool.equal pr.is_draft draft
+                    | Enqueue -> Pr_state.enqueued pr
+                    | Dequeue -> not (Pr_state.enqueued pr)
+                    | Merge -> Pr_state.merged pr
+                    | Set_body _ | Request_review _ -> false
+                  in
+                  if observed then Applied
+                  else if not first then
+                    Change_pending
+                      "ambiguous effect awaiting current provider evidence"
+                  else
+                    match observe (module F) ~io scope with
+                    | Unavailable reason -> Change_pending reason
+                    | Unconfirmed reason -> Change_blocked reason
+                    | Confirmed _ -> (
+                        let result =
+                          match action with
+                          | Set_body body ->
+                              F.update_pr_body ~pr_number:scope.pr ~body
+                          | Set_base base ->
+                              F.update_pr_base ~pr_number:scope.pr ~base
+                          | Set_draft draft ->
+                              F.set_draft ~pr_number:scope.pr ~draft
+                          | Request_review team ->
+                              F.request_review ~pr_number:scope.pr
+                                ~team_slug:team
+                          | Dequeue -> F.dequeue_pr ~pr_number:scope.pr
+                          | Enqueue | Merge -> Ok ()
+                        in
+                        match action with
+                        | Enqueue -> (
+                            match F.enqueue_pr ~pr_number:scope.pr with
+                            | Ok _ -> Applied
+                            | Error e -> Change_pending (F.show_error e))
+                        | Merge -> (
+                            match F.merge_pr ~pr_number:scope.pr with
+                            | Ok F.Merge_succeeded -> Applied
+                            | Ok (F.Merge_queued _ | F.Merge_unconfirmed) ->
+                                Change_pending
+                                  "merge awaiting provider evidence"
+                            | Error e -> Change_pending (F.show_error e))
+                        | _ -> (
+                            match result with
+                            | Ok () -> Applied
+                            | Error e -> Change_pending (F.show_error e))))))
+
 let render_notes ~gameplan ~patches ~publications ~projections =
   List.map patches ~f:(fun patch ->
       let publication =

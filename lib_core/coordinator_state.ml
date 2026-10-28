@@ -230,7 +230,7 @@ let control_target_ok (c : control) =
   match (c.kind, c.patch_id) with
   | ("sleep" | "wake" | "cancel"), None -> true
   | ( ( "guidance" | "automerge" | "bump" | "renewal" | "forge_create"
-      | "forge_ticket" ),
+      | "forge_ticket" | "forge_effect" ),
       Some id ) ->
       valid_id id
   | _, _ -> false
@@ -871,6 +871,7 @@ let rec step t event =
                    "cancel";
                    "forge_create";
                    "forge_ticket";
+                   "forge_effect";
                  ]
                  c.kind ~equal:String.equal))
         || (not (String.equal c.run_id t.run_id))
@@ -914,7 +915,7 @@ let rec step t event =
                       String.equal (Patch_id.to_string o.patch) target
                       && o.attention
                       && String.equal o.id c.payload)
-              | "forge_create" | "forge_ticket" ->
+              | "forge_create" | "forge_ticket" | "forge_effect" ->
                   String.length c.payload > 0
                   && String.length c.payload <= 131072
               | "cancel" ->

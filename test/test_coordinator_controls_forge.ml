@@ -422,6 +422,22 @@ let test_ambiguous_create () =
     "changed ticket identity accepted";
   check (!provider_reads = 1) "changed ticket read provider";
   check
+    (match
+       Coordinator_forge.change
+         (module Fake_forge)
+         ~host ~io ~scope ~patch ~effect_id:"draft-1" ~policy_ready:true
+         (Coordinator_forge.Set_draft true)
+     with
+    | Coordinator_forge.Change_pending _ -> true
+    | _ -> false)
+    "unavailable provider effect not pending";
+  check
+    (not
+       (List.exists
+          (fun (c : Coordinator_state.control) -> String.equal c.id "draft-1")
+          (Coordinator_state.controls (Coordinator_host.state host))))
+    "unconfirmed provider read consumed mutation identity";
+  check
     (match call host scope with
     | Coordinator_forge.Pending _ -> true
     | _ -> false)

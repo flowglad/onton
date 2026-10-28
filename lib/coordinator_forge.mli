@@ -76,6 +76,35 @@ val create_or_discover :
     discover the actual PR; absence alone NEVER permits another create. A new
     explicit renewal must have its own independently authorized identity. *)
 
+type change =
+  | Set_body of string
+  | Set_base of Branch.t
+  | Set_draft of bool
+  | Request_review of string
+  | Enqueue
+  | Dequeue
+  | Merge
+
+type change_result =
+  | Applied
+  | Change_pending of string
+  | Change_blocked of string
+
+val change :
+  (module Forge.S with type error = 'e) ->
+  host:Coordinator_host.t ->
+  io:Branch_reconcile_executor.io ->
+  scope:scope ->
+  patch:Patch_id.t ->
+  effect_id:string ->
+  policy_ready:bool ->
+  change ->
+  change_result
+(** Commit the exact effect identity and target before provider IO. Direct
+    current pair proof and caller-supplied shared-policy readiness gate a first
+    merge/queue attempt. Replay discovers actual provider state and never
+    replays an ambiguous mutation just because the read appears unchanged. *)
+
 val render_notes :
   gameplan:Gameplan.t ->
   patches:Patch.t list ->
