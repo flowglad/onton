@@ -794,6 +794,24 @@ let run env =
                        (Types.Branch.of_string input.selected_base)
                  | Some _ | None -> snapshot.orchestrator
                in
+               let orchestrator =
+                 match work with
+                 | Session { phase = Respond; kind = Some kind; _ } ->
+                     let outcome =
+                       match status with
+                       | Worker_protocol.Completed_ok -> Orchestrator.Respond_ok
+                       | Completed_no_commits -> Respond_no_commits
+                       | Retryable | Cancelled | Failed | Attention
+                       | Merged_observed ->
+                           Respond_failed
+                     in
+                     Orchestrator.apply_respond_outcome orchestrator patch_id
+                       kind outcome
+                 | Session { phase = Start; _ }
+                 | Session { phase = Respond; kind = None; _ }
+                 | Reconcile ->
+                     Orchestrator.complete orchestrator patch_id
+               in
                let orchestrator = apply_pending_input orchestrator in
                ({ snapshot with Runtime.orchestrator }, ()))
          with

@@ -11,6 +11,10 @@ type connection = {
 }
 
 type event =
+  | Tick of (Coordinator_store.envelope -> event option)
+  | Intent_batch of Coordinator_state.event list
+  | Stop_resource of string
+  | Shutdown
   | Intent of Coordinator_state.event
   | Provision of {
       request : Resource_protocol.request;

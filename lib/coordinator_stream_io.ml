@@ -25,12 +25,14 @@ let ready t =
 let max_frame = 1024 * 1024
 let valid_timeout timeout = Float.is_finite timeout && timeout > 0.
 
-let waiting deadline reads writes =
+let rec waiting deadline reads writes =
   let remaining = deadline -. Unix.gettimeofday () in
   if remaining <= 0. then false
   else
-    let readable, writable, _ = Unix.select reads writes [] remaining in
-    readable <> [] || writable <> []
+    try
+      let readable, writable, _ = Unix.select reads writes [] remaining in
+      readable <> [] || writable <> []
+    with Unix.Unix_error (Unix.EINTR, _, _) -> waiting deadline reads writes
 
 let read t ~timeout =
   if not (valid_timeout timeout) then Error "invalid stream timeout"
@@ -90,4 +92,7 @@ let send t ~timeout frames =
       | frame :: rest -> (
           match write frame 0 with Ok () -> loop rest | Error _ as e -> e)
     in
-    try loop frames with _ -> Error "worker send uncertain (I/O failure)"
+    try loop frames with
+    | Unix.Unix_error (err, _, _) ->
+        Error ("worker send uncertain: " ^ Unix.error_message err)
+    | _ -> Error "worker send uncertain (I/O failure)"

@@ -286,6 +286,15 @@ let () =
   let wake = S.{ sleep with id = "wake"; kind = "wake" } in
   let t = apply t (S.Control wake) in
   assert (not (S.sleep_ready t));
+  let resumed = apply t (S.Resume_idle patch_b) in
+  assert (
+    List.exists (S.operations resumed) ~f:(fun (o : S.operation) ->
+        Patch_id.equal o.S.patch patch_b
+        && o.S.maintenance && o.S.unfinished && o.S.used = 0));
+  assert (S.reserved_count resumed = 0);
+  assert (has_rejection (snd (S.step resumed (S.Resume_idle patch_b))));
+  assert (has_rejection (snd (S.step before_sleep (S.Resume_idle patch_b))));
+  assert (Result.is_ok (S.decode (S.encode resumed)));
   let cancel = S.{ sleep with id = "cancel"; kind = "cancel" } in
   let cancelling =
     apply before_sleep (S.Control cancel) |> fun t ->

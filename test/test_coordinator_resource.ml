@@ -89,6 +89,20 @@ let fixture () =
         let state =
           match f.payload with
           | Some bytes -> (
+              let prefix = "onton-coordinator-3\n" in
+              let packed =
+                String.sub bytes (String.length prefix)
+                  (String.length bytes - String.length prefix)
+              in
+              let bytes =
+                match
+                  Coordinator_archive.decode
+                    ~max_bytes:(64 * 1024 * 1024)
+                    packed
+                with
+                | Ok s -> s
+                | Error e -> failwith e
+              in
               match Yojson.Safe.from_string bytes with
               | `Assoc fields -> (
                   match Coordinator_state.decode (str "state" fields) with

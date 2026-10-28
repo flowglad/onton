@@ -93,6 +93,48 @@ let property name gen f =
 let () =
   QCheck_base_runner.run_tests_main
     [
+      property
+        "actual Ready is retained across codec restart and duplicate delivery"
+        QCheck2.Gen.unit (fun () ->
+          let t = bound () in
+          let frame =
+            wire (P.Ready { identity; worker_id = "w"; state_version = 0L })
+          in
+          let observed, _ = ok (H.receive t frame) in
+          let restored = ok (H.decode (H.encode observed)) in
+          let twice, _ = ok (H.receive restored frame) in
+          (not (H.ready t))
+          && H.ready restored
+          && H.encode twice = H.encode restored);
+      property
+        "late cancellation cannot rewrite an already captured terminal result"
+        QCheck2.Gen.bool (fun cancel_first ->
+          let cancel t =
+            fst
+              (ok
+                 (H.command t
+                    "{\"version\":3,\"type\":\"cancel\",\"run_id\":\"r\",\"patch_id\":\"p\",\"operation_id\":\"op\",\"attempt_id\":\"attempt\",\"assignment_seq\":\"1\"}\n"))
+          in
+          let t = active () in
+          let t = if cancel_first then cancel t else t in
+          let t, _ =
+            ok (H.receive t (wire (checkpoint 1L "captured terminal")))
+          in
+          let t = if cancel_first then t else cancel t in
+          let t = ok (H.decode (H.encode t)) in
+          let result =
+            P.Result
+              {
+                identity;
+                operation;
+                state_version = 1L;
+                status = Completed_ok;
+                diagnostics = "";
+                renewal_id = None;
+              }
+          in
+          let t, _ = ok (H.receive t (wire result)) in
+          H.terminal t = Some result);
       property "stream decoders and inbound/command boundaries are total"
         QCheck2.Gen.string (fun bytes ->
           ignore (H.decode bytes);

@@ -87,6 +87,8 @@ type t = {
 
 type event =
   | Admit of operation
+  | Resume_idle of Patch_id.t
+  | Continue of string * string
   | Assign of assignment * int64
   | Result_committed of string * string
   | Worker_result of string * string * string * int64
@@ -483,6 +485,17 @@ let scheduling_view t (view : Scheduler_decision.input) =
     List.map view.agents ~f:(fun agent ->
         let patch = Patch_id.to_string agent.Patch_agent.patch_id in
         let agent =
+          match
+            List.find t.assignments ~f:(fun a ->
+                Patch_id.equal a.patch agent.patch_id)
+          with
+          | Some a
+            when a.cleanup && a.result_committed && (not a.reserved)
+                 && agent.busy ->
+              Patch_agent.complete agent
+          | _ -> agent
+        in
+        let agent =
           List.fold
             (List.rev (Coordinator_journal.entries t.journal))
             ~init:agent
@@ -506,6 +519,14 @@ let scheduling_view t (view : Scheduler_decision.input) =
                     | Ok _ | Error _ -> agent)
                 | Pending | Attention -> agent
               else agent)
+        in
+        let agent =
+          if
+            Coordinator_config.body_delivered
+              (Coordinator_journal.entries t.journal)
+              agent
+          then Patch_agent.set_pr_body_delivered agent true
+          else agent
         in
         List.fold (List.rev t.controls) ~init:agent ~f:(fun agent c ->
             if not (Option.equal String.equal c.patch_id (Some patch)) then
@@ -552,6 +573,34 @@ let scheduling_view t (view : Scheduler_decision.input) =
   in
   { view with agents }
 
+let policy_windows t view now =
+  let view = scheduling_view t view in
+  match t.lifecycle with
+  | Running ->
+      List.filter_map view.agents ~f:(fun a ->
+          if
+            Scheduler_decision.dependencies_admitted view a.Patch_agent.patch_id
+            && Scheduler_decision.automerge_candidate a ~main:view.main
+          then
+            Option.map (Scheduler_decision.evidence_id view a.patch_id)
+              ~f:(fun evidence ->
+                match
+                  List.find t.merge_windows ~f:(fun (patch, old, _) ->
+                      Patch_id.equal patch a.patch_id
+                      && String.equal old evidence)
+                with
+                | Some window -> window
+                | None ->
+                    ( a.patch_id,
+                      evidence,
+                      if Int64.(now > max_value - 120L) then Int64.max_value
+                      else Int64.(now + 120L) ))
+          else None)
+  | _ -> []
+
+let policy_tick_needed t view ~now =
+  not (Poly.equal t.merge_windows (policy_windows t view now))
+
 let rec step t event =
   let commit = commit ~emergency:(emergency_event event) in
   match event with
@@ -586,33 +635,7 @@ let rec step t event =
   | Policy_tick (view, now) ->
       if Int64.(now < 0L) then reject "invalid scheduler clock" t
       else
-        let view = scheduling_view t view in
-        let merge_windows =
-          match t.lifecycle with
-          | Running ->
-              List.filter_map view.agents ~f:(fun a ->
-                  if
-                    Scheduler_decision.dependencies_admitted view
-                      a.Patch_agent.patch_id
-                    && Scheduler_decision.automerge_candidate a ~main:view.main
-                  then
-                    Option.map (Scheduler_decision.evidence_id view a.patch_id)
-                      ~f:(fun evidence ->
-                        match
-                          List.find t.merge_windows ~f:(fun (patch, old, _) ->
-                              Patch_id.equal patch a.patch_id
-                              && String.equal old evidence)
-                        with
-                        | Some window -> window
-                        | None ->
-                            ( a.patch_id,
-                              evidence,
-                              if Int64.(now > max_value - 120L) then
-                                Int64.max_value
-                              else Int64.(now + 120L) ))
-                  else None)
-          | _ -> []
-        in
+        let merge_windows = policy_windows t view now in
         commit t { t with merge_windows } [ Accepted ]
   | Operation_attention id ->
       if List.exists t.operations ~f:(fun op -> String.equal op.id id) then
@@ -702,6 +725,79 @@ let rec step t event =
               else old)
         in
         commit t { t with operations = o :: prior } [ Accepted ]
+  | Resume_idle patch ->
+      let prior =
+        List.find t.assignments ~f:(fun a -> Patch_id.equal a.patch patch)
+      in
+      if
+        (not (Poly.equal t.lifecycle Running))
+        || List.mem t.terminal_patches patch ~equal:Patch_id.equal
+        || List.exists t.operations ~f:(fun op ->
+            Patch_id.equal op.patch patch && (op.unfinished || op.attention))
+        || not
+             (Option.value_map prior ~default:false ~f:(fun a ->
+                  a.retired && a.cleanup && a.result_committed
+                  && List.mem t.retired_resources a.resource ~equal:String.equal))
+      then reject "idle recovery requires a settled retired owner" t
+      else
+        let id = maintenance_id t patch in
+        let next =
+          match List.find t.operations ~f:(fun op -> String.equal op.id id) with
+          | Some _ ->
+              update_op t id ~f:(fun op -> { op with unfinished = true })
+          | None ->
+              {
+                t with
+                operations =
+                  {
+                    id;
+                    patch;
+                    used = 0;
+                    budget = 3;
+                    retry_after = 0L;
+                    attention = false;
+                    unfinished = true;
+                    maintenance = true;
+                  }
+                  :: t.operations;
+              }
+        in
+        commit t next [ Maintain patch ]
+  | Continue (prior, id) -> (
+      match List.find t.operations ~f:(fun o -> String.equal o.id prior) with
+      | Some op
+        when op.unfinished && (not op.maintenance) && (not op.attention)
+             && op.used < op.budget && valid_id id
+             && (not
+                   (List.exists t.operations ~f:(fun o -> String.equal o.id id)))
+             && List.exists t.assignments ~f:(fun a ->
+                 String.equal a.operation prior
+                 && a.cleanup
+                 && List.exists t.results ~f:(fun (assignment, status) ->
+                     String.equal assignment a.id
+                     && List.mem [ "retryable"; "failed" ] status
+                          ~equal:String.equal))
+             && (not (String.is_prefix id ~prefix:"maintenance:"))
+             && (match t.lifecycle with
+               | Running | Draining _ -> true
+               | Sleeping _ | Cancelling _ -> false)
+             && not
+                  (List.exists t.assignments ~f:(fun a ->
+                       String.equal a.operation prior && a.reserved)) ->
+          let candidate =
+            update_op t prior ~f:(fun o -> { o with unfinished = false })
+          in
+          commit t
+            {
+              candidate with
+              operations = { op with id } :: candidate.operations;
+            }
+            [ Accepted ]
+      | _ ->
+          reject
+            "continuation requires a settled retryable protocol result and \
+             retained allowance"
+            t)
   | Assign (a, now) ->
       let op =
         List.find t.operations ~f:(fun o -> String.equal o.id a.operation)
@@ -1335,7 +1431,7 @@ let execution_context t view (c : context_input) =
              (List.find t.operations ~f:(fun o ->
                   String.equal o.id c.message_id && Patch_id.equal o.patch id))
              ~default:false
-             ~f:(fun o -> o.unfinished && not o.maintenance)))
+             ~f:(fun o -> o.unfinished)))
     || (not
           (Option.value_map
              (List.find view.agents ~f:(fun a ->

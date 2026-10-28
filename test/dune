@@ -1429,4 +1429,29 @@
 (test
  (name test_distributed_coordinator)
  (modules test_distributed_coordinator)
+ (deps ../bin/coordinator.exe ../bin/worker.exe distributed_coordinator_fixture.py (package onton))
+ (action
+  (setenv ONTON_COORDINATOR_BINARY_DEFAULT %{exe:../bin/coordinator.exe}
+   (setenv ONTON_WORKER_BINARY_DEFAULT %{exe:../bin/worker.exe}
+    (setenv ONTON_SETSID_EXEC %{bin:onton-setsid-exec}
+     (run %{test})))))
  (libraries onton onton_core onton_test_support eio_main unix yojson))
+
+(test
+ (name test_coordinator_archive_properties)
+ (modules test_coordinator_archive_properties)
+ (libraries onton_core qcheck-core qcheck-core.runner))
+
+(test
+ (name test_coordinator_config_properties)
+ (modules test_coordinator_config_properties)
+ (libraries onton_core qcheck-core qcheck-core.runner yojson))
+
+(rule
+ (alias distributed-coordinator-smoke)
+ (deps ../bin/coordinator.exe ../bin/worker.exe distributed_coordinator_fixture.py (package onton))
+ (action
+  (setenv ONTON_COORDINATOR_BINARY_DEFAULT %{exe:../bin/coordinator.exe}
+   (setenv ONTON_WORKER_BINARY_DEFAULT %{exe:../bin/worker.exe}
+    (setenv ONTON_SETSID_EXEC %{bin:onton-setsid-exec}
+     (run %{exe:test_distributed_coordinator.exe}))))))

@@ -157,6 +157,11 @@ Executable coverage includes:
   provisions and attaches the real worker and verifies checkpointed automerge
   delivery.
 
-Patch 8 still owns the installed entrypoint, exact extracted-binary composed
-acceptance/provider timing matrix, release artifacts and deployed cloud proof.
-`test_distributed_coordinator` remains pending and is **not** acceptance evidence.
+The opt-in `onton-coordinator` entrypoint now composes the mainline path, and
+`test_distributed_coordinator` runs real coordinator/worker processes rather than
+a pending stub. Release packaging includes the coordinator and qualifies the
+extracted coordinator, worker and session supervisor through
+`@distributed-coordinator-smoke`. See [operation and qualification](../distributed-coordinator-host.md).
+Feature-root execution is explicitly rejected by this entrypoint. The full
+provider-timing/root-loss matrix, FC-15/FC-16 closure and deployed-cloud M3 proof
+remain unqualified; the local process fixture is not permission to advance M4.

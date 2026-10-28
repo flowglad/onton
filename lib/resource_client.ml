@@ -18,9 +18,10 @@ let create ~helper ~transport =
 
 let close fd = try Unix.close fd with _ -> ()
 
-let wait pid =
-  try ignore (Unix.waitpid [] pid)
-  with Unix.Unix_error (Unix.ECHILD, _, _) -> ()
+let rec wait pid =
+  try ignore (Unix.waitpid [] pid) with
+  | Unix.Unix_error (Unix.ECHILD, _, _) -> ()
+  | Unix.Unix_error (Unix.EINTR, _, _) -> wait pid
 
 let supervise ~argv ~input ~limit =
   let supervisor = Process_tree.supervisor_path () in
@@ -71,10 +72,12 @@ let supervise ~argv ~input ~limit =
             failwith "resource helper timeout"
           else
             let rd, wr, _ =
-              Unix.select !reads
-                (if !written < String.length input then [ in_w ] else [])
-                []
-                (Float.min 0.5 (deadline -. Unix.gettimeofday ()))
+              try
+                Unix.select !reads
+                  (if !written < String.length input then [ in_w ] else [])
+                  []
+                  (Float.min 0.5 (deadline -. Unix.gettimeofday ()))
+              with Unix.Unix_error (Unix.EINTR, _, _) -> ([], [], [])
             in
             if List.mem wr in_w ~equal:Poly.equal then (
               (try
@@ -104,7 +107,10 @@ let supervise ~argv ~input ~limit =
         try
           loop ();
           let rec await () =
-            let done_pid, status = Unix.waitpid [ Unix.WNOHANG ] pid in
+            let done_pid, status =
+              try Unix.waitpid [ Unix.WNOHANG ] pid
+              with Unix.Unix_error (Unix.EINTR, _, _) -> (0, Unix.WEXITED 0)
+            in
             if done_pid <> 0 then status
             else if Float.(Unix.gettimeofday () >= deadline) then
               failwith "resource helper exit timeout"

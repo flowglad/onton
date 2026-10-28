@@ -166,6 +166,41 @@ let fails_recovery state interrupted =
 
 let[@warning "-4"] tests =
   [
+    QCheck2.Test.make ~count:100
+      ~name:
+        "BR settled provisioning does not invent a possible first publication"
+      Gen.bool (fun restart ->
+        try
+          let state =
+            fst
+              (B.step B.empty
+                 (B.Request
+                    B.
+                      {
+                        base = "main";
+                        policy = Rewrite;
+                        purpose = Provision_checkout "fresh";
+                      }))
+          in
+          let state = fst (reply state B.Checkout_ready) in
+          let state = if restart then restore state else state in
+          let state =
+            fst
+              (B.step state
+                 (B.Workspace_lost { request = "lost-before-publish" }))
+          in
+          let state =
+            fst
+              (reply state
+                 (B.Workspace_observed
+                    {
+                      push_destination = observation.destination;
+                      patch_revision = None;
+                      base_revision = Some target;
+                    }))
+          in
+          B.workspace_outcome state = Some (B.Workspace_base target)
+        with _ -> false);
     QCheck2.Test.make ~count:300
       ~name:"BR verified destination survives checkout inspection and restart"
       Gen.(list bool)

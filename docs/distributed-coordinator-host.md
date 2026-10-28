@@ -1,10 +1,11 @@
-# Distributed coordinator: host boundary for Patch 7
+# Distributed coordinator: executable and durable host boundary
 
 The original repair supplied the missing Patch 6 worker-stream prerequisite.
 The follow-up closes resource execution, durable forge-result, worker-input and
 serialized control/status seams; see [the composition contract](design/distributed-coordinator.md).
-Patch 8's pending composed/cloud qualification is not implied. The frozen
-gameplan is unchanged.
+The opt-in mainline executable and local multi-process acceptance now consume
+these boundaries. Full FC-15/FC-16 and deployed-cloud qualification are not
+implied. The frozen gameplan is unchanged.
 
 ## Owned guarantees
 
@@ -95,6 +96,74 @@ Two worker-side boundary fixes accompany the host:
   can bind an interrupted Attention checkpoint before Result arrives. A recovery
   checkpoint without a terminal status clears that provisional Attention field.
 
+## Opt-in executable
+
+The default `onton` local path is unchanged. Install `onton-coordinator`,
+`onton-worker` and `onton-setsid-exec` together. The coordinator needs a read
+checkout with directly observable origin refs, a public resource-v1 helper and
+GitHub credentials (or an explicit command forge adapter). The helper supplies
+worker repository/authentication/backend environments; this executable does not
+install or qualify a cloud image.
+
+Use the exact current, nonsecret configuration schema:
+
+```json
+{
+  "version": 3,
+  "capacity": 2,
+  "repo_root": "/srv/onton/read-checkout",
+  "main_branch": "main",
+  "worker_executable": "onton-worker",
+  "backend": "codex",
+  "execution_mode": "mainline"
+}
+```
+
+For a confirmed new run:
+
+```sh
+onton-coordinator --gameplan gameplan.yaml --config coordinator.json \
+  --run-id "$RUN_ID" --config-id "$CONFIG_DIGEST" \
+  --coordinator-id "$ACTUAL_TASK_ID" --resource-helper /usr/local/bin/resource-helper \
+  --control-socket /srv/onton/private/control.sock --fresh
+```
+
+The supervisor supplies real run/config/task identities, not fixture identities.
+For restart use the same exact plan/config bytes and replace `--fresh` with
+`--takeover-epoch N --takeover-revision N`, using current public helper metadata.
+Unknown ownership, incompatible bytes, uncertain bootstrap and unsupported
+execution modes fail closed. Feature-root execution is explicitly unsupported by
+this entrypoint. The control socket parent must be owner-only; crash residue is
+not blindly unlinked.
+
+The runtime restores owner projections, uses shared scheduler/reconciler decisions,
+persists selected work before provisioning and retains completed idle workers.
+Intentional wake uses bounded maintenance operations after positively retired,
+acknowledged owners; it does not replay implementation. Queued human work is
+executable and remains ahead of rebase work. Merge idle windows are journaled
+through shared policy, including loss of eligibility. Forge mutations still
+recompute policy at the owning boundary; source selection is not permission.
+
+The server backpressures tick/readability producers until the preceding event
+has completed; duplicate readiness cannot fill the control queue. Regular forge
+polling is bounded to one poll per patch per 30 seconds. Worker checkpoint waits
+are 60 seconds for this composition. Cancellation sends one committed request to
+active turns, retires unstarted reservations through actual helper Stop evidence,
+and exits only after confirmed helper Close. A late cancellation request cannot
+rewrite a terminal result captured before it; Result must still match the exact
+committed terminal capsule. No ACK or reservation release is inferred from Cancel.
+
+The single current opaque envelope is `onton-coordinator-3\n` followed by the
+lossless bounded-window archive codec. It retains every checkpoint, receipt,
+journal entry and protocol event; compression is not history eviction. The
+physical helper payload remains bounded to 8 MiB; decoded envelopes to 64 MiB;
+each decoded stream and logical coordinator state to 8 MiB. Prospective growth
+preserves emergency headroom and is rejected before installing an unrecoverable
+pending write. Old opaque envelope formats are not imported.
+
+`ONTON_COORDINATOR_TRACE_POLICY=1` emits changed per-patch readiness diagnostics,
+not credential or authority bytes. Headless status remains bounded and attributed.
+
 ## Verification
 
 - `test_worker_stream_properties`: totality, version boundaries, generated
@@ -114,5 +183,27 @@ Two worker-side boundary fixes accompany the host:
   bounded uncertain sends under backpressure.
 - Resource lifecycle, durable forge/effect, cumulative input and actual socket
   coverage is listed in the composition contract above.
+- `test_coordinator_archive_properties`: byte roundtrip, deterministic encoding,
+  strict decode bounds, malformed/truncated histories, trailing bytes, overlapping
+  copies and 64 KiB window boundaries. Links `onton_core` only.
+- `test_coordinator_config_properties`: strict schema/decoder totality, durable
+  work roundtrips, fail-closed body receipts and shared reconciliation idempotence.
+  Links `onton_core` only.
+- `test_distributed_coordinator` / `@distributed-coordinator-smoke`: actual
+  coordinator and worker processes, separate repositories/HOMEs, a fake backend
+  making real commits, and public resource/forge adapters. Covers five independent
+  patches at capacity two, lost successful bootstrap-write response, actual
+  coordinator kill/takeover, dead-predecessor workspace removal, replacement
+  without reconnect, guidance duplicate/conflict, unique owned PRs, origin
+  contribution content, physical backend overlap, idle retention, sleep/wake
+  maintenance and cancellation/Close. No pending-success path remains.
+- Release packaging includes all three distributed executables and runs that
+  composition against extracted paths. To reproduce, set
+  `ONTON_COORDINATOR_BINARY`, `ONTON_WORKER_BINARY`, and
+  `ONTON_SETSID_EXEC_BINARY` to the extracted executables and build
+  `@distributed-coordinator-smoke --force`.
+- This is local public-contract acceptance, not the full provider timing/root-loss
+  matrix, independent executable proof of every A09–A14/A22 case, or deployed
+  cloud M3 qualification. Do not infer FC-15/FC-16 closure or advance M4 from it.
 - Existing coordinator storage/state-machine, worker v3 and public-worker suites
   remain regression coverage. Passing pending stubs is not acceptance evidence.

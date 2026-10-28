@@ -71,11 +71,13 @@ let with_state e state = { e with state }
 let committed e (receipt : receipt) =
   { e with version = receipt.state_version; write_id = receipt.write_id }
 
-let encode e =
+let archive_prefix = "onton-coordinator-3\n"
+
+let encode_plain e =
   Yojson.Safe.to_string
     (`Assoc
        [
-         ("schema", `String "onton-coordinator-2");
+         ("schema", `String "onton-coordinator-3");
          ("version", `String (Int64.to_string e.version));
          ("write_id", `String e.write_id);
          ("state", `String (Coordinator_state.encode e.state));
@@ -86,11 +88,23 @@ let encode e =
          );
        ])
 
+let encode e = archive_prefix ^ Coordinator_archive.encode (encode_plain e)
+
 let decode bytes =
   if String.length bytes > 8 * 1024 * 1024 then
     Error (Invalid "oversized state")
   else
     try
+      if not (String.is_prefix bytes ~prefix:archive_prefix) then
+        failwith "archive schema";
+      let packed = String.drop_prefix bytes (String.length archive_prefix) in
+      let bytes =
+        match
+          Coordinator_archive.decode ~max_bytes:(64 * 1024 * 1024) packed
+        with
+        | Ok bytes -> bytes
+        | Error _ -> failwith "invalid archive"
+      in
       let fields =
         match Yojson.Safe.from_string bytes with `Assoc xs -> xs | _ -> []
       in
@@ -110,7 +124,7 @@ let decode bytes =
       then failwith "duplicate stream";
       match List.Assoc.remove fields "streams" ~equal:String.equal with
       | [
-       ("schema", `String "onton-coordinator-2");
+       ("schema", `String "onton-coordinator-3");
        ("version", `String version);
        ("write_id", `String write_id);
        ("state", `String raw);
@@ -260,9 +274,18 @@ let commit ?(emergency = false) t ~expected_version ~write_id e =
   then Error (Invalid "invalid write identity/version")
   else
     let next = { e with version = Int64.succ expected_version; write_id } in
-    let payload = encode next in
+    let plain = encode_plain next in
+    let payload =
+      if String.length plain > 64 * 1024 * 1024 then ""
+      else archive_prefix ^ Coordinator_archive.encode plain
+    in
     if
-      String.length payload > (8 * 1024 * 1024) - if emergency then 0 else 65536
+      (String.length plain > (64 * 1024 * 1024) - if emergency then 0 else 65536)
+      || (String.length payload
+         > (8 * 1024 * 1024) - if emergency then 0 else 65536)
+      || List.exists next.streams ~f:(fun (_, stream) ->
+          String.length (Worker_stream.encode stream)
+          > (8 * 1024 * 1024) - if emergency then 0 else 65536)
     then Error (Invalid "emergency state reserve exhausted")
     else
       let prospective =

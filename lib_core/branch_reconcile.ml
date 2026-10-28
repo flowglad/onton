@@ -2076,7 +2076,8 @@ let[@warning "-4"] rec step_workspace t event =
         || op.agent_dispatched
         ||
         match op.phase with
-        | Publishing | Confirming | Settled -> true
+        | Publishing | Confirming -> true
+        | Settled -> not (is_provisioning op.intent.purpose)
         | Preparing | Integrating | Repairing _ | Waiting _ | Recovering
         | Intervention _ ->
             false

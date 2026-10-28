@@ -94,6 +94,12 @@ let () =
         protocol_version ) =
     parse_args ()
   in
+  let repo_root =
+    try Unix.realpath repo_root
+    with _ ->
+      prerr_endline "Worker repository root is unavailable";
+      exit 2
+  in
   let gameplan =
     match Gameplan_parser.parse_file gameplan_path with
     | Ok parsed -> parsed.Gameplan_parser.gameplan

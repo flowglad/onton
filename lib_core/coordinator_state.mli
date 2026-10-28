@@ -59,6 +59,8 @@ type lifecycle =
 
 type event =
   | Admit of operation
+  | Resume_idle of Patch_id.t
+  | Continue of string * string
   | Assign of assignment * int64
   | Result_committed of string * string
   | Worker_result of string * string * string * int64
@@ -122,6 +124,7 @@ val capacity : t -> int
 val encode : t -> string
 val decode : string -> (t, string) result
 val step : t -> event -> t * outcome list
+val policy_tick_needed : t -> Scheduler_decision.input -> now:int64 -> bool
 
 val emergency_event : event -> bool
 (** Only settlement/retirement/lifecycle work may consume emergency headroom. *)

@@ -26,6 +26,7 @@ val receipt : t -> string option
 val identity : t -> Worker_protocol.identity option
 val binding : t -> Worker_protocol_v3.host_message option
 val operation : t -> Worker_protocol.operation option
+val ready : t -> bool
 val input : t -> Worker_protocol_v3.input option
 val delivered_input : t -> Worker_protocol_v3.input -> bool
 val terminal : t -> Worker_protocol.worker_message option

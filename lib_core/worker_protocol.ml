@@ -1052,7 +1052,8 @@ let rec step t event =
           when (not t.restored_unfinished)
                && a.pending = None && a.acknowledged && a.cleanup
                && a.terminal = None
-               && ((not a.cancelled) || status = Cancelled)
+               (* Cancellation is a request, not proof that it beat terminal
+                  capture. A completed turn may already be awaiting its ACK. *)
                && valid_text diagnostics
                &&
                match (status, renewal_id) with

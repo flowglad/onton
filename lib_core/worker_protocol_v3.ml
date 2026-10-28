@@ -718,9 +718,7 @@ let recovery_pending t = P.recovery_pending t.protocol
 let current_context t (bound : execution_context) e =
   let context = e.context in
   let version =
-    match t.current_input with
-    | Some input -> input.version
-    | None -> bound.input_version
+    match t.current_input with Some input -> input.version | None -> 0L
   in
   bound.admitted && context.admitted && context.run = bound.run
   && context.patch = bound.patch
@@ -867,7 +865,7 @@ let step t event =
               | None ->
                   let previous =
                     match t.current_input with
-                    | None -> c.input_version
+                    | None -> 0L
                     | Some old -> old.version
                   in
                   let covered =
@@ -913,7 +911,8 @@ let step t event =
       | Some bound
         when input.input_id <> ""
              && String.length input.guidance <= 262144
-             && input.version > bound.input_version
+             && input.version > 0L
+             && input.version >= bound.input_version
              && t.pending_input = None && t.current_input = None ->
           ({ t with current_input = Some input }, [])
       | Some _ | None -> reject "restored input scope or version")

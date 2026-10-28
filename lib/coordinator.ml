@@ -15,6 +15,10 @@ type connection = {
 }
 
 type event =
+  | Tick of (Coordinator_store.envelope -> event option)
+  | Intent_batch of Coordinator_state.event list
+  | Stop_resource of string
+  | Shutdown
   | Intent of Coordinator_state.event
   | Provision of {
       request : Resource_protocol.request;
@@ -168,6 +172,7 @@ let run ?forge ?git ?(write_status = fun _ -> ()) env =
   | Ok host ->
       restore_inventory env host;
       let attachments = Hashtbl.create (module String) in
+      let cancellations = Hash_set.create (module String) in
       let close (attachment, _) = Resource_client.disconnect attachment in
       let find_attachment assignment =
         match Hashtbl.find attachments assignment with
@@ -223,6 +228,10 @@ let run ?forge ?git ?(write_status = fun _ -> ()) env =
       in
       let frames assignment result =
         match result with
+        | Error (Coordinator_host.Invalid reason) ->
+            env.blocked
+              ("worker protocol/commit barrier not confirmed: " ^ reason);
+            false
         | Error _ ->
             env.blocked "worker protocol/commit barrier not confirmed";
             false
@@ -355,14 +364,20 @@ let run ?forge ?git ?(write_status = fun _ -> ()) env =
             (match Coordinator_state.lifecycle state with
             | Cancelling _ ->
                 List.iter (Coordinator_state.assignments state) ~f:(fun a ->
-                    if a.reserved && not a.retired then
+                    if
+                      a.reserved && (not a.retired)
+                      && not (Hash_set.mem cancellations a.id)
+                    then
                       match Coordinator_host.stream host a.id with
                       | Some stream -> (
                           match
                             ( Worker_stream.operation stream,
                               Worker_stream.identity stream )
                           with
-                          | Some operation, Some identity ->
+                          | Some operation, Some identity
+                            when String.equal operation.operation_id a.operation
+                                 && String.equal operation.attempt_id a.request
+                            ->
                               let frame =
                                 Yojson.Safe.to_string
                                   (`Assoc
@@ -382,10 +397,11 @@ let run ?forge ?git ?(write_status = fun _ -> ()) env =
                                      ])
                                 ^ "\n"
                               in
-                              ignore
-                                (frames a.id
-                                   (Coordinator_host.command host
-                                      ~assignment:a.id ~frame))
+                              if
+                                frames a.id
+                                  (Coordinator_host.command host
+                                     ~assignment:a.id ~frame)
+                              then Hash_set.add cancellations a.id
                           | _ -> ())
                       | None -> ())
             | _ -> ());
@@ -402,7 +418,22 @@ let run ?forge ?git ?(write_status = fun _ -> ()) env =
                           (Coordinator_state.assignments
                              (Coordinator_host.state host))
                           ~f:(fun a ->
-                            String.equal a.resource resource_id && a.reserved))
+                            String.equal a.resource resource_id
+                            && a.reserved
+                            &&
+                            match Coordinator_state.lifecycle state with
+                            | Cancelling _ ->
+                                Option.value_map
+                                  (Coordinator_host.stream host a.id)
+                                  ~default:false ~f:(fun stream ->
+                                    Option.value_map
+                                      (Worker_stream.operation stream)
+                                      ~default:false ~f:(fun operation ->
+                                        String.equal operation.operation_id
+                                          a.operation
+                                        && String.equal operation.attempt_id
+                                             a.request))
+                            | _ -> true))
                 then stop env host resource_id);
             (match
                Coordinator_state.lifecycle (Coordinator_host.state host)
@@ -421,8 +452,17 @@ let run ?forge ?git ?(write_status = fun _ -> ()) env =
         match env.next_event () with
         | None -> ()
         | Some event ->
-            let continue =
-              match event with
+            let rec handle = function
+              | Tick source -> (
+                  match source (Coordinator_host.envelope host) with
+                  | None -> true
+                  | Some event -> handle event)
+              | Intent_batch events ->
+                  report env (Coordinator_host.transaction host events)
+              | Stop_resource resource ->
+                  stop env host resource;
+                  true
+              | Shutdown -> false
               | Intent event -> report env (submit host event)
               | Provision p -> (
                   match
@@ -635,12 +675,18 @@ let run ?forge ?git ?(write_status = fun _ -> ()) env =
                                ~gameplan:env.gameplan
                                ~main_branch:env.main_branch ~now:(env.now ()))))
             in
+            let continue = handle event in
             if continue then (
               deliver_inputs ();
               let continue = settle_lifecycle () in
               Coordinator_headless.emit ~write:write_status
                 (Coordinator_host.state host);
-              if continue then loop ())
+              if
+                continue
+                && not
+                     (Coordinator_state.cancellation_complete
+                        (Coordinator_host.state host))
+              then loop ())
       in
       Exn.protect
         ~finally:(fun () -> Hashtbl.iter attachments ~f:close)
@@ -655,27 +701,44 @@ let serve ?forge ?git ?write_status ~net ~clock ~control_path env =
   let submit bytes =
     let promise, resolver = Eio.Promise.create () in
     Eio.Stream.add queue
-      (Some
-         (Control_line (bytes, fun status -> Eio.Promise.resolve resolver status)));
+      ( Some
+          (Control_line
+             ( bytes,
+               fun status ->
+                 Eio.Promise.resolve resolver status;
+                 Eio.Fiber.yield () )),
+        None );
+    Eio.Promise.await promise
+  in
+  let push event =
+    let promise, resolver = Eio.Promise.create () in
+    Eio.Stream.add queue (event, Some resolver);
     Eio.Promise.await promise
   in
   let rec events () =
     let event = env.next_event () in
-    Eio.Stream.add queue event;
+    push event;
     if Option.is_some event then events ()
   in
   let rec readable () =
     Eio.Time.sleep clock 0.02;
-    Hashtbl.iteri readers ~f:(fun ~key:resource ~data:ready ->
-        if ready () then Eio.Stream.add queue (Some (Read_resource resource)));
+    List.iter (Hashtbl.to_alist readers) ~f:(fun (resource, ready) ->
+        if ready () then push (Some (Read_resource resource)));
     readable ()
   in
+  let pending = ref None in
   Eio.Fiber.first
     (fun () ->
       run ?forge ?git ?write_status
         {
           env with
-          next_event = (fun () -> Eio.Stream.take queue);
+          next_event =
+            (fun () ->
+              Option.iter !pending ~f:(fun resolver ->
+                  Eio.Promise.resolve resolver ());
+              let event, resolver = Eio.Stream.take queue in
+              pending := resolver;
+              event);
           attached =
             (fun ~resource_id ~readable ->
               Hashtbl.set readers ~key:resource_id ~data:readable;

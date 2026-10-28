@@ -44,6 +44,15 @@ let receipt t =
 
 let identity t = t.identity
 let operation t = t.operation
+
+let ready t =
+  List.exists
+    (function
+      | Receive bytes -> (
+          match V.decode_worker bytes with Ok (P.Ready _) -> true | _ -> false)
+      | _ -> false)
+    t.history
+
 let input t = t.input
 let terminal t = t.terminal
 let acknowledged t = t.acknowledged
@@ -90,7 +99,16 @@ let valid outputs =
 let transition protocol event =
   let next, outputs = V.step protocol event in
   if valid outputs then Ok (next, outputs)
-  else Error "invalid protocol transition"
+  else
+    Error
+      (Option.value
+         (List.find_map
+            (function
+              | V.Reject why -> Some why
+              | V.Send (P.Protocol_error e) -> Some e.reason
+              | _ -> None)
+            outputs)
+         ~default:"invalid protocol transition")
 
 let exact message outputs =
   List.exists
@@ -322,7 +340,12 @@ let receive t bytes =
             else Error "result not bound to current protocol version")
     | _ -> Error "unexpected or stale worker frame"
   in
-  Ok ((if next == t then t else remember next (Receive bytes)), frames)
+  let first_ready =
+    match message with P.Ready _ -> not (ready t) | _ -> false
+  in
+  Ok
+    ( (if next == t && not first_ready then t else remember next (Receive bytes)),
+      frames )
 
 let acknowledge_result t =
   match t.terminal with
