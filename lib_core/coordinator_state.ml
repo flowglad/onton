@@ -156,6 +156,7 @@ let operations t = t.operations
 let assignments t = t.assignments
 let plan_bytes t = t.plan_bytes
 let config_bytes t = t.config_bytes
+let capacity t = t.capacity
 let resources t = t.resources
 let resource_owners t = t.resource_owners
 let terminal_patches t = t.terminal_patches

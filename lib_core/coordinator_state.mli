@@ -115,6 +115,7 @@ val create :
 
 val plan_bytes : t -> string
 val config_bytes : t -> string
+val capacity : t -> int
 
 (* Versioned exact run-state payload. Restore validates reservations, uniqueness,
     inventory, operation bindings and emergency headroom; no history is evicted. *)

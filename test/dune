@@ -1422,6 +1422,11 @@
  (libraries onton_core qcheck-core qcheck-core.runner))
 
 (test
+ (name test_coordinator_bootstrap)
+ (modules test_coordinator_bootstrap)
+ (libraries onton onton_core onton_test_support eio_main unix yojson))
+
+(test
  (name test_distributed_coordinator)
  (modules test_distributed_coordinator)
  (libraries onton onton_core onton_test_support eio_main unix yojson))
