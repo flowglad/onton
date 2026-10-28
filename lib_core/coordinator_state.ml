@@ -162,8 +162,13 @@ let reserved_count t = List.count t.assignments ~f:(fun a -> a.reserved)
 
 let all_retired t =
   List.for_all t.assignments ~f:(fun a -> a.retired || a.cleanup)
-  && List.for_all t.resources ~f:(fun (id, _) ->
-      List.mem t.retired_resources id ~equal:String.equal)
+  && List.for_all t.resources ~f:(fun (id, bytes) ->
+      (* A retained stop request is not itself a container. Its matching
+         response retires the launch/replace identity, not its request ID. *)
+      match Resource_protocol.make_request bytes with
+      | Ok request when Poly.equal request.operation Resource_protocol.Stop ->
+          true
+      | Ok _ | Error _ -> List.mem t.retired_resources id ~equal:String.equal)
 
 let settled_assignments t =
   List.for_all t.assignments ~f:(fun a ->
@@ -222,7 +227,8 @@ let valid_id s =
 let control_target_ok (c : control) =
   match (c.kind, c.patch_id) with
   | ("sleep" | "wake" | "cancel"), None -> true
-  | ("guidance" | "automerge" | "bump" | "renewal"), Some id -> valid_id id
+  | ("guidance" | "automerge" | "bump" | "renewal" | "forge_create"), Some id ->
+      valid_id id
   | _, _ -> false
 
 let decode_control bytes =
@@ -859,6 +865,7 @@ let rec step t event =
                    "sleep";
                    "wake";
                    "cancel";
+                   "forge_create";
                  ]
                  c.kind ~equal:String.equal))
         || (not (String.equal c.run_id t.run_id))
@@ -868,7 +875,7 @@ let rec step t event =
         match List.find t.controls ~f:(fun old -> String.equal old.id c.id) with
         | Some old when Poly.equal old c -> (t, [ Already_applied ])
         | Some _ -> reject "changed control identity" t
-        | None -> (
+        | None ->
             let lifecycle =
               match (c.kind, t.lifecycle) with
               | "cancel", _ -> Some (Cancelling c.id)
@@ -878,12 +885,73 @@ let rec step t event =
               | ("sleep" | "wake"), _ -> None
               | _, old -> Some old
             in
-            match lifecycle with
-            | None -> reject "control not applicable" t
-            | Some lifecycle ->
-                commit t
-                  { t with controls = c :: t.controls; lifecycle }
-                  [ Accepted ]))
+            let target = Option.value c.patch_id ~default:"" in
+            let known_patch =
+              List.exists t.operations ~f:(fun o ->
+                  String.equal (Patch_id.to_string o.patch) target)
+              || List.exists t.resource_owners ~f:(fun (_, p) ->
+                  String.equal (Patch_id.to_string p) target)
+            in
+            let latest_input =
+              List.fold t.inputs ~init:0L ~f:(fun n (_, p, v, _, _) ->
+                  if String.equal p target && Int64.(v > n) then v else n)
+            in
+            let valid_payload =
+              match c.kind with
+              | "guidance" ->
+                  (not (String.is_empty (String.strip c.payload)))
+                  && not (Int64.equal latest_input Int64.max_value)
+              | "automerge" ->
+                  String.equal c.payload "true"
+                  || String.equal c.payload "false"
+              | "renewal" ->
+                  List.exists t.operations ~f:(fun o ->
+                      String.equal (Patch_id.to_string o.patch) target
+                      && o.attention
+                      && String.equal o.id c.payload)
+              | "forge_create" ->
+                  String.length c.payload > 0
+                  && String.length c.payload <= 131072
+              | "cancel" ->
+                  String.is_empty c.payload || String.equal c.payload "cancel"
+              | "bump" | "sleep" | "wake" -> String.is_empty c.payload
+              | _ -> false
+            in
+            if
+              Option.is_none lifecycle || (not valid_payload)
+              || (Option.is_some c.patch_id && not known_patch)
+              || String.equal c.kind "guidance"
+                 && List.exists t.inputs ~f:(fun (id, _, _, _, _) ->
+                     String.equal id c.id)
+            then reject "control not applicable" t
+            else
+              let lifecycle = Option.value lifecycle ~default:t.lifecycle in
+              let inputs, input_floors =
+                if String.equal c.kind "guidance" then
+                  let floor =
+                    List.find t.assignments ~f:(fun (a : assignment) ->
+                        String.equal (Patch_id.to_string a.patch) target
+                        && a.reserved)
+                    |> Option.bind ~f:(fun (a : assignment) ->
+                        List.find t.capsules ~f:(fun cap ->
+                            String.equal cap.assignment a.id)
+                        |> Option.map ~f:(fun cap -> (c.id, a.id, cap.version)))
+                  in
+                  ( (c.id, target, Int64.succ latest_input, c.payload, false)
+                    :: t.inputs,
+                    Option.value_map floor ~default:t.input_floors ~f:(fun f ->
+                        f :: t.input_floors) )
+                else (t.inputs, t.input_floors)
+              in
+              commit t
+                {
+                  t with
+                  controls = c :: t.controls;
+                  lifecycle;
+                  inputs;
+                  input_floors;
+                }
+                [ Accepted ])
   | Input (id, patch, version, payload) -> (
       if (not (valid_id id && valid_id patch)) || Int64.(version <= 0L) then
         reject "invalid input" t

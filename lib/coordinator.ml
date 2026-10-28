@@ -229,6 +229,39 @@ let run env =
             env.blocked "attachment not bound to current live assignment";
             false
       in
+      let settle_lifecycle () =
+        let state = Coordinator_host.state host in
+        match Coordinator_state.lifecycle state with
+        | Coordinator_state.Running -> true
+        | Draining generation | Sleeping generation | Cancelling generation ->
+            let resources = Coordinator_state.resource_owners state in
+            List.iter resources ~f:(fun (resource_id, _) ->
+                if
+                  (not
+                     (List.mem
+                        (Coordinator_state.retired_resources
+                           (Coordinator_host.state host))
+                        resource_id ~equal:String.equal))
+                  && not
+                       (List.exists
+                          (Coordinator_state.assignments
+                             (Coordinator_host.state host))
+                          ~f:(fun a ->
+                            String.equal a.resource resource_id && a.reserved))
+                then stop env host resource_id);
+            (match
+               Coordinator_state.lifecycle (Coordinator_host.state host)
+             with
+            | Draining current when String.equal current generation -> (
+                let next =
+                  submit host (Coordinator_state.Sleep_ready generation)
+                in
+                match next with
+                | Ok (Coordinator_host.Rejected _) -> ()
+                | _ -> ignore (report env next))
+            | _ -> ());
+            true
+      in
       let rec loop () =
         match env.next_event () with
         | None -> ()
@@ -264,6 +297,8 @@ let run env =
                                ~gameplan:env.gameplan
                                ~main_branch:env.main_branch ~now:(env.now ()))))
             in
-            if continue then loop ()
+            if continue && settle_lifecycle () then loop ()
       in
-      Exn.protect ~finally:(fun () -> Hashtbl.iter attachments ~f:close) ~f:loop
+      Exn.protect
+        ~finally:(fun () -> Hashtbl.iter attachments ~f:close)
+        ~f:(fun () -> if settle_lifecycle () then loop ())

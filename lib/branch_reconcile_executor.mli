@@ -3,6 +3,15 @@
 
 type io = { git : string list -> int * string * string }
 
+val remote_head_at :
+  io ->
+  destination:string ->
+  branch:string ->
+  (Branch_reconcile.Commit.t option, string) result
+(** Read-only probe at an explicit captured destination; missing ref and probe
+    failure remain distinct. The caller must bind the destination to the current
+    publication scope. *)
+
 val remote_head :
   ?owner:Branch_reconcile.t ->
   io ->
