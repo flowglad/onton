@@ -54,6 +54,10 @@ write-gameplan skill as a mode: engineer-answered architecture decisions,
 schema-validated writes, pant-checked specs, and a finalize gate. See
 [`pi-gameplan/README.md`](pi-gameplan/README.md).
 
+For interactive workstream planning, `pi-workstream/` runs the write-workstream
+skill with an interview-driven mode, recorded user decisions, and a final review
+dialog. See [`pi-workstream/README.md`](pi-workstream/README.md).
+
 ## Onton: the orchestrator
 
 Onton parses a structured gameplan, builds a dependency graph, and spawns
