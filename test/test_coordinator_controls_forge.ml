@@ -292,6 +292,7 @@ let test_scope () =
     "failed probe misread as missing ref"
 
 let creates = ref 0
+let provider_reads = ref 0
 
 module Fake_forge : Forge.S with type error = string = struct
   type error = string
@@ -318,7 +319,11 @@ module Fake_forge : Forge.S with type error = string = struct
 
   let change_url _ = None
   let branch_state ?known_state:_ _ = Error "unused"
-  let pr_state _ = Error "unavailable"
+
+  let pr_state _ =
+    incr provider_reads;
+    Error "unavailable"
+
   let merge_queue_removal_checks ~pr_number:_ = Error "unused"
   let check_failure_details ~check:_ = Error "unused"
   let rerun_failed_jobs_for_check ~check:_ = Error "unused"
@@ -394,6 +399,28 @@ let test_ambiguous_create () =
   in
   creates := 0;
   let host = restore () in
+  provider_reads := 0;
+  check
+    (match
+       Coordinator_forge.observe_committed
+         (module Fake_forge)
+         ~host ~io ~patch ~scope
+     with
+    | Coordinator_forge.Unavailable _ -> true
+    | _ -> false)
+    "provider error invented proof";
+  check (!provider_reads = 1) "committed ticket not read";
+  check
+    (match
+       Coordinator_forge.observe_committed
+         (module Fake_forge)
+         ~host ~io ~patch
+         ~scope:{ scope with head_revision = "changed" }
+     with
+    | Coordinator_forge.Unconfirmed _ -> true
+    | _ -> false)
+    "changed ticket identity accepted";
+  check (!provider_reads = 1) "changed ticket read provider";
   check
     (match call host scope with
     | Coordinator_forge.Pending _ -> true

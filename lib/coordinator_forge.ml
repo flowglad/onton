@@ -43,6 +43,9 @@ let observe (type e) (module F : Forge.S with type error = e) ~io scope =
         if
           Pr_state.merged pr || Pr_state.closed pr
           || (not
+                (Option.value_map pr.pr_number ~default:false
+                   ~f:(Pr_number.equal scope.pr)))
+          || (not
                 (Option.value_map pr.head_branch ~default:false
                    ~f:(Branch.equal scope.head_branch)))
           || (not
@@ -76,6 +79,52 @@ let observe (type e) (module F : Forge.S with type error = e) ~io scope =
                       scope.base_revision ->
               Confirmed pr
           | _ -> Unconfirmed "remote revision pair not confirmed")
+
+let observe_committed (type e) (module F : Forge.S with type error = e) ~host
+    ~io ~patch ~scope =
+  let state = Coordinator_host.state host in
+  let payload =
+    Yojson.Safe.to_string
+      (`List
+         [
+           `String (Patch_id.to_string patch);
+           `Int (Pr_number.to_int scope.pr);
+           `String (Branch.to_string scope.head_branch);
+           `String (Branch.to_string scope.base_branch);
+           `String scope.head_revision;
+           `String scope.base_revision;
+           `String scope.push_destination;
+         ])
+  in
+  let ticket : Coordinator_state.control =
+    {
+      id = scope.ticket;
+      run_id = Coordinator_state.run_id state;
+      config_id = Coordinator_state.config_id state;
+      patch_id = Some (Patch_id.to_string patch);
+      kind = "forge_ticket";
+      payload;
+    }
+  in
+  let latest state =
+    List.find (Coordinator_state.controls state)
+      ~f:(fun (c : Coordinator_state.control) ->
+        String.equal c.kind "forge_ticket"
+        && Option.value_map c.patch_id ~default:false
+             ~f:(String.equal (Patch_id.to_string patch)))
+  in
+  match Coordinator_host.submit host (Coordinator_state.Control ticket) with
+  | Error _ -> Unavailable "observation ticket commit unconfirmed"
+  | Ok (Coordinator_host.Rejected _) ->
+      Unconfirmed "observation ticket rejected"
+  | Ok (Coordinator_host.Applied _) -> (
+      match latest (Coordinator_host.state host) with
+      | Some current when Poly.equal current ticket -> (
+          let observed = observe (module F) ~io scope in
+          match latest (Coordinator_host.state host) with
+          | Some current when Poly.equal current ticket -> observed
+          | _ -> Unconfirmed "observation ticket superseded")
+      | _ -> Unconfirmed "observation ticket superseded")
 
 let ready ~expected ~current ~policy_ready observation =
   same_scope expected current

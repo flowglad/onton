@@ -15,7 +15,10 @@ input in the *same* transition; only the checkpointed worker input consumption
 can mark it delivered. Bump never renews publication. A renewal must identify
 a durable attention operation on that patch. No IDs are evicted.
 
-`Coordinator_forge.observe` requires current provider PR/head/base identity plus
+`Coordinator_forge.observe_committed` persists an immutable run/patch-scoped
+observation ticket before provider IO. Changed ticket reuse and a superseded
+patch ticket cannot produce an accepted read. The underlying read requires
+current provider PR/head/base identity plus
 direct read-only `ls-remote` confirmation of the exact provider revisions.
 Head goes to the bound push destination, base to origin's fetch destination;
 missing ref differs from failed probe. `ready` also requires caller-supplied
@@ -50,8 +53,8 @@ not complete. Retained stop/close request IDs are not live containers.
 
 This patch's local seams do **not** complete FC-11–FC-14: the Patch 8 entrypoint
 has not wired the control socket/committed telemetry into the serialized loop;
-forge polling tickets, metadata/review/queue/merge reconciliation and versioned
-worker evidence delivery are not implemented here. The caller must supply the
+durable *results* of forge observation, metadata/review/queue/merge
+reconciliation and versioned worker evidence delivery are not implemented here. The caller must supply the
 terminal close request and route authorized control lines through the serialized
 loop. The implemented test verifies immutable control receipts, uncertain
 writes, sleep/wake/cancel dominance, changed create identity and ambiguous

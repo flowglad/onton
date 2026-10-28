@@ -28,6 +28,17 @@ val observe :
     The caller must durably record and recheck the ticket before adopting this
     observation. An unavailable probe never proves a missing ref. *)
 
+val observe_committed :
+  (module Forge.S with type error = 'e) ->
+  host:Coordinator_host.t ->
+  io:Branch_reconcile_executor.io ->
+  patch:Patch_id.t ->
+  scope:scope ->
+  observation
+(** Commit an immutable scoped observation ticket in the coordinator envelope
+    before network reads. Reject changed ticket reuse and superseded tickets;
+    neither a request nor a provider response grants Git/worker authority. *)
+
 val ready :
   expected:scope -> current:scope -> policy_ready:bool -> observation -> bool
 (** Policy readiness is supplied by the shared scheduler, never derived from a
