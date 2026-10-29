@@ -124,6 +124,23 @@ let () =
        (decode_response
           {|{"status":"ok","reason":"none","revision":1,"revision":2}|}))
     "duplicate response key";
+  List.iter
+    (fun (bytes, expected) ->
+      check
+        (Bool.equal (utf8_valid bytes) expected)
+        ("UTF-8 validation: " ^ String.escaped bytes))
+    [
+      ("", true);
+      ("plain ASCII", true);
+      ("\xC3\xA9", true);
+      ("\xF0\x9F\x8C\xB1", true);
+      ("\x00", true);
+      ("\x80", false);
+      ("\xC0\xAF", false);
+      ("\xE2\x82", false);
+      ("\xED\xA0\x80", false);
+      ("\xF4\x90\x80\x80", false);
+    ];
   let gen = QCheck2.Gen.string in
   QCheck2.Test.check_exn
     (QCheck2.Test.make ~count:500 gen (fun s ->
@@ -135,6 +152,12 @@ let () =
   print_endline "resource protocol properties passed";
   QCheck_base_runner.run_tests_main
     [
+      QCheck2.Test.make ~name:"utf8_valid is total" ~count:500
+        QCheck2.Gen.string (fun s ->
+          try
+            ignore (utf8_valid s);
+            true
+          with _ -> false);
       QCheck2.Test.make ~name:"public resource codec helpers" ~count:100
         (QCheck2.Gen.int_bound 1_000_000) (fun seed ->
           let open Resource_protocol in
