@@ -13,11 +13,10 @@ let () =
     (fun () ->
       let output = open_out_bin helper in
       output_string output
-        "#!/bin/sh\n\
-         cat >/dev/null\n\
-         printf '%s\\n' \\\n\
-        \         '{\"ok\":false,\"error\":\"queue \
-         required\",\"duplicate_change\":true,\"permanent\":true,\"merge_queue_required\":true}'\n";
+        {|#!/bin/sh
+cat >/dev/null
+printf '%s\n' '{"ok":false,"error":"queue required","duplicate_change":true,"permanent":true,"merge_queue_required":true}'
+|};
       close_out output;
       Unix.chmod helper 0o700;
       let module F = (val Coordinator_command_forge.make ~helper ~owner:"owner")

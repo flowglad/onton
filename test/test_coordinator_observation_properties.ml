@@ -143,6 +143,43 @@ let () =
             Patch_agent.pr_number next = Some number
             && Patch_agent.forge_revision_pair_confirmed next);
       test
+        "closed PR observations only transition a currently present PR to \
+         missing"
+        QCheck2.Gen.bool (fun already_missing ->
+          let closed = { pr with status = Closed } in
+          let observation = evidence scope (Some closed) in
+          let absent =
+            Patch_agent.create ~branch:(branch "feature")
+              (Types.Patch_id.of_string "patch")
+            |> fun a ->
+            Patch_agent.set_base_branch a (branch "main") |> fun a ->
+            Patch_agent.set_head_oid a (Some head)
+          in
+          let initial =
+            if already_missing then Patch_agent.mark_pr_missing (agent ())
+            else absent
+          in
+          let next = O.apply initial observation in
+          if already_missing then
+            Patch_agent.is_pr_missing initial
+            && Patch_agent.is_pr_missing next
+            && not (Patch_agent.forge_revision_pair_confirmed next)
+          else
+            (not (Patch_agent.has_pr initial))
+            && (not (Patch_agent.has_pr next))
+            && Option.is_none (Patch_agent.pr_number next)
+            && not (Patch_agent.forge_revision_pair_confirmed next));
+      test
+        "closed PR observations retire a present PR without authorizing \
+         readiness"
+        QCheck2.Gen.unit (fun () ->
+          let next =
+            O.apply (agent ())
+              (evidence scope (Some { pr with status = Closed }))
+          in
+          Patch_agent.is_pr_missing next
+          && not (Patch_agent.forge_revision_pair_confirmed next));
+      test
         "vanished queue entries retain repair evidence until an identified \
          removal lookup"
         QCheck2.Gen.bool (fun resolved ->

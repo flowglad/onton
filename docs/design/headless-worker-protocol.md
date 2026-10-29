@@ -14,7 +14,7 @@ The first command builds and drives `bin/worker.exe` through the public JSONL en
 Release archives contain `onton`, `onton-coordinator`, `onton-setsid-exec`, and `onton-worker`.
 The release workflow extracts each archive and runs the protocol smoke against
 that extracted worker before publishing. Linux builds additionally check worker
-startup in Ubuntu 22.04. The Homebrew formula template installs all three tools.
+startup in Ubuntu 22.04. The Homebrew formula template installs all four tools.
 
 OITC image qualification is a separate gate: its Dockerfile must extract and
 install `onton-worker` from the pinned release alongside the existing tools.
@@ -243,7 +243,8 @@ is a list of committed forge-observation records, `controls` is a list of
 `[kind,value]` pairs, and `covered` is the ordered list of every input ID and
 version included in the cumulative payload. A standalone input starts at version
 1 and advances by one; a batched input may advance to its latest version when
-`covered` lists every intervening version contiguously. A matching exact replay
+`covered` lists every intervening version contiguously in ascending order. The
+host rejects gaps, duplicates, and out-of-order coverage rather than sorting it. A matching exact replay
 is harmless; changed ID reuse, gaps and counter exhaustion reject. `Input_committed(id,version)` is a *host attestation*, not a
 storage write: the host must atomically commit the exact input before emitting
 it. Only a matching committed input updates the desired base or authorizes

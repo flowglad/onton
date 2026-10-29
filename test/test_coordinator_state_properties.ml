@@ -139,6 +139,51 @@ let () =
   assert (
     Result.is_ok (Coordinator_state.decode (Coordinator_state.encode state)));
   assert (Result.is_error (Coordinator_state.decode_control "not-json"));
+  let payload_state =
+    initial () |> fun t -> apply t (S.Admit (operation "payload"))
+  in
+  let payload_control : S.control =
+    S.
+      {
+        id = "observation";
+        run_id = "run";
+        config_id = "config";
+        payload = "{}";
+        kind = "worker_observation";
+        patch_id = Some "a";
+      }
+  in
+  let payload_state, outcomes =
+    S.step payload_state (S.Control payload_control)
+  in
+  assert (List.equal Poly.equal outcomes [ S.Accepted ]);
+  let replace fields key value =
+    List.map fields ~f:(fun (name, old) ->
+        if String.equal name key then (name, value) else (name, old))
+  in
+  let corrupt =
+    match Yojson.Safe.from_string (S.encode payload_state) with
+    | `Assoc root -> (
+        match List.Assoc.find root ~equal:String.equal "state" with
+        | Some (`Assoc fields) -> (
+            match List.Assoc.find fields ~equal:String.equal "controls" with
+            | Some (`List [ `Assoc control ]) ->
+                let control =
+                  `Assoc
+                    (replace control "payload"
+                       (`String (String.make 262145 'x')))
+                in
+                `Assoc
+                  [
+                    ("version", `Int 3);
+                    ( "state",
+                      `Assoc (replace fields "controls" (`List [ control ])) );
+                  ]
+            | _ -> failwith "control state encoding changed")
+        | _ -> failwith "state encoding changed")
+    | _ -> failwith "state envelope encoding changed"
+  in
+  assert (Result.is_error (S.decode (Yojson.Safe.to_string corrupt)));
   Stdio.print_endline "coordinator public projections: OK"
 
 let has_rejection =
@@ -190,6 +235,10 @@ let () =
   let t = apply t (S.Result_committed ("a1", "bind:a1")) in
   assert (S.reserved_count t = 2);
   let t = apply t (S.Cleanup_confirmed ("a1", "bind:a1")) in
+  assert (
+    List.equal Poly.equal
+      (snd (S.step t (S.Result_committed ("a1", "bind:a1"))))
+      [ S.Already_applied ]);
   assert (S.reserved_count t = 1);
   assert (List.length (S.capsules t) = 1);
   assert (has_rejection (snd (S.step t (S.Stop_confirmed ("a2", "bind:a1")))));

@@ -440,6 +440,7 @@ let valid (t : t) =
       && ((not a.reserved) || not (a.cleanup || a.retired)))
   && List.for_all t.controls ~f:(fun c ->
       valid_id c.id && control_target_ok c
+      && String.length c.payload <= 262144
       && String.equal c.run_id t.run_id
       && String.equal c.config_id t.config_id)
 
@@ -956,6 +957,11 @@ let rec step t event =
       | None -> reject "unknown assignment" t
       | Some a when not (String.equal a.request request) ->
           reject "stale result" t
+      | Some a
+        when match ev with
+             | Result_committed _ -> a.result_committed
+             | _ -> false ->
+          (t, [ Already_applied ])
       | Some a
         when match ev with
              | Result_committed _ -> a.retired || a.cleanup

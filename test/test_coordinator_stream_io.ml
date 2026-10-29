@@ -50,12 +50,12 @@ let () =
       check "backpressured send is uncertain"
         (Result.is_error
            (Coordinator_stream_io.send io ~timeout:0.05
-              [ String.make (1024 * 1024) 'a' ^ "\\n" ]));
+              [ String.make (1024 * 1024) 'a' ^ "\n" ]));
       check "unterminated frame rejected before write"
         (Result.is_error (Coordinator_stream_io.send io ~timeout:1. [ "{}" ]));
       check "multiple frames in one item rejected"
         (Result.is_error
-           (Coordinator_stream_io.send io ~timeout:1. [ "{}\\n{}\\n" ]));
+           (Coordinator_stream_io.send io ~timeout:1. [ "{}\n{}\n" ]));
       check "backpressure cannot indefinitely block cancellation"
         (Unix.gettimeofday () -. started < 3.);
       List.iter

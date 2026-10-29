@@ -299,6 +299,8 @@ let mutations = ref []
 let lose_effect = ref false
 let after_read = ref (fun () -> ())
 let after_effect = ref (fun () -> ())
+let fail_removal_checks = ref false
+let removal_check_calls = ref 0
 
 module Fake_forge : Forge.S with type error = string = struct
   type error = string
@@ -336,7 +338,10 @@ module Fake_forge : Forge.S with type error = string = struct
     !after_read ();
     result
 
-  let merge_queue_removal_checks ~pr_number:_ = Ok []
+  let merge_queue_removal_checks ~pr_number:_ =
+    incr removal_check_calls;
+    if !fail_removal_checks then Error "no removal event exists" else Ok []
+
   let check_failure_details ~check:_ = Error "unused"
   let rerun_failed_jobs_for_check ~check:_ = Error "unused"
   let list_prs ~branch:_ ?base:_ ~state:_ () = Ok []
@@ -637,6 +642,8 @@ let test_merged_pr_survives_deleted_head_ref () =
   in
   provider_state := Some merged_pr;
   provider_reads := 0;
+  removal_check_calls := 0;
+  fail_removal_checks := true;
   (after_read := fun () -> ());
   let git_probes = ref [] in
   let io : Branch_reconcile_executor.io =
@@ -659,6 +666,9 @@ let test_merged_pr_survives_deleted_head_ref () =
   | Coordinator_forge.Confirmed _ | Coordinator_forge.Terminal _ ->
       failwith "merged PR returned as open-pair proof");
   check (!git_probes = []) "merged PR incorrectly required live Git refs";
+  check (!removal_check_calls = 0)
+    "merged PR was gated on an unrelated queue-removal event";
+  fail_removal_checks := false;
   (match
      Coordinator_host.terminal_from_forge host ~patch ~ticket:scope.ticket
    with

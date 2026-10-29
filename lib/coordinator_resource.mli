@@ -2,6 +2,9 @@
    @archlint.domain coordinator-state *)
 type result = Ready | Pending | Attention | Blocked of string
 
+val journal_id : string -> string
+(** Stable journal key for a resource identity, including long-id hashing. *)
+
 val provision :
   host:Coordinator_host.t ->
   client:Resource_client.t ->

@@ -263,8 +263,13 @@ let () =
                 patch_id = None;
               }
           in
-          let cancelled = apply t cancel in
+          let cancelled, cancel_outcomes = S.step t cancel in
           String.equal (S.encode t) (S.encode unchanged)
+          && List.mem cancel_outcomes S.Accepted ~equal:Poly.equal
+          && List.exists
+               ~f:(fun control ->
+                 String.equal control.Coordinator_state.id "cancel-near-budget")
+               (S.controls cancelled)
           && String.length (S.encode stopped) > budget - 65536
           && Result.is_ok (S.decode (S.encode stopped))
           && Coordinator_state.emergency_event

@@ -629,6 +629,21 @@ let () =
                      in
                      Bool.equal routed
                        (not (List.is_empty patch.acceptance_criteria)))));
+      Test.make
+        ~name:"gameplan parser: patch identifiers respect protocol length"
+        ~count:1 Gen.unit (fun () ->
+          let patch_with_id id =
+            match plan 1 [] [] with
+            | `Assoc fields -> (
+                match List.Assoc.find fields ~equal:String.equal "patches" with
+                | Some (`List [ patch ]) ->
+                    field patch "number" (`String id) |> fun patch ->
+                    field (`Assoc fields) "patches" (`List [ patch ])
+                | _ -> assert false)
+            | _ -> assert false
+          in
+          Result.is_ok (parse (patch_with_id (String.make 256 'a')))
+          && rejected (patch_with_id (String.make 257 'a')));
       Test.make ~name:"gameplan parser: arbitrary text is total" ~count:500
         Gen.string
         (safely (fun text ->

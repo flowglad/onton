@@ -382,7 +382,7 @@ let run (type e) ~system ~client ~store ~(config : Coordinator_config.t)
                         let req = get (Resource_protocol.make_request bytes) in
                         match
                           J.find (S.journal state)
-                            ("resource:" ^ assignment.resource)
+                            (Coordinator_resource.journal_id assignment.resource)
                         with
                         | Some { phase = J.Pending; _ } ->
                             let run_id, coordinator_id, owner_epoch, revision =
@@ -438,7 +438,8 @@ let run (type e) ~system ~client ~store ~(config : Coordinator_config.t)
                                           input )) ))
                         | Error reason ->
                             !report_blocked reason;
-                            None
+                            Some
+                              (Coordinator.Intent (S.Operation_attention op.id))
                         | Ok None | Ok (Some _) ->
                             let version =
                               match Worker_stream.capsule s with
@@ -624,12 +625,14 @@ let run (type e) ~system ~client ~store ~(config : Coordinator_config.t)
                     Option.bind revision ~f:(fun revision ->
                         let already_integrated =
                           List.exists
-                            (Branch_reconcile.integrations
+                            (Branch_reconcile.contributor_integrations
                                root_agent.branch_reconcile) ~f:(fun receipt ->
-                              String.equal
-                                (Branch_reconcile.Commit.to_string
-                                   receipt.capture.source_revision)
-                                revision)
+                              Option.equal String.equal receipt.contributor
+                                (Some (Patch_id.to_string contributor.patch_id))
+                              && String.equal
+                                   (Branch_reconcile.Commit.to_string
+                                      receipt.capture.target_revision)
+                                   revision)
                         in
                         if already_integrated then None
                         else

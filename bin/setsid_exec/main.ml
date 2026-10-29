@@ -17,7 +17,7 @@ external descendants_remaining : int -> bool -> bool
    On Linux it also adopts orphaned descendants, so waiting for Git alone cannot
    leave filters behind. On macOS launchd reaps orphans; wait for the group to
    disappear before acknowledging teardown. *)
-let supervise ?parent ~streaming ~guards argv =
+let supervise ?parent ~streaming ~acknowledge_tree ~guards argv =
   let parent_alive () =
     match parent with
     | None -> true
@@ -85,8 +85,12 @@ let supervise ?parent ~streaming ~guards argv =
       Unix.close ready_r;
       let signal_group signal =
         if have_group then
-          try Unix.kill (-pid) signal
-          with Unix.Unix_error (Unix.ESRCH, _, _) -> ()
+          try Unix.kill (-pid) signal with
+          | Unix.Unix_error (Unix.ESRCH, _, _) -> ()
+          | Unix.Unix_error (Unix.EPERM, _, _) ->
+              (* On macOS, a just-exited leader may still anchor a group that
+                 contains no live descendants. Recheck the group before ack. *)
+              ()
       in
       let grace_ticks = ref None in
       let terminal_ticks = ref 0 in
@@ -129,18 +133,24 @@ let supervise ?parent ~streaming ~guards argv =
       in
       (* No group signal or observation may follow this reap. *)
       match reap_leader () with
-      | Unix.WEXITED code -> exit code
+      | Unix.WEXITED code -> exit (if acknowledge_tree then 0 else code)
       | Unix.WSIGNALED signal ->
-          (* Uncatchable signals cannot have their disposition changed. *)
-          if signal <> Sys.sigkill && signal <> Sys.sigstop then
-            Sys.set_signal signal Sys.Signal_default;
-          Unix.kill (Unix.getpid ()) signal;
-          exit 128
-      | Unix.WSTOPPED _ -> exit 127)
+          if acknowledge_tree then exit 0
+          else (
+            (* Uncatchable signals cannot have their disposition changed. *)
+            if signal <> Sys.sigkill && signal <> Sys.sigstop then
+              Sys.set_signal signal Sys.Signal_default;
+            Unix.kill (Unix.getpid ()) signal;
+            exit 128)
+      | Unix.WSTOPPED _ -> exit (if acknowledge_tree then 0 else 127))
 
 let () =
+  let attach =
+    Array.length Sys.argv > 1 && Sys.argv.(1) = "--supervise-attach-parent"
+  in
   let streaming =
-    Array.length Sys.argv > 1 && Sys.argv.(1) = "--supervise-stream-parent"
+    attach
+    || (Array.length Sys.argv > 1 && Sys.argv.(1) = "--supervise-stream-parent")
   in
   let parent_bound =
     streaming
@@ -186,7 +196,8 @@ let () =
     prerr_endline "onton-setsid-exec: missing program to exec";
     exit 2);
   let argv = Array.sub Sys.argv first (Array.length Sys.argv - first) in
-  if supervised then supervise ?parent ~streaming ~guards argv;
+  if supervised then
+    supervise ?parent ~streaming ~acknowledge_tree:attach ~guards argv;
   (try ignore (Unix.setsid () : int)
    with Unix.Unix_error _ ->
      (* Already a session leader: harmless, proceed. *)

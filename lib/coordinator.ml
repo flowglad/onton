@@ -715,9 +715,11 @@ let run ?forge ?git ?(write_status = fun _ -> ()) env =
       in
       Exn.protect
         ~finally:(fun () ->
+          let failed = ref false in
           Hashtbl.iter attachments ~f:(fun data ->
-              if not (close data) then
-                failwith "worker supervisor tree was not confirmed reaped"))
+              if not (close data) then failed := true);
+          if !failed then
+            failwith "worker supervisor tree was not confirmed reaped")
         ~f:(fun () ->
           Coordinator_headless.emit ~write:write_status
             (Coordinator_host.state host);

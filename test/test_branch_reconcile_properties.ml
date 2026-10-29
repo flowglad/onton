@@ -2117,9 +2117,14 @@ let[@warning "-4"] tests =
                 false
           in
           let state, _ = reply state (B.Integrated candidate) in
-          let unpublished =
-            B.publications state = [] && B.integrations state = []
+          let integration_recorded =
+            match B.contributor_integrations state with
+            | [ receipt ] ->
+                receipt.contributor = Some "2"
+                && B.Commit.equal receipt.capture.target_revision target
+            | [] | _ :: _ :: _ -> false
           in
+          let unpublished = B.publications state = [] && integration_recorded in
           let state, _ = reply state B.Published in
           let state =
             if restart then
@@ -2128,7 +2133,14 @@ let[@warning "-4"] tests =
               | Error _ -> assert false
             else state
           in
-          let unconfirmed = B.publications state = [] in
+          let unconfirmed =
+            B.publications state = []
+            && B.integrations state = []
+            &&
+            match B.contributor_integrations state with
+            | [ receipt ] -> receipt.contributor = Some "2"
+            | [] | _ :: _ :: _ -> false
+          in
           let state, _ =
             reply state (B.Remote { sha = Some candidate; topology = Equal })
           in

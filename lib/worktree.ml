@@ -396,42 +396,53 @@ let read_branch_sha ~process_mgr ~path ~ref_name =
   else None
 
 let probe_branch_sha ~process_mgr ~path ~ref_name =
-  let check_code, _, check_error =
-    run_git_exit_code ~process_mgr
-      [ "git"; "-C"; path; "check-ref-format"; ref_name ]
+  let git args =
+    run_git_exit_code ~process_mgr ([ "git"; "-C"; path ] @ args)
   in
+  let check_code, _, check_error = git [ "check-ref-format"; ref_name ] in
   if check_code <> 0 then
     Error
       (Printf.sprintf "invalid Git ref %s in %s: %s" ref_name path
          (String.strip check_error))
   else
-    let code, stdout, stderr =
-      run_git_exit_code ~process_mgr
-        [ "git"; "-C"; path; "show-ref"; "--verify"; "--hash"; ref_name ]
+    let symbolic_code, _, symbolic_error =
+      git [ "symbolic-ref"; "-q"; ref_name ]
     in
-    if code = 0 then
-      let sha = String.strip stdout in
-      if String.is_empty sha then Error "git returned an empty ref SHA"
-      else
-        let object_code, _, object_error =
-          run_git_exit_code ~process_mgr
-            [ "git"; "-C"; path; "cat-file"; "-e"; sha ^ "^{commit}" ]
-        in
-        if object_code = 0 then Ok (Some sha)
-        else
-          Error
-            (Printf.sprintf "Git ref %s points to an unavailable commit: %s"
-               ref_name
-               (String.strip object_error))
-    else if
-      code = 128
-      && String.equal (String.strip stderr)
-           (Printf.sprintf "fatal: '%s' - not a valid ref" ref_name)
-    then Ok None
+    if symbolic_code = 0 then
+      Error "symbolic Git ref cannot authorize provisioning"
+    else if symbolic_code <> 1 then
+      Error ("Git ref identity probe failed: " ^ String.strip symbolic_error)
     else
-      Error
-        (Printf.sprintf "git ref probe failed in %s (exit %d): %s" path code
-           (String.strip stderr))
+      let exists_code, _, exists_error =
+        git [ "show-ref"; "--verify"; "--quiet"; ref_name ]
+      in
+      match exists_code with
+      | 1 -> Ok None
+      | 0 -> (
+          let code, stdout, stderr =
+            git [ "rev-parse"; "--verify"; ref_name ]
+          in
+          if code <> 0 then
+            Error ("Git ref revision probe failed: " ^ String.strip stderr)
+          else
+            match Branch_reconcile.Commit.make (String.strip stdout) with
+            | None -> Error "git returned an invalid ref SHA"
+            | Some commit ->
+                let sha = Branch_reconcile.Commit.to_string commit in
+                let object_code, _, object_error =
+                  git [ "cat-file"; "-e"; sha ^ "^{commit}" ]
+                in
+                if object_code = 0 then Ok (Some sha)
+                else
+                  Error
+                    (Printf.sprintf
+                       "Git ref %s points to an unavailable commit: %s" ref_name
+                       (String.strip object_error)))
+      | _ ->
+          Error
+            (Printf.sprintf "Git ref probe failed in %s (exit %d): %s" path
+               exists_code
+               (String.strip exists_error))
 
 let is_ancestor ~process_mgr ~path ~ancestor ~descendant =
   let code, _, _ =

@@ -17,7 +17,11 @@ val supervisor_path : unit -> string
     explicit override stays empty so dispatch fails rather than bypassing it. *)
 
 val supervised_command :
-  supervisor:string -> streaming:bool -> string list -> string list
+  ?acknowledge_tree:bool ->
+  supervisor:string ->
+  streaming:bool ->
+  string list ->
+  string list
 (** Capture the current parent PID and held project command guards into the
     supervisor dispatch protocol. *)
 

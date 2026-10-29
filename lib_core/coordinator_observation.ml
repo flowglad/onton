@@ -95,7 +95,12 @@ let apply agent t =
     | None -> defer agent
     | Some pr when pr.is_fork -> defer agent
     | Some pr when Pr_state.closed pr && not (Pr_state.merged pr) ->
-        defer (Patch_agent.mark_pr_missing agent)
+        let agent =
+          if Patch_agent.is_pr_present agent then
+            Patch_agent.mark_pr_missing agent
+          else agent
+        in
+        defer agent
     | Some pr -> (
         let agent =
           if Option.is_none (Patch_agent.pr_number agent) then

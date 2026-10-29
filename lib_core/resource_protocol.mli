@@ -23,6 +23,7 @@ type request = private {
   run_id : string;
 }
 
+val utf8_valid : string -> bool
 val make_request : string -> (request, string) result
 val encode_request : request -> (string, string) result
 

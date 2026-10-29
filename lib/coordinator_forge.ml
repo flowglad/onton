@@ -165,13 +165,15 @@ let observe_committed ?(now = 0.) (type e)
                     | Unconfirmed reason | Unavailable reason -> (None, reason)
                   in
                   let removal_checks =
-                    match pr with
-                    | Some pr when not (Pr_state.enqueued pr) ->
+                    match observed with
+                    | Confirmed pr when not (Pr_state.enqueued pr) ->
                         Result.map
                           (F.merge_queue_removal_checks ~pr_number:scope.pr)
                           ~f:Option.some
                         |> Result.map_error ~f:F.show_error
-                    | _ -> Ok None
+                    | Confirmed _ | Terminal _ | Unconfirmed _ | Unavailable _
+                      ->
+                        Ok None
                   in
                   match removal_checks with
                   | Error reason -> Unavailable reason

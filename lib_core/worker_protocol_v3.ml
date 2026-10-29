@@ -357,7 +357,8 @@ let extended_work = function
           | Some contributor, Some revision
             when String.length contributor > 0
                  && String.length contributor <= 256
-                 && not (String.contains contributor '\000') ->
+                 && (not (String.contains contributor '\000'))
+                 && Option.is_some (Branch_reconcile.Commit.make revision) ->
               Some (Integrate_revision { contributor; revision })
           | _ -> None)
       | _ ->
@@ -882,7 +883,6 @@ let step t event =
                   let covered =
                     input.covered |> List.map snd
                     |> List.filter (fun v -> v > previous)
-                    |> List.sort Int64.compare
                   in
                   let rec contiguous expected = function
                     | [] -> expected = input.version

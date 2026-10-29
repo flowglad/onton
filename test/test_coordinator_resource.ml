@@ -176,6 +176,39 @@ let fixture () =
   (f, client, restore, sends, pending, lose)
 
 let () =
+  let short_resource = String.make 247 'x' in
+  let long_resource = String.make 248 'x' in
+  check
+    (R.journal_id short_resource = "resource:" ^ short_resource)
+    "short resource journal identity changed";
+  check
+    (R.journal_id long_resource
+    = "resource:" ^ Stdlib.Digest.to_hex (Stdlib.Digest.string long_resource))
+    "long resource journal identity must use the shared stable hash";
+  let check_fixture_reply input expected_reason =
+    let fixture = F.fixture () in
+    match F.transport fixture ~argv:[] ~input with
+    | Error _ -> failwith "fixture guard failed"
+    | Ok (0, output, _) -> (
+        match Yojson.Safe.from_string output with
+        | `Assoc fields ->
+            check
+              (F.string "reason" fields = expected_reason)
+              "fixture guard reason";
+            check
+              (F.get "revision" fields = Some (`Int 1))
+              "fixture guard omitted current revision"
+        | _ -> failwith "fixture returned malformed JSON")
+    | Ok _ -> failwith "fixture guard exit status"
+  in
+  let stale_revision =
+    {|{"op":"state-read","run_id":"r","coordinator_id":"c","owner_epoch":"1","revision":"9223372036854775807"}|}
+  in
+  check_fixture_reply stale_revision "stale_guard";
+  let stale_state_version =
+    {|{"op":"state-write","write_id":"write","state_version":"1","payload":"eA==","coordinator_id":"c","owner_epoch":"1","revision":"1"}|}
+  in
+  check_fixture_reply stale_state_version "state_version";
   let f, client, restore, sends, _pending, lose = fixture () in
   let host = restore () in
   applied (Coordinator_host.submit host (Admit (operation "one")));

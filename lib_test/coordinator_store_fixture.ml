@@ -67,7 +67,10 @@ let transport (f : fixture) ~argv:_ ~input =
     (String.equal op "state-read"
     || String.equal op "write-status"
     || String.equal op "state-write")
-    && int_of_string (string "revision" fields) <> f.revision
+    && not
+         (match Int64.of_string_opt (string "revision" fields) with
+         | Some revision -> Int64.equal revision (Int64.of_int f.revision)
+         | None -> false)
   in
   let response =
     if stale then
@@ -93,7 +96,11 @@ let transport (f : fixture) ~argv:_ ~input =
             else
               Ok
                 (0, reply ~revision:f.revision ~state_version:f.version "ok", ""))
-          else Ok (0, reply ~reason:"state_version" "rejected", "")
+          else
+            Ok
+              ( 0,
+                reply ~revision:f.revision ~reason:"state_version" "rejected",
+                "" )
       | "state-read" -> (
           if f.refuse_read then Ok (0, reply "pending", "")
           else

@@ -1325,9 +1325,9 @@
 (test
  (name test_resource_client)
  (modules test_resource_client)
- (deps %{bin:onton-setsid-exec})
+ (deps %{exe:../bin/setsid_exec/main.exe})
  (action
-  (setenv ONTON_SETSID_EXEC %{bin:onton-setsid-exec} (run %{test})))
+  (setenv ONTON_SETSID_EXEC %{exe:../bin/setsid_exec/main.exe} (run %{test})))
  (libraries onton onton_core eio eio_main unix))
 
 (test
@@ -1412,6 +1412,9 @@
 (test
  (name test_coordinator_command_forge)
  (modules test_coordinator_command_forge)
+ (deps %{exe:../bin/setsid_exec/main.exe})
+ (action
+  (setenv ONTON_SETSID_EXEC %{exe:../bin/setsid_exec/main.exe} (run %{test})))
  (libraries onton onton_core unix))
 
 (test

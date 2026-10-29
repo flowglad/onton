@@ -366,24 +366,28 @@ module Make_impl
                     Eio.Fiber.yield ();
                     fetch_base (attempt + 1))
             in
+            let base_is_head = String.equal base "HEAD" in
             let local_missing =
-              match
-                W.probe_branch_sha ~path:(W.resolve_main_root ())
-                  ~ref_name:("refs/heads/" ^ base)
-              with
-              | Ok None -> true
-              | Ok (Some _) -> false
-              | Error reason ->
-                  log_event runtime ~patch_id
-                    (Printf.sprintf
-                       "Local base ref probe failed; suppressing remote \
-                        fallback for %s: %s"
-                       base reason);
-                  false
+              if base_is_head then false
+              else
+                match
+                  W.probe_branch_sha ~path:(W.resolve_main_root ())
+                    ~ref_name:("refs/heads/" ^ base)
+                with
+                | Ok None -> true
+                | Ok (Some _) -> false
+                | Error reason ->
+                    log_event runtime ~patch_id
+                      (Printf.sprintf
+                         "Local base ref probe failed; suppressing remote \
+                          fallback for %s: %s"
+                         base reason);
+                    false
             in
             let fetched_remote_sha =
               if
                 Option.is_some expected_revision
+                || base_is_head
                 || ((not base_is_main) && not local_missing)
               then None
               else

@@ -212,46 +212,54 @@ type attachment = {
   pid : int;
   mutable closed : bool;
   mutable reaped : bool;
+  mutable teardown_confirmed : bool;
 }
 
 let input a = a.stdin
 let output a = a.stdout
-
-let utf8_valid s =
-  let rec loop i =
-    if i = String.length s then true
-    else
-      let decoded = Stdlib.String.get_utf_8_uchar s i in
-      Stdlib.Uchar.utf_decode_is_valid decoded
-      && loop (i + Stdlib.Uchar.utf_decode_length decoded)
-  in
-  loop 0
 
 let disconnect ?(timeout = 5.) a =
   if not a.closed then (
     a.closed <- true;
     close a.stdin;
     close a.stdout);
-  if a.reaped then Ok ()
+  if a.reaped then
+    if a.teardown_confirmed then Ok ()
+    else Error "supervisor teardown was not confirmed"
   else if (not (Float.is_finite timeout)) || Float.(timeout <= 0.) then
     Error "invalid supervisor teardown timeout"
   else (
     (try Unix.kill a.pid Stdlib.Sys.sigterm with _ -> ());
     let rec await attempts =
       match Unix.waitpid [ Unix.WNOHANG ] a.pid with
-      | pid, _ when pid = a.pid ->
+      | pid, Unix.WEXITED 0 when pid = a.pid ->
           a.reaped <- true;
+          a.teardown_confirmed <- true;
           Ok ()
-      | 0, _ when attempts <= 0 ->
+      | pid, status when pid = a.pid ->
+          a.reaped <- true;
+          let detail =
+            match status with
+            | Unix.WEXITED code -> "exit code " ^ Int.to_string code
+            | Unix.WSIGNALED signal -> "signal " ^ Int.to_string signal
+            | Unix.WSTOPPED signal ->
+                "stopped by signal " ^ Int.to_string signal
+          in
+          Error
+            ("supervisor exited without confirming descendant teardown ("
+           ^ detail ^ ")")
+      | 0, (Unix.WEXITED _ | Unix.WSIGNALED _ | Unix.WSTOPPED _)
+        when attempts <= 0 ->
           Error "worker supervisor teardown timed out; attachment retained"
-      | 0, _ ->
+      | 0, (Unix.WEXITED _ | Unix.WSIGNALED _ | Unix.WSTOPPED _) ->
           Unix.sleepf 0.01;
           await (attempts - 1)
-      | _ -> Error "unexpected supervisor wait result"
+      | pid, (Unix.WEXITED _ | Unix.WSIGNALED _ | Unix.WSTOPPED _) ->
+          Error ("unexpected supervisor wait result " ^ Int.to_string pid)
       | exception Unix.Unix_error (Unix.EINTR, _, _) -> await attempts
       | exception Unix.Unix_error (Unix.ECHILD, _, _) ->
           a.reaped <- true;
-          Ok ()
+          Error "supervisor exit status unavailable; teardown unconfirmed"
     in
     let attempts = Stdlib.int_of_float (Stdlib.ceil (timeout /. 0.01)) in
     await attempts)
@@ -263,7 +271,8 @@ let connect t ~run_id ~coordinator_id ~owner_epoch ~revision ~request_id
     (not
        (List.for_all selectors ~f:(fun s ->
             let n = String.length s in
-            n > 0 && n <= 256 && utf8_valid s
+            n > 0 && n <= 256
+            && Resource_protocol.utf8_valid s
             && not
                  (String.exists s ~f:(fun c ->
                       Char.equal c '\000' || Char.equal c '\n'
@@ -282,7 +291,8 @@ let connect t ~run_id ~coordinator_id ~owner_epoch ~revision ~request_id
       let err = Unix.openfile "/dev/null" [ Unix.O_WRONLY; Unix.O_CLOEXEC ] 0 in
       try
         let argv =
-          Process_tree.supervised_command ~supervisor ~streaming:true
+          Process_tree.supervised_command ~acknowledge_tree:true ~supervisor
+            ~streaming:true
             [
               t.helper;
               "resources";
@@ -302,7 +312,15 @@ let connect t ~run_id ~coordinator_id ~owner_epoch ~revision ~request_id
         in
         List.iter [ in_r; out_w; err ] ~f:close;
         t.attachments <- resource_id :: t.attachments;
-        Ok { stdin = in_w; stdout = out_r; pid; closed = false; reaped = false }
+        Ok
+          {
+            stdin = in_w;
+            stdout = out_r;
+            pid;
+            closed = false;
+            reaped = false;
+            teardown_confirmed = false;
+          }
       with exn ->
         List.iter [ in_r; in_w; out_r; out_w; err ] ~f:close;
         Error (Exn.to_string exn)

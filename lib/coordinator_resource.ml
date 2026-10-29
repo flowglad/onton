@@ -6,6 +6,10 @@ open Base
 
 type result = Ready | Pending | Attention | Blocked of string
 
+let journal_id resource =
+  if String.length resource <= 247 then "resource:" ^ resource
+  else "resource:" ^ Stdlib.Digest.to_hex (Stdlib.Digest.string resource)
+
 let committed = function
   | Ok (Coordinator_host.Applied _) -> true
   | Ok (Rejected _) | Error _ -> false
@@ -82,10 +86,7 @@ let provision ~host ~client ~(request : Resource_protocol.request)
                 && (not (String.equal id resource))
                 && not (retired id)))
     in
-    let id =
-      if String.length resource <= 247 then "resource:" ^ resource
-      else "resource:" ^ Stdlib.Digest.to_hex (Stdlib.Digest.string resource)
-    in
+    let id = journal_id resource in
     let journal = Coordinator_state.journal state in
     if not request_matches then
       Blocked "resource scope/predecessor not authorized"

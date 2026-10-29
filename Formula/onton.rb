@@ -15,10 +15,10 @@ class Onton < Formula
   depends_on "gmp"
 
   def install
-    bin.install "onton", "onton-coordinator", "onton-setsid-exec", "onton-worker"
+    bin.install "onton", "onton-setsid-exec", "onton-worker"
     # Rewrite CI's hardcoded libgmp path to this machine's Homebrew prefix
     gmp_lib = (Formula["gmp"].opt_lib/"libgmp.10.dylib").to_s
-    %w[onton onton-coordinator onton-worker].each do |name|
+    %w[onton onton-worker].each do |name|
       old_path = Utils.popen_read("otool", "-L", bin/name)
         .lines.find { |l| l.include?("libgmp") }&.strip&.split&.first
       if old_path && old_path != gmp_lib
@@ -29,9 +29,7 @@ class Onton < Formula
 
   test do
     assert_match "onton", shell_output("#{bin}/onton --version 2>&1", 0)
-    assert_predicate bin/"onton-coordinator", :executable?
     assert_predicate bin/"onton-setsid-exec", :executable?
-    assert_match "Usage: onton-coordinator", shell_output("#{bin}/onton-coordinator 2>&1", 2)
     assert_match "Usage: onton-worker", shell_output("#{bin}/onton-worker 2>&1", 2)
   end
 end

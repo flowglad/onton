@@ -31,14 +31,19 @@ let pending state patch ~selected_base =
                  selected_base = base;
                }))
     | (id, _, version, payload, _) :: rest -> (
-        let next guidance evidence actions base =
+        let next ?(nested_covered = []) guidance evidence actions base =
+          let covered = List.rev_append nested_covered covered in
           gather guidance evidence actions ((id, version) :: covered) base
             (Some (id, version))
             rest
         in
         match
           List.find controls ~f:(fun c ->
-              String.equal c.Coordinator_state.id id)
+              String.equal c.Coordinator_state.id id
+              && String.equal c.run_id (Coordinator_state.run_id state)
+              && String.equal c.config_id (Coordinator_state.config_id state)
+              && Option.equal String.equal c.patch_id (Some patch_id)
+              && String.equal c.payload payload)
         with
         | Some c when String.equal c.kind "guidance" ->
             next (payload :: guidance) evidence actions base
@@ -62,7 +67,7 @@ let pending state patch ~selected_base =
                        && String.equal identity.patch_id patch_id
                        && String.equal input.input_id id
                        && Int64.equal input.version version ->
-                    next
+                    next ~nested_covered:input.covered
                       (input.guidance :: guidance)
                       (List.rev_append input.evidence evidence)
                       (List.rev_append input.controls actions)

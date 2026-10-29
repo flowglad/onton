@@ -13,7 +13,8 @@ type t = {
 let slugify = Types.Gameplan.slugify
 
 let is_valid_patch_id s =
-  (not (String.is_empty s))
+  String.length s <= 256
+  && (not (String.is_empty s))
   && String.for_all s ~f:(fun c -> Char.is_alphanum c)
   && not (String.is_substring s ~substring:"..")
 

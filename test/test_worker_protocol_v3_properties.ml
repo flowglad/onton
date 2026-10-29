@@ -128,7 +128,9 @@ let test_integration () =
   let e =
     {
       V.request = request ();
-      work = V.Integrate_revision { contributor = "child"; revision = "abc123" };
+      work =
+        V.Integrate_revision
+          { contributor = "child"; revision = String.make 40 'c' };
       context = root_context;
       input_version = 0L;
     }
@@ -140,7 +142,9 @@ let test_integration () =
   let changed =
     {
       e with
-      work = V.Integrate_revision { contributor = "child"; revision = "def456" };
+      work =
+        V.Integrate_revision
+          { contributor = "child"; revision = String.make 40 'd' };
     }
   in
   let _, out = V.step t (V.Host (V.Execute changed)) in
@@ -155,6 +159,46 @@ let test_integration () =
             }))
   in
   check (not (has_begin out)) "context replay fence"
+
+let test_extended_revision () =
+  let valid_work =
+    V.Integrate_revision
+      { contributor = "child"; revision = String.make 40 'a' }
+  in
+  let root_context = ok (V.decode_context (context ~root:"root" ())) in
+  let encoded =
+    ok
+      (V.encode_host
+         (V.Execute
+            { (execute ()) with work = valid_work; context = root_context }))
+  in
+  check
+    (match V.decode_host encoded with
+    | Ok (V.Execute { work = V.Integrate_revision _; _ }) -> true
+    | Ok (V.Execute { work = V.Session _ | V.Reconcile; _ })
+    | Ok (V.Bind _ | V.Input _ | V.Legacy_control _)
+    | Error _ ->
+        false)
+    "valid integrate revision frame";
+  let malformed =
+    match Yojson.Safe.from_string encoded with
+    | `Assoc fields ->
+        let work =
+          `Assoc
+            [
+              ("type", `String "integrate_revision");
+              ("contributor", `String "child");
+              ("revision", `String "not-a-commit");
+            ]
+        in
+        Yojson.Safe.to_string
+          (`Assoc (("work", work) :: List.remove_assoc "work" fields))
+        ^ "\n"
+    | _ -> failwith "encoded execute is not a JSON object"
+  in
+  check
+    (Result.is_error (V.decode_host malformed))
+    "malformed integrate revision rejected by v3 decoder"
 
 let test_input () =
   let identity = (request ()).identity in
@@ -191,7 +235,24 @@ let test_input () =
   let _, out = V.step t (V.Input_committed ("other", 2L)) in
   check
     (List.exists (function V.Reject _ -> true | _ -> false) out)
-    "unmatched input commit"
+    "unmatched input commit";
+  let batch =
+    {
+      i with
+      input_id = "batch";
+      version = 3L;
+      covered = [ ("third", 3L); ("second", 2L) ];
+    }
+  in
+  let _, out = V.step t (V.Host (V.Input (identity, batch))) in
+  check
+    (List.exists (function V.Reject _ -> true | _ -> false) out)
+    "out-of-order cumulative coverage";
+  let ordered = { batch with covered = [ ("second", 2L); ("third", 3L) ] } in
+  let _, out = V.step t (V.Host (V.Input (identity, ordered))) in
+  check
+    (not (List.exists (function V.Reject _ -> true | _ -> false) out))
+    "ordered cumulative coverage"
 
 let has_reject outputs =
   List.exists (function V.Reject _ -> true | _ -> false) outputs
@@ -510,6 +571,7 @@ let public_api_coverage =
 let () =
   test_lifecycle ();
   test_integration ();
+  test_extended_revision ();
   test_input ();
   test_retarget ();
   test_boundaries ();
