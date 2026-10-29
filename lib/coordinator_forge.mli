@@ -16,6 +16,7 @@ type scope = Coordinator_observation.scope = {
 
 type observation =
   | Confirmed of Pr_state.t
+  | Terminal of Pr_state.t
   | Unconfirmed of string
   | Unavailable of string
 
@@ -24,10 +25,12 @@ val observe :
   io:Branch_reconcile_executor.io ->
   scope ->
   observation
-(** Read-only provider and direct Git confirmation. The head probe uses the
-    captured push destination; the base probe uses origin's fetch destination.
-    The caller must durably record and recheck the ticket before adopting this
-    observation. An unavailable probe never proves a missing ref. *)
+(** Read-only provider observation. Open PRs require direct head/base Git
+    confirmation: the head probe uses the captured push destination and the base
+    probe uses origin's fetch destination. A matching terminal PR is reported
+    separately and needs no live source ref. The caller must durably record and
+    recheck the ticket before adopting this observation. An unavailable probe
+    never proves a missing ref. *)
 
 val observe_committed :
   ?now:float ->

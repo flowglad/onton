@@ -18,6 +18,7 @@ type scope = Coordinator_observation.scope = {
 
 type observation =
   | Confirmed of Pr_state.t
+  | Terminal of Pr_state.t
   | Unconfirmed of string
   | Unavailable of string
 
@@ -31,6 +32,11 @@ let same_scope a b =
   && String.equal a.base_revision b.base_revision
   && String.equal a.push_destination b.push_destination
 
+let is_terminal_pr pr = Pr_state.merged pr || Pr_state.closed pr
+
+let observation_of_pr pr =
+  if is_terminal_pr pr then Terminal pr else Confirmed pr
+
 let observe (type e) (module F : Forge.S with type error = e) ~io scope =
   if
     String.is_empty scope.ticket
@@ -42,22 +48,27 @@ let observe (type e) (module F : Forge.S with type error = e) ~io scope =
     match F.pr_state scope.pr with
     | Error e -> Unavailable (F.show_error e)
     | Ok pr -> (
+        let matches_optional_branch expected = function
+          | None -> true
+          | Some branch -> Branch.equal branch expected
+        in
         if
           (not
              (Option.value_map pr.pr_number ~default:false
                 ~f:(Pr_number.equal scope.pr)))
+          || (not (matches_optional_branch scope.head_branch pr.head_branch))
+          || not (matches_optional_branch scope.base_branch pr.base_branch)
+        then Unconfirmed "provider PR identity changed"
+        else if is_terminal_pr pr then Terminal pr
+        else if
+          (not
+             (Option.value_map pr.head_oid ~default:false
+                ~f:(String.equal scope.head_revision)))
           || (not
-                (Option.value_map pr.head_branch ~default:false
-                   ~f:(Branch.equal scope.head_branch)))
-          || (not
-                (Option.value_map pr.base_branch ~default:false
-                   ~f:(Branch.equal scope.base_branch)))
-          || (not
-                (Option.value_map pr.head_oid ~default:false
-                   ~f:(String.equal scope.head_revision)))
-          || not
-               (Option.value_map pr.base_oid ~default:false
-                  ~f:(String.equal scope.base_revision))
+                (Option.value_map pr.base_oid ~default:false
+                   ~f:(String.equal scope.base_revision)))
+          || Option.is_none pr.head_branch
+          || Option.is_none pr.base_branch
         then Unconfirmed "provider revision pair changed"
         else
           let open Branch_reconcile_executor in
@@ -125,7 +136,7 @@ let observe_committed ?(now = 0.) (type e)
           let id = "observation:" ^ scope.ticket in
           let from_evidence evidence =
             match evidence.Coordinator_observation.state with
-            | Some pr -> Confirmed pr
+            | Some pr -> observation_of_pr pr
             | None -> Unavailable evidence.diagnostic
           in
           match
@@ -150,7 +161,7 @@ let observe_committed ?(now = 0.) (type e)
                   let observed = observe (module F) ~io scope in
                   let pr, diagnostic =
                     match observed with
-                    | Confirmed pr -> (Some pr, "")
+                    | Confirmed pr | Terminal pr -> (Some pr, "")
                     | Unconfirmed reason | Unavailable reason -> (None, reason)
                   in
                   let removal_checks =
@@ -311,7 +322,7 @@ let create_unsettled (type e) (module F : Forge.S with type error = e) ~host ~io
                         observe (module F) ~io { scope with pr = number }
                       with
                       | Confirmed _ -> Some number
-                      | Unavailable _ | Unconfirmed _ -> None)
+                      | Terminal _ | Unavailable _ | Unconfirmed _ -> None)
                 in
                 match confirmed with
                 | Some number -> Found number
@@ -424,6 +435,11 @@ let change_unsettled (type e) (module F : Forge.S with type error = e) ~host ~io
     match proof with
     | Some (Unavailable reason) -> Change_pending reason
     | Some (Unconfirmed reason) -> Change_blocked reason
+    | Some (Terminal pr)
+      when match action with Merge -> Pr_state.merged pr | _ -> false ->
+        Applied
+    | Some (Terminal _) ->
+        Change_blocked "terminal PR cannot authorize an open-PR mutation"
     | Some (Confirmed _) | None -> (
         match
           Coordinator_host.submit host (Coordinator_state.Control intent)
@@ -483,6 +499,9 @@ let change_unsettled (type e) (module F : Forge.S with type error = e) ~host ~io
                     match observe (module F) ~io scope with
                     | Unavailable reason -> Change_pending reason
                     | Unconfirmed reason -> Change_blocked reason
+                    | Terminal _ ->
+                        Change_blocked
+                          "terminal PR cannot authorize an open-PR mutation"
                     | Confirmed pr
                       when Option.value_map expected ~default:false
                              ~f:(fun old ->
@@ -709,6 +728,13 @@ let change forge ~host ~io ~scope ~patch ~effect_id ?renewal_id ~view ~now
             then
               Change_pending
                 "current shared scheduler policy/idle window not ready"
+            else if
+              (not replay)
+              && Option.exists observation ~f:(function
+                | Terminal _ -> true
+                | Confirmed _ | Unconfirmed _ | Unavailable _ -> false)
+            then
+              Change_blocked "terminal PR cannot authorize an open-PR mutation"
             else
               match journal_attempt host id bytes with
               | Error why -> Change_blocked why
@@ -724,6 +750,9 @@ let change forge ~host ~io ~scope ~patch ~effect_id ?renewal_id ~view ~now
                     | None | Some (Confirmed _) ->
                         change_unsettled forge ~host ~io ~scope ~patch
                           ~effect_id ~policy_ready:true ~expected action
+                    | Some (Terminal _) ->
+                        Change_blocked
+                          "terminal PR cannot authorize an open-PR mutation"
                     | Some (Unconfirmed why) -> Change_blocked why
                     | Some (Unavailable why) -> Change_pending why
                   in

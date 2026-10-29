@@ -518,7 +518,8 @@ let run ?forge ?git ?(write_status = fun _ -> ()) env =
                            ~now:(Int64.to_float (env.now ()))
                            forge ~host ~io ~patch ~scope
                        with
-                      | Confirmed pr -> (
+                      | Confirmed _ -> ()
+                      | Terminal pr -> (
                           if Pr_state.merged pr then
                             match
                               Coordinator_host.terminal_from_forge host ~patch

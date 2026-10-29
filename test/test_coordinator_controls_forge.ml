@@ -519,6 +519,169 @@ let test_ambiguous_create () =
     "disappeared publication recreated without explicit renewal";
   check (!creates = 1) "unrenewed create wrote to provider"
 
+let test_merged_pr_survives_deleted_head_ref () =
+  let module F = Onton_test_support.Coordinator_store_fixture in
+  let fixture = F.fixture () in
+  let store, initial, next = F.setup fixture in
+  let patch = Types.Patch_id.of_string "merged-patch" in
+  let apply state event =
+    let state, outcomes = Coordinator_state.step state event in
+    match
+      List.find_map
+        (function
+          | Coordinator_state.Rejected reason -> Some reason | _ -> None)
+        outcomes
+    with
+    | Some reason -> failwith ("fixture transition rejected: " ^ reason)
+    | None -> state
+  in
+  let operation : Coordinator_state.operation =
+    {
+      id = "work";
+      patch;
+      used = 0;
+      budget = 3;
+      retry_after = 0L;
+      attention = false;
+      unfinished = true;
+      maintenance = false;
+    }
+  in
+  let assignment : Coordinator_state.assignment =
+    {
+      id = "assignment";
+      operation = operation.id;
+      patch;
+      resource = "worker";
+      request = "request";
+      reserved = true;
+      retired = false;
+      result_committed = false;
+      cleanup = false;
+    }
+  in
+  let state =
+    initial |> fun state ->
+    apply state (Coordinator_state.Admit operation) |> fun state ->
+    apply state (Coordinator_state.Resource_request ("worker", "resource"))
+    |> fun state ->
+    apply state (Coordinator_state.Bind_resource ("worker", patch))
+    |> fun state ->
+    apply state (Coordinator_state.Assign (assignment, 0L)) |> fun state ->
+    apply state
+      (Coordinator_state.Owner_receipt
+         {
+           assignment = assignment.id;
+           version = 1L;
+           bytes = "owner-capsule";
+           receipt = "receipt";
+         })
+    |> fun state ->
+    apply state
+      (Coordinator_state.Worker_result
+         (assignment.id, assignment.request, "completed_ok", 0L))
+    |> fun state ->
+    apply state
+      (Coordinator_state.Cleanup_confirmed (assignment.id, assignment.request))
+  in
+  let number = Types.Pr_number.of_int 17 in
+  let branch = Types.Branch.of_string in
+  let head = String.make 40 'a' and base = String.make 40 'b' in
+  let scope : Coordinator_forge.scope =
+    {
+      ticket = "merged-after-delete";
+      pr = number;
+      head_branch = branch "feature";
+      base_branch = branch "main";
+      head_revision = head;
+      base_revision = base;
+      push_destination = "push";
+      generation = 0;
+    }
+  in
+  ignore
+    (F.committed
+       (Coordinator_store.commit store ~expected_version:0L ~write_id:"initial"
+          (Coordinator_store.initial state)));
+  let host =
+    match Coordinator_host.restore ~store ~next_write_id:next with
+    | Ok host -> host
+    | Error _ -> failwith "restore merged PR fixture"
+  in
+  let merged_pr : Pr_state.t =
+    {
+      pr_number = Some number;
+      status = Merged;
+      is_draft = false;
+      merge_state = Mergeable;
+      merge_ready = true;
+      merge_ready_divergence = None;
+      review_decision = Some "APPROVED";
+      check_status = Passing;
+      ci_checks = [];
+      ci_checks_truncated = false;
+      comments = [];
+      unresolved_comment_count = 0;
+      findings = [];
+      node_id = Some "merged-node";
+      merge_queue_required = false;
+      merge_queue_entry = None;
+      native_stack = false;
+      head_branch = Some (branch "feature");
+      head_oid = Some head;
+      base_oid = Some base;
+      merge_commit_sha = Some (String.make 40 'c');
+      base_branch = Some (branch "main");
+      is_fork = false;
+    }
+  in
+  provider_state := Some merged_pr;
+  provider_reads := 0;
+  (after_read := fun () -> ());
+  let git_probes = ref [] in
+  let io : Branch_reconcile_executor.io =
+    {
+      git =
+        (fun args ->
+          git_probes := args :: !git_probes;
+          if List.mem "refs/heads/feature" args then (2, "", "missing")
+          else (0, base ^ "\trefs/heads/main\n", ""));
+    }
+  in
+  (match
+     Coordinator_forge.observe_committed
+       (module Fake_forge)
+       ~host ~io ~patch ~scope
+   with
+  | Coordinator_forge.Terminal pr when Pr_state.merged pr -> ()
+  | Coordinator_forge.Unavailable why | Coordinator_forge.Unconfirmed why ->
+      failwith ("merged PR observation was not terminal: " ^ why)
+  | Coordinator_forge.Confirmed _ | Coordinator_forge.Terminal _ ->
+      failwith "merged PR returned as open-pair proof");
+  check (!git_probes = []) "merged PR incorrectly required live Git refs";
+  (match
+     Coordinator_host.terminal_from_forge host ~patch ~ticket:scope.ticket
+   with
+  | Ok (Coordinator_host.Applied _) -> ()
+  | Ok (Coordinator_host.Rejected reason) ->
+      failwith ("committed merge did not terminate patch: " ^ reason)
+  | Error _ -> failwith "committed merge transition failed");
+  check
+    (List.mem patch
+       (Coordinator_state.terminal_patches (Coordinator_host.state host)))
+    "matching merged PR did not become terminal";
+  let open_scope = { scope with ticket = "open-with-deleted-head" } in
+  provider_state :=
+    Some { merged_pr with status = Open; merge_commit_sha = None };
+  (match Coordinator_forge.observe (module Fake_forge) ~io open_scope with
+  | Coordinator_forge.Unconfirmed _ -> ()
+  | Coordinator_forge.Confirmed _ | Coordinator_forge.Terminal _
+  | Coordinator_forge.Unavailable _ ->
+      failwith "open PR bypassed direct revision-pair proof");
+  check
+    (List.exists (fun args -> List.mem "refs/heads/feature" args) !git_probes)
+    "open PR did not probe the deleted head ref"
+
 let test_committed_evidence_and_effects () =
   let module F = Onton_test_support.Coordinator_store_fixture in
   let f = F.fixture () in
@@ -662,6 +825,7 @@ let test_committed_evidence_and_effects () =
   let host = restore () in
   (match observe host "committed-result" with
   | Confirmed _ -> ()
+  | Terminal _ -> failwith "open PR was reported terminal"
   | Unavailable why | Unconfirmed why ->
       failwith ("observation result not committed: " ^ why));
   let projected =
@@ -819,6 +983,7 @@ let test_committed_evidence_and_effects () =
      restart and applied/ambiguous effect settlement"
 
 let () =
+  test_merged_pr_survives_deleted_head_ref ();
   test_committed_evidence_and_effects ();
   test_control_store ();
   test_guidance_atomic ();
