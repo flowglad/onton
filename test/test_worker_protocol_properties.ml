@@ -843,6 +843,29 @@ let public_codec_api =
               | P.Shutdown _ )
           | None ->
               false);
+        let admission_of line =
+          match P.decode line with
+          | Ok (P.Bind { admission; _ }) -> Some admission
+          | Ok
+              ( P.Execute _ | P.Cancel _ | P.Checkpoint_ack _ | P.Result_ack _
+              | P.Shutdown _ )
+          | Error _ ->
+              None
+        in
+        let fresh_admission = admission_of (bind ()) in
+        let resumed_admission = admission_of (resume (admitted ())) in
+        let fresh_is_fresh =
+          match fresh_admission with
+          | Some admission -> P.admission_is_fresh admission
+          | None -> false
+        in
+        let resumed_is_not_fresh =
+          match resumed_admission with
+          | Some admission -> not (P.admission_is_fresh admission)
+          | None -> false
+        in
+        check ~label:"admission predicate distinguishes fresh and resumed"
+          (fresh_is_fresh && resumed_is_not_fresh);
         let binding =
           match P.decode (bind ()) with
           | Ok binding -> binding
