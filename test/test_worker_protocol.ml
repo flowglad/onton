@@ -67,6 +67,42 @@ let step state event =
 let has_checkpoint outputs =
   List.exists (function P.Send (P.Checkpoint _) -> true | _ -> false) outputs
 
+let test_checkpoint_attention_identity () =
+  let patch_id = Onton_core.Types.Patch_id.of_string "patch" in
+  let agent =
+    Onton_core.Patch_agent.create
+      ~branch:(Onton_core.Types.Branch.of_string "feature")
+      patch_id
+  in
+  let operation : P.operation =
+    P.{ operation_id = "op"; attempt_id = "attempt"; assignment_seq = 1L }
+  in
+  let initial =
+    Worker_checkpoint.initial ~run_id:"run" ~patch_id ~workspace_id:"workspace"
+      ~context:"context" ~agent
+  in
+  let attention =
+    match
+      Worker_checkpoint.advance initial ~operation ~guidance:"repair"
+        ~workspace_id:None ~agent
+        ~terminal:(Some (P.Attention, "", Some "renew"))
+    with
+    | Ok capsule -> capsule
+    | Error why -> failwith why
+  in
+  let checkpoint =
+    match
+      Worker_checkpoint.advance attention ~operation ~guidance:"repair"
+        ~workspace_id:None ~agent ~terminal:None
+    with
+    | Ok capsule -> capsule
+    | Error why -> failwith why
+  in
+  check "same-operation checkpoint preserves attention identity"
+    (Option.equal String.equal
+       (Worker_checkpoint.attention_id checkpoint)
+       (Some "renew"))
+
 type child = {
   output : in_channel;
   input : out_channel;
@@ -933,6 +969,7 @@ let run_cancellation ~root ~managed ~gameplan ~fake_bin ~prompt_log
      else "public worker: cancellation stops backend descendant")
 
 let () =
+  test_checkpoint_attention_identity ();
   let root, origin, managed, gameplan, fake_bin, prompt_log = fixture () in
   Fun.protect
     ~finally:(fun () ->

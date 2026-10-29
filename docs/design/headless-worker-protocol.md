@@ -1,4 +1,4 @@
-# Headless patch worker protocol v2
+# Headless patch worker protocol v2 (default) and v3 (opt-in)
 
 This is the local, trusted stdin/stdout contract for the opt-in `onton-worker` executable. Each direction carries one UTF-8 JSON object per line. Stderr is diagnostics only. The existing `onton --headless` scheduler keeps its local execution route.
 
@@ -11,10 +11,10 @@ ONTON_WORKER_BINARY=/absolute/path/to/onton-worker dune build @worker-protocol-s
 
 The first command builds and drives `bin/worker.exe` through the public JSONL entry point. The override drives an explicitly supplied binary with the same harness, for the later exact-image gate. The smoke uses local bare Git repositories, separate clones, a fake Codex executable, a local forge observation fixture, and a host durability simulator; it does not require AWS or a GitHub credential. `dune build && dune runtest` runs the source-change gate. Ordinary `onton` is a separate executable.
 
-Release archives contain `onton`, `onton-setsid-exec`, and `onton-worker`.
+Release archives contain `onton`, `onton-coordinator`, `onton-setsid-exec`, and `onton-worker`.
 The release workflow extracts each archive and runs the protocol smoke against
 that extracted worker before publishing. Linux builds additionally check worker
-startup in Ubuntu 22.04. The Homebrew formula template installs all three tools.
+startup in Ubuntu 22.04. The Homebrew formula template installs all four tools.
 
 OITC image qualification is a separate gate: its Dockerfile must extract and
 install `onton-worker` from the pinned release alongside the existing tools.
@@ -214,3 +214,52 @@ results preserve exact replay for the run/patch lifetime.
 Persist the admission object alongside the opaque execution capsule in the host
 storage envelope. Do not insert it recursively into the capsule string supplied
 to the protocol; the resume object already binds those exact capsule bytes.
+
+## Opt-in v3 pure contract (M3)
+
+The default worker and explicit v2 continue to use the wire and receipt above.
+V3 is a distinct, explicitly selected schema: a v2 line sent to the v3 decoder
+(or a v3 line sent to the v2 decoder) fails closed. A worker process must not
+switch protocols after binding. `Worker_protocol_v3` provides the *pure* library
+seam; effectful v3 worker CLI selection/execution belongs to the subsequent
+worker-execution patch. It does not make the current v2 executable a v3 worker.
+
+V3 frames retain the v2 identity, counter, UTF-8, duplicate-key, text and 1 MiB
+line rules, with numeric `version:3`. Bind additionally requires
+`execution_context`, a canonical JSON *string* (up to 256 KiB) containing exactly
+`version:3`, `run_id`, `patch_id`, `config_id`, `plan_id`, `message_id`,
+`generation` (decimal counter), `dependencies` (list of objects with `patch_id`,
+`admitted`, `revision`), `selected_base`, `execution_mode` (`feature|mainline`),
+`root_role` (`root|patch`), `admitted`, `evidence_id`, `guidance_ids` (list of IDs),
+and `input_version` (decimal counter). Root role requires feature mode. Bind
+and execute scopes must agree with the context. Execute repeats the exact
+execution context and supplies `input_version`; its work is either the existing
+session/reconcile shape or `{type:"integrate_revision",contributor,revision}`.
+Missing/unknown fields, bad scopes and changed request identities reject.
+
+V3 input is a separate `{version:3,type:"input",run_id,patch_id,input_id,
+input_version,guidance,selected_base,evidence,controls,covered}` frame. `evidence`
+is a list of committed forge-observation records, `controls` is a list of
+`[kind,value]` pairs, and `covered` is the ordered list of every input ID and
+version included in the cumulative payload. A standalone input starts at version
+1 and advances by one; a batched input may advance to its latest version when
+`covered` lists every intervening version contiguously in ascending order. The
+host rejects gaps, duplicates, and out-of-order coverage rather than sorting it. A matching exact replay
+is harmless; changed ID reuse, gaps and counter exhaustion reject. `Input_committed(id,version)` is a *host attestation*, not a
+storage write: the host must atomically commit the exact input before emitting
+it. Only a matching committed input updates the desired base or authorizes
+application. An older unfinished Execute retains its original binding. Notes
+are bounded to 256 KiB, with distinct missing, empty, unreadable and oversized
+outcomes; acceptance requires exact assignment and publication binding. Storage
+confirmation for notes and their bytes is a later effectful host obligation.
+
+The pure v3 host delegates admission, checkpoints, terminal-versus-ACK and
+unfinished recovery to `Worker_protocol.step`. Its shared receipt records a
+canonical v3 Execute frame in the v2 request's guidance field, so all extended
+work, context and input bindings participate in replay equality and are
+reconstructed on replacement. The shadow request is never backend guidance.
+Receipts and capsules must be committed together; a prospective pure `step`
+transition, a transmitted checkpoint, or an unconfirmed storage write cannot
+justify an ACK or worker effect. A context too large to fit the v2 guidance
+bound is rejected before admission rather than truncated. V3 resource identities
+remain outside protocol assignment identities and receipts.

@@ -819,6 +819,72 @@ let bound_receipt_pair =
         true
       with _ -> false)
 
+let public_codec_api =
+  QCheck2.Test.make ~name:"public codec constructors round-trip" ~count:100
+    (QCheck2.Gen.int_bound 1_000_000) (fun seed ->
+      try
+        let request =
+          match P.decode (execute ()) with
+          | Ok (P.Execute request) ->
+              let open P in
+              { request with guidance = "property-" ^ string_of_int seed }
+          | _ -> failwith "execute fixture"
+        in
+        let frame = Onton_core.Worker_protocol.execute_frame request in
+        check ~label:"codec assertion 68"
+          (match Onton_core.Worker_protocol.parse_frame frame with
+          | Ok _ -> true
+          | Error _ -> false);
+        check ~label:"codec assertion 69"
+          (match Onton_core.Worker_protocol.execute_message request with
+          | Some (P.Execute decoded) -> decoded = request
+          | Some
+              ( P.Bind _ | P.Cancel _ | P.Checkpoint_ack _ | P.Result_ack _
+              | P.Shutdown _ )
+          | None ->
+              false);
+        let admission_of line =
+          match P.decode line with
+          | Ok (P.Bind { admission; _ }) -> Some admission
+          | Ok
+              ( P.Execute _ | P.Cancel _ | P.Checkpoint_ack _ | P.Result_ack _
+              | P.Shutdown _ )
+          | Error _ ->
+              None
+        in
+        let fresh_admission = admission_of (bind ()) in
+        let resumed_admission = admission_of (resume (admitted ())) in
+        let fresh_is_fresh =
+          match fresh_admission with
+          | Some admission -> P.admission_is_fresh admission
+          | None -> false
+        in
+        let resumed_is_not_fresh =
+          match resumed_admission with
+          | Some admission -> not (P.admission_is_fresh admission)
+          | None -> false
+        in
+        check ~label:"admission predicate distinguishes fresh and resumed"
+          (fresh_is_fresh && resumed_is_not_fresh);
+        let binding =
+          match P.decode (bind ()) with
+          | Ok binding -> binding
+          | Error _ -> failwith "bind fixture"
+        in
+        check ~label:"codec assertion 70"
+          (let encoded = Onton_core.Worker_protocol.encode_host binding in
+           match P.decode encoded with
+           | Ok (P.Bind _ as decoded) ->
+               decoded = binding
+               && Onton_core.Worker_protocol.encode_host decoded = encoded
+           | Ok
+               ( P.Execute _ | P.Cancel _ | P.Checkpoint_ack _ | P.Result_ack _
+               | P.Shutdown _ )
+           | Error _ ->
+               false);
+        true
+      with _ -> false)
+
 let committed_before_delivery =
   QCheck2.Test.make
     ~name:
@@ -891,4 +957,5 @@ let () =
       attention_transition;
       bounded_encode;
       generated_wire_state;
+      public_codec_api;
     ]

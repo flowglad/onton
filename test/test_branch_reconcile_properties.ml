@@ -49,6 +49,26 @@ let reply_raw state result =
 
 let reply = reply_raw
 
+let legacy_contributor_checkpoint state =
+  match B.yojson_of_t state with
+  | `Assoc fields ->
+      let list_field name =
+        match List.assoc_opt name fields with
+        | Some (`List values) -> values
+        | Some _ | None -> []
+      in
+      let integrations =
+        list_field "contributor_integrations" @ list_field "integrations"
+      in
+      `Assoc
+        (("integrations", `List integrations)
+        :: List.filter
+             (fun (name, _) ->
+               not
+                 (List.mem name [ "integrations"; "contributor_integrations" ]))
+             fields)
+  | _ -> failwith "branch checkpoint is not an object"
+
 let is_diagnosis state =
   match B.phase state with
   | Some (B.Repairing { mode = Diagnosis _; _ }) -> true
@@ -166,6 +186,41 @@ let fails_recovery state interrupted =
 
 let[@warning "-4"] tests =
   [
+    QCheck2.Test.make ~count:100
+      ~name:
+        "BR settled provisioning does not invent a possible first publication"
+      Gen.bool (fun restart ->
+        try
+          let state =
+            fst
+              (B.step B.empty
+                 (B.Request
+                    B.
+                      {
+                        base = "main";
+                        policy = Rewrite;
+                        purpose = Provision_checkout "fresh";
+                      }))
+          in
+          let state = fst (reply state B.Checkout_ready) in
+          let state = if restart then restore state else state in
+          let state =
+            fst
+              (B.step state
+                 (B.Workspace_lost { request = "lost-before-publish" }))
+          in
+          let state =
+            fst
+              (reply state
+                 (B.Workspace_observed
+                    {
+                      push_destination = observation.destination;
+                      patch_revision = None;
+                      base_revision = Some target;
+                    }))
+          in
+          B.workspace_outcome state = Some (B.Workspace_base target)
+        with _ -> false);
     QCheck2.Test.make ~count:300
       ~name:"BR verified destination survives checkout inspection and restart"
       Gen.(list bool)
@@ -2082,18 +2137,34 @@ let[@warning "-4"] tests =
                 false
           in
           let state, _ = reply state (B.Integrated candidate) in
-          let unpublished =
-            B.publications state = [] && B.integrations state = []
+          let integration_recorded =
+            match B.contributor_integrations state with
+            | [ receipt ] ->
+                receipt.contributor = Some "2"
+                && B.Commit.equal receipt.capture.target_revision target
+                && B.Commit.equal receipt.integrated_revision candidate
+            | [] | _ :: _ :: _ -> false
           in
+          let unpublished = B.publications state = [] && integration_recorded in
           let state, _ = reply state B.Published in
           let state =
             if restart then
-              match B.decode (B.yojson_of_t state) with
+              match B.decode (legacy_contributor_checkpoint state) with
               | Ok restored -> restored
               | Error _ -> assert false
             else state
           in
-          let unconfirmed = B.publications state = [] in
+          let unconfirmed =
+            B.publications state = []
+            && B.integrations state = []
+            &&
+            match B.contributor_integrations state with
+            | [ receipt ] ->
+                receipt.contributor = Some "2"
+                && B.Commit.equal receipt.capture.target_revision target
+                && B.Commit.equal receipt.integrated_revision candidate
+            | [] | _ :: _ :: _ -> false
+          in
           let state, _ =
             reply state (B.Remote { sha = Some candidate; topology = Equal })
           in
@@ -5048,6 +5119,41 @@ let creation_base_tests =
 
 let[@warning "-4"] workspace_state_tests =
   [
+    QCheck2.Test.make ~count:200
+      ~name:
+        "BR root workspace loss seeds and retains captured contributor intent"
+      Gen.bool (fun malformed ->
+        try
+          let intent =
+            B.
+              {
+                base = "main";
+                policy = Preserve_ancestry;
+                purpose =
+                  Integrate_revision
+                    {
+                      contributor = (if malformed then "" else "sibling");
+                      revision = sha 'a';
+                    };
+              }
+          in
+          let state, _ =
+            B.step B.empty
+              (B.Workspace_lost_without_operation
+                 { request = "lost-root"; intent })
+          in
+          if malformed then B.equal state B.empty
+          else
+            let restored = restore state in
+            B.equal restored state
+            &&
+            match B.operation restored with
+            | Some op ->
+                B.equal_intent op.intent intent
+                && op.lost_workspace && op.source = None
+                && B.workspace_outcome restored = Some B.Workspace_wait
+            | None -> false
+        with _ -> false);
     QCheck2.Test.make ~count:200
       ~name:"BR workspace loss roundtrip retains intent and fences old command"
       Gen.bool (fun captured ->

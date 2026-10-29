@@ -7,7 +7,8 @@ open Onton_core
 let usage () =
   prerr_endline
     "Usage: onton-worker --gameplan FILE --repo-root DIR --project-name NAME \
-     [--main-branch BRANCH] [--backend codex|claude] [--ack-timeout SECONDS]";
+     [--main-branch BRANCH] [--backend codex|claude] [--ack-timeout SECONDS] \
+     [--protocol-version 2|3]";
   exit 2
 
 let parse_args () =
@@ -17,6 +18,7 @@ let parse_args () =
   let main_branch = ref "main" in
   let backend = ref "codex" in
   let ack_timeout = ref 10. in
+  let protocol_version = ref 2 in
   let rec scan = function
     | [] -> ()
     | "--gameplan" :: value :: rest ->
@@ -34,6 +36,10 @@ let parse_args () =
     | "--backend" :: value :: rest ->
         backend := value;
         scan rest
+    | "--protocol-version" :: "2" :: rest -> scan rest
+    | "--protocol-version" :: "3" :: rest ->
+        protocol_version := 3;
+        scan rest
     | "--ack-timeout" :: value :: rest -> (
         match float_of_string_opt value with
         | Some seconds when seconds > 0. && seconds <= 60. ->
@@ -48,7 +54,13 @@ let parse_args () =
     when String.length project_name > 0
          && String.length !main_branch > 0
          && List.mem !backend [ "codex"; "claude" ] ->
-      (gameplan, repo_root, project_name, !main_branch, !backend, !ack_timeout)
+      ( gameplan,
+        repo_root,
+        project_name,
+        !main_branch,
+        !backend,
+        !ack_timeout,
+        !protocol_version )
   | _ -> usage ()
 
 let github_token () =
@@ -78,8 +90,15 @@ let () =
         project_name,
         main_branch_name,
         backend_name,
-        ack_timeout ) =
+        ack_timeout,
+        protocol_version ) =
     parse_args ()
+  in
+  let repo_root =
+    try Unix.realpath repo_root
+    with _ ->
+      prerr_endline "Worker repository root is unavailable";
+      exit 2
   in
   let gameplan =
     match Gameplan_parser.parse_file gameplan_path with
@@ -140,6 +159,7 @@ let () =
       backend;
       observe_forge;
       ack_timeout;
+      protocol_version;
     }
   in
   try Worker.run env

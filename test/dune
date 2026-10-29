@@ -1294,3 +1294,175 @@
   (setenv ONTON_WORKER_BINARY_DEFAULT %{exe:../bin/worker.exe}
    (setenv ONTON_SETSID_EXEC %{bin:onton-setsid-exec}
     (run %{exe:test_worker_protocol.exe})))))
+
+; Patch 1 creates executable pending suites for their owning implementation
+; patches. A passing stub only reports PENDING; it is not qualification evidence.
+(test
+ (name test_worker_protocol_v3_properties)
+ (modules test_worker_protocol_v3_properties)
+ (libraries onton_core qcheck-core qcheck-core.runner))
+
+(test
+ (name test_coordinator_state_properties)
+ (modules test_coordinator_state_properties)
+ (libraries onton_core qcheck-core qcheck-core.runner))
+
+(test
+ (name test_scheduler_decision_properties)
+ (modules test_scheduler_decision_properties)
+ (libraries onton_core qcheck-core qcheck-core.runner))
+
+(test
+ (name test_scheduler_adapter)
+ (modules test_scheduler_adapter)
+ (libraries onton onton_core qcheck-core))
+
+(test
+ (name test_resource_protocol_properties)
+ (modules test_resource_protocol_properties)
+ (libraries onton_core qcheck-core qcheck-core.runner))
+
+(test
+ (name test_resource_client)
+ (modules test_resource_client)
+ (deps %{exe:../bin/setsid_exec/main.exe})
+ (action
+  (setenv ONTON_SETSID_EXEC %{exe:../bin/setsid_exec/main.exe} (run %{test})))
+ (libraries onton onton_core eio eio_main unix))
+
+(test
+ (name test_worker_v3)
+ (modules test_worker_v3)
+ (deps ../bin/worker.exe (package onton))
+ (action
+  (setenv ONTON_WORKER_BINARY_DEFAULT %{exe:../bin/worker.exe}
+   (setenv ONTON_SETSID_EXEC %{bin:onton-setsid-exec}
+    (run %{test}))))
+ (libraries onton onton_core onton_test_support eio_main unix yojson))
+
+(test
+ (name test_worker_root_recovery_git)
+ (modules test_worker_root_recovery_git)
+ (deps (package onton))
+ (action
+  (setenv ONTON_SETSID_EXEC %{bin:onton-setsid-exec}
+   (run %{test})))
+ (libraries onton onton_core onton_test_support eio_main unix))
+
+(test
+ (name test_coordinator_host_state_machine)
+ (modules test_coordinator_host_state_machine)
+ (libraries onton onton_core qcheck-core qcheck-core.runner))
+
+(test
+ (name test_coordinator_store_state_machine)
+ (modules test_coordinator_store_state_machine)
+ (libraries onton onton_core qcheck-core qcheck-core.runner))
+
+(test
+ (name test_coordinator_stream_io)
+ (modules test_coordinator_stream_io)
+ (deps (package onton))
+ (action
+  (setenv ONTON_SETSID_EXEC %{bin:onton-setsid-exec}
+   (run %{test})))
+ (libraries onton eio eio_main unix))
+
+(test
+ (name test_coordinator_stream)
+ (modules test_coordinator_stream)
+ (deps ../bin/worker.exe (package onton))
+ (action
+  (setenv ONTON_WORKER_BINARY_DEFAULT %{exe:../bin/worker.exe}
+   (setenv ONTON_SETSID_EXEC %{bin:onton-setsid-exec}
+    (run %{test}))))
+ (libraries onton onton_core onton_test_support eio_main unix yojson))
+
+(test
+ (name test_coordinator_result_properties)
+ (modules test_coordinator_result_properties)
+ (libraries onton_core qcheck-core qcheck-core.runner))
+
+(test
+ (name test_worker_stream_properties)
+ (modules test_worker_stream_properties)
+ (libraries onton_core qcheck-core qcheck-core.runner))
+
+(test
+ (name test_coordinator_control_socket)
+ (modules test_coordinator_control_socket)
+ (libraries onton onton_core onton_test_support eio_main unix yojson))
+
+(test
+ (name test_coordinator_resource)
+ (modules test_coordinator_resource)
+ (libraries onton onton_core onton_test_support unix))
+
+(test
+ (name test_coordinator_recovery)
+ (modules test_coordinator_recovery)
+ (libraries onton onton_core onton_test_support eio_main unix))
+
+(test
+ (name test_coordinator_controls_forge)
+ (modules test_coordinator_controls_forge)
+ (libraries onton onton_core onton_test_support eio_main unix))
+
+
+(test
+ (name test_coordinator_command_forge)
+ (modules test_coordinator_command_forge)
+ (deps %{exe:../bin/setsid_exec/main.exe})
+ (action
+  (setenv ONTON_SETSID_EXEC %{exe:../bin/setsid_exec/main.exe} (run %{test})))
+ (libraries onton onton_core unix))
+
+(test
+ (name test_coordinator_journal_properties)
+ (modules test_coordinator_journal_properties)
+ (libraries onton_core qcheck-core qcheck-core.runner))
+
+(test
+ (name test_coordinator_observation_properties)
+ (modules test_coordinator_observation_properties)
+ (libraries onton_core qcheck-core qcheck-core.runner))
+
+(test
+ (name test_coordinator_inputs_properties)
+ (modules test_coordinator_inputs_properties)
+ (libraries onton_core qcheck-core qcheck-core.runner))
+
+(test
+ (name test_coordinator_bootstrap)
+ (modules test_coordinator_bootstrap)
+ (libraries onton onton_core onton_test_support eio_main unix yojson))
+
+(test
+ (name test_distributed_coordinator)
+ (modules test_distributed_coordinator)
+ (deps ../bin/coordinator.exe ../bin/worker.exe distributed_coordinator_fixture.py (package onton))
+ (action
+  (setenv ONTON_COORDINATOR_BINARY_DEFAULT %{exe:../bin/coordinator.exe}
+   (setenv ONTON_WORKER_BINARY_DEFAULT %{exe:../bin/worker.exe}
+    (setenv ONTON_SETSID_EXEC %{bin:onton-setsid-exec}
+     (run %{test})))))
+ (libraries onton onton_core onton_test_support eio_main unix yojson))
+
+(test
+ (name test_coordinator_archive_properties)
+ (modules test_coordinator_archive_properties)
+ (libraries onton_core qcheck-core qcheck-core.runner))
+
+(test
+ (name test_coordinator_config_properties)
+ (modules test_coordinator_config_properties)
+ (libraries onton_core qcheck-core qcheck-core.runner yojson))
+
+(rule
+ (alias distributed-coordinator-smoke)
+ (deps ../bin/coordinator.exe ../bin/worker.exe distributed_coordinator_fixture.py (package onton))
+ (action
+  (setenv ONTON_COORDINATOR_BINARY_DEFAULT %{exe:../bin/coordinator.exe}
+   (setenv ONTON_WORKER_BINARY_DEFAULT %{exe:../bin/worker.exe}
+    (setenv ONTON_SETSID_EXEC %{bin:onton-setsid-exec}
+     (run %{exe:test_distributed_coordinator.exe}))))))

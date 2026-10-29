@@ -262,6 +262,9 @@ module type S = sig
   val conflict_diff : path:string -> string
   val read_branch_sha : path:string -> ref_name:string -> string option
 
+  val probe_branch_sha :
+    path:string -> ref_name:string -> (string option, string) Result.t
+
   val is_ancestor : path:string -> ancestor:string -> descendant:string -> bool
   (** [is_ancestor ~path ~ancestor ~descendant] returns [true] iff [ancestor] is
       an ancestor of [descendant] in the repo at [path], via

@@ -74,6 +74,19 @@ val message_patch_id : patch_agent_message -> Patch_id.t
 val message_action : patch_agent_message -> action
 val message_status : patch_agent_message -> message_status
 
+val scheduling_view : t -> Scheduler_decision.input
+(** Read-only adapter: current message, dependency revisions, mode and evidence
+    are projected from the current orchestrator, never a fresh worker peer. *)
+
+val assigned_context :
+  t ->
+  Coordinator_state.t ->
+  run_id:string ->
+  config_id:string ->
+  plan_id:string ->
+  message:patch_agent_message ->
+  (Worker_protocol_v3.execution_context, string) Result.t
+
 (** {2 External event application} *)
 
 val complete : t -> Patch_id.t -> t
@@ -134,6 +147,11 @@ val accept_forge_observation :
   t * (Poll_outcome.t, string) Result.t
 
 val defer_forge_revision_pair : t -> Patch_id.t -> t
+
+val apply_worker_input : t -> Patch_id.t -> Worker_protocol_v3.input -> t
+(** Safe-boundary ingestion; caller checkpoints the input and owner together.
+    Forge bookkeeping never changes implementation message generation. *)
+
 val set_base_branch : t -> Patch_id.t -> Branch.t -> t
 val set_notified_base_branch : t -> Patch_id.t -> Branch.t -> t
 val increment_ci_failure_count : t -> Patch_id.t -> t
@@ -412,6 +430,20 @@ val restore :
   unit ->
   t
 (** Reconstruct orchestrator from persisted components. *)
+
+val restore_worker :
+  gameplan:Gameplan.t ->
+  main_branch:Branch.t ->
+  context:Worker_protocol_v3.execution_context ->
+  ?input:Worker_protocol_v3.input ->
+  agent:Patch_agent.t ->
+  unit ->
+  (t, string) Result.t
+(** Restore only the assigned patch using the coordinator's selected base and
+    gameplan-validated execution mode; never create default dependency peers. *)
+
+val start_assigned_worker : t -> Patch_id.t -> base:Branch.t -> t
+(** A coordinator-admitted Start does not re-check missing local peer agents. *)
 
 val start_eligibility :
   t ->

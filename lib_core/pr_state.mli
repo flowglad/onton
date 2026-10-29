@@ -12,8 +12,8 @@ open Types
 type merge_state = Mergeable | Conflicting | Unknown
 [@@deriving show, eq, compare, sexp_of, yojson]
 
-type check_status = Passing | Failing | Pending [@@deriving show, eq]
-type pr_status = Open | Merged | Closed [@@deriving show, eq]
+type check_status = Passing | Failing | Pending [@@deriving show, eq, yojson]
+type pr_status = Open | Merged | Closed [@@deriving show, eq, yojson]
 
 type merge_queue_entry_state =
   | Mq_queued
@@ -34,7 +34,7 @@ type merge_ready_divergence = {
   github_merge_state_status : string;  (** What GitHub's rollup reported. *)
   derived_merge_ready : bool;  (** What {!merge_ready_of} derived. *)
 }
-[@@deriving show, eq]
+[@@deriving show, eq, yojson]
 (** A disagreement between onton's component-derived readiness and GitHub's own
     [mergeStateStatus] rollup, captured at poll time for diagnostics. Surfaces
     the stale-[BLOCKED] smell (derived ready, GitHub not) and the conservative
@@ -86,7 +86,7 @@ type t = {
   base_branch : Branch.t option;
   is_fork : bool;
 }
-[@@deriving show, eq]
+[@@deriving show, eq, yojson]
 
 (** {2 WorldCtx predicates} *)
 

@@ -69,6 +69,7 @@ CAMLprim value caml_onton_descendants_remaining(value leader, value terminate) {
     bytes = 0;
     if (sysctl(mib, 4, NULL, &bytes, NULL, 0) < 0) {
       error = errno;
+      if (error == ESRCH || error == ENOENT) error = 0;
       break;
     }
     /* The group may grow between the sizing and reading calls. Retry ENOMEM. */
@@ -88,6 +89,10 @@ CAMLprim value caml_onton_descendants_remaining(value leader, value terminate) {
     }
     error = errno;
     free(members);
+    if (error == ESRCH || error == ENOENT) {
+      error = 0;
+      break;
+    }
     if (error != ENOMEM) break;
     error = 0;
   }

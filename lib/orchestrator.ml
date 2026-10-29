@@ -246,6 +246,12 @@ let set_execution_mode t mode =
 let refresh_base_branch t patch_id =
   match find_agent t patch_id with
   | None -> t
+  | Some _
+    when List.exists (Graph.deps t.graph patch_id) ~f:(fun dep ->
+             not (Map.mem t.agents dep)) ->
+      (* Assigned workers have no peer snapshots. Their selected base is
+         supplied by the coordinator, not re-derived during completion. *)
+      t
   | Some _ -> (
       match expected_base t patch_id with
       | None -> t
@@ -522,6 +528,87 @@ let current_message t patch_id =
   match (agent t patch_id).Patch_agent.current_message_id with
   | None -> None
   | Some message_id -> Map.find t.outbox message_id
+
+let scheduling_view t : Scheduler_decision.input =
+  {
+    graph = t.graph;
+    mode = t.execution_mode;
+    agents = Map.data t.agents;
+    main = t.main_branch;
+  }
+
+let assigned_context t state ~run_id ~config_id ~plan_id ~message =
+  let patch_id = message.patch_id in
+  let view = scheduling_view t in
+  match (Map.find t.outbox message.message_id, Map.find t.agents patch_id) with
+  | None, _ | _, None -> Error "no current scheduling message"
+  | Some stored, Some agent
+    when (not (equal_patch_agent_message stored message))
+         || (not (Int.equal message.generation agent.generation))
+         || equal_message_status stored.status Obsolete
+         || equal_message_status stored.status Completed ->
+      Error "stale scheduling message"
+  | Some _, Some agent -> (
+      let dependency_ids = Graph.deps t.graph patch_id in
+      let rec revisions = function
+        | [] -> Ok []
+        | id :: rest -> (
+            match Map.find t.agents id with
+            | None -> Error "missing dependency agent"
+            | Some dep -> (
+                let revision =
+                  if dep.merged then dep.merge_commit_sha else dep.head_oid
+                in
+                match (revision, revisions rest) with
+                | Some rev, Ok xs -> Ok ((id, true, rev) :: xs)
+                | None, Ok _ | _, Error _ ->
+                    Error "dependency revision unconfirmed"))
+      in
+      match
+        ( revisions dependency_ids,
+          Scheduler_decision.selected_base view patch_id,
+          Scheduler_decision.evidence_id view patch_id )
+      with
+      | Ok dependencies, Some selected_base, Some evidence_id
+        when match message.action with
+             | Start (_, base) | Rebase (_, base) ->
+                 Branch.equal base selected_base
+             | Respond _ | Reconcile_branch _ -> true ->
+          let unconsumed =
+            Coordinator_state.inputs state
+            |> List.filter ~f:(fun (_, p, _, _, used) ->
+                String.equal p (Patch_id.to_string patch_id) && not used)
+          in
+          let input_version =
+            List.fold (Coordinator_state.inputs state) ~init:0L
+              ~f:(fun n (_, p, v, _, _) ->
+                if String.equal p (Patch_id.to_string patch_id) && Int64.(v > n)
+                then v
+                else n)
+          in
+          let context : Coordinator_state.context_input =
+            {
+              run_id;
+              config_id;
+              plan_id;
+              message_id = Message_id.to_string message.message_id;
+              generation = Int64.of_int agent.generation;
+              patch_id;
+              dependencies;
+              selected_base;
+              mode =
+                (if Option.is_some (Execution_mode.root t.execution_mode) then
+                   "feature"
+                 else "mainline");
+              root = Execution_mode.is_root t.execution_mode patch_id;
+              evidence_id;
+              guidance_ids = List.map unconsumed ~f:(fun (id, _, _, _, _) -> id);
+              input_version;
+            }
+          in
+          Coordinator_state.execution_context state view context
+      | Error _, _, _ | _, None, _ | _, _, None | Ok _, Some _, Some _ ->
+          Error "incomplete current scheduling projection")
 
 let find_patch_by_branch t branch =
   Map.to_alist t.agents
@@ -810,6 +897,13 @@ let accept_forge_observation ?confirmed_base t patch_id ~ticket ~confirmed_head
 let defer_forge_revision_pair t patch_id =
   update_agent t patch_id ~f:Patch_agent.defer_forge_revision_pair
 
+let apply_worker_input t patch_id input =
+  match find_agent t patch_id with
+  | None -> t
+  | Some agent ->
+      let agent = Worker_protocol_v3.apply_input agent input in
+      { t with agents = Map.set t.agents ~key:patch_id ~data:agent }
+
 let set_base_branch t patch_id branch =
   update_agent t patch_id ~f:(fun a -> Patch_agent.set_base_branch a branch)
 
@@ -1013,6 +1107,63 @@ let restore ?(promotion_claimed = false) ~graph ~agents ~outbox ~main_branch ()
           reconcile_message orch
             (message_of_action agent (Reconcile_branch (pid, op.id)))
       | Some _ | None -> orch)
+
+let restore_worker ~gameplan ~main_branch ~context ?input ~agent () =
+  let patch_id = agent.Patch_agent.patch_id in
+  let named = Patch_id.to_string patch_id in
+  if not (String.equal named (Worker_protocol_v3.assigned_patch context)) then
+    Error "worker context names another patch"
+  else if
+    not
+      (List.exists gameplan.Gameplan.patches ~f:(fun p ->
+           Patch_id.equal p.Patch.id patch_id))
+  then Error "worker patch absent from gameplan"
+  else
+    let mode = Worker_protocol_v3.execution_mode context in
+    let role = Worker_protocol_v3.root_role context in
+    let selected =
+      Branch.of_string
+        (match input with
+        | None -> Worker_protocol_v3.selected_base context
+        | Some input -> input.Worker_protocol_v3.selected_base)
+    in
+    let graph = Graph.of_gameplan gameplan in
+    let execution_mode =
+      if String.equal mode "mainline" then
+        if String.equal role "patch" then Ok Execution_mode.mainline
+        else Error "mainline cannot have a root worker"
+      else
+        Result.bind (Execution_mode.infer_gameplan gameplan) ~f:(fun inferred ->
+            if
+              Bool.equal
+                (Execution_mode.is_root inferred patch_id)
+                (String.equal role "root")
+            then Ok inferred
+            else Error "worker root role does not match gameplan")
+    in
+    Result.map execution_mode ~f:(fun execution_mode ->
+        (* The coordinator has already admitted this dependency-scoped patch.
+           Do not reconstruct missing peers as unmerged local agents. Only the
+           assigned patch can be mutated by this worker. *)
+        let agent = Patch_agent.set_base_branch agent selected in
+        let agents = Map.singleton (module Patch_id) patch_id agent in
+        {
+          execution_mode;
+          promotion_claimed = false;
+          promotion_inflight = false;
+          graph;
+          agents;
+          outbox = Map.empty (module Message_id);
+          main_branch;
+          max_ci_failures = agent.max_ci_failures;
+        })
+
+let start_assigned_worker t patch_id ~base =
+  match Map.find t.agents patch_id with
+  | Some agent when (not agent.busy) && not (Patch_agent.has_pr agent) ->
+      update_agent t patch_id ~f:(fun agent ->
+          Patch_agent.start agent ~base_branch:base)
+  | _ -> t
 
 let main_branch t = t.main_branch
 let set_main_branch t branch = { t with main_branch = branch }

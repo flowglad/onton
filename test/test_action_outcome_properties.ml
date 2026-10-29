@@ -1821,3 +1821,234 @@ let () =
                 after.Patch_agent.branch_reconcile
            && Patch_agent.equal peer (Orchestrator.agent recovered other)
          with _ -> false))
+
+let () =
+  let patches = mk_patches 1 in
+  let patch_id = pid_of_idx patches 0 in
+  let orch = Orchestrator.create ~patches ~main_branch:main in
+  let message =
+    Orchestrator.message_of_action
+      (Orchestrator.agent orch patch_id)
+      (Orchestrator.Start (patch_id, main))
+  in
+  let orch = Orchestrator.reconcile_message orch message in
+  let state =
+    Coordinator_state.create ~run_id:"run" ~config_id:"config" ~plan_id:"plan"
+      ~plan_bytes:"plan" ~config_bytes:"config" ~capacity:1
+      ~budget_bytes:8388608
+  in
+  let operation : Coordinator_state.operation =
+    Coordinator_state.
+      {
+        id = Message_id.to_string (Orchestrator.message_id message);
+        patch = patch_id;
+        used = 0;
+        budget = 1;
+        retry_after = 0L;
+        attention = false;
+        unfinished = true;
+        maintenance = false;
+      }
+  in
+  let state =
+    fst (Coordinator_state.step state (Coordinator_state.Admit operation))
+  in
+  let view = Orchestrator.scheduling_view orch in
+  assert (List.length view.Scheduler_decision.agents = 1);
+  assert (Branch.equal view.Scheduler_decision.main main);
+  match
+    Orchestrator.assigned_context orch state ~run_id:"run" ~config_id:"config"
+      ~plan_id:"plan" ~message
+  with
+  | Error reason -> failwith reason
+  | Ok context ->
+      assert (
+        String.equal
+          (Worker_protocol_v3.selected_base context)
+          (Branch.to_string main));
+      assert (
+        String.equal (Worker_protocol_v3.execution_mode context) "mainline")
+
+let () =
+  QCheck2.Test.check_exn
+    (QCheck2.Test.make
+       ~name:"assigned contexts use the current scheduling projection" ~count:50
+       QCheck2.Gen.bool (fun use_main_base ->
+         try
+           let selected_base =
+             if use_main_base then main else Branch.of_string "alternate-base"
+           in
+           let patches = mk_patches 1 in
+           let patch_id = pid_of_idx patches 0 in
+           let orch = Orchestrator.create ~patches ~main_branch:selected_base in
+           let message =
+             Orchestrator.message_of_action
+               (Orchestrator.agent orch patch_id)
+               (Orchestrator.Start (patch_id, selected_base))
+           in
+           let orch = Orchestrator.reconcile_message orch message in
+           let view = Orchestrator.scheduling_view orch in
+           let state =
+             Coordinator_state.create ~run_id:"run" ~config_id:"config"
+               ~plan_id:"plan"
+               ~plan_bytes:(if use_main_base then "plan-main" else "plan-alt")
+               ~config_bytes:"config" ~capacity:1 ~budget_bytes:8388608
+           in
+           let operation : Coordinator_state.operation =
+             Coordinator_state.
+               {
+                 id = Message_id.to_string (Orchestrator.message_id message);
+                 patch = patch_id;
+                 used = 0;
+                 budget = 1;
+                 retry_after = 0L;
+                 attention = false;
+                 unfinished = true;
+                 maintenance = false;
+               }
+           in
+           let state =
+             fst
+               (Coordinator_state.step state (Coordinator_state.Admit operation))
+           in
+           List.length view.Scheduler_decision.agents = 1
+           && Branch.equal view.Scheduler_decision.main selected_base
+           &&
+           match
+             Orchestrator.assigned_context orch state ~run_id:"run"
+               ~config_id:"config" ~plan_id:"plan" ~message
+           with
+           | Error _ -> false
+           | Ok context ->
+               String.equal
+                 (Worker_protocol_v3.selected_base context)
+                 (Branch.to_string selected_base)
+               && String.equal
+                    (Worker_protocol_v3.execution_mode context)
+                    "mainline"
+         with _ -> false))
+
+let () =
+  QCheck2.Test.check_exn
+    (QCheck2.Test.make
+       ~name:"assigned worker restore and start preserve coordinator scope"
+       ~count:50 QCheck2.Gen.bool (fun choose_alternate_base ->
+         try
+           let patches = mk_patches 1 in
+           let gameplan = make_gameplan patches in
+           let patch_id = pid_of_idx patches 0 in
+           let selected_base =
+             if choose_alternate_base then Branch.of_string "selected-base"
+             else main
+           in
+           let orch = Orchestrator.create ~patches ~main_branch:selected_base in
+           let message =
+             Orchestrator.message_of_action
+               (Orchestrator.agent orch patch_id)
+               (Orchestrator.Start (patch_id, selected_base))
+           in
+           let orch = Orchestrator.reconcile_message orch message in
+           let state =
+             Coordinator_state.create ~run_id:"run" ~config_id:"config"
+               ~plan_id:"plan" ~plan_bytes:"plan" ~config_bytes:"config"
+               ~capacity:1 ~budget_bytes:8388608
+           in
+           let operation : Coordinator_state.operation =
+             Coordinator_state.
+               {
+                 id = Message_id.to_string (Orchestrator.message_id message);
+                 patch = patch_id;
+                 used = 0;
+                 budget = 1;
+                 retry_after = 0L;
+                 attention = false;
+                 unfinished = true;
+                 maintenance = false;
+               }
+           in
+           let state =
+             fst
+               (Coordinator_state.step state (Coordinator_state.Admit operation))
+           in
+           match
+             Orchestrator.assigned_context orch state ~run_id:"run"
+               ~config_id:"config" ~plan_id:"plan" ~message
+           with
+           | Error _ -> false
+           | Ok context -> (
+               let original_agent = Orchestrator.agent orch patch_id in
+               match
+                 Orchestrator.restore_worker ~gameplan
+                   ~main_branch:selected_base ~context ~agent:original_agent ()
+               with
+               | Error _ -> false
+               | Ok restored ->
+                   let restored_agent = Orchestrator.agent restored patch_id in
+                   let started =
+                     Orchestrator.start_assigned_worker orch patch_id
+                       ~base:selected_base
+                   in
+                   let started_agent = Orchestrator.agent started patch_id in
+                   let repeated =
+                     Orchestrator.start_assigned_worker started patch_id
+                       ~base:selected_base
+                   in
+                   Patch_agent.equal started_agent
+                     (Orchestrator.agent repeated patch_id)
+                   && started_agent.Patch_agent.busy
+                   && Option.equal Branch.equal
+                        started_agent.Patch_agent.base_branch
+                        (Some selected_base)
+                   && Option.equal Branch.equal
+                        restored_agent.Patch_agent.base_branch
+                        (Some selected_base)
+                   && List.length (Orchestrator.all_agents restored) = 1
+                   && List.equal Patch_id.equal
+                        (Graph.deps (Orchestrator.graph restored) patch_id)
+                        (Graph.deps (Orchestrator.graph orch) patch_id))
+         with _ -> false))
+
+let () =
+  let property =
+    QCheck2.Test.make ~count:300
+      ~name:"worker input applies controls to the matching orchestrator owner"
+      QCheck2.Gen.bool (fun enabled ->
+        try
+          let patches = mk_patches 1 in
+          let patch_id = pid_of_idx patches 0 in
+          let orch = Orchestrator.create ~patches ~main_branch:main in
+          let input : Worker_protocol_v3.input =
+            Worker_protocol_v3.
+              {
+                input_id = (if enabled then "input-on" else "input-off");
+                version = 1L;
+                guidance = "";
+                selected_base = "feature/base";
+                evidence = [];
+                controls =
+                  [ ("automerge", if enabled then "true" else "false") ];
+                covered = [];
+              }
+          in
+          let updated = Orchestrator.apply_worker_input orch patch_id input in
+          let updated_agent = Orchestrator.agent updated patch_id in
+          let next_input =
+            Worker_protocol_v3.
+              {
+                input with
+                input_id = "next";
+                version = 2L;
+                controls =
+                  [ ("automerge", if enabled then "false" else "true") ];
+              }
+          in
+          let next =
+            Orchestrator.apply_worker_input updated patch_id next_input
+          in
+          Bool.equal updated_agent.Patch_agent.automerge_enabled enabled
+          && Bool.equal
+               (Orchestrator.agent next patch_id).Patch_agent.automerge_enabled
+               (not enabled)
+        with _ -> false)
+  in
+  QCheck2.Test.check_exn property

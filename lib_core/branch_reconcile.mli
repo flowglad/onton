@@ -228,6 +228,7 @@ type integration_receipt = private {
   capture : integration_capture;
   integrated_revision : Commit.t;
   evidence : integration_evidence;
+  contributor : string option;
 }
 [@@deriving eq, compare, sexp_of]
 
@@ -532,6 +533,10 @@ val unobserved_publication : t -> publication_receipt option
 val integrations : t -> integration_receipt list
 (** Newest-first local base integration receipts, retained independently of
     publication. *)
+
+val contributor_integrations : t -> integration_receipt list
+(** Newest-first root contributor integration receipts, separate from base
+    lineage and rebase-boundary evidence. *)
 
 val forge_conflict : t -> scope:Forge_observation.scope -> bool
 

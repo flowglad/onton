@@ -7,8 +7,8 @@ open Ppx_yojson_conv_lib.Yojson_conv.Primitives
 type merge_state = Mergeable | Conflicting | Unknown
 [@@deriving show, eq, compare, sexp_of, yojson]
 
-type check_status = Passing | Failing | Pending [@@deriving show, eq]
-type pr_status = Open | Merged | Closed [@@deriving show, eq]
+type check_status = Passing | Failing | Pending [@@deriving show, eq, yojson]
+type pr_status = Open | Merged | Closed [@@deriving show, eq, yojson]
 
 type merge_queue_entry_state =
   | Mq_queued
@@ -29,7 +29,7 @@ type merge_ready_divergence = {
   github_merge_state_status : string;
   derived_merge_ready : bool;
 }
-[@@deriving show, eq]
+[@@deriving show, eq, yojson]
 
 type t = {
   pr_number : Types.Pr_number.t option;
@@ -75,7 +75,7 @@ type t = {
   base_branch : Types.Branch.t option;
   is_fork : bool;
 }
-[@@deriving show, eq]
+[@@deriving show, eq, yojson]
 
 let merged (st : t) = equal_pr_status st.status Merged
 let closed (st : t) = equal_pr_status st.status Closed

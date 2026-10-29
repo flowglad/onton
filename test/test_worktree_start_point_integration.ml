@@ -49,6 +49,8 @@ let commit ~dir ~file ~content ~msg =
 let () =
   Eio_main.run @@ fun env ->
   let process_mgr = Eio.Stdenv.process_mgr env in
+  let fs = Eio.Stdenv.fs env in
+  let clock = Eio.Stdenv.clock env in
   Git_env.with_temp_repo @@ fun dir ->
   Stdlib.print_endline "Worktree git-read contract:";
   (* main: base -> ahead. [base] is a strict ancestor of [ahead]. *)
@@ -67,6 +69,11 @@ let () =
   Git_env.run_git ~cwd:dir [ "checkout"; "-q"; "-b"; "rdiv"; base_sha ];
   let r_sha = commit ~dir ~file:"r.txt" ~content:"r" ~msg:"R" in
 
+  let module W =
+    (val Worktree.make ~fs ~config:Worktree_lifecycle.git ~clock ~process_mgr
+           ~repo_root:dir)
+  in
+  let probe ref_name = W.probe_branch_sha ~path:dir ~ref_name in
   let read ref_name =
     match Worktree.read_repo_ref_sha ~process_mgr ~repo_root:dir ~ref_name with
     | Ok revision -> revision
@@ -139,6 +146,12 @@ let () =
   Git_env.run_git ~cwd:dir
     [ "symbolic-ref"; "refs/heads/symbolic"; "refs/heads/missing-target" ];
   check "dangling symbolic ref is not absence" (fails "refs/heads/symbolic");
+  check "stable probe reports missing refs independent of stderr wording"
+    (match probe "refs/heads/does-not-exist" with
+    | Ok None -> true
+    | Ok (Some _) | Error _ -> false);
+  check "stable probe rejects symbolic refs"
+    (match probe "refs/heads/symbolic" with Error _ -> true | Ok _ -> false);
   Git_env.run_git ~cwd:dir
     [ "tag"; "-a"; "-m"; "tag object"; "tag-object"; equiv_local ];
   check "tag object is not a branch commit" (fails "refs/tags/tag-object");

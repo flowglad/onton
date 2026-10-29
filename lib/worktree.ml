@@ -395,6 +395,55 @@ let read_branch_sha ~process_mgr ~path ~ref_name =
     if String.is_empty s then None else Some s
   else None
 
+let probe_branch_sha ~process_mgr ~path ~ref_name =
+  let git args =
+    run_git_exit_code ~process_mgr ([ "git"; "-C"; path ] @ args)
+  in
+  let check_code, _, check_error = git [ "check-ref-format"; ref_name ] in
+  if check_code <> 0 then
+    Error
+      (Printf.sprintf "invalid Git ref %s in %s: %s" ref_name path
+         (String.strip check_error))
+  else
+    let symbolic_code, _, symbolic_error =
+      git [ "symbolic-ref"; "-q"; ref_name ]
+    in
+    if symbolic_code = 0 then
+      Error "symbolic Git ref cannot authorize provisioning"
+    else if symbolic_code <> 1 then
+      Error ("Git ref identity probe failed: " ^ String.strip symbolic_error)
+    else
+      let exists_code, _, exists_error =
+        git [ "show-ref"; "--verify"; "--quiet"; ref_name ]
+      in
+      match exists_code with
+      | 1 -> Ok None
+      | 0 -> (
+          let code, stdout, stderr =
+            git [ "rev-parse"; "--verify"; ref_name ]
+          in
+          if code <> 0 then
+            Error ("Git ref revision probe failed: " ^ String.strip stderr)
+          else
+            match Branch_reconcile.Commit.make (String.strip stdout) with
+            | None -> Error "git returned an invalid ref SHA"
+            | Some commit ->
+                let sha = Branch_reconcile.Commit.to_string commit in
+                let object_code, _, object_error =
+                  git [ "cat-file"; "-e"; sha ^ "^{commit}" ]
+                in
+                if object_code = 0 then Ok (Some sha)
+                else
+                  Error
+                    (Printf.sprintf
+                       "Git ref %s points to an unavailable commit: %s" ref_name
+                       (String.strip object_error)))
+      | _ ->
+          Error
+            (Printf.sprintf "Git ref probe failed in %s (exit %d): %s" path
+               exists_code
+               (String.strip exists_error))
+
 let is_ancestor ~process_mgr ~path ~ancestor ~descendant =
   let code, _, _ =
     run_git_exit_code ~process_mgr
@@ -566,6 +615,10 @@ module type S = sig
   (** Resolve [ref_name] to a SHA in the worktree at [path]. [None] on any error
       (missing ref, git failure). *)
 
+  val probe_branch_sha :
+    path:string -> ref_name:string -> (string option, string) Result.t
+  (** Distinguish an absent ref from a Git/object observation error. *)
+
   val is_ancestor : path:string -> ancestor:string -> descendant:string -> bool
 
   val commit_gameplan :
@@ -724,6 +777,9 @@ let make ~fs ~config ~clock ~process_mgr ~repo_root =
 
     let read_branch_sha ~path ~ref_name =
       read_branch_sha ~process_mgr ~path ~ref_name
+
+    let probe_branch_sha ~path ~ref_name =
+      probe_branch_sha ~process_mgr ~path ~ref_name
 
     let is_ancestor ~path ~ancestor ~descendant =
       is_ancestor ~process_mgr ~path ~ancestor ~descendant

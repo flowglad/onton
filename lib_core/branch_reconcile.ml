@@ -226,6 +226,7 @@ type integration_receipt = {
   capture : integration_capture;
   integrated_revision : Commit.t;
   evidence : integration_evidence;
+  contributor : string option; [@yojson.default None]
 }
 [@@deriving eq, compare, sexp_of, yojson]
 
@@ -326,6 +327,7 @@ type t = {
   next_operation : int;
   active : operation option;
   integrations : integration_receipt list;
+  contributor_integrations : integration_receipt list; [@yojson.default []]
   remote_integrations : integration_receipt list;
   publications : publication_receipt list;
   observed_publication : publication_identity option; [@default None]
@@ -427,6 +429,7 @@ let empty =
     next_operation = 1;
     active = None;
     integrations = [];
+    contributor_integrations = [];
     remote_integrations = [];
     publications = [];
     observed_publication = None;
@@ -563,6 +566,7 @@ let established_base t =
       | None | Some (New_branch _ | Adopted_branch _) -> None)
 
 let integrations t = t.integrations
+let contributor_integrations t = t.contributor_integrations
 let remote_integrations t = t.remote_integrations
 
 let required_revisions t =
@@ -625,6 +629,7 @@ let required_revisions t =
         capture = captured;
         integrated_revision;
         evidence = _;
+        contributor = _;
       } =
     integrated_revision :: capture captured
   in
@@ -714,6 +719,7 @@ let required_revisions t =
     next_operation = _;
     active;
     integrations;
+    contributor_integrations;
     remote_integrations;
     publications;
     observed_publication;
@@ -725,7 +731,9 @@ let required_revisions t =
     @ List.concat_map (option desired) ~f:intent
     @ List.map (option materialized) ~f:materialization_head
     @ List.concat_map (option active) ~f:operation
-    @ List.concat_map (integrations @ remote_integrations) ~f:integration
+    @ List.concat_map
+        (integrations @ contributor_integrations @ remote_integrations)
+        ~f:integration
     @ List.concat_map publications
         ~f:(fun
             {
@@ -1428,10 +1436,28 @@ let record_integration t op candidate evidence =
           capture;
           integrated_revision = candidate;
           evidence;
+          contributor =
+            (match op.intent.purpose with
+            | Integrate_revision { contributor; _ } -> Some contributor
+            | Provision_checkout _ | Reconcile_base | Reconcile_request _
+            | Reconcile_scoped _ | Publish_revision _ | Publish_session _
+            | Verify_publication ->
+                None);
         }
       in
-      ( { t with integrations = receipt :: t.integrations },
-        { op with integration = None } )
+      let t =
+        match op.intent.purpose with
+        | Integrate_revision _ ->
+            {
+              t with
+              contributor_integrations = receipt :: t.contributor_integrations;
+            }
+        | Provision_checkout _ | Reconcile_base | Reconcile_request _
+        | Reconcile_scoped _ | Publish_revision _ | Publish_session _
+        | Verify_publication ->
+            { t with integrations = receipt :: t.integrations }
+      in
+      (t, { op with integration = None })
 
 let capture_candidate ?(evidence = Executed) t op candidate =
   let op =
@@ -1461,6 +1487,7 @@ let capture_candidate ?(evidence = Executed) t op candidate =
             capture;
             integrated_revision = candidate;
             evidence;
+            contributor = None;
           }
         in
         if
@@ -1620,9 +1647,16 @@ let observed ?(deterministic = true) t op (o : observation) =
                   replay_boundary = o.boundary;
                   integration_policy = op.intent.policy;
                 }
-          | Integrate_revision _ | Publish_revision _ | Publish_session _
-          | Verify_publication ->
-              None);
+          | Integrate_revision _ ->
+              Some
+                {
+                  base_branch = None;
+                  source_revision = source;
+                  target_revision = target;
+                  replay_boundary = o.boundary;
+                  integration_policy = op.intent.policy;
+                }
+          | Publish_revision _ | Publish_session _ | Verify_publication -> None);
       }
     in
     let module P = Reconcile_plan in
@@ -1989,7 +2023,9 @@ let valid_intent (intent : intent) =
   let named_base = not (String.is_empty intent.base) in
   match intent.purpose with
   | Integrate_revision { contributor; revision } ->
-      (not (String.is_empty contributor))
+      String.length contributor > 0
+      && String.length contributor <= 256
+      && (not (String.contains contributor '\000'))
       && valid_commit revision
       && equal_policy intent.policy Preserve_ancestry
   | Provision_checkout request -> named_base && not (String.is_empty request)
@@ -2052,7 +2088,16 @@ let[@warning "-4"] rec step_workspace t event =
   | Workspace_lost_without_operation { request; intent }, None, None
     when (not (String.is_empty request))
          && (not (String.is_empty intent.base))
-         && equal_purpose intent.purpose (Provision_checkout request)
+         && valid_intent intent
+         && (equal_purpose intent.purpose (Provision_checkout request)
+            ||
+            match intent.purpose with
+            | Integrate_revision _ ->
+                equal_policy intent.policy Preserve_ancestry
+            | Provision_checkout _ | Reconcile_base | Reconcile_request _
+            | Reconcile_scoped _ | Publish_revision _ | Publish_session _
+            | Verify_publication ->
+                false)
          && (not (List.mem t.workspace_requests request ~equal:String.equal))
          && t.next_operation < Int.max_value ->
       let seeded, _ = start { t with desired = Some intent } intent in
@@ -2067,7 +2112,8 @@ let[@warning "-4"] rec step_workspace t event =
         || op.agent_dispatched
         ||
         match op.phase with
-        | Publishing | Confirming | Settled -> true
+        | Publishing | Confirming -> true
+        | Settled -> not (is_provisioning op.intent.purpose)
         | Preparing | Integrating | Repairing _ | Waiting _ | Recovering
         | Intervention _ ->
             false
@@ -3451,12 +3497,18 @@ let decode json =
                 (Option.for_all t.observed_publication
                    ~f:(retains_publication_observation t)))
           || not
-               (List.for_all (t.integrations @ t.remote_integrations)
+               (List.for_all
+                  (t.integrations @ t.contributor_integrations
+                 @ t.remote_integrations)
                   ~f:(fun r ->
                     r.operation_id > 0
                     && r.operation_id < t.next_operation
                     && valid_capture r.capture
-                    && valid_commit r.integrated_revision))
+                    && valid_commit r.integrated_revision
+                    && Option.for_all r.contributor ~f:(fun id ->
+                        String.length id > 0
+                        && String.length id <= 256
+                        && not (String.contains id '\000'))))
         then Error "invalid branch checkpoint"
         else
           match t.active with
@@ -3642,7 +3694,41 @@ let decode json =
               else Ok t
           | Some _ -> Error "invalid branch operation")
   in
-  decoded
+  Result.map decoded ~f:(fun t ->
+      let reversed_contributors =
+        List.fold
+          (List.filter t.integrations ~f:(fun receipt ->
+               Option.is_some receipt.contributor))
+          ~init:(List.rev t.contributor_integrations)
+          ~f:(fun seen receipt ->
+            if List.exists seen ~f:(equal_integration_receipt receipt) then seen
+            else receipt :: seen)
+      in
+      let contributor_integrations = List.rev reversed_contributors in
+      let integrations =
+        List.filter t.integrations ~f:(fun receipt ->
+            Option.is_none receipt.contributor)
+      in
+      let workspace_integration_floor =
+        Option.map t.workspace_integration_floor ~f:(fun floor ->
+            let rec count_workspace_receipts remaining count = function
+              | _ when remaining <= 0 -> count
+              | [] -> count
+              | receipt :: rest ->
+                  let count =
+                    if Option.is_none receipt.contributor then count + 1
+                    else count
+                  in
+                  count_workspace_receipts (remaining - 1) count rest
+            in
+            count_workspace_receipts floor 0 t.integrations)
+      in
+      {
+        t with
+        integrations;
+        contributor_integrations;
+        workspace_integration_floor;
+      })
 
 let recovery_name_hex s =
   String.to_list s

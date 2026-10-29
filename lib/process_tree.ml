@@ -61,10 +61,14 @@ let supervisor_path () =
   then Stdlib.Filename.concat (Stdlib.Sys.getcwd ()) supervisor
   else supervisor
 
-let supervised_command ~supervisor ~streaming args =
+let supervised_command ?(acknowledge_tree = false) ~supervisor ~streaming args =
   let guards = Project_lifecycle.command_guards () in
-  supervisor
-  :: (if streaming then "--supervise-stream-parent" else "--supervise-parent")
+  let mode =
+    if acknowledge_tree then "--supervise-attach-parent"
+    else if streaming then "--supervise-stream-parent"
+    else "--supervise-parent"
+  in
+  supervisor :: mode
   :: Int.to_string (Unix.getpid ())
   :: "--command-guards"
   :: Int.to_string (List.length guards)

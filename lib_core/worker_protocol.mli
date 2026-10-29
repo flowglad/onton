@@ -41,6 +41,8 @@ type admission
 (** Decoded wire receipt; bind validates its admission history before readiness.
 *)
 
+val admission_is_fresh : admission -> bool
+
 type host_message = private
   | Bind of {
       identity : identity;
@@ -100,8 +102,22 @@ type worker_message =
     }
   | Protocol_error of { identity : identity option; reason : string }
 
+val parse_frame : string -> (Yojson.Safe.t, decode_error) result
+(** Shared strict framing: size, UTF-8, duplicate keys at every depth and JSON
+    shape. Version-specific schema validation remains with the caller. *)
+
 val decode : string -> (host_message, decode_error) result
 (** One complete line, including its newline, is at most 1 MiB. *)
+
+val execute_frame : execute_request -> string
+(** Canonical candidate frame; validate with [execute_message] before sending.
+*)
+
+val execute_message : execute_request -> host_message option
+(** Revalidates a constructed request through the strict wire decoder. *)
+
+val encode_host : host_message -> string
+(** Canonical host frame, including exact receipt contents. *)
 
 val encode : worker_message -> string
 

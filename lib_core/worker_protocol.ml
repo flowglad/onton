@@ -245,7 +245,7 @@ let base = [ "version"; "type"; "run_id"; "patch_id" ]
 let op = [ "operation_id"; "attempt_id"; "assignment_seq" ]
 let invalid = Error (Invalid "invalid worker protocol frame")
 
-let rec decode line =
+let parse_frame line =
   if
     String.length line = 0
     || String.length line > max_frame
@@ -264,217 +264,218 @@ let rec decode line =
     with
     | None -> invalid
     | Some json when not (recursive_shape json) -> invalid
-    | Some (`Assoc xs as json) -> (
-        match get xs "version" with
-        | Some (`Int 2) -> (
-            match (get xs "type", required_identity xs) with
-            | Some (`String "bind"), Some identity -> (
-                match
-                  fields
-                    (base
+    | Some json -> Ok json
+
+let rec decode line =
+  match parse_frame line with
+  | Error e -> Error e
+  | Ok (`Assoc xs as json) -> (
+      match get xs "version" with
+      | Some (`Int 2) -> (
+          match (get xs "type", required_identity xs) with
+          | Some (`String "bind"), Some identity -> (
+              match
+                fields
+                  (base
+                  @ [
+                      "worker_id";
+                      "workspace_id";
+                      "context";
+                      "capsule";
+                      "state_version";
+                      "attention_id";
+                      "admission";
+                    ])
+                  json
+              with
+              | Some f -> (
+                  match
+                    ( id f "worker_id",
+                      id f "workspace_id",
+                      string f "context",
+                      string f "capsule",
+                      counter f "state_version",
+                      optional_id f "attention_id",
+                      decode_admission (get f "admission") )
+                  with
+                  | ( Some worker_id,
+                      Some workspace_id,
+                      Some context,
+                      Some capsule,
+                      Some state_version,
+                      Some attention_id,
+                      Some admission ) ->
+                      Ok
+                        (Bind
+                           {
+                             identity;
+                             worker_id;
+                             workspace_id;
+                             context;
+                             capsule;
+                             state_version;
+                             attention_id;
+                             admission;
+                           })
+                  | _ -> invalid)
+              | None -> invalid)
+          | Some (`String "execute"), Some identity -> (
+              match
+                ( fields
+                    (base @ op
                     @ [
-                        "worker_id";
-                        "workspace_id";
-                        "context";
-                        "capsule";
-                        "state_version";
-                        "attention_id";
-                        "admission";
+                        "expected_state_version";
+                        "work";
+                        "guidance";
+                        "recovery_mode";
+                        "renewal_id";
+                        "renewed_intent";
                       ])
-                    json
-                with
-                | Some f -> (
-                    match
-                      ( id f "worker_id",
-                        id f "workspace_id",
-                        string f "context",
-                        string f "capsule",
-                        counter f "state_version",
-                        optional_id f "attention_id",
-                        decode_admission (get f "admission") )
-                    with
-                    | ( Some worker_id,
-                        Some workspace_id,
-                        Some context,
-                        Some capsule,
-                        Some state_version,
-                        Some attention_id,
-                        Some admission ) ->
-                        Ok
-                          (Bind
-                             {
-                               identity;
-                               worker_id;
-                               workspace_id;
-                               context;
-                               capsule;
-                               state_version;
-                               attention_id;
-                               admission;
-                             })
-                    | _ -> invalid)
-                | None -> invalid)
-            | Some (`String "execute"), Some identity -> (
-                match
-                  ( fields
-                      (base @ op
-                      @ [
-                          "expected_state_version";
-                          "work";
-                          "guidance";
-                          "recovery_mode";
-                          "renewal_id";
-                          "renewed_intent";
-                        ])
-                      json,
-                    required_operation xs )
-                with
-                | Some f, Some operation -> (
-                    let work =
-                      match get f "work" with
-                      | Some (`Assoc _ as j) -> (
-                          match
-                            fields [ "type"; "phase"; "kind"; "turn" ] j
-                          with
-                          | Some w -> (
-                              match
-                                ( get w "type",
-                                  string w "phase",
-                                  optional_text w "kind",
-                                  string w "turn" )
-                              with
-                              | ( Some (`String "session"),
-                                  Some phase,
-                                  Some kind,
-                                  Some turn ) -> (
-                                  match
-                                    ( phase_of_string phase,
-                                      match kind with
-                                      | None -> Some None
-                                      | Some label ->
-                                          Option.map
-                                            (fun kind -> Some kind)
-                                            (Types.Operation_kind.of_label label)
-                                    )
-                                  with
-                                  | Some phase, Some kind ->
-                                      Some (Session { phase; kind; turn })
-                                  | _ -> None)
-                              | _ -> None)
-                          | None -> (
-                              match fields [ "type" ] j with
-                              | Some w
-                                when get w "type" = Some (`String "reconcile")
-                                ->
-                                  Some Reconcile
-                              | _ -> None))
-                      | _ -> None
-                    in
-                    let recovery_mode =
-                      match get f "recovery_mode" with
-                      | Some (`String "retained_workspace") ->
-                          Some Retained_workspace
-                      | Some (`String "lost_workspace") -> Some Lost_workspace
-                      | _ -> None
-                    in
-                    match
-                      ( counter f "expected_state_version",
-                        work,
-                        string f "guidance",
-                        recovery_mode,
-                        optional_id f "renewal_id",
-                        get f "renewed_intent" )
-                    with
-                    | ( Some expected_state_version,
-                        Some work,
-                        Some guidance,
-                        Some recovery_mode,
-                        Some renewal_id,
-                        Some (`Bool renewed_intent) ) -> (
-                        match (renewal_id, renewed_intent) with
-                        | None, false ->
-                            Ok
-                              (Execute
-                                 {
-                                   identity;
-                                   operation;
-                                   expected_state_version;
-                                   work;
-                                   guidance;
-                                   recovery_mode;
-                                   renewal = Ordinary;
-                                 })
-                        | Some id, true ->
-                            Ok
-                              (Execute
-                                 {
-                                   identity;
-                                   operation;
-                                   expected_state_version;
-                                   work;
-                                   guidance;
-                                   recovery_mode;
-                                   renewal = Renewed id;
-                                 })
-                        | None, true | Some _, false -> invalid)
-                    | _ -> invalid)
-                | _ -> invalid)
-            | Some (`String "cancel"), Some identity -> (
-                match (fields (base @ op) json, required_operation xs) with
-                | Some _, Some operation -> Ok (Cancel { identity; operation })
-                | _ -> invalid)
-            | Some (`String "checkpoint_ack"), Some identity -> (
-                match
-                  ( fields
-                      (base @ op
-                      @ [
-                          "proposal_id"; "state_version"; "capsule"; "accepted";
-                        ])
-                      json,
-                    required_operation xs )
-                with
-                | Some f, Some operation -> (
-                    match
-                      ( id f "proposal_id",
-                        counter f "state_version",
-                        string f "capsule",
-                        get f "accepted" )
-                    with
-                    | ( Some proposal_id,
-                        Some state_version,
-                        Some capsule,
-                        Some (`Bool accepted) ) ->
-                        Ok
-                          (Checkpoint_ack
-                             {
-                               identity;
-                               operation;
-                               proposal_id;
-                               state_version;
-                               capsule;
-                               accepted;
-                             })
-                    | _ -> invalid)
-                | _ -> invalid)
-            | Some (`String "result_ack"), Some identity -> (
-                match
-                  ( fields (base @ op @ [ "state_version" ]) json,
-                    required_operation xs )
-                with
-                | Some f, Some operation -> (
-                    match counter f "state_version" with
-                    | Some state_version ->
-                        Ok (Result_ack { identity; operation; state_version })
-                    | None -> invalid)
-                | _ -> invalid)
-            | Some (`String "shutdown"), Some identity -> (
-                match fields base json with
-                | Some _ -> Ok (Shutdown identity)
-                | None -> invalid)
-            | _ -> invalid)
-        | Some _ -> Error (Incompatible "unsupported worker protocol version")
-        | None -> invalid)
-    | _ -> invalid
+                    json,
+                  required_operation xs )
+              with
+              | Some f, Some operation -> (
+                  let work =
+                    match get f "work" with
+                    | Some (`Assoc _ as j) -> (
+                        match fields [ "type"; "phase"; "kind"; "turn" ] j with
+                        | Some w -> (
+                            match
+                              ( get w "type",
+                                string w "phase",
+                                optional_text w "kind",
+                                string w "turn" )
+                            with
+                            | ( Some (`String "session"),
+                                Some phase,
+                                Some kind,
+                                Some turn ) -> (
+                                match
+                                  ( phase_of_string phase,
+                                    match kind with
+                                    | None -> Some None
+                                    | Some label ->
+                                        Option.map
+                                          (fun kind -> Some kind)
+                                          (Types.Operation_kind.of_label label)
+                                  )
+                                with
+                                | Some phase, Some kind ->
+                                    Some (Session { phase; kind; turn })
+                                | _ -> None)
+                            | _ -> None)
+                        | None -> (
+                            match fields [ "type" ] j with
+                            | Some w
+                              when get w "type" = Some (`String "reconcile") ->
+                                Some Reconcile
+                            | _ -> None))
+                    | _ -> None
+                  in
+                  let recovery_mode =
+                    match get f "recovery_mode" with
+                    | Some (`String "retained_workspace") ->
+                        Some Retained_workspace
+                    | Some (`String "lost_workspace") -> Some Lost_workspace
+                    | _ -> None
+                  in
+                  match
+                    ( counter f "expected_state_version",
+                      work,
+                      string f "guidance",
+                      recovery_mode,
+                      optional_id f "renewal_id",
+                      get f "renewed_intent" )
+                  with
+                  | ( Some expected_state_version,
+                      Some work,
+                      Some guidance,
+                      Some recovery_mode,
+                      Some renewal_id,
+                      Some (`Bool renewed_intent) ) -> (
+                      match (renewal_id, renewed_intent) with
+                      | None, false ->
+                          Ok
+                            (Execute
+                               {
+                                 identity;
+                                 operation;
+                                 expected_state_version;
+                                 work;
+                                 guidance;
+                                 recovery_mode;
+                                 renewal = Ordinary;
+                               })
+                      | Some id, true ->
+                          Ok
+                            (Execute
+                               {
+                                 identity;
+                                 operation;
+                                 expected_state_version;
+                                 work;
+                                 guidance;
+                                 recovery_mode;
+                                 renewal = Renewed id;
+                               })
+                      | None, true | Some _, false -> invalid)
+                  | _ -> invalid)
+              | _ -> invalid)
+          | Some (`String "cancel"), Some identity -> (
+              match (fields (base @ op) json, required_operation xs) with
+              | Some _, Some operation -> Ok (Cancel { identity; operation })
+              | _ -> invalid)
+          | Some (`String "checkpoint_ack"), Some identity -> (
+              match
+                ( fields
+                    (base @ op
+                    @ [ "proposal_id"; "state_version"; "capsule"; "accepted" ]
+                    )
+                    json,
+                  required_operation xs )
+              with
+              | Some f, Some operation -> (
+                  match
+                    ( id f "proposal_id",
+                      counter f "state_version",
+                      string f "capsule",
+                      get f "accepted" )
+                  with
+                  | ( Some proposal_id,
+                      Some state_version,
+                      Some capsule,
+                      Some (`Bool accepted) ) ->
+                      Ok
+                        (Checkpoint_ack
+                           {
+                             identity;
+                             operation;
+                             proposal_id;
+                             state_version;
+                             capsule;
+                             accepted;
+                           })
+                  | _ -> invalid)
+              | _ -> invalid)
+          | Some (`String "result_ack"), Some identity -> (
+              match
+                ( fields (base @ op @ [ "state_version" ]) json,
+                  required_operation xs )
+              with
+              | Some f, Some operation -> (
+                  match counter f "state_version" with
+                  | Some state_version ->
+                      Ok (Result_ack { identity; operation; state_version })
+                  | None -> invalid)
+              | _ -> invalid)
+          | Some (`String "shutdown"), Some identity -> (
+              match fields base json with
+              | Some _ -> Ok (Shutdown identity)
+              | None -> invalid)
+          | _ -> invalid)
+      | Some _ -> Error (Incompatible "unsupported worker protocol version")
+      | None -> invalid)
+  | Ok _ -> invalid
 
 and decode_admission = function
   | Some (`Assoc [ ("mode", `String "fresh") ]) -> Some Fresh
@@ -757,6 +758,20 @@ type event =
   | Recover_unfinished
   | Host_lost
 
+(* Attention is part of the exact checkpoint capsule, not a later inference
+   from Result. Keeping its committed projection at the checkpoint barrier lets
+   an interrupted terminal checkpoint bind before Result has been delivered. The
+   effectful host separately validates the complete owner capsule. *)
+let checkpoint_attention capsule =
+  try
+    match Yojson.Safe.from_string capsule with
+    | `Assoc fields -> (
+        match List.assoc_opt "attention_id" fields with
+        | Some (`String id) when valid_id id -> Some id
+        | _ -> None)
+    | _ -> None
+  with _ -> None
+
 let rec step t event =
   if t.stopped then (t, [])
   else
@@ -938,6 +953,7 @@ let rec step t event =
                       t with
                       version = state_version;
                       capsule;
+                      attention = checkpoint_attention capsule;
                       active =
                         Some
                           {
@@ -1036,7 +1052,8 @@ let rec step t event =
           when (not t.restored_unfinished)
                && a.pending = None && a.acknowledged && a.cleanup
                && a.terminal = None
-               && ((not a.cancelled) || status = Cancelled)
+               (* Cancellation is a request, not proof that it beat terminal
+                  capture. A completed turn may already be awaiting its ACK. *)
                && valid_text diagnostics
                &&
                match (status, renewal_id) with
@@ -1130,11 +1147,12 @@ and restore base initial_version initial_attention entries =
             when rest = []
                  && (not receipt.result_acknowledged)
                  && Int64.compare base.version admitted.version >= 0
-                 && base.attention = None ->
+                 && base.attention = checkpoint_attention base.capsule ->
               Some
                 {
                   admitted with
                   version = base.version;
+                  attention = base.attention;
                   restored_unfinished = true;
                 }
           | Some terminal, Some active
@@ -1226,6 +1244,19 @@ let request_json
           `Bool (match renewal with Ordinary -> false | Renewed _ -> true) );
       ])
 
+let execute_frame request = Yojson.Safe.to_string (request_json request) ^ "\n"
+
+let execute_message request =
+  match decode (Yojson.Safe.to_string (request_json request) ^ "\n") with
+  | Ok (Execute decoded) when decoded = request -> Some (Execute decoded)
+  | Ok
+      ( Bind _ | Execute _ | Cancel _ | Checkpoint_ack _ | Result_ack _
+      | Shutdown _ )
+  | Error (Invalid _ | Incompatible _) ->
+      None
+
+let admission_is_fresh = function Fresh -> true | Resume _ -> false
+
 let admission_receipt (t : t) =
   match (t.identity, t.receipts) with
   | None, _ -> None
@@ -1263,3 +1294,67 @@ let admission_receipt (t : t) =
                         ])
                     receipts) );
            ])
+
+let encode_host msg =
+  let admission_json = function
+    | Fresh -> obj [ ("mode", s "fresh") ]
+    | Resume r -> (
+        let receipt_state =
+          {
+            (initial ()) with
+            identity = Some { run_id = "receipt"; patch_id = "receipt" };
+            initial_version = r.initial_version;
+            initial_attention = r.initial_attention;
+            version = r.committed_version;
+            capsule = r.committed_capsule;
+            attention = r.committed_attention;
+            receipts = List.rev r.entries;
+          }
+        in
+        match admission_receipt receipt_state with
+        | Some j -> j
+        | None -> obj [ ("mode", s "invalid") ])
+  in
+  let json =
+    match msg with
+    | Execute r -> request_json r
+    | Bind
+        {
+          identity;
+          worker_id;
+          workspace_id;
+          context;
+          capsule;
+          state_version;
+          attention_id;
+          admission;
+        } ->
+        envelope "bind" identity
+          [
+            ("worker_id", s worker_id);
+            ("workspace_id", s workspace_id);
+            ("context", s context);
+            ("capsule", s capsule);
+            ("state_version", n state_version);
+            ("attention_id", opt attention_id);
+            ("admission", admission_json admission);
+          ]
+    | Cancel { identity; operation } ->
+        envelope "cancel" identity (operation_fields operation)
+    | Checkpoint_ack
+        { identity; operation; proposal_id; state_version; capsule; accepted }
+      ->
+        envelope "checkpoint_ack" identity
+          (operation_fields operation
+          @ [
+              ("proposal_id", s proposal_id);
+              ("state_version", n state_version);
+              ("capsule", s capsule);
+              ("accepted", `Bool accepted);
+            ])
+    | Result_ack { identity; operation; state_version } ->
+        envelope "result_ack" identity
+          (operation_fields operation @ [ ("state_version", n state_version) ])
+    | Shutdown identity -> envelope "shutdown" identity []
+  in
+  Yojson.Safe.to_string json ^ "\n"

@@ -159,8 +159,9 @@ let empty_gameplan =
 (** Instantiate the real [Worktree_setup.Make] over a real git-backed [W] for
     [managed_dir], then run [ensure_worktree] for a brand-new [branch] cut from
     [base_ref]. Returns the worktree path. *)
-let run_ensure ?cancel_stage ?materialization_error ?(fail_checkpoint = false)
-    env ~managed_dir ~project_name ~pid ~branch ~base_ref =
+let run_ensure ?cancel_stage ?materialization_error ?probes ?fetches
+    ?(fail_checkpoint = false) env ~managed_dir ~project_name ~pid ~branch
+    ~base_ref =
   let process_mgr = Eio.Stdenv.process_mgr env in
   let clock = Eio.Stdenv.clock env in
   let module Real =
@@ -180,6 +181,14 @@ let run_ensure ?cancel_stage ?materialization_error ?(fail_checkpoint = false)
   in
   let module W = struct
     include Real
+
+    let probe_branch_sha ~path ~ref_name =
+      Option.iter probes ~f:(fun probes -> probes := ref_name :: !probes);
+      Real.probe_branch_sha ~path ~ref_name
+
+    let fetch_origin_branch ~fetch_lock ~branch =
+      Option.iter fetches ~f:(fun fetches -> fetches := branch :: !fetches);
+      Real.fetch_origin_branch ~fetch_lock ~branch
 
     let materialization ~path ~project_name ~branch =
       match materialization_error with
@@ -495,6 +504,29 @@ let scenario_dep_base_local_canonical env =
   assert_string "dep_base: worktree HEAD == local dep tip (not origin/dep)"
     local_dep_tip head;
   Stdlib.print_endline "  dep_base_local_canonical: OK"
+
+(** The symbolic [HEAD] start-point sentinel bypasses branch-ref probing and
+    origin branch fetching while preserving the checkout's current revision. *)
+let scenario_head_base_skips_branch_probe_and_fetch env =
+  with_temp_dir @@ fun root ->
+  let origin_dir = Stdlib.Filename.concat root "origin" in
+  let managed_dir = Stdlib.Filename.concat root "managed" in
+  setup_origin_with_main ~origin_dir;
+  clone_into ~origin_dir ~managed_dir;
+  let expected = git_capture ~dir:managed_dir [ "rev-parse"; "HEAD" ] in
+  let probes = ref [] and fetches = ref [] in
+  let wt =
+    run_ensure ~probes ~fetches env ~managed_dir ~project_name:"head-base"
+      ~pid:(Types.Patch_id.of_string "4")
+      ~branch:"head-base/patch-4" ~base_ref:"HEAD"
+  in
+  assert_string "symbolic HEAD base is preserved" expected
+    (git_capture ~dir:wt [ "rev-parse"; "HEAD" ]);
+  if List.mem !probes "refs/heads/HEAD" ~equal:String.equal then
+    failwith "HEAD sentinel was probed as a branch ref";
+  if List.mem !fetches "HEAD" ~equal:String.equal then
+    failwith "HEAD sentinel was fetched as an origin branch";
+  Stdlib.print_endline "  HEAD_base_skips_branch_ref_work: OK"
 
 (** Origin is unreachable: the main-base fetch fails and the cut proceeds from
     the local main ref and records that actual creation revision. *)
@@ -1624,5 +1656,6 @@ let () =
   scenario_creation_retry_reuses_base env;
   scenario_stale_local_main env;
   scenario_dep_base_local_canonical env;
+  scenario_head_base_skips_branch_probe_and_fetch env;
   scenario_fetch_failure_falls_back env;
   Stdlib.print_endline "all base-fetch integration scenarios passed"
