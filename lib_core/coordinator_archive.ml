@@ -1,4 +1,4 @@
-(* @archlint.module pure
+(* @archlint.module core
    @archlint.domain coordinator-state *)
 open Base
 

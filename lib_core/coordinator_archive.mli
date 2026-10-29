@@ -1,4 +1,4 @@
-(* @archlint.module pure
+(* @archlint.module interface
    @archlint.domain coordinator-state *)
 val encode : string -> string
 (** Lossless byte encoding with a fixed 64 KiB backward window. *)
