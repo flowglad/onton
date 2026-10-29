@@ -588,9 +588,10 @@ let branch_map_of_patches patches =
 
 let action_of_decision = function
   | Scheduler_decision.Start (id, base) -> Orchestrator.Start (id, base)
-  | Respond (id, kind) -> Orchestrator.Respond (id, kind)
-  | Rebase (id, base) -> Orchestrator.Rebase (id, base)
-  | Reconcile_branch (id, op) -> Orchestrator.Reconcile_branch (id, op)
+  | Scheduler_decision.Respond (id, kind) -> Orchestrator.Respond (id, kind)
+  | Scheduler_decision.Rebase (id, base) -> Orchestrator.Rebase (id, base)
+  | Scheduler_decision.Reconcile_branch (id, op) ->
+      Orchestrator.Reconcile_branch (id, op)
 
 let reconcile_action_message t action =
   let patch_id =

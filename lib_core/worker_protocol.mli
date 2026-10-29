@@ -41,6 +41,8 @@ type admission
 (** Decoded wire receipt; bind validates its admission history before readiness.
 *)
 
+val admission_is_fresh : admission -> bool
+
 type host_message = private
   | Bind of {
       identity : identity;

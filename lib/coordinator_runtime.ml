@@ -32,6 +32,11 @@ let run (type e) ~system ~client ~store ~(config : Coordinator_config.t)
   let clock = Eio.Stdenv.clock system in
   let main = Branch.of_string config.main_branch in
   let graph = Graph.of_gameplan gameplan in
+  let mode =
+    if String.equal config.execution_mode "feature" then
+      get (Execution_mode.infer_gameplan gameplan)
+    else Execution_mode.mainline
+  in
   let io =
     Branch_reconcile_executor.make_io
       ~process_mgr:(Eio.Stdenv.process_mgr system)
@@ -42,6 +47,7 @@ let run (type e) ~system ~client ~store ~(config : Coordinator_config.t)
   let polled = Hashtbl.create (module String) in
   let forge_cursor = ref 0 in
   let diagnostics = Hashtbl.create (module String) in
+  let report_blocked = ref (fun _ -> ()) in
   let stop_request ~resource_id =
     let run_id, coordinator_id, epoch, revision =
       Coordinator_store.authority store
@@ -91,33 +97,50 @@ let run (type e) ~system ~client ~store ~(config : Coordinator_config.t)
     in
     let capsule_agent patch =
       match latest patch with
-      | None -> None
-      | Some c ->
-          let cap = get (Worker_checkpoint.decode (json c.bytes)) in
-          Some
-            (get
-               (Worker_checkpoint.validate_binding cap ~run_id:(S.run_id state)
-                  ~patch_id:patch
-                  ~context:(Worker_checkpoint.context cap)
-                  ~state_version:c.version
-                  ~attention_id:(Worker_checkpoint.attention_id cap)
-                  ~gameplan ~main_branch:main))
+      | None -> Ok None
+      | Some c -> (
+          try
+            Result.bind
+              (Worker_checkpoint.decode (json c.bytes))
+              ~f:(fun cap ->
+                Result.map
+                  (Worker_checkpoint.validate_binding cap
+                     ~run_id:(S.run_id state) ~patch_id:patch
+                     ~context:(Worker_checkpoint.context cap)
+                     ~state_version:c.version
+                     ~attention_id:(Worker_checkpoint.attention_id cap)
+                     ~gameplan ~main_branch:main)
+                  ~f:Option.some)
+          with _ -> Error "malformed persisted owner capsule")
+    in
+    let capsule_results =
+      List.map gameplan.patches ~f:(fun p -> (p.id, capsule_agent p.id))
+    in
+    let corrupt_patch patch =
+      List.exists capsule_results ~f:(fun (id, result) ->
+          Patch_id.equal id patch && Result.is_error result)
     in
     let agents =
       List.map gameplan.patches ~f:(fun p ->
-          match capsule_agent p.id with
-          | Some a -> a
-          | None -> Patch_agent.create ~branch:p.branch p.id)
+          match List.Assoc.find capsule_results p.id ~equal:Patch_id.equal with
+          | Some (Ok (Some a)) -> a
+          | Some (Ok None) | None -> Patch_agent.create ~branch:p.branch p.id
+          | Some (Error _) ->
+              Patch_agent.create ~branch:p.branch p.id
+              |> Patch_agent.set_branch_blocked)
+    in
+    let capsule_attention =
+      List.find_map assignments ~f:(fun assignment ->
+          if not (corrupt_patch assignment.patch) then None
+          else
+            List.find (S.operations state) ~f:(fun (op : S.operation) ->
+                String.equal op.id assignment.operation && not op.attention)
+            |> Option.map ~f:(fun (op : S.operation) -> op.id))
     in
     let view =
       Coordinator_config.reconcile
         (S.scheduling_view state
-           {
-             Scheduler_decision.graph;
-             mode = Execution_mode.mainline;
-             agents;
-             main;
-           })
+           { Scheduler_decision.graph; mode; agents; main })
     in
     if
       Option.equal String.equal
@@ -202,8 +225,10 @@ let run (type e) ~system ~client ~store ~(config : Coordinator_config.t)
           patch_id = a.patch_id;
           dependencies;
           selected_base;
-          mode = "mainline";
-          root = false;
+          mode =
+            (if Option.is_some (Execution_mode.root mode) then "feature"
+             else "mainline");
+          root = Execution_mode.is_root mode a.patch_id;
           evidence_id =
             Option.value
               (Scheduler_decision.evidence_id view a.patch_id)
@@ -303,6 +328,7 @@ let run (type e) ~system ~client ~store ~(config : Coordinator_config.t)
       List.find_map assignments ~f:(fun assignment ->
           if
             (not assignment.reserved) || assignment.retired
+            || corrupt_patch assignment.patch
             || List.mem (S.lost_resources state) assignment.resource
                  ~equal:String.equal
           then None
@@ -394,7 +420,7 @@ let run (type e) ~system ~client ~store ~(config : Coordinator_config.t)
                             ~selected_base:(V.selected_base context)
                         in
                         match input with
-                        | Some input
+                        | Ok (Some input)
                           when not
                                  (Option.value_map (Worker_stream.input s)
                                     ~default:false ~f:(fun old ->
@@ -410,7 +436,10 @@ let run (type e) ~system ~client ~store ~(config : Coordinator_config.t)
                                               Patch_id.to_string a.patch_id;
                                           },
                                           input )) ))
-                        | _ ->
+                        | Error reason ->
+                            !report_blocked reason;
+                            None
+                        | Ok None | Ok (Some _) ->
                             let version =
                               match Worker_stream.capsule s with
                               | None | Some "{}" -> 0L
@@ -487,7 +516,8 @@ let run (type e) ~system ~client ~store ~(config : Coordinator_config.t)
     let retry =
       List.find_map (S.operations state) ~f:(fun op ->
           if
-            S.reserved_count state >= config.capacity
+            corrupt_patch op.patch
+            || S.reserved_count state >= config.capacity
             || not (S.can_recover state op ~now:(now ()))
           then None
           else
@@ -542,7 +572,8 @@ let run (type e) ~system ~client ~store ~(config : Coordinator_config.t)
             List.find assignments ~f:(fun a -> Patch_id.equal a.patch p.id)
           with
           | Some a
-            when a.retired && a.cleanup && a.result_committed
+            when (not (corrupt_patch p.id))
+                 && a.retired && a.cleanup && a.result_committed
                  && (not
                        (List.mem (S.terminal_patches state) p.id
                           ~equal:Patch_id.equal))
@@ -553,54 +584,137 @@ let run (type e) ~system ~client ~store ~(config : Coordinator_config.t)
               Some (Coordinator.Intent (S.Resume_idle p.id))
           | _ -> None)
     in
+    let scheduling_decisions =
+      let decisions = Scheduler_decision.plan view in
+      match Execution_mode.root mode with
+      | None -> decisions
+      | Some root ->
+          List.filter decisions ~f:(fun (id, _) -> Patch_id.equal id root)
+          @ List.filter decisions ~f:(fun (id, _) ->
+              not (Patch_id.equal id root))
+    in
+    let root_integration =
+      match Execution_mode.root mode with
+      | None -> None
+      | Some root_id
+        when S.reserved_count state >= config.capacity
+             || List.exists (S.operations state) ~f:(fun op ->
+                 Patch_id.equal op.patch root_id
+                 && (op.unfinished || op.attention)) ->
+          None
+      | Some root_id -> (
+          match agent root_id with
+          | Some root_agent
+            when Execution_mode.integration_root_available root_agent
+                 &&
+                 match Patch_agent.worktree_state root_agent with
+                 | Patch_agent.Materialized _ -> true
+                 | Patch_agent.Unmaterialized -> false ->
+              let root_branch = root_agent.branch in
+              List.find_map view.agents ~f:(fun contributor ->
+                  let revision = contributor.Patch_agent.head_oid in
+                  if
+                    Patch_id.equal contributor.patch_id root_id
+                    || not
+                         (Execution_mode.integration_ready mode
+                            ~construction_open:true ~ignore_inflight:false
+                            ~max_failures:3 ~terminal:root_branch contributor)
+                  then None
+                  else
+                    Option.bind revision ~f:(fun revision ->
+                        let already_integrated =
+                          List.exists
+                            (Branch_reconcile.integrations
+                               root_agent.branch_reconcile) ~f:(fun receipt ->
+                              String.equal
+                                (Branch_reconcile.Commit.to_string
+                                   receipt.capture.source_revision)
+                                revision)
+                        in
+                        if already_integrated then None
+                        else
+                          Option.map (Branch_reconcile.Commit.make revision)
+                            ~f:(fun _ ->
+                              (root_id, contributor.patch_id, revision))))
+          | Some _ | None -> None)
+    in
+    let root_integration_admission =
+      Option.map root_integration ~f:(fun (root_id, contributor, revision) ->
+          let op : S.operation =
+            {
+              id = next_id ();
+              patch = root_id;
+              used = 0;
+              budget = 3;
+              retry_after = 0L;
+              attention = false;
+              unfinished = true;
+              maintenance = false;
+            }
+          in
+          let work =
+            V.Integrate_revision
+              { contributor = Patch_id.to_string contributor; revision }
+          in
+          Coordinator.Intent_batch
+            [
+              S.Admit op;
+              S.Journal_attempt
+                ( "schedule:" ^ op.id,
+                  Yojson.Safe.to_string (Coordinator_config.work_json work) );
+            ])
+    in
     let admit =
-      List.find_map (Scheduler_decision.plan view) ~f:(fun (id, decision) ->
-          if
-            S.reserved_count state >= config.capacity
-            || List.exists (S.operations state) ~f:(fun op ->
-                Patch_id.equal op.patch id && (op.unfinished || op.attention))
-          then None
-          else
-            Option.bind decision ~f:(fun decision ->
-                if
-                  match (decision, agent id) with
-                  | Scheduler_decision.Start _, Some a ->
-                      not
-                        (List.is_empty
-                           (Branch_reconcile.publications a.branch_reconcile))
-                  | _ -> false
-                then None
-                else
-                  let patch =
-                    List.find gameplan.patches ~f:(fun p ->
-                        Patch_id.equal p.id id)
-                  in
-                  Option.map patch ~f:(fun p ->
-                      let op : S.operation =
-                        {
-                          id = next_id ();
-                          patch = id;
-                          used = 0;
-                          budget = 3;
-                          retry_after = 0L;
-                          attention = false;
-                          unfinished = true;
-                          maintenance = false;
-                        }
+      match root_integration_admission with
+      | Some _ -> root_integration_admission
+      | None ->
+          List.find_map scheduling_decisions ~f:(fun (id, decision) ->
+              if
+                S.reserved_count state >= config.capacity
+                || List.exists (S.operations state) ~f:(fun op ->
+                    Patch_id.equal op.patch id && (op.unfinished || op.attention))
+              then None
+              else
+                Option.bind decision ~f:(fun decision ->
+                    if
+                      match (decision, agent id) with
+                      | Scheduler_decision.Start _, Some a ->
+                          not
+                            (List.is_empty
+                               (Branch_reconcile.publications a.branch_reconcile))
+                      | _ -> false
+                    then None
+                    else
+                      let patch =
+                        List.find gameplan.patches ~f:(fun p ->
+                            Patch_id.equal p.id id)
                       in
-                      let work =
-                        Coordinator_config.work_of_decision
-                          ~spec:(p.description ^ "\n" ^ p.spec)
-                          decision
-                      in
-                      Coordinator.Intent_batch
-                        [
-                          S.Admit op;
-                          S.Journal_attempt
-                            ( "schedule:" ^ op.id,
-                              Yojson.Safe.to_string
-                                (Coordinator_config.work_json work) );
-                        ])))
+                      Option.map patch ~f:(fun p ->
+                          let op : S.operation =
+                            {
+                              id = next_id ();
+                              patch = id;
+                              used = 0;
+                              budget = 3;
+                              retry_after = 0L;
+                              attention = false;
+                              unfinished = true;
+                              maintenance = false;
+                            }
+                          in
+                          let work =
+                            Coordinator_config.work_of_decision
+                              ~spec:(p.description ^ "\n" ^ p.spec)
+                              decision
+                          in
+                          Coordinator.Intent_batch
+                            [
+                              S.Admit op;
+                              S.Journal_attempt
+                                ( "schedule:" ^ op.id,
+                                  Yojson.Safe.to_string
+                                    (Coordinator_config.work_json work) );
+                            ])))
     in
     let forge_action () =
       let ordered =
@@ -610,7 +724,7 @@ let run (type e) ~system ~client ~store ~(config : Coordinator_config.t)
       let result =
         List.find_map ordered ~f:(fun a ->
             if
-              a.Patch_agent.merged
+              corrupt_patch a.patch_id || a.Patch_agent.merged
               || List.exists assignments ~f:(fun assignment ->
                   Patch_id.equal assignment.patch a.patch_id
                   && assignment.reserved)
@@ -820,30 +934,35 @@ let run (type e) ~system ~client ~store ~(config : Coordinator_config.t)
         forge_cursor := (!forge_cursor + 1) % List.length view.agents;
       result
     in
-    match S.lifecycle state with
-    | S.Cancelling _ when S.cancellation_complete state ->
-        stopped_cleanly := true;
-        Some Coordinator.Shutdown
-    | Cancelling _
-      when List.for_all (S.resource_owners state) ~f:(fun (r, _) ->
-               List.mem (S.retired_resources state) r ~equal:String.equal) ->
-        Some (Coordinator.Close_run (request "close" []))
-    | Sleeping _ | Cancelling _ | Draining _ -> None
-    | Running when S.policy_tick_needed state view ~now:(now ()) ->
-        Some (Coordinator.Intent (S.Policy_tick (view, now ())))
-    | Running -> (
-        match active with
-        | Some _ -> active
-        | None -> (
-            match retry with
-            | Some _ -> retry
+    match capsule_attention with
+    | Some operation ->
+        Some (Coordinator.Intent (S.Operation_attention operation))
+    | None -> (
+        match S.lifecycle state with
+        | S.Cancelling _ when S.cancellation_complete state ->
+            stopped_cleanly := true;
+            Some Coordinator.Shutdown
+        | Cancelling _
+          when List.for_all (S.resource_owners state) ~f:(fun (r, _) ->
+                   List.mem (S.retired_resources state) r ~equal:String.equal)
+          ->
+            Some (Coordinator.Close_run (request "close" []))
+        | Sleeping _ | Cancelling _ | Draining _ -> None
+        | Running when S.policy_tick_needed state view ~now:(now ()) ->
+            Some (Coordinator.Intent (S.Policy_tick (view, now ())))
+        | Running -> (
+            match active with
+            | Some _ -> active
             | None -> (
-                match admit with
-                | Some _ -> admit
+                match retry with
+                | Some _ -> retry
                 | None -> (
-                    match maintenance with
-                    | Some _ -> maintenance
-                    | None -> forge_action ()))))
+                    match admit with
+                    | Some _ -> admit
+                    | None -> (
+                        match maintenance with
+                        | Some _ -> maintenance
+                        | None -> forge_action ())))))
   in
   let env : Coordinator.env =
     {
@@ -856,6 +975,7 @@ let run (type e) ~system ~client ~store ~(config : Coordinator_config.t)
           Some (Coordinator.Tick source));
       now;
       stream_timeout = 10.;
+      mono_clock = Eio.Stdenv.mono_clock system;
       attached =
         (fun ~resource_id ~readable ->
           Hashtbl.set attached ~key:resource_id ~data:readable);
@@ -867,6 +987,7 @@ let run (type e) ~system ~client ~store ~(config : Coordinator_config.t)
       blocked = (fun why -> Stdlib.prerr_endline ("onton-coordinator: " ^ why));
     }
   in
+  report_blocked := env.blocked;
   Coordinator.serve ~forge ~git:io ~write_status:Stdlib.print_endline
     ~net:(Eio.Stdenv.net system) ~clock ~control_path env;
   if not !stopped_cleanly then

@@ -239,12 +239,32 @@ let () =
        ~assignment:(assignment "one" "new") ~now:2L
     = R.Ready)
     "guarded retired replacement failed";
+  let assignments =
+    Coordinator_state.assignments (Coordinator_host.state host)
+  in
   let recovered =
-    List.hd (Coordinator_state.assignments (Coordinator_host.state host))
+    Stdlib.List.find_opt
+      (fun (assignment : Coordinator_state.assignment) ->
+        String.equal assignment.Coordinator_state.id "assignment-new")
+      assignments
   in
   check
-    (recovered.operation = a.operation && recovered.request = a.request)
-    "unfinished identity lost";
+    (match recovered with
+    | Some recovered ->
+        recovered.operation = a.operation
+        && recovered.request = a.request
+        && String.equal recovered.resource "new"
+        && recovered.reserved && not recovered.retired
+    | None -> false)
+    "replacement assignment identity/resource lost";
+  check
+    (Stdlib.List.exists
+       (fun (predecessor : Coordinator_state.assignment) ->
+         String.equal predecessor.Coordinator_state.id "assignment-old"
+         && String.equal predecessor.resource "old"
+         && predecessor.retired)
+       assignments)
+    "predecessor retirement was not preserved";
   check (!sends = 2) "one replacement";
 
   let _, client, restore, sends, pending, _ = fixture () in

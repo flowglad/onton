@@ -94,6 +94,8 @@ let apply agent t =
     match t.state with
     | None -> defer agent
     | Some pr when pr.is_fork -> defer agent
+    | Some pr when Pr_state.closed pr && not (Pr_state.merged pr) ->
+        defer (Patch_agent.mark_pr_missing agent)
     | Some pr -> (
         let agent =
           if Option.is_none (Patch_agent.pr_number agent) then
@@ -170,8 +172,6 @@ let apply agent t =
                           match Patch_decision.on_ci_failure a with
                           | Enqueue_ci -> Patch_agent.enqueue a kind
                           | _ -> a)
-                      | Merge_conflict when not (Patch_agent.has_conflict a) ->
-                          a
                       | _ -> Patch_agent.enqueue a kind)
                 in
                 observe

@@ -46,11 +46,10 @@ let decode bytes =
                      ~f:safe))
             || (not
                   (List.mem [ "codex"; "claude" ] t.backend ~equal:String.equal))
-            || not (String.equal t.execution_mode "mainline")
-          then
-            Error
-              "invalid configuration; this executable currently supports \
-               mainline execution only"
+            || not
+                 (List.mem [ "mainline"; "feature" ] t.execution_mode
+                    ~equal:String.equal)
+          then Error "invalid coordinator configuration values"
           else Ok t
       | _ -> Error "expected the exact current coordinator configuration schema"
   with _ -> Error "invalid coordinator configuration JSON"
@@ -80,6 +79,14 @@ let work_json = function
           ("spec", `String spec);
         ]
 
+let exact_fields names fields =
+  List.length fields = List.length names
+  && List.length
+       (List.dedup_and_sort (List.map fields ~f:fst) ~compare:String.compare)
+     = List.length names
+  && List.for_all names ~f:(fun name ->
+      List.count fields ~f:(fun (key, _) -> String.equal key name) = 1)
+
 let work bytes =
   try
     if String.length bytes > 262144 then Error "work exceeds bound"
@@ -90,10 +97,13 @@ let work bytes =
       | `Assoc fields -> (
           let field k = List.Assoc.find fields k ~equal:String.equal in
           match (field "type", field "phase", field "kind", field "spec") with
-          | Some (`String "integrate"), _, _, _ -> (
+          | Some (`String "integrate"), _, _, _
+            when exact_fields [ "type"; "contributor"; "revision" ] fields -> (
               match (field "contributor", field "revision") with
               | Some (`String contributor), Some (`String revision)
-                when not (String.is_empty contributor) -> (
+                when String.length contributor > 0
+                     && String.length contributor <= 256
+                     && not (String.contains contributor '\000') -> (
                   match Branch_reconcile.Commit.make revision with
                   | Some _ ->
                       Ok
@@ -104,7 +114,8 @@ let work bytes =
           | ( Some (`String "session"),
               Some (`String phase),
               kind,
-              Some (`String spec) ) -> (
+              Some (`String spec) )
+            when exact_fields [ "type"; "phase"; "kind"; "spec" ] fields -> (
               let phase =
                 match phase with
                 | "start" -> Some Worker_protocol.Start

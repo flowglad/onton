@@ -163,7 +163,7 @@ let decode bytes =
                                        (a : Coordinator_state.capsule) b ->
                                      Int64.compare a.version b.version)
                             with
-                            | None -> true
+                            | None -> String.equal bytes "{}"
                             | Some capsule ->
                                 String.equal capsule.bytes bytes
                                 && String.equal capsule.receipt receipt)
@@ -225,24 +225,33 @@ let load t =
   | Error e -> Error e
   | Ok r -> (
       match
-        (r.status, r.payload, r.state_version, r.revision, r.owner_epoch)
+        ( r.status,
+          r.run_id,
+          r.payload,
+          r.state_version,
+          r.revision,
+          r.owner_epoch )
       with
-      | Ok, Some encoded, Some version, Some revision, Some epoch
-        when Int64.equal epoch t.owner_epoch -> (
+      | Ok, Some run_id, Some encoded, Some version, Some revision, Some epoch
+        when String.equal run_id t.run_id && Int64.equal epoch t.owner_epoch
+        -> (
           match Base64.decode encoded with
           | Error _ -> Error (Invalid "invalid state-read base64")
           | Ok bytes -> (
               match decode bytes with
               | Error e -> Error e
-              | Ok e when Int64.equal e.version version ->
+              | Ok e
+                when Int64.equal e.version version
+                     && String.equal (Coordinator_state.run_id e.state) t.run_id
+                ->
                   t.revision <- revision;
                   Ok e
-              | Ok _ -> Error (Invalid "envelope and pointer version differ")))
-      | Ok, _, _, _, _ ->
+              | Ok _ -> Error (Invalid "envelope identity/version mismatch")))
+      | Ok, _, _, _, _, _ ->
           Error (Invalid "state-read missing current bytes or guards")
-      | Pending, _, _, _, _ | Attention, _, _, _, _ ->
+      | Pending, _, _, _, _, _ | Attention, _, _, _, _, _ ->
           Error (Uncertain "state-read not confirmed")
-      | Rejected, _, _, _, _ -> Error (Refused r))
+      | Rejected, _, _, _, _, _ -> Error (Refused r))
 
 let confirm t pending =
   (* A known receipt is metadata, not historical bytes. Check current bytes too. *)
@@ -328,5 +337,5 @@ let commit ?(emergency = false) t ~expected_version ~write_id e =
           | Ok r when Poly.equal r.status Resource_protocol.Rejected -> (
               match confirm t p with
               | Ok receipt -> Ok receipt
-              | Error _ -> Error (Refused r))
+              | Error confirmation_error -> Error confirmation_error)
           | Ok _ | Error _ -> confirm t p)

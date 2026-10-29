@@ -30,8 +30,8 @@ let string field xs =
   | Some (`String s) -> s
   | _ -> fail ("missing " ^ field)
 
-let reply ?(reason = "none") ?payload ?state_version ?receipt_state_version
-    ?(revision = 1) status =
+let reply ?(reason = "none") ?run_id ?payload ?state_version
+    ?receipt_state_version ?(revision = 1) status =
   let fields =
     [
       ("status", `String status);
@@ -46,6 +46,7 @@ let reply ?(reason = "none") ?payload ?state_version ?receipt_state_version
   Yojson.Safe.to_string
     (`Assoc
        (fields
+       @ optional "run_id" (Option.map (fun s -> `String s) run_id)
        @ optional "payload"
            (Option.map (fun s -> `String (Base64.encode_string s)) payload)
        @ optional "state_version"
@@ -63,7 +64,9 @@ let transport (f : fixture) ~argv:_ ~input =
   in
   let op = string "op" fields in
   let stale =
-    (String.equal op "state-read" || String.equal op "write-status")
+    (String.equal op "state-read"
+    || String.equal op "write-status"
+    || String.equal op "state-write")
     && int_of_string (string "revision" fields) <> f.revision
   in
   let response =
@@ -85,10 +88,12 @@ let transport (f : fixture) ~argv:_ ~input =
             f.version <- Int64.succ version;
             f.revision <- f.revision + 1;
             f.payload <- Some bytes;
-            f.writes <- (write_id, f.version) :: f.writes);
-          if f.drop_write then Error "lost write response"
-          else
-            Ok (0, reply ~revision:f.revision ~state_version:f.version "ok", "")
+            f.writes <- (write_id, f.version) :: f.writes;
+            if f.drop_write then Error "lost write response"
+            else
+              Ok
+                (0, reply ~revision:f.revision ~state_version:f.version "ok", ""))
+          else Ok (0, reply ~reason:"state_version" "rejected", "")
       | "state-read" -> (
           if f.refuse_read then Ok (0, reply "pending", "")
           else
@@ -97,8 +102,8 @@ let transport (f : fixture) ~argv:_ ~input =
             | Some bytes ->
                 Ok
                   ( 0,
-                    reply ~revision:f.revision ~payload:bytes
-                      ~state_version:f.version "ok",
+                    reply ~run_id:(string "run_id" fields) ~revision:f.revision
+                      ~payload:bytes ~state_version:f.version "ok",
                     "" ))
       | "write-status" -> (
           if f.refuse_receipt then Ok (0, reply "pending", "")

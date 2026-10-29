@@ -8,7 +8,7 @@ type envelope = private {
   streams : (string * Worker_stream.t) list;
 }
 
-type receipt = { write_id : string; state_version : int64 }
+type receipt = private { write_id : string; state_version : int64 }
 
 type error =
   | Invalid of string

@@ -577,13 +577,31 @@ let project t ~run_id ~patch_id ~context ~state_version ~attention_id ~gameplan
               else
                 let publication =
                   match
-                    Branch_reconcile.publications agent.branch_reconcile
+                    ( t.operation,
+                      Branch_reconcile.operation agent.branch_reconcile,
+                      agent.session_completion )
                   with
-                  | receipt :: _ ->
-                      Some
-                        (Branch_reconcile.Commit.to_string
-                           receipt.published_revision)
-                  | [] -> None
+                  | Some _, Some owner_operation, Some completion ->
+                      Option.bind completion.head ~f:(fun expected_revision ->
+                          Branch_reconcile.publications agent.branch_reconcile
+                          |> List.find
+                               ~f:(fun
+                                   (receipt :
+                                     Branch_reconcile.publication_receipt)
+                                 ->
+                                 receipt.operation_id = owner_operation.id
+                                 && String.equal
+                                      (Branch_reconcile.Commit.to_string
+                                         receipt.published_revision)
+                                      expected_revision)
+                          |> Option.map
+                               ~f:(fun
+                                   (receipt :
+                                     Branch_reconcile.publication_receipt)
+                                 ->
+                                 Branch_reconcile.Commit.to_string
+                                   receipt.published_revision))
+                  | _ -> None
                 in
                 let note_bytes =
                   match (t.note, t.operation, publication) with
@@ -622,7 +640,10 @@ let advance t ~operation ~guidance ~workspace_id ~agent ~terminal =
           _,
           _ ) ->
         None
-    | None -> None
+    | None ->
+        if Option.equal Poly.equal t.operation (Some operation) then
+          t.attention_id
+        else None
   in
   if Int64.equal t.version Int64.max_value then
     Error "capsule state version exhausted"

@@ -64,6 +64,7 @@ type env = {
   next_event : unit -> event option;
   now : unit -> int64;
   stream_timeout : float;
+  mono_clock : Eio.Time.Mono.ty Eio.Time.Mono.t;
   attached : resource_id:string -> readable:(unit -> bool) -> unit;
   gameplan : Types.Gameplan.t;
   main_branch : Types.Branch.t;
@@ -173,7 +174,13 @@ let run ?forge ?git ?(write_status = fun _ -> ()) env =
       restore_inventory env host;
       let attachments = Hashtbl.create (module String) in
       let cancellations = Hash_set.create (module String) in
-      let close (attachment, _) = Resource_client.disconnect attachment in
+      let close (attachment, _) =
+        match Resource_client.disconnect attachment with
+        | Ok () -> true
+        | Error reason ->
+            env.blocked reason;
+            false
+      in
       let find_attachment assignment =
         match Hashtbl.find attachments assignment with
         | Some io -> Some io
@@ -219,9 +226,7 @@ let run ?forge ?git ?(write_status = fun _ -> ()) env =
                       ~f:(fun a ->
                         String.equal a.id id
                         && String.equal a.resource owner.resource)
-                  then (
-                    Hashtbl.remove attachments id;
-                    close io));
+                  then if close io then Hashtbl.remove attachments id);
               stop env host owner.resource;
               true)
             else false
@@ -279,10 +284,13 @@ let run ?forge ?git ?(write_status = fun _ -> ()) env =
             | Ok attachment -> (
                 match
                   Or_error.try_with (fun () ->
-                      Coordinator_stream_io.create attachment)
+                      Coordinator_stream_io.create ~mono_clock:env.mono_clock
+                        attachment)
                 with
                 | Error _ ->
-                    Resource_client.disconnect attachment;
+                    (match Resource_client.disconnect attachment with
+                    | Ok () -> ()
+                    | Error reason -> env.blocked reason);
                     env.blocked "worker stream setup failed";
                     false
                 | Ok io -> (
@@ -295,7 +303,7 @@ let run ?forge ?git ?(write_status = fun _ -> ()) env =
                           ~readable:(fun () -> Coordinator_stream_io.ready io);
                         true
                     | `Duplicate ->
-                        close (attachment, io);
+                        ignore (close (attachment, io));
                         false)))
         | _ ->
             env.blocked "attachment not bound to current live assignment";
@@ -330,8 +338,9 @@ let run ?forge ?git ?(write_status = fun _ -> ()) env =
                   match
                     Coordinator_inputs.pending state a.patch ~selected_base:base
                   with
-                  | None -> ()
-                  | Some input when not (String.is_empty base) -> (
+                  | Error reason -> env.blocked reason
+                  | Ok None -> ()
+                  | Ok (Some input) when not (String.is_empty base) -> (
                       let already =
                         Option.value_map (Worker_stream.input stream)
                           ~default:false ~f:(fun old ->
@@ -354,7 +363,7 @@ let run ?forge ?git ?(write_status = fun _ -> ()) env =
                               (frames a.id
                                  (Coordinator_host.command host ~assignment:a.id
                                     ~frame)))
-                  | Some _ -> ()))
+                  | Ok (Some _) -> ()))
       in
       let settle_lifecycle () =
         let state = Coordinator_host.state host in
@@ -583,11 +592,26 @@ let run ?forge ?git ?(write_status = fun _ -> ()) env =
                   response (Coordinator_control.handle host bytes);
                   true
               | Close_run template -> (
+                  let resources =
+                    Coordinator_state.resources (Coordinator_host.state host)
+                  in
                   let persisted =
-                    List.Assoc.find
-                      (Coordinator_state.resources
-                         (Coordinator_host.state host))
-                      template.request_id ~equal:String.equal
+                    match
+                      List.Assoc.find resources template.request_id
+                        ~equal:String.equal
+                    with
+                    | Some _ as persisted -> persisted
+                    | None ->
+                        List.find_map resources ~f:(fun (_, bytes) ->
+                            match Resource_protocol.make_request bytes with
+                            | Ok request
+                              when Poly.equal request.operation
+                                     Resource_protocol.Close
+                                   && String.equal request.run_id
+                                        (Coordinator_state.run_id
+                                           (Coordinator_host.state host)) ->
+                                Some bytes
+                            | Ok _ | Error _ -> None)
                   in
                   let request =
                     match persisted with
@@ -689,7 +713,10 @@ let run ?forge ?git ?(write_status = fun _ -> ()) env =
               then loop ())
       in
       Exn.protect
-        ~finally:(fun () -> Hashtbl.iter attachments ~f:close)
+        ~finally:(fun () ->
+          Hashtbl.iter attachments ~f:(fun data ->
+              if not (close data) then
+                failwith "worker supervisor tree was not confirmed reaped"))
         ~f:(fun () ->
           Coordinator_headless.emit ~write:write_status
             (Coordinator_host.state host);

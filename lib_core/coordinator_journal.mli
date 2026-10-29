@@ -1,7 +1,7 @@
 (* @archlint.module interface
    @archlint.domain coordinator-state *)
 
-type phase = Pending | Applied of string | Attention [@@deriving yojson]
+type phase = Pending | Applied of string | Attention
 
 type entry = private {
   id : string;
@@ -9,10 +9,10 @@ type entry = private {
   attempts : int;
   phase : phase;
 }
-[@@deriving yojson]
 
-type t [@@deriving yojson]
+type t
 
+val yojson_of_t : t -> Yojson.Safe.t
 val encode : t -> string
 val decode : string -> (t, string) result
 val empty : t

@@ -211,18 +211,50 @@ type attachment = {
   stdout : Unix.file_descr;
   pid : int;
   mutable closed : bool;
+  mutable reaped : bool;
 }
 
 let input a = a.stdin
 let output a = a.stdout
 
-let disconnect a =
+let utf8_valid s =
+  let rec loop i =
+    if i = String.length s then true
+    else
+      let decoded = Stdlib.String.get_utf_8_uchar s i in
+      Stdlib.Uchar.utf_decode_is_valid decoded
+      && loop (i + Stdlib.Uchar.utf_decode_length decoded)
+  in
+  loop 0
+
+let disconnect ?(timeout = 5.) a =
   if not a.closed then (
     a.closed <- true;
     close a.stdin;
-    close a.stdout;
+    close a.stdout);
+  if a.reaped then Ok ()
+  else if (not (Float.is_finite timeout)) || Float.(timeout <= 0.) then
+    Error "invalid supervisor teardown timeout"
+  else (
     (try Unix.kill a.pid Stdlib.Sys.sigterm with _ -> ());
-    wait a.pid)
+    let rec await attempts =
+      match Unix.waitpid [ Unix.WNOHANG ] a.pid with
+      | pid, _ when pid = a.pid ->
+          a.reaped <- true;
+          Ok ()
+      | 0, _ when attempts <= 0 ->
+          Error "worker supervisor teardown timed out; attachment retained"
+      | 0, _ ->
+          Unix.sleepf 0.01;
+          await (attempts - 1)
+      | _ -> Error "unexpected supervisor wait result"
+      | exception Unix.Unix_error (Unix.EINTR, _, _) -> await attempts
+      | exception Unix.Unix_error (Unix.ECHILD, _, _) ->
+          a.reaped <- true;
+          Ok ()
+    in
+    let attempts = Stdlib.int_of_float (Stdlib.ceil (timeout /. 0.01)) in
+    await attempts)
 
 let connect t ~run_id ~coordinator_id ~owner_epoch ~revision ~request_id
     ~resource_id =
@@ -231,7 +263,7 @@ let connect t ~run_id ~coordinator_id ~owner_epoch ~revision ~request_id
     (not
        (List.for_all selectors ~f:(fun s ->
             let n = String.length s in
-            n > 0 && n <= 256
+            n > 0 && n <= 256 && utf8_valid s
             && not
                  (String.exists s ~f:(fun c ->
                       Char.equal c '\000' || Char.equal c '\n'
@@ -245,7 +277,6 @@ let connect t ~run_id ~coordinator_id ~owner_epoch ~revision ~request_id
     if String.is_empty supervisor || not (Stdlib.Sys.file_exists supervisor)
     then Error "supervisor unavailable"
     else
-      let () = t.attachments <- resource_id :: t.attachments in
       let in_r, in_w = Unix.pipe ~cloexec:true () in
       let out_r, out_w = Unix.pipe ~cloexec:true () in
       let err = Unix.openfile "/dev/null" [ Unix.O_WRONLY; Unix.O_CLOEXEC ] 0 in
@@ -270,7 +301,8 @@ let connect t ~run_id ~coordinator_id ~owner_epoch ~revision ~request_id
             out_w err
         in
         List.iter [ in_r; out_w; err ] ~f:close;
-        Ok { stdin = in_w; stdout = out_r; pid; closed = false }
+        t.attachments <- resource_id :: t.attachments;
+        Ok { stdin = in_w; stdout = out_r; pid; closed = false; reaped = false }
       with exn ->
         List.iter [ in_r; in_w; out_r; out_w; err ] ~f:close;
         Error (Exn.to_string exn)

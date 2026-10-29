@@ -73,6 +73,7 @@ let () =
                   None);
               now = (fun () -> 0L);
               stream_timeout = 1.;
+              mono_clock = Eio.Stdenv.mono_clock env;
               attached = (fun ~resource_id:_ ~readable:_ -> ());
               gameplan;
               main_branch = Branch.of_string "main";

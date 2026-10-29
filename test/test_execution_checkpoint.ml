@@ -74,6 +74,7 @@ let () =
     let has_uncommitted_changes ~path:_ = reject ()
     let conflict_diff ~path:_ = reject ()
     let read_branch_sha ~path:_ ~ref_name:_ = reject ()
+    let probe_branch_sha ~path:_ ~ref_name:_ = reject ()
     let is_ancestor ~path:_ ~ancestor:_ ~descendant:_ = reject ()
     let commit_gameplan ~path:_ ~publication:_ ~message:_ = reject ()
     let materialization ~path:_ ~project_name:_ ~branch:_ = reject ()

@@ -116,6 +116,12 @@ let () =
         Onton.Resource_client.connect client ~run_id:"r" ~coordinator_id:"c"
           ~owner_epoch:0L ~revision:0L ~request_id:"stream-1" ~resource_id:"p"
       in
+      check
+        (Result.is_error
+           (Onton.Resource_client.connect client ~run_id:"\255"
+              ~coordinator_id:"c" ~owner_epoch:0L ~revision:0L
+              ~request_id:"invalid" ~resource_id:"p"))
+        "invalid UTF-8 selector rejected before attachment registration";
       match connect () with
       | Error e -> failwith e
       | Ok stream ->
@@ -129,5 +135,7 @@ let () =
           check
             (n = 9 && Bytes.to_string buf = "raw\000bytes")
             "raw stream bytes";
-          Onton.Resource_client.disconnect stream);
+          check
+            (Result.is_ok (Onton.Resource_client.disconnect stream))
+            "supervisor process tree reaped");
   print_endline "resource client public helper passed"

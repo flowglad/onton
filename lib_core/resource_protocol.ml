@@ -89,13 +89,9 @@ let operation = function
   | _ -> None
 
 let unique xs =
-  let rec loop = function
-    | [] -> true
-    | (k, _) :: rest ->
-        (not (List.exists rest ~f:(fun (x, _) -> String.equal x k)))
-        && loop rest
-  in
-  loop xs
+  let keys = List.map xs ~f:fst in
+  List.length keys
+  = List.length (List.dedup_and_sort keys ~compare:String.compare)
 
 let rec no_duplicates = function
   | `Assoc fields ->

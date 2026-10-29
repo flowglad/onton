@@ -82,7 +82,10 @@ let provision ~host ~client ~(request : Resource_protocol.request)
                 && (not (String.equal id resource))
                 && not (retired id)))
     in
-    let id = "resource:" ^ resource in
+    let id =
+      if String.length resource <= 247 then "resource:" ^ resource
+      else "resource:" ^ Stdlib.Digest.to_hex (Stdlib.Digest.string resource)
+    in
     let journal = Coordinator_state.journal state in
     if not request_matches then
       Blocked "resource scope/predecessor not authorized"
@@ -100,13 +103,15 @@ let provision ~host ~client ~(request : Resource_protocol.request)
           else Ready
       | Some { phase = Attention; _ } -> Attention
       | Some { attempts = 3; _ } ->
-          ignore
-            (Coordinator_host.transaction host
-               [
-                 Journal_settle (id, None);
-                 Operation_attention assignment.operation;
-               ]);
-          Attention
+          if
+            committed
+              (Coordinator_host.transaction host
+                 [
+                   Journal_settle (id, None);
+                   Operation_attention assignment.operation;
+                 ])
+          then Attention
+          else Blocked "resource attention commit unconfirmed"
       | _ -> (
           let prior =
             List.find (Coordinator_state.assignments state) ~f:(fun a ->

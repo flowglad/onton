@@ -1695,9 +1695,13 @@ let () =
                            }))
                | None -> state
              in
-             (match B.operation restored with
+             let retains_workspace_operation state =
+               match B.operation state with
                | Some op -> B.equal_intent op.intent intent && op.lost_workspace
-               | None -> false)
+               | None -> false
+             in
+             retains_workspace_operation restored
+             && retains_workspace_operation observed
              && List.length effects = 1
              && B.workspace_outcome observed
                 = Some

@@ -101,6 +101,8 @@ let decode_context bytes =
   else
     match P.parse_frame (bytes ^ "\n") with
     | Error _ -> Error "malformed context"
+    | Ok json when not (String.equal bytes (Yojson.Safe.to_string json)) ->
+        Error "noncanonical context"
     | Ok json -> (
         match keys context_keys json with
         | None -> Error "context schema"
@@ -352,7 +354,10 @@ let extended_work = function
       match keys [ "type"; "contributor"; "revision" ] j with
       | Some xs when field "type" xs = Some (`String "integrate_revision") -> (
           match (str xs "contributor", str xs "revision") with
-          | Some contributor, Some revision ->
+          | Some contributor, Some revision
+            when String.length contributor > 0
+                 && String.length contributor <= 256
+                 && not (String.contains contributor '\000') ->
               Some (Integrate_revision { contributor; revision })
           | _ -> None)
       | _ ->
@@ -454,7 +459,13 @@ let decode_host line =
                   | Ok (P.Execute request), extended
                     when context.run = request.identity.run_id
                          && context.patch = request.identity.patch_id
-                         && context.admitted ->
+                         && context.input_version = input_version
+                         && context.admitted
+                         &&
+                         match extended with
+                         | Some (Integrate_revision _) ->
+                             String.equal context.role "root"
+                         | Some (Session _ | Reconcile) | None -> true ->
                       Ok
                         (Execute
                            {

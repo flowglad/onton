@@ -14,7 +14,7 @@ type helper_state = {
   mutable writes : (string * int64) list;
 }
 
-let helper_response state ?(reason = "none") ?payload ?state_version
+let helper_response state ?(reason = "none") ?run_id ?payload ?state_version
     ?receipt_state_version status =
   let optional name value =
     match value with None -> [] | Some value -> [ (name, value) ]
@@ -27,6 +27,7 @@ let helper_response state ?(reason = "none") ?payload ?state_version
           ("owner_epoch", `Int 1);
           ("revision", `Intlit (Int64.to_string state.revision));
         ]
+       @ optional "run_id" (Option.map ~f:(fun value -> `String value) run_id)
        @ optional "payload"
            (Option.map payload ~f:(fun value ->
                 `String (Base64.encode_string value)))
@@ -57,8 +58,9 @@ let helper_transport state ~argv:_ ~input =
         match state.bytes with
         | None -> helper_response state ~reason:"not_found" "rejected"
         | Some bytes ->
-            helper_response state ~payload:bytes ~state_version:state.version
-              "ok")
+            helper_response state
+              ~run_id:(required_string "run_id" fields)
+              ~payload:bytes ~state_version:state.version "ok")
     | "state-write" ->
         let expected =
           Int64.of_string (required_string "state_version" fields)

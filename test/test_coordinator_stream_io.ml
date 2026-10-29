@@ -5,7 +5,7 @@ open Onton
 
 let check message yes = if not yes then failwith message
 
-let with_connection script f =
+let with_connection mono_clock script f =
   let helper = Filename.temp_file "onton-coordinator-io-" ".sh" in
   let output = open_out_bin helper in
   output_string output ("#!/bin/sh\n" ^ script ^ "\n");
@@ -26,29 +26,36 @@ let with_connection script f =
       | Error why -> failwith why
       | Ok attachment ->
           Fun.protect
-            ~finally:(fun () -> Resource_client.disconnect attachment)
-            (fun () -> f (Coordinator_stream_io.create attachment)))
+            ~finally:(fun () -> ignore (Resource_client.disconnect attachment))
+            (fun () -> f (Coordinator_stream_io.create ~mono_clock attachment)))
 
 let () =
-  with_connection "printf 'first\\nsecond\\n'" (fun io ->
+  Eio_main.run @@ fun env ->
+  let mono_clock = Eio.Stdenv.mono_clock env in
+  with_connection mono_clock "printf 'first\\nsecond\\n'" (fun io ->
       check "first complete frame"
         (Coordinator_stream_io.read io ~timeout:3. = Ok "first\n");
       check "buffered frame survives peer EOF"
         (Coordinator_stream_io.read io ~timeout:3. = Ok "second\n");
       check "EOF is not a frame or retirement"
         (Result.is_error (Coordinator_stream_io.read io ~timeout:3.)));
-  with_connection "printf 'partial'; sleep 30" (fun io ->
+  with_connection mono_clock "printf 'partial'; sleep 30" (fun io ->
       let started = Unix.gettimeofday () in
       check "partial frame cannot enter protocol"
         (Result.is_error (Coordinator_stream_io.read io ~timeout:0.05));
       check "partial frame read is bounded"
         (Unix.gettimeofday () -. started < 3.));
-  with_connection "sleep 30" (fun io ->
+  with_connection mono_clock "sleep 30" (fun io ->
       let started = Unix.gettimeofday () in
       check "backpressured send is uncertain"
         (Result.is_error
            (Coordinator_stream_io.send io ~timeout:0.05
-              [ String.make (1024 * 1024) 'a' ]));
+              [ String.make (1024 * 1024) 'a' ^ "\\n" ]));
+      check "unterminated frame rejected before write"
+        (Result.is_error (Coordinator_stream_io.send io ~timeout:1. [ "{}" ]));
+      check "multiple frames in one item rejected"
+        (Result.is_error
+           (Coordinator_stream_io.send io ~timeout:1. [ "{}\\n{}\\n" ]));
       check "backpressure cannot indefinitely block cancellation"
         (Unix.gettimeofday () -. started < 3.);
       List.iter

@@ -367,9 +367,19 @@ module Make_impl
                     fetch_base (attempt + 1))
             in
             let local_missing =
-              Option.is_none
-                (W.read_branch_sha ~path:(W.resolve_main_root ())
-                   ~ref_name:("refs/heads/" ^ base))
+              match
+                W.probe_branch_sha ~path:(W.resolve_main_root ())
+                  ~ref_name:("refs/heads/" ^ base)
+              with
+              | Ok None -> true
+              | Ok (Some _) -> false
+              | Error reason ->
+                  log_event runtime ~patch_id
+                    (Printf.sprintf
+                       "Local base ref probe failed; suppressing remote \
+                        fallback for %s: %s"
+                       base reason);
+                  false
             in
             let fetched_remote_sha =
               if

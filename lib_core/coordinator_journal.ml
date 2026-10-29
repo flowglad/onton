@@ -39,7 +39,11 @@ let decode bytes =
   if String.length bytes > 8388608 then Error "journal too large"
   else
     try
-      let t = t_of_yojson (Yojson.Safe.from_string bytes) in
+      let t =
+        match Json.of_string bytes with
+        | Ok json -> t_of_yojson json
+        | Error _ -> failwith "invalid journal JSON"
+      in
       if valid t then Ok t else Error "invalid journal"
     with _ -> Error "malformed journal"
 

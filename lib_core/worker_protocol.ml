@@ -1255,6 +1255,8 @@ let execute_message request =
   | Error (Invalid _ | Incompatible _) ->
       None
 
+let admission_is_fresh = function Fresh -> true | Resume _ -> false
+
 let admission_receipt (t : t) =
   match (t.identity, t.receipts) with
   | None, _ -> None

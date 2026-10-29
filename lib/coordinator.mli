@@ -64,6 +64,7 @@ type env = {
   next_event : unit -> event option;
   now : unit -> int64;
   stream_timeout : float;
+  mono_clock : Eio.Time.Mono.ty Eio.Time.Mono.t;
   attached : resource_id:string -> readable:(unit -> bool) -> unit;
   gameplan : Types.Gameplan.t;
   main_branch : Types.Branch.t;

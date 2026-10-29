@@ -41,16 +41,11 @@ let observe (type e) (module F : Forge.S with type error = e) ~io scope =
   else
     match F.pr_state scope.pr with
     | Error e -> Unavailable (F.show_error e)
-    | Ok pr
-      when (Pr_state.merged pr || Pr_state.closed pr)
-           && Option.equal Pr_number.equal pr.pr_number (Some scope.pr) ->
-        Confirmed pr
     | Ok pr -> (
         if
-          Pr_state.merged pr || Pr_state.closed pr
-          || (not
-                (Option.value_map pr.pr_number ~default:false
-                   ~f:(Pr_number.equal scope.pr)))
+          (not
+             (Option.value_map pr.pr_number ~default:false
+                ~f:(Pr_number.equal scope.pr)))
           || (not
                 (Option.value_map pr.head_branch ~default:false
                    ~f:(Branch.equal scope.head_branch)))
@@ -161,51 +156,59 @@ let observe_committed ?(now = 0.) (type e)
                   let removal_checks =
                     match pr with
                     | Some pr when not (Pr_state.enqueued pr) ->
-                        Result.ok
+                        Result.map
                           (F.merge_queue_removal_checks ~pr_number:scope.pr)
-                    | _ -> None
+                          ~f:Option.some
+                        |> Result.map_error ~f:F.show_error
+                    | _ -> Ok None
                   in
-                  match
-                    Coordinator_observation.make ?removal_checks
-                      ~observed_at:now scope pr ~diagnostic
-                  with
-                  | Error reason -> Unconfirmed reason
-                  | Ok evidence -> (
-                      match latest (Coordinator_host.state host) with
-                      | Some current when Poly.equal current ticket -> (
-                          match
-                            Coordinator_host.transaction host
-                              (let state = Coordinator_host.state host in
-                               let version =
-                                 List.fold (Coordinator_state.inputs state)
-                                   ~init:0L ~f:(fun v (_, p, n, _, _) ->
-                                     if
-                                       String.equal p (Patch_id.to_string patch)
-                                     then Int64.max v n
-                                     else v)
-                               in
-                               [
-                                 Journal_settle
-                                   ( id,
-                                     Some
-                                       (Coordinator_observation.encode evidence)
-                                   );
-                                 Forge_wait
-                                   (patch, Option.is_some evidence.state);
-                                 Input
-                                   ( "evidence:" ^ scope.ticket,
-                                     Patch_id.to_string patch,
-                                     (if Int64.equal version Int64.max_value
-                                      then version
-                                      else Int64.succ version),
-                                     Coordinator_observation.encode evidence );
-                               ])
-                          with
-                          | Ok (Applied _) -> observed
-                          | Ok (Rejected _) | Error _ ->
-                              Unavailable
-                                "observation result commit unconfirmed")
-                      | _ -> Unconfirmed "observation ticket superseded"))))
+                  match removal_checks with
+                  | Error reason -> Unavailable reason
+                  | Ok removal_checks -> (
+                      match
+                        Coordinator_observation.make ?removal_checks
+                          ~observed_at:now scope pr ~diagnostic
+                      with
+                      | Error reason -> Unconfirmed reason
+                      | Ok evidence -> (
+                          match latest (Coordinator_host.state host) with
+                          | Some current when Poly.equal current ticket -> (
+                              match
+                                Coordinator_host.transaction host
+                                  (let state = Coordinator_host.state host in
+                                   let version =
+                                     List.fold (Coordinator_state.inputs state)
+                                       ~init:0L ~f:(fun v (_, p, n, _, _) ->
+                                         if
+                                           String.equal p
+                                             (Patch_id.to_string patch)
+                                         then Int64.max v n
+                                         else v)
+                                   in
+                                   [
+                                     Journal_settle
+                                       ( id,
+                                         Some
+                                           (Coordinator_observation.encode
+                                              evidence) );
+                                     Forge_wait
+                                       (patch, Option.is_some evidence.state);
+                                     Input
+                                       ( "evidence:" ^ scope.ticket,
+                                         Patch_id.to_string patch,
+                                         (if Int64.equal version Int64.max_value
+                                          then version
+                                          else Int64.succ version),
+                                         Coordinator_observation.encode evidence
+                                       );
+                                   ])
+                              with
+                              | Ok (Applied _) -> observed
+                              | Ok (Rejected _) | Error _ ->
+                                  Unavailable
+                                    "observation result commit unconfirmed")
+                          | _ -> Unconfirmed "observation ticket superseded"))))
+          )
       | _ -> Unconfirmed "observation ticket superseded")
 
 let ready ~expected ~current ~policy_ready observation =
@@ -415,7 +418,8 @@ let change_unsettled (type e) (module F : Forge.S with type error = e) ~host ~io
         ~f:(fun (c : Coordinator_state.control) -> String.equal c.id effect_id)
     in
     let proof =
-      if pending then None else Option.map expected ~f:(fun pr -> Confirmed pr)
+      if pending then Some (observe (module F) ~io scope)
+      else Option.map expected ~f:(fun pr -> Confirmed pr)
     in
     match proof with
     | Some (Unavailable reason) -> Change_pending reason

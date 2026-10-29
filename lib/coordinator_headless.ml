@@ -56,6 +56,7 @@ let json state =
   let idle =
     List.count (resource_owners state) ~f:(fun (id, _) ->
         (not (List.mem (retired_resources state) id ~equal:String.equal))
+        && (not (List.mem (lost_resources state) id ~equal:String.equal))
         && not
              (List.exists assignments ~f:(fun a ->
                   String.equal a.resource id && a.reserved)))

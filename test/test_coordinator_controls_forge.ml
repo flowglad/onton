@@ -336,7 +336,7 @@ module Fake_forge : Forge.S with type error = string = struct
     !after_read ();
     result
 
-  let merge_queue_removal_checks ~pr_number:_ = Error "unused"
+  let merge_queue_removal_checks ~pr_number:_ = Ok []
   let check_failure_details ~check:_ = Error "unused"
   let rerun_failed_jobs_for_check ~check:_ = Error "unused"
   let list_prs ~branch:_ ?base:_ ~state:_ () = Ok []
@@ -676,8 +676,9 @@ let test_committed_evidence_and_effects () =
         (Coordinator_host.state host)
         patch ~selected_base:"main"
     with
-    | Some i -> i
-    | None -> failwith "versioned worker evidence absent"
+    | Ok (Some i) -> i
+    | Ok None -> failwith "versioned worker evidence absent"
+    | Error why -> failwith why
   in
   check
     (pending.evidence <> [] && pending.version = 1L)

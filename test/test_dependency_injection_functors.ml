@@ -36,6 +36,7 @@ module Fake_worktree : Worktree.S = struct
   let has_uncommitted_changes ~path:_ = assert false
   let conflict_diff ~path:_ = assert false
   let read_branch_sha ~path:_ ~ref_name:_ = None
+  let probe_branch_sha ~path:_ ~ref_name:_ = Ok None
   let is_ancestor ~path:_ ~ancestor:_ ~descendant:_ = false
   let commit_gameplan ~path:_ ~publication:_ ~message:_ = assert false
   let materialization ~path:_ ~project_name:_ ~branch:_ = Ok None

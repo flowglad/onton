@@ -26,7 +26,7 @@ let () =
           let packed = A.encode bytes in
           packed = A.encode bytes
           && A.decode ~max_bytes:(String.length bytes) packed = Ok bytes);
-      test "output bound is checked before allocation" QCheck2.Gen.string
+      test "oversized decoded output is rejected" QCheck2.Gen.string
         (fun bytes ->
           match
             A.decode ~max_bytes:(String.length bytes - 1) (A.encode bytes)

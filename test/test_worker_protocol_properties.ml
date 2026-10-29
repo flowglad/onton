@@ -849,13 +849,16 @@ let public_codec_api =
           | Error _ -> failwith "bind fixture"
         in
         check ~label:"codec assertion 70"
-          (match P.decode (Onton_core.Worker_protocol.encode_host binding) with
-          | Ok (P.Bind _) -> true
-          | Ok
-              ( P.Execute _ | P.Cancel _ | P.Checkpoint_ack _ | P.Result_ack _
-              | P.Shutdown _ )
-          | Error _ ->
-              false);
+          (let encoded = Onton_core.Worker_protocol.encode_host binding in
+           match P.decode encoded with
+           | Ok (P.Bind _ as decoded) ->
+               decoded = binding
+               && Onton_core.Worker_protocol.encode_host decoded = encoded
+           | Ok
+               ( P.Execute _ | P.Cancel _ | P.Checkpoint_ack _ | P.Result_ack _
+               | P.Shutdown _ )
+           | Error _ ->
+               false);
         true
       with _ -> false)
 

@@ -30,8 +30,8 @@ let string field xs =
   | Some (`String s) -> s
   | _ -> fail ("missing " ^ field)
 
-let reply ?(reason = "none") ?payload ?state_version ?receipt_state_version
-    ?(revision = 1) status =
+let reply ?(reason = "none") ?run_id ?payload ?state_version
+    ?receipt_state_version ?(revision = 1) status =
   let fields =
     [
       ("status", `String status);
@@ -46,6 +46,7 @@ let reply ?(reason = "none") ?payload ?state_version ?receipt_state_version
   Yojson.Safe.to_string
     (`Assoc
        (fields
+       @ optional "run_id" (Option.map (fun s -> `String s) run_id)
        @ optional "payload"
            (Option.map (fun s -> `String (Base64.encode_string s)) payload)
        @ optional "state_version"
@@ -95,8 +96,8 @@ let transport (f : fixture) ~argv:_ ~input =
             | Some bytes ->
                 Ok
                   ( 0,
-                    reply ~revision:f.revision ~payload:bytes
-                      ~state_version:f.version "ok",
+                    reply ~run_id:(string "run_id" fields) ~revision:f.revision
+                      ~payload:bytes ~state_version:f.version "ok",
                     "" ))
       | "write-status" -> (
           if f.refuse_receipt then Ok (0, reply "pending", "")

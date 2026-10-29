@@ -252,11 +252,26 @@ let () =
             {|{"version":"resource-v1","op":"stop","run_id":"run","request_id":"stop","coordinator_id":"c","owner_epoch":"1","revision":"1","resource_id":"padding"}|}
           in
           let stopped = apply t (S.Resource_request ("stop", stop)) in
+          let cancel =
+            S.Control
+              {
+                id = "cancel-near-budget";
+                run_id = "run";
+                config_id = "config";
+                payload = "cancel";
+                kind = "cancel";
+                patch_id = None;
+              }
+          in
+          let cancelled = apply t cancel in
           String.equal (S.encode t) (S.encode unchanged)
           && String.length (S.encode stopped) > budget - 65536
           && Result.is_ok (S.decode (S.encode stopped))
           && Coordinator_state.emergency_event
-               (S.Resource_request ("stop", stop)));
+               (S.Resource_request ("stop", stop))
+          && String.length (S.encode cancelled) > budget - 65536
+          && Result.is_ok (S.decode (S.encode cancelled))
+          && Coordinator_state.emergency_event cancel);
       property
         "idle maintenance reserves a slot without coding and keeps its \
          allowance after completion/restart"

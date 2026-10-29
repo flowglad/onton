@@ -41,6 +41,8 @@ module Fake_worktree : Worktree.S = struct
     if String.is_suffix ref_name ~suffix:"/main" then Some !base_head
     else Some !head
 
+  let probe_branch_sha ~path ~ref_name = Ok (read_branch_sha ~path ~ref_name)
+
   let is_ancestor ~path:_ ~ancestor ~descendant =
     String.equal ancestor "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
     && String.equal descendant "cccccccccccccccccccccccccccccccccccccccc"

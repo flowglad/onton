@@ -11,7 +11,7 @@ ONTON_WORKER_BINARY=/absolute/path/to/onton-worker dune build @worker-protocol-s
 
 The first command builds and drives `bin/worker.exe` through the public JSONL entry point. The override drives an explicitly supplied binary with the same harness, for the later exact-image gate. The smoke uses local bare Git repositories, separate clones, a fake Codex executable, a local forge observation fixture, and a host durability simulator; it does not require AWS or a GitHub credential. `dune build && dune runtest` runs the source-change gate. Ordinary `onton` is a separate executable.
 
-Release archives contain `onton`, `onton-setsid-exec`, and `onton-worker`.
+Release archives contain `onton`, `onton-coordinator`, `onton-setsid-exec`, and `onton-worker`.
 The release workflow extracts each archive and runs the protocol smoke against
 that extracted worker before publishing. Linux builds additionally check worker
 startup in Ubuntu 22.04. The Homebrew formula template installs all three tools.
@@ -238,9 +238,13 @@ session/reconcile shape or `{type:"integrate_revision",contributor,revision}`.
 Missing/unknown fields, bad scopes and changed request identities reject.
 
 V3 input is a separate `{version:3,type:"input",run_id,patch_id,input_id,
-input_version,guidance,selected_base}` frame. Versions start at 1 and increase
-by one. A matching exact replay is harmless; changed ID reuse, gaps and counter
-exhaustion reject. `Input_committed(id,version)` is a *host attestation*, not a
+input_version,guidance,selected_base,evidence,controls,covered}` frame. `evidence`
+is a list of committed forge-observation records, `controls` is a list of
+`[kind,value]` pairs, and `covered` is the ordered list of every input ID and
+version included in the cumulative payload. A standalone input starts at version
+1 and advances by one; a batched input may advance to its latest version when
+`covered` lists every intervening version contiguously. A matching exact replay
+is harmless; changed ID reuse, gaps and counter exhaustion reject. `Input_committed(id,version)` is a *host attestation*, not a
 storage write: the host must atomically commit the exact input before emitting
 it. Only a matching committed input updates the desired base or authorizes
 application. An older unfinished Execute retains its original binding. Notes

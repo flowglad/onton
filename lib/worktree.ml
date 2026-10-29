@@ -395,6 +395,44 @@ let read_branch_sha ~process_mgr ~path ~ref_name =
     if String.is_empty s then None else Some s
   else None
 
+let probe_branch_sha ~process_mgr ~path ~ref_name =
+  let check_code, _, check_error =
+    run_git_exit_code ~process_mgr
+      [ "git"; "-C"; path; "check-ref-format"; ref_name ]
+  in
+  if check_code <> 0 then
+    Error
+      (Printf.sprintf "invalid Git ref %s in %s: %s" ref_name path
+         (String.strip check_error))
+  else
+    let code, stdout, stderr =
+      run_git_exit_code ~process_mgr
+        [ "git"; "-C"; path; "show-ref"; "--verify"; "--hash"; ref_name ]
+    in
+    if code = 0 then
+      let sha = String.strip stdout in
+      if String.is_empty sha then Error "git returned an empty ref SHA"
+      else
+        let object_code, _, object_error =
+          run_git_exit_code ~process_mgr
+            [ "git"; "-C"; path; "cat-file"; "-e"; sha ^ "^{commit}" ]
+        in
+        if object_code = 0 then Ok (Some sha)
+        else
+          Error
+            (Printf.sprintf "Git ref %s points to an unavailable commit: %s"
+               ref_name
+               (String.strip object_error))
+    else if
+      code = 128
+      && String.equal (String.strip stderr)
+           (Printf.sprintf "fatal: '%s' - not a valid ref" ref_name)
+    then Ok None
+    else
+      Error
+        (Printf.sprintf "git ref probe failed in %s (exit %d): %s" path code
+           (String.strip stderr))
+
 let is_ancestor ~process_mgr ~path ~ancestor ~descendant =
   let code, _, _ =
     run_git_exit_code ~process_mgr
@@ -566,6 +604,10 @@ module type S = sig
   (** Resolve [ref_name] to a SHA in the worktree at [path]. [None] on any error
       (missing ref, git failure). *)
 
+  val probe_branch_sha :
+    path:string -> ref_name:string -> (string option, string) Result.t
+  (** Distinguish an absent ref from a Git/object observation error. *)
+
   val is_ancestor : path:string -> ancestor:string -> descendant:string -> bool
 
   val commit_gameplan :
@@ -724,6 +766,9 @@ let make ~fs ~config ~clock ~process_mgr ~repo_root =
 
     let read_branch_sha ~path ~ref_name =
       read_branch_sha ~process_mgr ~path ~ref_name
+
+    let probe_branch_sha ~path ~ref_name =
+      probe_branch_sha ~process_mgr ~path ~ref_name
 
     let is_ancestor ~path ~ancestor ~descendant =
       is_ancestor ~process_mgr ~path ~ancestor ~descendant

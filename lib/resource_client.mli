@@ -27,8 +27,9 @@ val worker_manifest :
 val request :
   t -> Resource_protocol.request -> (Resource_protocol.response, error) result
 
-(* Raw single-use attachment. [connect] is never retried. The caller owns the
-    returned file descriptors and must close them; an EOF is not retirement. *)
+(* Raw single-use attachment. [connect] is never retried. [disconnect] is the
+    sole owner of the returned descriptors; callers must not close them directly.
+    An EOF is not retirement. *)
 type attachment
 
 val connect :
@@ -43,4 +44,8 @@ val connect :
 
 val input : attachment -> Unix.file_descr
 val output : attachment -> Unix.file_descr
-val disconnect : attachment -> unit
+
+val disconnect : ?timeout:float -> attachment -> (unit, string) result
+(** Close the stream, ask the supervisor to terminate its process tree, and
+    return only after the supervisor has reaped that tree. On timeout the error
+    is explicit and callers must keep the attachment fenced. *)

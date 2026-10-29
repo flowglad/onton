@@ -123,12 +123,13 @@ let test_lifecycle () =
   ignore receipt_bytes
 
 let test_integration () =
-  let t, _ = V.step (V.initial ()) (V.Host (V.Bind (bind (), ctx ()))) in
+  let root_context = ok (V.decode_context (context ~root:"root" ())) in
+  let t, _ = V.step (V.initial ()) (V.Host (V.Bind (bind (), root_context))) in
   let e =
     {
       V.request = request ();
       work = V.Integrate_revision { contributor = "child"; revision = "abc123" };
-      context = ctx ();
+      context = root_context;
       input_version = 0L;
     }
   in
@@ -460,7 +461,9 @@ let public_api_coverage =
         let request =
           { execution.request with guidance = "guidance-" ^ string_of_int seed }
         in
-        let execution = { execution with request; context = decoded_context } in
+        let execution =
+          { execution with request; context = decoded_context; input_version }
+        in
         let encoded = V.encode_host (V.Execute execution) in
         let bound = V.Bind (bind (), decoded_context) in
         let state, _ = V.step (V.initial ()) (V.Host bound) in

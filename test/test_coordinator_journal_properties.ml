@@ -21,8 +21,22 @@ let () =
         QCheck2.Gen.(list (pair bool bool))
         (fun actions ->
           let rec loop journal (previous : J.entry option) = function
-            | [] ->
-                J.valid journal && Result.is_ok (J.decode (J.encode journal))
+            | [] -> (
+                match J.decode (J.encode journal) with
+                | Error _ -> false
+                | Ok restored -> (
+                    J.valid journal && J.valid restored
+                    && String.equal (J.encode restored) (J.encode journal)
+                    &&
+                    match
+                      (J.find journal "effect", J.find restored "effect")
+                    with
+                    | Some before, Some after ->
+                        before.attempts = after.attempts
+                        && before.scope = after.scope
+                        && before.phase = after.phase
+                    | None, None -> true
+                    | _ -> false))
             | (attempt, applied) :: rest ->
                 let next =
                   if attempt then
@@ -60,10 +74,18 @@ let () =
             | Error _ -> j
           in
           let j = step (step (step J.empty)) in
+          let pending =
+            match J.begin_attempt J.empty ~id:"x" ~scope:"fixed" with
+            | Ok pending -> pending
+            | Error _ -> failwith "initial pending attempt"
+          in
+          let different =
+            if String.equal changed "fixed" then "other" else changed
+          in
           (match J.find j "x" with
             | Some e -> e.attempts = 3 && e.phase = J.Attention
             | None -> false)
-          && Result.is_error (J.begin_attempt j ~id:"x" ~scope:changed));
+          && Result.is_error (J.begin_attempt pending ~id:"x" ~scope:different));
       QCheck2.Test.make ~count:400 ~name:"journal generated public API sequence"
         QCheck2.Gen.(list_size (int_range 0 20) bool)
         (fun actions ->
@@ -88,9 +110,16 @@ let () =
             let found = J.find journal "generated" in
             match J.decode (J.encode journal) with
             | Error _ -> false
-            | Ok restored ->
+            | Ok restored -> (
                 J.valid journal && J.valid restored
-                && List.length entries = List.length (J.entries restored)
+                && String.equal (J.encode journal) (J.encode restored)
+                && entries = J.entries restored
+                && Option.equal ( = ) found (J.find restored "generated")
                 && Option.is_some found = not (List.is_empty actions)
+                &&
+                match J.decode (J.encode restored) with
+                | Ok restarted ->
+                    String.equal (J.encode restarted) (J.encode restored)
+                | Error _ -> false)
           with _ -> false);
     ]

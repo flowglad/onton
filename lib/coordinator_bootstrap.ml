@@ -126,4 +126,6 @@ let start ~client ~run_id ~coordinator_id ~config_id ~plan_id ~plan_bytes
             (String.equal (Coordinator_state.config_bytes state) config_bytes))
       || Coordinator_state.capacity state <> capacity
     then fail "committed run identity/config/gameplan mismatch"
-    else Ok { store; envelope; authority }
+    else
+      let _, _, owner_epoch, revision = Coordinator_store.authority store in
+      Ok { store; envelope; authority = { owner_epoch; revision } }

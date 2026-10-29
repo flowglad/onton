@@ -35,30 +35,31 @@ let runtime_of_agent env patch_id restored context input =
   let runtime =
     Runtime.create ~gameplan:env.gameplan ~main_branch:env.main_branch ()
   in
-  Runtime.update runtime (fun snapshot ->
-      let agents =
-        Base.Map.set
-          (Orchestrator.agents_map snapshot.orchestrator)
-          ~key:patch_id ~data:restored
-      in
-      let orchestrator =
-        match context with
-        | None ->
-            Orchestrator.restore
-              ~graph:(Orchestrator.graph snapshot.orchestrator)
-              ~agents
-              ~outbox:(Base.Map.empty (module Types.Message_id))
-              ~main_branch:env.main_branch ()
-        | Some context -> (
-            match
-              Orchestrator.restore_worker ~gameplan:env.gameplan
-                ~main_branch:env.main_branch ~context ?input ~agent:restored ()
-            with
-            | Ok orch -> orch
-            | Error reason -> failwith reason)
-      in
-      { snapshot with Runtime.orchestrator });
-  runtime
+  let snapshot = Runtime.read runtime Fun.id in
+  let agents =
+    Base.Map.set
+      (Orchestrator.agents_map snapshot.orchestrator)
+      ~key:patch_id ~data:restored
+  in
+  let orchestrator =
+    match context with
+    | None ->
+        Ok
+          (Orchestrator.restore
+             ~graph:(Orchestrator.graph snapshot.orchestrator)
+             ~agents
+             ~outbox:(Base.Map.empty (module Types.Message_id))
+             ~main_branch:env.main_branch ())
+    | Some context ->
+        Orchestrator.restore_worker ~gameplan:env.gameplan
+          ~main_branch:env.main_branch ~context ?input ~agent:restored ()
+  in
+  Result.map
+    (fun orchestrator ->
+      Runtime.update runtime (fun snapshot ->
+          { snapshot with Runtime.orchestrator });
+      runtime)
+    orchestrator
 
 let status_of_session (result : Session_driver.run_result) =
   match result.disposition with
@@ -771,7 +772,7 @@ let run env =
                     else
                       Worker_protocol_v3.note ~assignment:operation ~publication
                         (Ok (Stdlib.really_input_string channel size)))
-              with Sys_error _ -> (
+              with Sys_error _ | End_of_file -> (
                 match Unix.stat path with
                 | _ -> Worker_protocol_v3.Unreadable
                 | exception Unix.Unix_error (Unix.ENOENT, _, _) ->
@@ -899,24 +900,27 @@ let run env =
               Error "invalid admission receipt")
             else
               match admission_receipt () with
-              | Some receipt when capsule_matches_admission capsule receipt ->
-                  binding :=
-                    Some
-                      ( runtime_of_agent env patch_id restored context_v3
-                          (Worker_checkpoint.v3_input capsule),
-                        ref capsule,
-                        workspace_id );
-                  (match Worker_checkpoint.v3_input capsule with
-                  | None -> ()
-                  | Some input ->
-                      if
-                        transition_v3 (Worker_protocol_v3.Restore_input input)
-                        <> []
-                      then
-                        fail_host "restored input does not match v3 admission";
-                      pending_input := Some input);
-                  emit outputs;
-                  Ok ()
+              | Some receipt when capsule_matches_admission capsule receipt -> (
+                  match
+                    runtime_of_agent env patch_id restored context_v3
+                      (Worker_checkpoint.v3_input capsule)
+                  with
+                  | Error reason -> Error reason
+                  | Ok runtime ->
+                      binding := Some (runtime, ref capsule, workspace_id);
+                      (match Worker_checkpoint.v3_input capsule with
+                      | None -> ()
+                      | Some input ->
+                          if
+                            transition_v3
+                              (Worker_protocol_v3.Restore_input input)
+                            <> []
+                          then
+                            fail_host
+                              "restored input does not match v3 admission";
+                          pending_input := Some input);
+                      emit outputs;
+                      Ok ())
               | Some _ | None -> Error "capsule and admission disagree"))
     | Worker_protocol.Execute _ | Cancel _ | Checkpoint_ack _ | Result_ack _
     | Shutdown _ ->

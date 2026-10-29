@@ -407,27 +407,39 @@ let command t ~assignment ~frame =
   let* a = owner t assignment in
   if not (live_owner t a) then invalid "lost, retired or superseded assignment"
   else
-    let previous =
-      match stream t assignment with
-      | Some s -> s
-      | None ->
-          List.find_map
-            (Coordinator_state.assignments (state t))
-            ~f:(fun prior ->
-              if
-                String.equal prior.resource a.resource
-                && Patch_id.equal prior.patch a.patch
-                && prior.cleanup && not prior.retired
-              then
-                match stream t prior.id with
-                | Some s when Worker_stream.acknowledged s -> Some s
-                | _ -> None
-              else None)
-          |> Option.value ~default:Worker_stream.initial
-    in
     let* message = protocol (Worker_protocol_v3.decode_host frame) in
+    let previous, inherited_assignment =
+      match stream t assignment with
+      | Some s -> (s, None)
+      | None -> (
+          match message with
+          | Worker_protocol_v3.Bind (Worker_protocol.Bind b, _)
+            when Worker_protocol.admission_is_fresh b.admission ->
+              (Worker_stream.initial, None)
+          | _ -> (
+              match
+                List.find_map
+                  (Coordinator_state.assignments (state t))
+                  ~f:(fun prior ->
+                    if
+                      String.equal prior.resource a.resource
+                      && Patch_id.equal prior.patch a.patch
+                      && prior.cleanup && not prior.retired
+                    then
+                      match stream t prior.id with
+                      | Some s when Worker_stream.acknowledged s ->
+                          Some (prior.id, s)
+                      | _ -> None
+                    else None)
+              with
+              | Some (id, s) -> (s, Some id)
+              | None -> (Worker_stream.initial, None)))
+    in
     let* () =
       match message with
+      | Worker_protocol_v3.Bind (Worker_protocol.Bind b, _context)
+        when not (Worker_protocol.admission_is_fresh b.admission) ->
+          invalid "command only accepts a fresh bind; use recover/rebind"
       | Worker_protocol_v3.Bind (Worker_protocol.Bind b, context) ->
           let* () = check_scope t a b.identity in
           let json =
@@ -448,10 +460,19 @@ let command t ~assignment ~frame =
           then invalid "bind configuration/plan mismatch"
           else if
             List.exists t.current.streams ~f:(fun (id, stream) ->
-                (not (String.equal id assignment))
-                && Option.value_map (Worker_stream.identity stream)
-                     ~default:false ~f:(fun identity ->
-                       String.equal identity.patch_id b.identity.patch_id))
+                if String.equal id assignment then false
+                else
+                  match Worker_stream.identity stream with
+                  | Some identity
+                    when String.equal identity.patch_id b.identity.patch_id ->
+                      not
+                        (List.exists
+                           (Coordinator_state.assignments (state t))
+                           ~f:(fun prior ->
+                             String.equal prior.id id && prior.cleanup
+                             && prior.result_committed
+                             && Worker_stream.acknowledged stream))
+                  | Some _ | None -> false)
           then
             invalid
               "patch has committed protocol history; recover instead of fresh \
@@ -520,10 +541,15 @@ let command t ~assignment ~frame =
                     Worker_protocol_v3.selected_base context
                 | _ -> "")
           in
+          let* pending =
+            match
+              Coordinator_inputs.pending (state t) a.patch ~selected_base:base
+            with
+            | Ok pending -> Ok pending
+            | Error reason -> invalid reason
+          in
           let cumulative =
-            Option.value_map
-              (Coordinator_inputs.pending (state t) a.patch ~selected_base:base)
-              ~default:false ~f:(Poly.equal input)
+            Option.value_map pending ~default:false ~f:(Poly.equal input)
           in
           if
             cumulative
@@ -561,7 +587,52 @@ let command t ~assignment ~frame =
       | _ -> invalid "ACK is derived from inbound worker evidence only"
     in
     let* next, frames = protocol (Worker_stream.command previous frame) in
-    publish_stream t assignment next (state t) [] frames
+    let* inherited_state, inherited_outcomes =
+      match inherited_assignment with
+      | None -> Ok (state t, [])
+      | Some predecessor -> (
+          match Worker_stream.capsule previous with
+          | None | Some "{}" -> Ok (state t, [])
+          | Some bytes -> (
+              match
+                List.find
+                  (Coordinator_state.capsules (state t))
+                  ~f:(fun capsule ->
+                    String.equal capsule.assignment predecessor
+                    && String.equal capsule.bytes bytes)
+              with
+              | Some capsule when Worker_stream.acknowledged previous -> (
+                  match Worker_stream.receipt next with
+                  | Some receipt ->
+                      step_state (state t)
+                        (Coordinator_state.Owner_receipt
+                           { capsule with assignment; receipt })
+                  | None -> invalid "continued stream has no derived receipt")
+              | Some _ -> invalid "predecessor receipt is not acknowledged"
+              | None ->
+                  invalid "stream and coordinator owner artifacts disagree"))
+    in
+    let* next_state, receipt_outcomes =
+      match (Worker_stream.capsule next, Worker_stream.receipt next) with
+      | Some bytes, Some receipt when not (String.equal bytes "{}") -> (
+          match
+            List.find (Coordinator_state.capsules inherited_state)
+              ~f:(fun capsule ->
+                String.equal capsule.assignment assignment
+                && String.equal capsule.bytes bytes)
+          with
+          | Some capsule when String.equal capsule.receipt receipt ->
+              Ok (inherited_state, [])
+          | Some capsule ->
+              step_state inherited_state
+                (Coordinator_state.Advance_receipt
+                   ({ capsule with receipt }, capsule.receipt))
+          | None -> Ok (inherited_state, []))
+      | _ -> Ok (inherited_state, [])
+    in
+    publish_stream t assignment next next_state
+      (inherited_outcomes @ receipt_outcomes)
+      frames
 
 let advance_receipt state assignment stream =
   match (Worker_stream.capsule stream, Worker_stream.receipt stream) with
@@ -589,6 +660,31 @@ let receive t ~assignment ~frame ~gameplan ~main_branch ~now =
     let* next, frames = protocol (Worker_stream.receive previous frame) in
     let* next_state, outcomes =
       match message with
+      | Worker_protocol.Observation m ->
+          let observation_key =
+            String.concat ~sep:"\000"
+              [
+                assignment;
+                m.operation.operation_id;
+                m.operation.attempt_id;
+                Int64.to_string m.operation.assignment_seq;
+                m.text;
+              ]
+          in
+          let id =
+            "worker-observation:"
+            ^ Stdlib.Digest.to_hex (Stdlib.Digest.string observation_key)
+          in
+          step_state (state t)
+            (Coordinator_state.Control
+               {
+                 id;
+                 run_id = Coordinator_state.run_id (state t);
+                 config_id = Coordinator_state.config_id (state t);
+                 kind = "worker_observation";
+                 patch_id = Some (Patch_id.to_string a.patch);
+                 payload = m.text;
+               })
       | Worker_protocol.Checkpoint m ->
           let* capsule =
             check_capsule ~gameplan ~main_branch previous m.capsule
@@ -743,8 +839,7 @@ let recover t ~predecessor ~assignment ~worker_id ~workspace_id =
     in
     let* next_state, outcomes =
       match (Worker_stream.capsule next, Worker_stream.receipt next) with
-      | Some bytes, Some receipt
-        when (not old.cleanup) && not (String.equal bytes "{}") ->
+      | Some bytes, Some receipt when not (String.equal bytes "{}") ->
           let* capsule =
             protocol
               (try Worker_checkpoint.decode (Yojson.Safe.from_string bytes)

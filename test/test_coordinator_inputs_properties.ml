@@ -67,13 +67,27 @@ let tests =
           match
             Coordinator_inputs.pending state patch ~selected_base:"main"
           with
-          | None -> kinds = []
-          | Some input ->
+          | Error _ -> false
+          | Ok None -> kinds = []
+          | Ok (Some input) ->
               List.length input.covered = List.length kinds
               && input.version = Int64.of_int (List.length kinds)
               && (match V.decode_input (V.input_json input) with
                 | Ok next -> next = input
                 | Error _ -> false)
+              && input.guidance
+                 = String.concat "\n\n"
+                     (List.filter_map
+                        (function 0 -> Some "guide" | _ -> None)
+                        kinds)
+              && input.controls
+                 = List.filter_map
+                     (function
+                       | 1 -> Some ("automerge", "false")
+                       | 2 -> Some ("bump", "")
+                       | _ -> None)
+                     kinds
+              && input.selected_base = "main"
               && input.covered
                  = List.mapi
                      (fun n _ ->

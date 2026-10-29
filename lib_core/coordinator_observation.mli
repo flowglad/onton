@@ -21,7 +21,6 @@ type t = private {
   removal_checks : Types.Ci_check.t list option;
   observed_at : float;
 }
-[@@deriving yojson]
 
 val make :
   ?removal_checks:Types.Ci_check.t list ->

@@ -190,6 +190,33 @@ let () =
            "3";
          ])
   in
+  let bad_output, bad_input, bad_errors = Unix.open_process_full command env in
+  let bad_bind =
+    frame "bind"
+      [
+        ("worker_id", `String "bad-worker");
+        ("workspace_id", `String "workspace-1");
+        ("context", `String "requirements");
+        ("capsule", `String "{}");
+        ("state_version", `String "0");
+        ("attention_id", `Null);
+        ("admission", `Assoc [ ("mode", `String "fresh") ]);
+        ( "execution_context",
+          `String
+            (context ~base:"v3-test/patch-1" ~generation:1 ~input_version:0
+            |> Yojson.Safe.from_string
+            |> replace "root_role" (`String "root")
+            |> Yojson.Safe.to_string) );
+      ]
+  in
+  send bad_input bad_bind;
+  let rejection = recv bad_output in
+  check "gameplan-incompatible bind returns protocol error"
+    (str "type" rejection = "protocol_error"
+    && String.length (str "reason" rejection) > 0);
+  ignore (Unix.close_process_full (bad_output, bad_input, bad_errors));
+  check "gameplan-incompatible bind does not invoke backend"
+    (not (Sys.file_exists prompt_log));
   let output, input, errors = Unix.open_process_full command env in
   let host = ref (V.initial ()) in
   let capsule = ref "{}" and version = ref 0L in
@@ -343,8 +370,13 @@ let () =
       ]
   in
   let result = execute 1 ~context:bind_context ~input_version:0 session in
-  check "dependent session admitted without merged peer defaults"
-    (List.mem (str "status" result)
+  let result_status = str "status" result in
+  check
+    (Printf.sprintf
+       "dependent session admitted without merged peer defaults: status=%s \
+        diagnostics=%s"
+       result_status (str "diagnostics" result))
+    (List.mem result_status
        [ "completed_ok"; "completed_no_commits"; "retryable" ]);
   let prompt = In_channel.with_open_bin prompt_log In_channel.input_all in
   check "actual backend received dependent Start"

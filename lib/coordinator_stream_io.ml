@@ -5,14 +5,23 @@ type t = {
   input : Unix.file_descr;
   output : Unix.file_descr;
   mutable pending : string;
+  monotonic_now : unit -> float;
 }
 
-let create attachment =
+let create ~mono_clock attachment =
   let input = Resource_client.input attachment
   and output = Resource_client.output attachment in
   Unix.set_nonblock input;
   Unix.set_nonblock output;
-  { input; output; pending = "" }
+  {
+    input;
+    output;
+    pending = "";
+    monotonic_now =
+      (fun () ->
+        Int64.to_float (Mtime.to_uint64_ns (Eio.Time.Mono.now mono_clock))
+        /. 1e9);
+  }
 
 let ready t =
   try
@@ -25,19 +34,19 @@ let ready t =
 let max_frame = 1024 * 1024
 let valid_timeout timeout = Float.is_finite timeout && timeout > 0.
 
-let rec waiting deadline reads writes =
-  let remaining = deadline -. Unix.gettimeofday () in
+let rec waiting t deadline reads writes =
+  let remaining = deadline -. t.monotonic_now () in
   if remaining <= 0. then false
   else
     try
       let readable, writable, _ = Unix.select reads writes [] remaining in
       readable <> [] || writable <> []
-    with Unix.Unix_error (Unix.EINTR, _, _) -> waiting deadline reads writes
+    with Unix.Unix_error (Unix.EINTR, _, _) -> waiting t deadline reads writes
 
 let read t ~timeout =
   if not (valid_timeout timeout) then Error "invalid stream timeout"
   else
-    let deadline = Unix.gettimeofday () +. timeout in
+    let deadline = t.monotonic_now () +. timeout in
     let bytes = Bytes.create 4096 in
     let rec loop () =
       match String.index_opt t.pending '\n' with
@@ -52,7 +61,7 @@ let read t ~timeout =
       | None when String.length t.pending >= max_frame ->
           Error "oversized worker frame"
       | None -> (
-          if not (waiting deadline [ t.output ] []) then
+          if not (waiting t deadline [ t.output ] []) then
             Error "worker frame timed out"
           else
             match Unix.read t.output bytes 0 (Bytes.length bytes) with
@@ -69,11 +78,22 @@ let read t ~timeout =
 
 let send t ~timeout frames =
   if not (valid_timeout timeout) then Error "invalid stream timeout"
+  else if
+    Stdlib.List.exists
+      (fun frame ->
+        String.length frame = 0
+        || (not (Char.equal frame.[String.length frame - 1] '\n'))
+        ||
+        match String.index_opt frame '\n' with
+        | Some index -> index <> String.length frame - 1
+        | None -> true)
+      frames
+  then Error "each send item must be one newline-terminated frame"
   else
-    let deadline = Unix.gettimeofday () +. timeout in
+    let deadline = t.monotonic_now () +. timeout in
     let rec write frame offset =
       if offset = String.length frame then Ok ()
-      else if not (waiting deadline [] [ t.input ]) then
+      else if not (waiting t deadline [] [ t.input ]) then
         Error "worker send uncertain (timeout)"
       else
         match

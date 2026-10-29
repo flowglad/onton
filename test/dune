@@ -1325,6 +1325,9 @@
 (test
  (name test_resource_client)
  (modules test_resource_client)
+ (deps %{bin:onton-setsid-exec})
+ (action
+  (setenv ONTON_SETSID_EXEC %{bin:onton-setsid-exec} (run %{test})))
  (libraries onton onton_core eio eio_main unix))
 
 (test
@@ -1363,7 +1366,7 @@
  (action
   (setenv ONTON_SETSID_EXEC %{bin:onton-setsid-exec}
    (run %{test})))
- (libraries onton unix))
+ (libraries onton eio eio_main unix))
 
 (test
  (name test_coordinator_stream)
@@ -1405,6 +1408,11 @@
  (modules test_coordinator_controls_forge)
  (libraries onton onton_core onton_test_support eio_main unix))
 
+
+(test
+ (name test_coordinator_command_forge)
+ (modules test_coordinator_command_forge)
+ (libraries onton onton_core unix))
 
 (test
  (name test_coordinator_journal_properties)

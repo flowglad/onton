@@ -7,6 +7,17 @@ open Ppx_yojson_conv_lib.Yojson_conv.Primitives
 
 [@@@warning "-4"]
 
+module Raw_journal = Coordinator_journal
+
+module Coordinator_journal = struct
+  include Raw_journal
+
+  let t_of_yojson json =
+    match Raw_journal.decode (Yojson.Safe.to_string json) with
+    | Ok journal -> journal
+    | Error reason -> failwith reason
+end
+
 type control = {
   id : string;
   run_id : string;
@@ -245,7 +256,7 @@ let control_target_ok (c : control) =
   match (c.kind, c.patch_id) with
   | ("sleep" | "wake" | "cancel"), None -> true
   | ( ( "guidance" | "automerge" | "bump" | "renewal" | "forge_create"
-      | "forge_ticket" | "forge_effect" ),
+      | "forge_ticket" | "forge_effect" | "worker_observation" ),
       Some id ) ->
       valid_id id
   | _, _ -> false
@@ -301,7 +312,7 @@ let decode_control bytes =
               Some kind,
               Some patch_id,
               Some (`String payload) )
-            when String.length payload <= 131072
+            when String.length payload <= 262144
                  && List.mem
                       [
                         "guidance";
@@ -311,6 +322,7 @@ let decode_control bytes =
                         "sleep";
                         "wake";
                         "cancel";
+                        "worker_observation";
                       ]
                       kind ~equal:String.equal ->
               let control =
@@ -377,7 +389,7 @@ let valid (t : t) =
        (List.map t.capsules ~f:(fun c ->
             c.assignment ^ ":" ^ Int64.to_string c.version))
   && List.for_all t.capsules ~f:(fun c ->
-      Int64.(c.version >= 0L)
+      Int64.(c.version > 0L)
       && (not (String.is_empty c.bytes))
       && (not (String.is_empty c.receipt))
       && List.exists t.assignments ~f:(fun a -> String.equal a.id c.assignment))
@@ -912,7 +924,7 @@ let rec step t event =
   | Owner_receipt (c : capsule) -> (
       if
         (not (valid_id c.assignment))
-        || Int64.(c.version < 0L)
+        || Int64.(c.version <= 0L)
         || String.is_empty c.bytes || String.is_empty c.receipt
       then reject "invalid owner artifact" t
       else
@@ -944,6 +956,11 @@ let rec step t event =
       | None -> reject "unknown assignment" t
       | Some a when not (String.equal a.request request) ->
           reject "stale result" t
+      | Some a
+        when match ev with
+             | Result_committed _ -> a.retired || a.cleanup
+             | _ -> false ->
+          reject "settled assignment" t
       | Some a
         when (match ev with Result_committed _ -> true | _ -> false)
              && not
@@ -1121,7 +1138,7 @@ let rec step t event =
   | Control c -> (
       if
         (not (valid_id c.id))
-        || String.length c.payload > 131072
+        || String.length c.payload > 262144
         || (not (control_target_ok c))
         || (not
               (List.mem
@@ -1136,6 +1153,7 @@ let rec step t event =
                    "forge_create";
                    "forge_ticket";
                    "forge_effect";
+                   "worker_observation";
                  ]
                  c.kind ~equal:String.equal))
         || (not (String.equal c.run_id t.run_id))
@@ -1191,7 +1209,8 @@ let rec step t event =
                   | _ -> false)
               | "forge_create" | "forge_ticket" | "forge_effect" ->
                   String.length c.payload > 0
-                  && String.length c.payload <= 131072
+                  && String.length c.payload <= 262144
+              | "worker_observation" -> String.length c.payload <= 262144
               | "cancel" ->
                   String.is_empty c.payload || String.equal c.payload "cancel"
               | "bump" ->

@@ -9,6 +9,23 @@ module C = Coordinator_config
 let test name gen f =
   QCheck2.Test.make ~count:500 ~name gen (fun x -> try f x with _ -> false)
 
+let applied_entry ~id ~scope ~result =
+  let journal =
+    match
+      Coordinator_journal.begin_attempt Coordinator_journal.empty ~id ~scope
+    with
+    | Ok journal -> journal
+    | Error _ -> failwith "valid journal intent"
+  in
+  let journal =
+    match Coordinator_journal.settle journal ~id ~result:(Some result) with
+    | Ok journal -> journal
+    | Error _ -> failwith "valid journal result"
+  in
+  match Coordinator_journal.find journal id with
+  | Some entry -> entry
+  | None -> failwith "journal entry missing"
+
 let fields =
   [
     ("version", `Int 3);
@@ -50,7 +67,14 @@ let () =
                 (`Assoc
                    (("execution_mode", `String mode)
                    :: List.remove_assoc "execution_mode" fields))))))
-    [ "feature"; "unknown"; "" ];
+    [ "unknown"; "" ];
+  assert (
+    Result.is_ok
+      (C.decode
+         (Yojson.Safe.to_string
+            (`Assoc
+               (("execution_mode", `String "feature")
+               :: List.remove_assoc "execution_mode" fields)))));
   QCheck_base_runner.run_tests_main
     [
       test "body delivery cannot survive a new owner generation"
@@ -92,14 +116,7 @@ let () =
                  ])
           in
           let e =
-            Coordinator_journal.entry_of_yojson
-              (`Assoc
-                 [
-                   ("id", `String "effect:body");
-                   ("scope", `String serialized);
-                   ("attempts", `Int 1);
-                   ("phase", `List [ `String "Applied"; `String "applied" ]);
-                 ])
+            applied_entry ~id:"effect:body" ~scope:serialized ~result:"applied"
           in
           C.body_delivered [ e ] agent
           && not (C.body_delivered [ e ] (Patch_agent.bump_generation agent)));
@@ -124,19 +141,21 @@ let () =
       test "malformed delivery evidence cannot grant PR body delivery"
         QCheck2.Gen.(pair string string)
         (fun (scope, result) ->
-          let e =
-            Coordinator_journal.entry_of_yojson
-              (`Assoc
-                 [
-                   ("id", `String "bad");
-                   ("scope", `String scope);
-                   ("attempts", `Int 1);
-                   ("phase", `List [ `String "Applied"; `String result ]);
-                 ])
+          let main = Types.Branch.of_string "main" in
+          let agent = Patch_agent.create ~branch:patch.branch patch.id in
+          let agent = Patch_agent.set_base_branch agent main in
+          let agent =
+            Patch_agent.set_pr_number agent (Types.Pr_number.of_int 1)
           in
-          not
-            (C.body_delivered [ e ]
-               (Patch_agent.create ~branch:patch.branch patch.id)));
+          let agent =
+            Patch_agent.set_head_oid agent
+              (Some "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+          in
+          let e =
+            applied_entry ~id:"bad" ~scope:("malformed:" ^ scope)
+              ~result:(result ^ "!")
+          in
+          not (C.body_delivered [ e ] agent));
       test "shared reconciliation is idempotent and does not mutate busy owners"
         QCheck2.Gen.(pair bool bool)
         (fun (busy, pr) ->
@@ -160,10 +179,11 @@ let () =
           in
           let next = C.reconcile view in
           let twice = C.reconcile next in
-          List.map (fun a -> a.Patch_agent.queue) next.agents
-          = List.map (fun a -> a.Patch_agent.queue) twice.agents
+          List.map Patch_agent.sexp_of_t next.agents
+          = List.map Patch_agent.sexp_of_t twice.agents
           && ((not busy)
-             || List.for_all (fun a -> a.Patch_agent.queue = []) next.agents));
+             || List.map Patch_agent.sexp_of_t next.agents
+                = [ Patch_agent.sexp_of_t a ]));
       QCheck2.Test.make ~count:300
         ~name:"coordinator config generated public decision surface"
         (QCheck2.Gen.int_range 1 1_000_000) (fun seed ->

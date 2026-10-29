@@ -75,6 +75,7 @@ let write path bytes =
     (fun () -> output_string out bytes)
 
 let () =
+  Eio_main.run @@ fun system ->
   let root = Filename.temp_dir "onton-v3-worker-" "" in
   let seed = Filename.concat root "seed" in
   Unix.mkdir seed 0o755;
@@ -246,6 +247,10 @@ let () =
   in
   let send_committed = function
     | Error (Coordinator_host.Invalid e) -> failwith e
+    | Error (Coordinator_host.Store (Coordinator_store.Invalid e))
+    | Error (Coordinator_host.Store (Coordinator_store.Uncertain e))
+    | Error (Coordinator_host.Store (Coordinator_store.Conflict e)) ->
+        failwith e
     | Error _ -> failwith "unconfirmed barrier"
     | Ok (_, frames) ->
         List.iter
@@ -478,7 +483,16 @@ let () =
         check "cross-run result accepted"
           (Result.is_error (receive assignment stale ()));
         json
-    | "ready" | "accepted" | "observation" ->
+    | "accepted" ->
+        send_committed (receive assignment json ());
+        if String.equal assignment "assignment-2" then
+          send_committed
+            (receive assignment
+               (frame "observation"
+                  (op 2 @ [ ("text", `String "recovery progress") ]))
+               ());
+        consume assignment
+    | "ready" | "observation" ->
         send_committed (receive assignment json ());
         consume assignment
     | other -> failwith ("unexpected real worker frame " ^ other)
@@ -491,6 +505,12 @@ let () =
     (command "assignment-2"
        (execute 2 (`Assoc [ ("type", `String "reconcile") ])));
   ignore (consume "assignment-2");
+  check "worker observation is retained in the durable coordinator transcript"
+    (Stdlib.List.exists
+       (fun control ->
+         String.equal control.Coordinator_state.kind "worker_observation"
+         && String.length control.payload > 0)
+       (Coordinator_state.controls (Coordinator_host.state !host)));
   send_committed (command "assignment-2" (frame "shutdown" []) ());
   ignore (Unix.close_process_full (!output, !input, !errors));
   apply (Loss ("resource-1", 0L));
@@ -760,6 +780,7 @@ let () =
       next_event;
       now = (fun () -> 0L);
       stream_timeout = 3.;
+      mono_clock = Eio.Stdenv.mono_clock system;
       attached = (fun ~resource_id:_ ~readable:ready -> readable := ready);
       gameplan;
       main_branch;
