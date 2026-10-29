@@ -1,5 +1,5 @@
-(* @archlint.module shell
-   @archlint.domain coordinator-forge *)
+(* @archlint.module exempt
+   @archlint.exempt-reason effect-facade *)
 open Base
 open Types
 

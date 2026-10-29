@@ -1867,3 +1867,48 @@ let () =
                         (Graph.deps (Orchestrator.graph restored) patch_id)
                         (Graph.deps (Orchestrator.graph orch) patch_id))
          with _ -> false))
+
+let () =
+  let property =
+    QCheck2.Test.make ~count:300
+      ~name:"worker input applies controls to the matching orchestrator owner"
+      QCheck2.Gen.bool (fun enabled ->
+        try
+          let patches = mk_patches 1 in
+          let patch_id = pid_of_idx patches 0 in
+          let orch = Orchestrator.create ~patches ~main_branch:main in
+          let input : Worker_protocol_v3.input =
+            Worker_protocol_v3.
+              {
+                input_id = (if enabled then "input-on" else "input-off");
+                version = 1L;
+                guidance = "";
+                selected_base = "feature/base";
+                evidence = [];
+                controls =
+                  [ ("automerge", if enabled then "true" else "false") ];
+                covered = [];
+              }
+          in
+          let updated = Orchestrator.apply_worker_input orch patch_id input in
+          let updated_agent = Orchestrator.agent updated patch_id in
+          let next_input =
+            Worker_protocol_v3.
+              {
+                input with
+                input_id = "next";
+                version = 2L;
+                controls =
+                  [ ("automerge", if enabled then "false" else "true") ];
+              }
+          in
+          let next =
+            Orchestrator.apply_worker_input updated patch_id next_input
+          in
+          Bool.equal updated_agent.Patch_agent.automerge_enabled enabled
+          && Bool.equal
+               (Orchestrator.agent next patch_id).Patch_agent.automerge_enabled
+               (not enabled)
+        with _ -> false)
+  in
+  QCheck2.Test.check_exn property

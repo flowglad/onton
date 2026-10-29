@@ -374,9 +374,9 @@ let () =
                     fields))
           in
           Result.is_error (H.decode bytes));
-      property
-        "host stream public projections are derived from one current protocol"
-        QCheck2.Gen.bool (fun _ ->
+      QCheck2.Test.make ~count:200
+        ~name:"host stream public projections are derived from one protocol"
+        QCheck2.Gen.bool (fun generated_input ->
           let t, _ =
             ok
               (Worker_stream.command Worker_stream.initial
@@ -389,12 +389,28 @@ let () =
           in
           let t, _ = ok (Worker_stream.receive t (wire (checkpoint 1L "{}"))) in
           let t = ok (Worker_stream.decode (Worker_stream.encode t)) in
+          let candidate : V.input =
+            V.
+              {
+                input_id =
+                  (if generated_input then "candidate-a" else "candidate-b");
+                version = 1L;
+                guidance = "unseen";
+                selected_base = "feature/root";
+                evidence = [];
+                controls = [];
+                covered = [];
+              }
+          in
+          let readiness = not (Worker_stream.ready Worker_stream.initial) in
+          let not_delivered = not (Worker_stream.delivered_input t candidate) in
           let replacement, _ =
             ok
               (Worker_stream.rebind t ~worker_id:"replacement"
                  ~workspace_id:"new")
           in
-          Worker_stream.binding t <> None
+          readiness && not_delivered
+          && Worker_stream.binding t <> None
           && Worker_stream.identity t = Some identity
           && Worker_stream.operation t = Some operation
           && Worker_stream.input t = None

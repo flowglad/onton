@@ -1,5 +1,5 @@
-(* @archlint.module test
-   @archlint.domain coordinator-store-fixture *)
+(* @archlint.module exempt
+   @archlint.exempt-reason test-support *)
 
 open Onton_core
 open Onton

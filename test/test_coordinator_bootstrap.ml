@@ -1,5 +1,5 @@
 (* @archlint.module test
-   @archlint.domain coordinator *)
+   @archlint.domain coordinator-state *)
 
 open Onton
 

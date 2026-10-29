@@ -1,5 +1,5 @@
-(* @archlint.module shell
-   @archlint.domain coordinator-stream-io *)
+(* @archlint.module exempt
+   @archlint.exempt-reason effect-boundary *)
 
 type t = {
   input : Unix.file_descr;

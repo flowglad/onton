@@ -505,6 +505,16 @@ let () =
           let state =
             initial () |> fun state -> apply state (S.Admit operation)
           in
+          let journal = Coordinator_state.journal state in
+          let tick_needed =
+            Coordinator_state.policy_tick_needed state view
+              ~now:(Int64.of_int seed)
+          in
+          let tick_needed_again =
+            Coordinator_state.policy_tick_needed state view
+              ~now:(Int64.of_int seed)
+          in
+          let scheduling_view = Coordinator_state.scheduling_view state view in
           let projections =
             String.equal (Coordinator_state.plan_bytes state) "frozen-plan"
             && String.equal
@@ -527,6 +537,14 @@ let () =
             && (not (Coordinator_state.sleep_ready state))
             && (not (Coordinator_state.cancellation_complete state))
             && Coordinator_state.reserved_count state = 0
+            && Coordinator_state.capacity state = 2
+            && Coordinator_journal.valid journal
+            && List.is_empty (Coordinator_journal.entries journal)
+            && Bool.equal tick_needed tick_needed_again
+            && Types.Branch.equal scheduling_view.Scheduler_decision.main
+                 view.Scheduler_decision.main
+            && List.length scheduling_view.Scheduler_decision.agents
+               = List.length view.Scheduler_decision.agents
             && Coordinator_state.can_recover state operation ~now:0L
             && Result.is_ok
                  (Coordinator_state.decode (Coordinator_state.encode state))

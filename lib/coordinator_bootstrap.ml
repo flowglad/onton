@@ -1,5 +1,5 @@
-(* @archlint.module state
-   @archlint.domain coordinator *)
+(* @archlint.module exempt
+   @archlint.exempt-reason effect-facade *)
 
 open Base
 

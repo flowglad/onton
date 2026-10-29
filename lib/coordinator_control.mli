@@ -1,5 +1,5 @@
 (* @archlint.module interface
-   @archlint.domain coordinator *)
+   @archlint.domain coordinator-state *)
 
 val handle : Coordinator_host.t -> string -> string
 (** Decode a v3 run-scoped control and return accepted, already_applied,

@@ -64,4 +64,33 @@ let () =
             | Some e -> e.attempts = 3 && e.phase = J.Attention
             | None -> false)
           && Result.is_error (J.begin_attempt j ~id:"x" ~scope:changed));
+      QCheck2.Test.make ~count:400 ~name:"journal generated public API sequence"
+        QCheck2.Gen.(list_size (int_range 0 20) bool)
+        (fun actions ->
+          try
+            let journal =
+              List.fold_left
+                (fun journal applied ->
+                  match
+                    J.begin_attempt journal ~id:"generated" ~scope:"fixed"
+                  with
+                  | Error _ -> journal
+                  | Ok pending -> (
+                      match
+                        J.settle pending ~id:"generated"
+                          ~result:(if applied then Some "receipt" else None)
+                      with
+                      | Ok settled -> settled
+                      | Error _ -> pending))
+                J.empty actions
+            in
+            let entries = J.entries journal in
+            let found = J.find journal "generated" in
+            match J.decode (J.encode journal) with
+            | Error _ -> false
+            | Ok restored ->
+                J.valid journal && J.valid restored
+                && List.length entries = List.length (J.entries restored)
+                && Option.is_some found = not (List.is_empty actions)
+          with _ -> false);
     ]

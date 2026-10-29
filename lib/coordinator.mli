@@ -1,5 +1,5 @@
 (* @archlint.module interface
-   @archlint.domain coordinator *)
+   @archlint.domain coordinator-state *)
 
 type connection = {
   run_id : string;

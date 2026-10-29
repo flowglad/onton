@@ -1,5 +1,5 @@
 (* @archlint.module exempt
-   @archlint.exempt-reason effect-boundary *)
+   @archlint.exempt-reason effect-facade *)
 open Base
 open Types
 

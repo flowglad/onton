@@ -1,5 +1,5 @@
 (* @archlint.module shell
-   @archlint.domain coordinator *)
+   @archlint.domain coordinator-state *)
 open Base
 
 [@@@warning "-4"]

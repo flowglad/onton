@@ -189,4 +189,18 @@ let () =
               not
                 (Patch_agent.forge_revision_pair_confirmed
                    (O.apply (agent ()) e)));
+      QCheck2.Test.make ~count:400
+        ~name:"forge observation generated public API roundtrip"
+        QCheck2.Gen.(string_size ~gen:(char_range 'a' 'z') (int_range 0 100))
+        (fun diagnostic ->
+          match O.make scope (Some pr) ~diagnostic with
+          | Error _ -> false
+          | Ok observation -> (
+              let encoded = O.encode observation in
+              match O.decode encoded with
+              | Error _ -> false
+              | Ok restored ->
+                  String.equal (O.encode restored) encoded
+                  && Patch_agent.forge_revision_pair_confirmed
+                       (O.apply (agent ()) restored)));
     ]

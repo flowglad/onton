@@ -1,5 +1,5 @@
 (* @archlint.module test
-   @archlint.domain coordinator-state *)
+   @archlint.domain coordinator *)
 open Onton_core
 
 [@@@warning "-4-40-42"]
@@ -164,4 +164,69 @@ let () =
           = List.map (fun a -> a.Patch_agent.queue) twice.agents
           && ((not busy)
              || List.for_all (fun a -> a.Patch_agent.queue = []) next.agents));
+      QCheck2.Test.make ~count:300
+        ~name:"coordinator config generated public decision surface"
+        (QCheck2.Gen.int_range 1 1_000_000) (fun seed ->
+          try
+            let suffix = string_of_int seed in
+            let main = Types.Branch.of_string "main" in
+            let config_json =
+              Yojson.Safe.to_string
+                (`Assoc
+                   [
+                     ("version", `Int 3);
+                     ("capacity", `Int (1 + (seed mod 256)));
+                     ("repo_root", `String ("/repo/" ^ suffix));
+                     ("main_branch", `String "main");
+                     ("worker_executable", `String ("worker-" ^ suffix));
+                     ("backend", `String "codex");
+                     ("execution_mode", `String "mainline");
+                   ])
+            in
+            match C.decode config_json with
+            | Error _ -> false
+            | Ok config -> (
+                let encoded_config =
+                  Yojson.Safe.to_string (C.yojson_of_t config)
+                in
+                let work =
+                  match seed mod 3 with
+                  | 0 -> Worker_protocol_v3.Reconcile
+                  | 1 ->
+                      Worker_protocol_v3.Integrate_revision
+                        { contributor = suffix; revision = String.make 40 'a' }
+                  | _ ->
+                      Worker_protocol_v3.Session
+                        (Worker_protocol.Start, None, "spec-" ^ suffix)
+                in
+                let work_roundtrip =
+                  C.work (Yojson.Safe.to_string (C.work_json work)) = Ok work
+                in
+                let agent = Patch_agent.create ~branch:patch.branch patch.id in
+                let view : Scheduler_decision.input =
+                  Scheduler_decision.
+                    {
+                      graph = Graph.of_patches [ patch ];
+                      mode = Execution_mode.mainline;
+                      agents = [ agent ];
+                      main;
+                    }
+                in
+                let reconciled = C.reconcile view in
+                let repeated = C.reconcile reconciled in
+                Result.is_ok (C.decode encoded_config)
+                && work_roundtrip
+                && C.body_delivered [] agent = false
+                && List.map (fun a -> a.Patch_agent.queue) reconciled.agents
+                   = List.map (fun a -> a.Patch_agent.queue) repeated.agents
+                &&
+                match
+                  C.work_of_decision ~spec:suffix
+                    (Scheduler_decision.Start (patch.id, main))
+                with
+                | Worker_protocol_v3.Session (Worker_protocol.Start, None, spec)
+                  ->
+                    String.equal spec suffix
+                | _ -> false)
+          with _ -> false);
     ]

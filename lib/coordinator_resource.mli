@@ -1,5 +1,5 @@
 (* @archlint.module interface
-   @archlint.domain coordinator *)
+   @archlint.domain coordinator-state *)
 type result = Ready | Pending | Attention | Blocked of string
 
 val provision :

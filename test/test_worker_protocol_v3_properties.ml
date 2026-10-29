@@ -464,7 +464,34 @@ let public_api_coverage =
         let encoded = V.encode_host (V.Execute execution) in
         let bound = V.Bind (bind (), decoded_context) in
         let state, _ = V.step (V.initial ()) (V.Host bound) in
-        V.context_bytes decoded_context = encoded_context
+        let enabled = seed land 1 = 0 in
+        let protocol_input : V.input =
+          {
+            input_id = "coverage-" ^ string_of_int seed;
+            version = 1L;
+            guidance = "guidance-" ^ string_of_int seed;
+            selected_base = "feature/root";
+            evidence = [];
+            controls = [ ("automerge", if enabled then "true" else "false") ];
+            covered = [];
+          }
+        in
+        let input_roundtrip =
+          match V.decode_input (V.input_json protocol_input) with
+          | Error _ -> false
+          | Ok restored ->
+              restored.input_id = protocol_input.input_id
+              && restored.version = protocol_input.version
+              && restored.guidance = protocol_input.guidance
+              && (V.apply_input
+                    (Patch_agent.create
+                       ~branch:(Types.Branch.of_string "main")
+                       (Types.Patch_id.of_string "coverage"))
+                    restored)
+                   .Patch_agent.automerge_enabled = enabled
+        in
+        input_roundtrip
+        && V.context_bytes decoded_context = encoded_context
         && V.execution_mode decoded_context = "feature"
         && V.assigned_patch decoded_context = "p"
         && V.root_role decoded_context = "patch"

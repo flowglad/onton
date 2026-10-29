@@ -1,5 +1,5 @@
 (* @archlint.module interface
-   @archlint.domain coordinator *)
+   @archlint.domain coordinator-state *)
 
 type authority = { owner_epoch : int64; revision : int64 }
 

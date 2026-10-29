@@ -1,5 +1,5 @@
 (* @archlint.module interface
-   @archlint.domain coordinator *)
+   @archlint.domain coordinator-state *)
 
 val json : Coordinator_state.t -> Yojson.Safe.t
 (** Bounded, non-authoritative aggregate projection of committed state only. *)

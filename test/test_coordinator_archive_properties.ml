@@ -54,4 +54,9 @@ let () =
         (fun (n, s) ->
           let bytes = s ^ String.make n 'x' ^ s ^ String.make n 'x' in
           A.decode ~max_bytes:(String.length bytes) (A.encode bytes) = Ok bytes);
+      QCheck2.Test.make ~count:500
+        ~name:"archive public API generated roundtrip" QCheck2.Gen.string
+        (fun bytes ->
+          let packed = A.encode bytes in
+          A.decode ~max_bytes:(String.length bytes) packed = Ok bytes);
     ]
