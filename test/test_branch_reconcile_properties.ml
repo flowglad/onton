@@ -49,6 +49,26 @@ let reply_raw state result =
 
 let reply = reply_raw
 
+let legacy_contributor_checkpoint state =
+  match B.yojson_of_t state with
+  | `Assoc fields ->
+      let list_field name =
+        match List.assoc_opt name fields with
+        | Some (`List values) -> values
+        | Some _ | None -> []
+      in
+      let integrations =
+        list_field "contributor_integrations" @ list_field "integrations"
+      in
+      `Assoc
+        (("integrations", `List integrations)
+        :: List.filter
+             (fun (name, _) ->
+               not
+                 (List.mem name [ "integrations"; "contributor_integrations" ]))
+             fields)
+  | _ -> failwith "branch checkpoint is not an object"
+
 let is_diagnosis state =
   match B.phase state with
   | Some (B.Repairing { mode = Diagnosis _; _ }) -> true
@@ -2122,13 +2142,14 @@ let[@warning "-4"] tests =
             | [ receipt ] ->
                 receipt.contributor = Some "2"
                 && B.Commit.equal receipt.capture.target_revision target
+                && B.Commit.equal receipt.integrated_revision candidate
             | [] | _ :: _ :: _ -> false
           in
           let unpublished = B.publications state = [] && integration_recorded in
           let state, _ = reply state B.Published in
           let state =
             if restart then
-              match B.decode (B.yojson_of_t state) with
+              match B.decode (legacy_contributor_checkpoint state) with
               | Ok restored -> restored
               | Error _ -> assert false
             else state
@@ -2138,7 +2159,10 @@ let[@warning "-4"] tests =
             && B.integrations state = []
             &&
             match B.contributor_integrations state with
-            | [ receipt ] -> receipt.contributor = Some "2"
+            | [ receipt ] ->
+                receipt.contributor = Some "2"
+                && B.Commit.equal receipt.capture.target_revision target
+                && B.Commit.equal receipt.integrated_revision candidate
             | [] | _ :: _ :: _ -> false
           in
           let state, _ =

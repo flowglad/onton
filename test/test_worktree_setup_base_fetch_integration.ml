@@ -505,8 +505,8 @@ let scenario_dep_base_local_canonical env =
     local_dep_tip head;
   Stdlib.print_endline "  dep_base_local_canonical: OK"
 
-(** Origin is unreachable: the main-base fetch fails and the cut proceeds from
-    the local main ref and records that actual creation revision. *)
+(** The symbolic [HEAD] start-point sentinel bypasses branch-ref probing and
+    origin branch fetching while preserving the checkout's current revision. *)
 let scenario_head_base_skips_branch_probe_and_fetch env =
   with_temp_dir @@ fun root ->
   let origin_dir = Stdlib.Filename.concat root "origin" in
@@ -528,6 +528,8 @@ let scenario_head_base_skips_branch_probe_and_fetch env =
     failwith "HEAD sentinel was fetched as an origin branch";
   Stdlib.print_endline "  HEAD_base_skips_branch_ref_work: OK"
 
+(** Origin is unreachable: the main-base fetch fails and the cut proceeds from
+    the local main ref and records that actual creation revision. *)
 let scenario_fetch_failure_falls_back env =
   with_temp_dir @@ fun root ->
   let origin_dir = Stdlib.Filename.concat root "origin" in

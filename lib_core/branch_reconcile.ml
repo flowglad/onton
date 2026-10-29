@@ -3694,7 +3694,41 @@ let decode json =
               else Ok t
           | Some _ -> Error "invalid branch operation")
   in
-  decoded
+  Result.map decoded ~f:(fun t ->
+      let reversed_contributors =
+        List.fold
+          (List.filter t.integrations ~f:(fun receipt ->
+               Option.is_some receipt.contributor))
+          ~init:(List.rev t.contributor_integrations)
+          ~f:(fun seen receipt ->
+            if List.exists seen ~f:(equal_integration_receipt receipt) then seen
+            else receipt :: seen)
+      in
+      let contributor_integrations = List.rev reversed_contributors in
+      let integrations =
+        List.filter t.integrations ~f:(fun receipt ->
+            Option.is_none receipt.contributor)
+      in
+      let workspace_integration_floor =
+        Option.map t.workspace_integration_floor ~f:(fun floor ->
+            let rec count_workspace_receipts remaining count = function
+              | _ when remaining <= 0 -> count
+              | [] -> count
+              | receipt :: rest ->
+                  let count =
+                    if Option.is_none receipt.contributor then count + 1
+                    else count
+                  in
+                  count_workspace_receipts (remaining - 1) count rest
+            in
+            count_workspace_receipts floor 0 t.integrations)
+      in
+      {
+        t with
+        integrations;
+        contributor_integrations;
+        workspace_integration_floor;
+      })
 
 let recovery_name_hex s =
   String.to_list s

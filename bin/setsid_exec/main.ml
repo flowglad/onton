@@ -88,9 +88,23 @@ let supervise ?parent ~streaming ~acknowledge_tree ~guards argv =
           try Unix.kill (-pid) signal with
           | Unix.Unix_error (Unix.ESRCH, _, _) -> ()
           | Unix.Unix_error (Unix.EPERM, _, _) ->
-              (* On macOS, a just-exited leader may still anchor a group that
-                 contains no live descendants. Recheck the group before ack. *)
-              ()
+              (* On macOS, signaling can race with the leader becoming a
+                 zombie. Allow a short bounded window for that race, but do
+                 not suppress EPERM if any descendant remains unsignalable. *)
+              let rec group_gone attempts =
+                if descendants_remaining pid false then false
+                else if leader_exited pid then true
+                else if attempts <= 0 then false
+                else (
+                  Unix.sleepf 0.01;
+                  group_gone (attempts - 1))
+              in
+              if group_gone 5 then ()
+              else (
+                prerr_endline
+                  "onton-setsid-exec: process group is unsignalable; teardown \
+                   unconfirmed";
+                exit 125)
       in
       let grace_ticks = ref None in
       let terminal_ticks = ref 0 in

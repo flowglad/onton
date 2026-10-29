@@ -170,7 +170,7 @@ let () =
               Fun.protect
                 ~finally:(fun () -> close_in_noerr input)
                 (fun () -> int_of_string (input_line input))
-            with Sys_error _ | End_of_file ->
+            with Sys_error _ | End_of_file | Failure _ ->
               Unix.sleepf 0.01;
               read_child (attempts - 1)
           in
@@ -190,23 +190,41 @@ let () =
           check (gone 200) "descendant survived confirmed teardown");
   let crash_script = Filename.temp_file "onton-resource-crash" ".sh" in
   let crash_file = Filename.temp_file "onton-resource-crash-child" ".pid" in
-  let child_pids = ref [] in
+  let reaped_file =
+    Filename.temp_file "onton-resource-crash-reaped" ".marker"
+  in
+  let child_pid = ref None in
+  let wait_reaped attempts =
+    let rec loop attempts =
+      if Sys.file_exists reaped_file then true
+      else if attempts <= 0 then false
+      else (
+        Unix.sleepf 0.01;
+        loop (attempts - 1))
+    in
+    loop attempts
+  in
+  let stop_and_wait pid =
+    (try Unix.kill pid Sys.sigkill
+     with Unix.Unix_error (Unix.ESRCH, _, _) -> ());
+    if not (wait_reaped 500) then
+      failwith "crash fixture child was not reaped by its surviving parent"
+  in
   Fun.protect
     ~finally:(fun () ->
-      List.iter
-        (fun pid -> try Unix.kill pid Sys.sigkill with _ -> ())
-        !child_pids;
+      Option.iter stop_and_wait !child_pid;
       (try Sys.remove crash_script with _ -> ());
-      try Sys.remove crash_file with _ -> ())
+      (try Sys.remove crash_file with _ -> ());
+      try Sys.remove reaped_file with _ -> ())
     (fun () ->
       Sys.remove crash_file;
+      Sys.remove reaped_file;
       let out = open_out_bin crash_script in
       output_string out
-        ("#!/bin/sh\n\
-          (sleep 60) &\n\
-          child=$!\n\
-          printf '%s %s\\n' \"$$\" \"$child\" > " ^ Filename.quote crash_file
-       ^ "\nkill -KILL \"$PPID\"\nwait \"$child\"\n");
+        ("#!/bin/sh\nsleep 60 &\nchild=$!\nprintf '%s\\n' \"$child\" > "
+       ^ Filename.quote crash_file
+       ^ "\nkill -KILL \"$PPID\"\nwait \"$child\"\nprintf reaped > "
+       ^ Filename.quote reaped_file ^ "\n");
       close_out out;
       Unix.chmod crash_script 0o700;
       let client =
@@ -219,53 +237,28 @@ let () =
       with
       | Error reason -> failwith reason
       | Ok attachment ->
-          let rec read_pids attempts =
+          let rec read_pid attempts =
             if attempts <= 0 then failwith "crash fixture did not start";
             try
               let input = open_in crash_file in
-              Fun.protect
-                ~finally:(fun () -> close_in_noerr input)
-                (fun () ->
-                  match String.split_on_char ' ' (input_line input) with
-                  | [ leader; child ] ->
-                      let leader = int_of_string leader
-                      and child = int_of_string child in
-                      child_pids := [ leader; child ];
-                      (leader, child)
-                  | _ -> failwith "invalid crash fixture PID file")
-            with Sys_error _ | End_of_file ->
+              let pid =
+                Fun.protect
+                  ~finally:(fun () -> close_in_noerr input)
+                  (fun () -> int_of_string (input_line input))
+              in
+              child_pid := Some pid;
+              pid
+            with Sys_error _ | End_of_file | Failure _ ->
               Unix.sleepf 0.01;
-              read_pids (attempts - 1)
+              read_pid (attempts - 1)
           in
-          let _leader, child = read_pids 200 in
+          let child = read_pid 200 in
           check
             (Result.is_error (Onton.Resource_client.disconnect attachment))
             "abnormal supervisor exit must not confirm teardown";
           check
             (Result.is_error (Onton.Resource_client.disconnect attachment))
             "unconfirmed teardown must remain fenced on replay";
-          List.iter
-            (fun pid -> try Unix.kill pid Sys.sigkill with _ -> ())
-            !child_pids;
-          let rec gone attempts =
-            match !child_pids with
-            | [] -> true
-            | pids ->
-                let alive =
-                  List.exists
-                    (fun pid ->
-                      try
-                        Unix.kill pid 0;
-                        true
-                      with Unix.Unix_error (Unix.ESRCH, _, _) -> false)
-                    pids
-                in
-                if not alive then true
-                else if attempts <= 0 then false
-                else (
-                  Unix.sleepf 0.01;
-                  gone (attempts - 1))
-          in
-          check (gone 200) "crash fixture descendants were not cleaned up";
-          ignore child);
+          stop_and_wait child;
+          print_endline "  crash fixture child reaped by surviving shell");
   print_endline "resource client public helper passed"
