@@ -58,6 +58,10 @@ For interactive workstream planning, `pi-workstream/` runs the write-workstream
 skill with an interview-driven mode, recorded user decisions, and a final review
 dialog. See [`pi-workstream/README.md`](pi-workstream/README.md).
 
+For agents running under Onton, [`pi-onton`](pi-onton/README.md) adds tools for
+supervisor context, evidence, implementation notes, review replies, finding
+dispositions, and opt-out, with lifecycle hooks for resume and compaction.
+
 ## Onton: the orchestrator
 
 Onton parses a structured gameplan, builds a dependency graph, and spawns

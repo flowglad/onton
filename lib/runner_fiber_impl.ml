@@ -1041,7 +1041,12 @@ module Make (Forge : Forge.S) (W : Worktree.S) (Env : Runner_env.S) = struct
         ~(agent : Patch_agent.t) ~on_pr_detected ~complexity =
       let gameplan = Runtime.read runtime (fun snap -> snap.Runtime.gameplan) in
       let run_agent () =
-        let backend, _decision = pick_backend ~complexity in
+        let backend, _ = pick_backend ~complexity in
+        let response_transport =
+          Session_prompt.response_transport
+            ~backend_name:backend.Llm_backend.name
+        in
+        let prompt = prompt response_transport in
         let patch =
           Base.List.find gameplan.Gameplan.patches ~f:(fun (p : Patch.t) ->
               Patch_id.equal p.id patch_id)
@@ -1575,8 +1580,8 @@ module Make (Forge : Forge.S) (W : Worktree.S) (Env : Runner_env.S) = struct
                                             run_llm_session ~write_owner ~kind
                                               ~delivery_mode:
                                                 Patch_decision.Start ~patch_id
-                                              ~prompt ~agent ~on_pr_detected
-                                              ~complexity
+                                              ~prompt:(fun _ -> prompt)
+                                              ~agent ~on_pr_detected ~complexity
                                           in
                                           (r
                                             :> [ `Failed
@@ -2297,6 +2302,17 @@ module Make (Forge : Forge.S) (W : Worktree.S) (Env : Runner_env.S) = struct
                                           (Operation_kind.to_label kind));
                                   let exception Skip_delivery in
                                   try
+                                    let complexity =
+                                      patch_complexity ~gameplan ~agent
+                                        ~patch_id
+                                    in
+                                    (* Capture feedback and clear stale artifacts now;
+                                       defer only response rendering until an actual
+                                       agent backend is selected. Scripted publication
+                                       never needs to select a backend. *)
+                                    let common_prompt text _response_transport =
+                                      text
+                                    in
                                     let prompt =
                                       match payload with
                                       | Patch_decision
@@ -2307,133 +2323,146 @@ module Make (Forge : Forge.S) (W : Worktree.S) (Env : Runner_env.S) = struct
                                             ~git_status:
                                               (W.git_status ~path:wt_path)
                                             ()
+                                          |> common_prompt
                                       | Patch_decision.Ci_payload
                                           { failed_checks } ->
-                                          if Base.List.is_empty failed_checks
-                                          then
-                                            Prompt.render_turn_layer_ci_unknown
-                                              ~project_name ?pr_number ()
-                                          else
-                                            let fetch_cap = 10 in
-                                            let checks_to_fetch, extra =
-                                              Base.List.split_n failed_checks
-                                                fetch_cap
-                                            in
-                                            if not (Base.List.is_empty extra)
+                                          let text =
+                                            if Base.List.is_empty failed_checks
                                             then
-                                              log_event runtime ~patch_id
-                                                (Printf.sprintf
-                                                   "Skipping CI detail fetch \
-                                                    for %d check(s) over cap — \
-                                                    delivering metadata only"
-                                                   (Base.List.length extra));
-                                            let current_head_oid =
-                                              Base.Option.bind fresh_pr_state
-                                                ~f:(fun ps ->
-                                                  ps.Pr_state.head_oid)
-                                            in
-                                            let is_merge_queue_removal_check
-                                                check =
-                                              Base.List.mem
-                                                !ci_merge_queue_removal_checks
-                                                check ~equal:Ci_check.equal
-                                            in
-                                            let head_oid_for_check check =
-                                              match check.Ci_check.id with
-                                              | Some _
-                                                when not
-                                                       (is_merge_queue_removal_check
-                                                          check) ->
-                                                  current_head_oid
-                                              | Some _ | None -> None
-                                            in
-                                            let detail_for_check check =
-                                              try
-                                                match
-                                                  Forge.check_failure_details
-                                                    ~check
+                                              Prompt
+                                              .render_turn_layer_ci_unknown
+                                                ~project_name ?pr_number ()
+                                            else
+                                              let fetch_cap = 10 in
+                                              let checks_to_fetch, extra =
+                                                Base.List.split_n failed_checks
+                                                  fetch_cap
+                                              in
+                                              if not (Base.List.is_empty extra)
+                                              then
+                                                log_event runtime ~patch_id
+                                                  (Printf.sprintf
+                                                     "Skipping CI detail fetch \
+                                                      for %d check(s) over cap \
+                                                      — delivering metadata \
+                                                      only"
+                                                     (Base.List.length extra));
+                                              let current_head_oid =
+                                                Base.Option.bind fresh_pr_state
+                                                  ~f:(fun ps ->
+                                                    ps.Pr_state.head_oid)
+                                              in
+                                              let is_merge_queue_removal_check
+                                                  check =
+                                                Base.List.mem
+                                                  !ci_merge_queue_removal_checks
+                                                  check ~equal:Ci_check.equal
+                                              in
+                                              let head_oid_for_check check =
+                                                match check.Ci_check.id with
+                                                | Some _
+                                                  when not
+                                                         (is_merge_queue_removal_check
+                                                            check) ->
+                                                    current_head_oid
+                                                | Some _ | None -> None
+                                              in
+                                              let detail_for_check check =
+                                                try
+                                                  match
+                                                    Forge.check_failure_details
+                                                      ~check
+                                                  with
+                                                  | Error e ->
+                                                      log_event runtime
+                                                        ~patch_id
+                                                        (Printf.sprintf
+                                                           "CI detail fetch \
+                                                            failed for %s (%s) \
+                                                            — delivering \
+                                                            metadata only"
+                                                           check.Ci_check.name
+                                                           (Forge.show_error e));
+                                                      None
+                                                  | Ok source -> (
+                                                      let enrichment =
+                                                        Ci_log_digest.digest
+                                                          source
+                                                      in
+                                                      let log =
+                                                        Base.Option.map
+                                                          source
+                                                            .Ci_log_digest.log
+                                                          ~f:
+                                                            Ci_log_digest
+                                                            .strip_log
+                                                      in
+                                                      match
+                                                        Project_store
+                                                        .publish_ci_check_artifact
+                                                          ~project_name
+                                                          ~patch_id ~check
+                                                          ?head_oid:
+                                                            (head_oid_for_check
+                                                               check)
+                                                          ~summary_md:
+                                                            enrichment
+                                                              .Ci_log_digest
+                                                               .summary_md ?log
+                                                          ()
+                                                      with
+                                                      | Ok artifact_dir ->
+                                                          Some
+                                                            Prompt.
+                                                              {
+                                                                artifact_dir;
+                                                                enrichment;
+                                                              }
+                                                      | Error msg ->
+                                                          log_event runtime
+                                                            ~patch_id
+                                                            (Printf.sprintf
+                                                               "CI detail \
+                                                                artifact \
+                                                                publish failed \
+                                                                for %s (%s) — \
+                                                                delivering \
+                                                                metadata only"
+                                                               check
+                                                                 .Ci_check.name
+                                                               msg);
+                                                          None)
                                                 with
-                                                | Error e ->
+                                                | Eio.Cancel.Cancelled _ as exn
+                                                  ->
+                                                    raise exn
+                                                | exn ->
                                                     log_event runtime ~patch_id
                                                       (Printf.sprintf
-                                                         "CI detail fetch \
+                                                         "CI detail processing \
                                                           failed for %s (%s) — \
                                                           delivering metadata \
                                                           only"
                                                          check.Ci_check.name
-                                                         (Forge.show_error e));
+                                                         (Stdlib.Printexc
+                                                          .to_string exn));
                                                     None
-                                                | Ok source -> (
-                                                    let enrichment =
-                                                      Ci_log_digest.digest
-                                                        source
-                                                    in
-                                                    let log =
-                                                      Base.Option.map
-                                                        source.Ci_log_digest.log
-                                                        ~f:
-                                                          Ci_log_digest
-                                                          .strip_log
-                                                    in
-                                                    match
-                                                      Project_store
-                                                      .publish_ci_check_artifact
-                                                        ~project_name ~patch_id
-                                                        ~check
-                                                        ?head_oid:
-                                                          (head_oid_for_check
-                                                             check)
-                                                        ~summary_md:
-                                                          enrichment
-                                                            .Ci_log_digest
-                                                             .summary_md ?log ()
-                                                    with
-                                                    | Ok artifact_dir ->
-                                                        Some
-                                                          Prompt.
-                                                            {
-                                                              artifact_dir;
-                                                              enrichment;
-                                                            }
-                                                    | Error msg ->
-                                                        log_event runtime
-                                                          ~patch_id
-                                                          (Printf.sprintf
-                                                             "CI detail \
-                                                              artifact publish \
-                                                              failed for %s \
-                                                              (%s) — \
-                                                              delivering \
-                                                              metadata only"
-                                                             check.Ci_check.name
-                                                             msg);
-                                                        None)
-                                              with
-                                              | Eio.Cancel.Cancelled _ as exn ->
-                                                  raise exn
-                                              | exn ->
-                                                  log_event runtime ~patch_id
-                                                    (Printf.sprintf
-                                                       "CI detail processing \
-                                                        failed for %s (%s) — \
-                                                        delivering metadata \
-                                                        only"
-                                                       check.Ci_check.name
-                                                       (Stdlib.Printexc
-                                                        .to_string exn));
-                                                  None
-                                            in
-                                            let detailed_checks =
-                                              Base.List.map checks_to_fetch
-                                                ~f:(fun check ->
-                                                  (check, detail_for_check check))
-                                              @ Base.List.map extra
+                                              in
+                                              let detailed_checks =
+                                                Base.List.map checks_to_fetch
                                                   ~f:(fun check ->
-                                                    (check, None))
-                                            in
-                                            Prompt.render_turn_layer_ci_detailed
-                                              ~project_name ?pr_number
-                                              detailed_checks
+                                                    ( check,
+                                                      detail_for_check check ))
+                                                @ Base.List.map extra
+                                                    ~f:(fun check ->
+                                                      (check, None))
+                                              in
+                                              Prompt
+                                              .render_turn_layer_ci_detailed
+                                                ~project_name ?pr_number
+                                                detailed_checks
+                                          in
+                                          common_prompt text
                                       | Patch_decision.Review_payload
                                           { comments } ->
                                           let current_head_sha =
@@ -2455,12 +2484,13 @@ module Make (Forge : Forge.S) (W : Worktree.S) (Env : Runner_env.S) = struct
                                              replayed as a duplicate reply. *)
                                           Project_store.reset_artifact_dir
                                             artifact_dir;
-                                          Prompt.render_turn_layer_review
-                                            ~project_name ?pr_number
-                                            ?current_head_sha
-                                            ?viewer_login:
-                                              (Forge.viewer_login ())
-                                            ~artifact_dir comments
+                                          fun response_transport ->
+                                            Prompt.render_turn_layer_review
+                                              ~response_transport ~project_name
+                                              ?pr_number ?current_head_sha
+                                              ?viewer_login:
+                                                (Forge.viewer_login ())
+                                              ~artifact_dir comments
                                       | Patch_decision.Findings_payload
                                           { findings } ->
                                           let current_head_sha =
@@ -2474,14 +2504,16 @@ module Make (Forge : Forge.S) (W : Worktree.S) (Env : Runner_env.S) = struct
                                           in
                                           Project_store.reset_artifact_dir
                                             artifact_dir;
-                                          Prompt.render_turn_layer_findings
-                                            ~project_name ?pr_number
-                                            ?current_head_sha ~artifact_dir
-                                            findings
+                                          fun response_transport ->
+                                            Prompt.render_turn_layer_findings
+                                              ~response_transport ~project_name
+                                              ?pr_number ?current_head_sha
+                                              ~artifact_dir findings
                                       | Patch_decision.Human_payload
                                           { messages } ->
                                           Prompt.render_human_message_prompt
                                             ~project_name messages
+                                          |> common_prompt
                                       | Patch_decision.Pr_body_payload ->
                                           let pr, patch =
                                             match
@@ -2548,24 +2580,29 @@ module Make (Forge : Forge.S) (W : Worktree.S) (Env : Runner_env.S) = struct
                                            | Unix.Unix_error (Unix.ENOENT, _, _)
                                            ->
                                              ());
-                                          Prompt.render_pr_body_prompt
-                                            ~branch_only:
-                                              (Runtime.read runtime (fun snap ->
-                                                   Orchestrator
-                                                   .is_feature_descendant
-                                                     snap.Runtime.orchestrator
-                                                     patch_id))
-                                            ~project_name ~pr_number:pr ~pr_body
-                                            ~spec_suffix ~artifact_path
+                                          fun response_transport ->
+                                            Prompt.render_pr_body_prompt
+                                              ~response_transport
+                                              ~branch_only:
+                                                (Runtime.read runtime
+                                                   (fun snap ->
+                                                     Orchestrator
+                                                     .is_feature_descendant
+                                                       snap.Runtime.orchestrator
+                                                       patch_id))
+                                              ~project_name ~pr_number:pr
+                                              ~pr_body ~spec_suffix
+                                              ~artifact_path
                                       | Patch_decision.Merge_conflict_payload ->
                                           (* Invariant: Merge_conflict is handled
                                          in the dedicated match arm above *)
                                           assert false
                                     in
-                                    let prompt =
+                                    let prompt response_transport =
+                                      let turn = prompt response_transport in
                                       if String.equal base_changed_prefix ""
-                                      then prompt
-                                      else base_changed_prefix ^ "\n" ^ prompt
+                                      then turn
+                                      else base_changed_prefix ^ "\n" ^ turn
                                     in
                                     let on_pr_detected _pr_number = () in
                                     let base =
@@ -2607,10 +2644,6 @@ module Make (Forge : Forge.S) (W : Worktree.S) (Env : Runner_env.S) = struct
                                       read_artifact_file
                                         (Project_store.pr_body_artifact_path
                                            ~project_name ~patch_id)
-                                    in
-                                    let complexity =
-                                      patch_complexity ~gameplan ~agent
-                                        ~patch_id
                                     in
                                     let result, tool_failures =
                                       run_llm_session ~write_owner

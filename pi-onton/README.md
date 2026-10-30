@@ -1,0 +1,96 @@
+# pi-onton
+
+Pi agent mode for coding sessions supervised by Onton. Requires Pi 1.2+.
+
+Onton's installer places this extension in `share/onton/pi-onton` under its
+installation prefix. The backend automatically loads that installed copy on every
+`--backend pi` execution, including resumed sessions. No global Pi extension
+installation or npm setup is needed. The Pi CLI itself must still be installed
+and available on `PATH`. The extension activates only when Onton supplies
+`ONTON_PI_CONTEXT`;
+ordinary Pi sessions are unaffected.
+
+For source-checkout development, set the extension entrypoint:
+
+```sh
+cd /path/to/onton/pi-onton
+npm ci
+ONTON_PI_EXTENSION=/absolute/path/to/onton/pi-onton/src/index.ts onton --backend pi ...
+```
+
+Do not also install this package globally in Pi: the backend already loads it.
+No interactive UI or approval dialog is needed.
+
+The mode adds Onton tools and context alongside other extensions. It leaves their
+tools, prompt contributions, dialogs, policies, and lifecycle hooks in place.
+It does not remove or alter existing tools, intercept ordinary tool calls, replace the
+system prompt, or veto session changes. Response instructions describe how to
+communicate with Onton; they do not restrict extensions used for the coding work.
+
+| Existing communication | Mode interface |
+| --- | --- |
+| Initial implementation and gameplan/patch requirements | Original prompt plus `onton_context` |
+| Human guidance and base-branch changes | Current supervisor turn via `onton_context` |
+| Review comments and external review findings | Current prompt with original IDs and anchors |
+| CI failures, missing CI observations, uncommitted changes | Current prompt plus `onton_read_artifact` for evidence |
+| Git reconciliation, scheduler repair, workspace recovery | Original captured repair prompt, without reinterpretation |
+| Publication feedback | Original supervisor instructions |
+| Published gameplan and dependency implementation notes | `onton_read_artifact` |
+| Implementation notes | `onton_respond(kind: "implementation_notes", content)` |
+| Review reply | `onton_respond(kind: "review_response", id: comment_id, content)` |
+| Unaddressed finding | `onton_respond(kind: "finding_wontfix", id: wontfix_file, content)` |
+| Offered pre-commit opt-out | `onton_respond(kind: "opt_out", content)` |
+| Text, tool activity, session identity, end-of-turn, process errors | Native Pi JSON stream and process exit, consumed by existing Onton backend |
+
+The selected backend determines response instructions before delivery. Pi prompts
+use `onton_respond` for notes, review replies, unaddressed findings, and opt-out; file-based
+backends retain their file instructions. Pi uses separate `pi_pr_body.md`,
+`pi_turn_review.md`, and `pi_turn_findings.md` project prompt overrides so existing
+file-based response templates are not accidentally delivered to Pi.
+
+`onton_context` returns the exact prompt for this execution, not a reconstructed
+summary. On resume this may be just the new turn; preceding context remains in
+Pi's conversation. `before_agent_start` adds protocol guidance and execution identity.
+After compaction, `session_compact` restores a pointer to the recovery tools.
+`session_start` validates the delivery and shows status when a UI exists.
+
+Artifacts are addressed relative to the returned `artifacts_root`; use paths
+from the prompt. Reads support byte `offset` and `limit` (maximum 65536), returning
+`next_offset` and `eof`. Text chunks preserve UTF-8 characters; a limit smaller
+than the first character extends by up to three bytes to ensure progress. Follow
+`next_offset`; offsets inside a character and malformed UTF-8 are rejected.
+Missing evidence is a tool error, never an invented result.
+Responses are atomic replacements of the same files Onton already consumes.
+Copy the exact comment ID or `wontfix_file` from the prompt. Code-fixed findings
+need no wontfix file. Opt-out is accepted only under Onton's existing pre-commit
+rules. Report other blockers in the normal final response.
+
+The extension does not commit, push, post replies, resolve threads, or grant
+completion authority. Follow each prompt's Git instructions; Onton owns session
+validation, reconciliation, publication, and forge updates. Feedback is delivered
+on supervisor turns, not through an additional polling loop.
+
+The release archive includes the three TypeScript files as separate assets.
+Homebrew installs them under its formula prefix at `share/onton/pi-onton`;
+`dune install` uses the same layout. The backend follows executable symlinks to
+locate the matching installation rather than a globally selected extension copy. Flat archive extraction also works when `share/` is kept beside
+the executables. Copying only the binary requires setting `ONTON_PI_EXTENSION` to
+an installed extension entrypoint. Missing or incomplete assets produce an
+installation error before Pi is started.
+
+The sources use only Node built-ins and TypeBox supplied by Pi’s extension loader.
+
+The backend writes a version-1 `pi-context.json` into the execution's session
+artifact directory and passes its absolute path in `ONTON_PI_CONTEXT`. It contains
+project, patch and execution identity, the current prompt, and artifact locations.
+It is not a credential or a sandbox: extensions share the agent's OS permissions.
+No source text parsing or inferred home-directory layout is required.
+
+Development checks:
+
+```sh
+npm run check
+npm test
+```
+
+The lifecycle integration follows Pi's [extension API](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/extensions.md).
