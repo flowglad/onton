@@ -81,6 +81,10 @@ let () =
                       let args =
                         In_channel.with_open_bin argv In_channel.input_all
                       in
+                      assert (
+                        String.starts_with
+                          ~prefix:("-p\n" ^ prompt ^ "\n--mode\njson\n")
+                          args);
                       if String.equal session_uuid "bundled" then (
                         let directory =
                           Filename.concat (Filename.dirname path) "pi-onton"

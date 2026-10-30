@@ -691,16 +691,10 @@ struct
                   in
                   if allows_wontdo && Option.is_none resume_session then
                     prompt
-                    ^ Printf.sprintf
-                        "\n\n\
-                         Before making your first commit, you may opt out of \
-                         this patch. If you decide the work should not \
-                         proceed, write your reason to `%s` and end your turn \
-                         without committing. The supervisor will surface that \
-                         message and stop this patch without pushing or \
-                         opening a PR. This option is unavailable after any \
-                         patch commit or PR exists."
-                        wontdo_path
+                    ^ Session_prompt.render_opt_out
+                        ~response_transport:
+                          (Session_prompt.response_transport ~backend_name)
+                        ~artifact_path:wontdo_path
                   else prompt
                 in
                 (* Read once at session start so the per-event callback below can

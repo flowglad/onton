@@ -33,6 +33,12 @@ No interactive UI or approval dialog is needed.
 | Offered pre-commit opt-out | `onton_respond(kind: "opt_out", content)` |
 | Text, tool activity, session identity, end-of-turn, process errors | Native Pi JSON stream and process exit, consumed by existing Onton backend |
 
+The selected backend determines response instructions before delivery. Pi prompts
+use `onton_respond` for notes, review replies, findings, and opt-out; file-based
+backends retain their file instructions. Pi uses separate `pi_pr_body.md`,
+`pi_turn_review.md`, and `pi_turn_findings.md` project prompt overrides so existing
+file-based response templates are not accidentally delivered to Pi.
+
 `onton_context` returns the exact prompt for this execution, not a reconstructed
 summary. On resume this may be just the new turn; preceding context remains in
 Pi's conversation. `before_agent_start` adds protocol guidance and execution identity.

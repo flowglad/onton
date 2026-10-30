@@ -15,8 +15,39 @@ let contains text needle =
 let () =
   let open QCheck2 in
   let input = Gen.(pair string string) in
+  let backend_names =
+    Gen.oneof
+      [
+        Gen.string;
+        Gen.oneof_list
+          [
+            "pi"; "Pi"; "PI"; "pI"; ""; "claude"; "codex"; "opencode"; "gemini";
+          ];
+      ]
+  in
   let tests =
     [
+      Test.make ~name:"backend response transport is total and case invariant"
+        ~count:500 backend_names (fun backend_name ->
+          Session_prompt.response_transport ~backend_name
+          = Session_prompt.response_transport
+              ~backend_name:(String.uppercase_ascii backend_name));
+      Test.make ~name:"only Pi selects tool responses" ~count:500 backend_names
+        (fun backend_name ->
+          Session_prompt.response_transport ~backend_name
+          = Session_prompt.Pi_tools
+          = String.equal (String.lowercase_ascii backend_name) "pi");
+      Test.make ~name:"opt-out offers preserve eligibility in both transports"
+        ~count:500 Gen.string (fun artifact_path ->
+          List.for_all
+            (fun response_transport ->
+              let text =
+                Session_prompt.render_opt_out ~response_transport ~artifact_path
+              in
+              contains text "Before making your first commit"
+              && contains text "unavailable after any patch commit or PR exists"
+              && contains text "end your turn without committing")
+            [ Session_prompt.File_artifacts; Session_prompt.Pi_tools ]);
       Test.make ~name:"fresh sessions receive exact context and turn" ~count:500
         input (fun (context, turn) ->
           let prompt = Session_prompt.create ~context ~turn in

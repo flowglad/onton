@@ -1,6 +1,29 @@
 (* @archlint.module core
    @archlint.domain session-driver *)
 
+type response_transport = File_artifacts | Pi_tools
+
+let response_transport ~backend_name =
+  if String.equal (String.lowercase_ascii backend_name) "pi" then Pi_tools
+  else File_artifacts
+
+let render_opt_out ~response_transport ~artifact_path =
+  let response =
+    match response_transport with
+    | File_artifacts -> Printf.sprintf "write your reason to `%s`" artifact_path
+    | Pi_tools ->
+        "call `onton_respond` with `kind: \"opt_out\"` and your reason as \
+         `content`"
+  in
+  Printf.sprintf
+    "\n\n\
+     Before making your first commit, you may opt out of this patch. If you \
+     decide the work should not proceed, %s and end your turn without \
+     committing. The supervisor will surface that message and stop this patch \
+     without pushing or opening a PR. This option is unavailable after any \
+     patch commit or PR exists."
+    response
+
 type t = { context : string; turn : string }
 
 let create ~context ~turn = { context; turn }

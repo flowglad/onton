@@ -162,3 +162,127 @@ let () =
     ~substring:"This worktree already has uncommitted changes"
 
 let () = Stdlib.print_endline "All prompt-recovery tests passed."
+
+let () =
+  let open Onton_core in
+  let comment : Types.Comment.t =
+    Types.Comment.
+      {
+        id = Types.Comment_id.of_int 42;
+        thread_id = Some "thread";
+        body = "Please handle this edge case.";
+        path = Some "lib/foo.ml";
+        line = Some 7;
+        commit_sha = None;
+        original_commit_sha = None;
+        outdated = false;
+        last_reply_author = None;
+      }
+  in
+  let finding =
+    match
+      Review_service.parse_finding
+        (`Assoc
+           [
+             ("id", `String "service/finding-7");
+             ("postingSha", `String "abc");
+             ("path", `String "lib/foo.ml");
+             ("startLine", `Int 7);
+             ("endLine", `Int 7);
+             ("severity", `String "should-fix");
+             ("body", `String "Handle the boundary.");
+             ("createdAt", `String "now");
+             ("outcome", `Assoc [ ("kind", `String "outstanding") ]);
+           ])
+    with
+    | Ok finding -> finding
+    | Error error -> failwith error
+  in
+  let render response_transport =
+    [
+      ( Prompt.render_pr_body_prompt ~response_transport ~branch_only:false
+          ~project_name:"" ~pr_number:(Types.Pr_number.of_int 1)
+          ~pr_body:"Patch description" ~spec_suffix:""
+          ~artifact_path:"/notes.md",
+        "implementation_notes",
+        "Write just the notes content" );
+      ( Prompt.render_turn_layer_review ~response_transport ~project_name:""
+          ~artifact_dir:"/responses" [ comment ],
+        "review_response",
+        "Write your response to" );
+      ( Prompt.render_turn_layer_findings ~response_transport ~project_name:""
+          ~artifact_dir:"/findings" [ finding ],
+        "finding_wontfix",
+        "write the reason (plain text) to" );
+      ( Session_prompt.render_opt_out ~response_transport
+          ~artifact_path:"/WONTDO.md",
+        "opt_out",
+        "write your reason to" );
+    ]
+  in
+  List.iter (render Session_prompt.Pi_tools)
+    ~f:(fun (text, kind, file_instruction) ->
+      assert_contains "Pi responses name the tool" text
+        ~substring:"onton_respond";
+      assert_contains "Pi responses select the response kind" text
+        ~substring:kind;
+      assert_not_contains "Pi responses do not instruct file delivery" text
+        ~substring:file_instruction;
+      assert_not_contains "Pi responses do not require the Write tool" text
+        ~substring:"Write tool");
+  List.iter (render Session_prompt.File_artifacts)
+    ~f:(fun (text, _, file_instruction) ->
+      assert_contains "File backends retain their delivery contract" text
+        ~substring:file_instruction;
+      assert_not_contains "File backends do not require Pi tools" text
+        ~substring:"onton_respond");
+  let review, _, _ = List.nth_exn (render Session_prompt.Pi_tools) 1 in
+  assert_contains "Pi preserves comment IDs" review ~substring:"comment_id=42";
+  assert_contains "Pi preserves review bodies" review
+    ~substring:comment.Types.Comment.body;
+  let findings, _, _ = List.nth_exn (render Session_prompt.Pi_tools) 2 in
+  assert_contains "Pi preserves finding response names" findings
+    ~substring:"service_finding-7.md";
+  assert_contains "Pi preserves finding bodies" findings
+    ~substring:finding.Review_service.body;
+  let directory = Stdlib.Filename.temp_dir "onton-prompt-transport-" "" in
+  let previous = Stdlib.Sys.getenv_opt "ONTON_DATA_DIR" in
+  Exn.protect
+    ~finally:(fun () ->
+      (match previous with
+      | Some value -> Unix.putenv "ONTON_DATA_DIR" value
+      | None -> Unix.unsetenv "ONTON_DATA_DIR");
+      ignore (Stdlib.Sys.command ("rm -rf " ^ Stdlib.Filename.quote directory)))
+    ~f:(fun () ->
+      Unix.putenv "ONTON_DATA_DIR" directory;
+      let prompts =
+        Stdlib.Filename.concat (Project_store.project_dir "") "prompts"
+      in
+      Project_store.ensure_dir prompts;
+      let write name content =
+        let channel =
+          Stdlib.open_out_bin (Stdlib.Filename.concat prompts (name ^ ".md"))
+        in
+        Exn.protect
+          ~finally:(fun () -> Stdlib.close_out channel)
+          ~f:(fun () -> Stdlib.output_string channel content)
+      in
+      List.iter [ "pr_body"; "turn_review"; "turn_findings" ] ~f:(fun name ->
+          write name "Existing file response override");
+      List.iter
+        (List.take (render Session_prompt.File_artifacts) 3)
+        ~f:(fun (text, _, _) ->
+          assert (String.equal text "Existing file response override"));
+      List.iter
+        (List.take (render Session_prompt.Pi_tools) 3)
+        ~f:(fun (text, _, _) ->
+          assert_contains "Pi ignores file protocol overrides" text
+            ~substring:"onton_respond");
+      List.iter [ "pi_pr_body"; "pi_turn_review"; "pi_turn_findings" ]
+        ~f:(fun name -> write name "Explicit Pi tool response override");
+      List.iter
+        (List.take (render Session_prompt.Pi_tools) 3)
+        ~f:(fun (text, _, _) ->
+          assert (String.equal text "Explicit Pi tool response override")));
+  Stdlib.print_endline
+    "Backend-specific response prompt contracts and override isolation: OK"

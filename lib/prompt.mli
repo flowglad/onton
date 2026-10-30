@@ -97,6 +97,7 @@ val render_turn_layer_start :
   project_name:string -> ?has_existing_changes:bool -> unit -> string
 
 val render_turn_layer_review :
+  ?response_transport:Session_prompt.response_transport ->
   project_name:string ->
   ?pr_number:Pr_number.t ->
   ?current_head_sha:string ->
@@ -104,15 +105,16 @@ val render_turn_layer_review :
   artifact_dir:string ->
   Comment.t list ->
   string
-(** [artifact_dir] is the absolute [comment_responses/] directory the agent is
-    told to write per-comment response files to
-    ({!Project_store.comment_responses_dir}, one [<comment_id>.md] per comment).
-    The agent is not asked to reply or resolve itself; the supervisor replies to
-    and resolves every comment with a written response after it pushes the
-    session's commits. [viewer_login] (the forge token's account) marks comments
-    whose thread already ends with onton's own reply as
-    [response already posted] — those need no fresh response file, only a
-    resolve retry. *)
+(** File mode uses [turn_review] overrides; Pi tool mode uses [pi_turn_review]
+    and instructs [onton_respond] instead of direct file writes. [artifact_dir]
+    is the absolute [comment_responses/] directory the agent is told to write
+    per-comment response files to ({!Project_store.comment_responses_dir}, one
+    [<comment_id>.md] per comment). The agent is not asked to reply or resolve
+    itself; the supervisor replies to and resolves every comment with a written
+    response after it pushes the session's commits. [viewer_login] (the forge
+    token's account) marks comments whose thread already ends with onton's own
+    reply as [response already posted] — those need no fresh response file, only
+    a resolve retry. *)
 
 val render_turn_layer_ci :
   project_name:string -> ?pr_number:Pr_number.t -> Ci_check.t list -> string
@@ -139,6 +141,7 @@ val render_turn_layer_uncommitted_changes :
   string
 
 val render_turn_layer_findings :
+  ?response_transport:Session_prompt.response_transport ->
   project_name:string ->
   ?pr_number:Pr_number.t ->
   ?current_head_sha:string ->
@@ -186,6 +189,7 @@ val render_spec_suffix : Types.Patch.t -> Types.Gameplan.t -> string
     accidentally drop them. *)
 
 val render_pr_body_prompt :
+  response_transport:Session_prompt.response_transport ->
   branch_only:bool ->
   project_name:string ->
   pr_number:Pr_number.t ->
@@ -195,6 +199,7 @@ val render_pr_body_prompt :
   string
 
 val render_review_prompt :
+  ?response_transport:Session_prompt.response_transport ->
   project_name:string ->
   ?agents_md:string ->
   ?pr_number:Pr_number.t ->
@@ -208,6 +213,7 @@ val render_review_prompt :
   string
 
 val render_findings_prompt :
+  ?response_transport:Session_prompt.response_transport ->
   project_name:string ->
   ?agents_md:string ->
   ?pr_number:Pr_number.t ->

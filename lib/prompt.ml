@@ -987,9 +987,9 @@ let render_pr_description ~(project_name : string) (patch : Patch.t)
 {{architecture_design_section}}{{changes_section}}{{gameplan_spec_section}}{{patch_spec_section}}{{reachability_section}}{{acceptance_criteria_section}}{{files_section}}{{precedents_section}}|}
         vars)
 
-let render_pr_body_prompt ~(branch_only : bool) ~(project_name : string)
-    ~(pr_number : Pr_number.t) ~(pr_body : string) ~(spec_suffix : string)
-    ~(artifact_path : string) =
+let render_pr_body_prompt ~response_transport ~(branch_only : bool)
+    ~(project_name : string) ~(pr_number : Pr_number.t) ~(pr_body : string)
+    ~(spec_suffix : string) ~(artifact_path : string) =
   let pr_num_str = Int.to_string (Pr_number.to_int pr_number) in
   let spec_context =
     if String.is_empty (String.strip spec_suffix) then ""
@@ -1021,9 +1021,28 @@ let render_pr_body_prompt ~(branch_only : bool) ~(project_name : string)
       ("pr_body", pr_body);
       ("spec_context", spec_context);
       ("artifact_path", artifact_path);
+      ( "response_instructions",
+        match response_transport with
+        | Session_prompt.File_artifacts ->
+            Printf.sprintf
+              "**Write just the notes content (no header) to `%s`.** This is \
+               an absolute path outside the worktree — write it with the Write \
+               tool. Do NOT run `gh`, `git`, or any forge command; the \
+               supervisor reads the file and PATCHes the PR."
+              artifact_path
+        | Session_prompt.Pi_tools ->
+            "Call `onton_respond` with `kind: \"implementation_notes\"` and \
+             the notes text as `content` (no header). Do NOT run `gh`, `git`, \
+             or any forge command; the supervisor processes the response and \
+             updates the PR." );
     ]
   in
-  render_with_override ~project_name ~name:"pr_body" ~vars ~default:(fun () ->
+  let name =
+    match response_transport with
+    | Session_prompt.File_artifacts -> "pr_body"
+    | Session_prompt.Pi_tools -> "pi_pr_body"
+  in
+  render_with_override ~project_name ~name ~vars ~default:(fun () ->
       substitute_variables
         {|{{publication_context}}
 
@@ -1035,7 +1054,7 @@ The patch description is:
 {{spec_context}}
 {{notes_destination}} Agents implementing patches that depend on this one are also pointed at these notes, so they double as a handoff to the work built on top of your changes.
 
-**Write just the notes content (no header) to `{{artifact_path}}`.** This is an absolute path outside the worktree — write it with the Write tool. Do NOT run `gh`, `git`, or any forge command; the supervisor reads the file and PATCHes the PR.
+{{response_instructions}}
 
 What to include:
 
@@ -1054,9 +1073,10 @@ Keep it concise — a few bullet points usually suffices. If you have nothing ma
 (* Private helper — truncates a Git SHA to 7 chars for prompt display. *)
 let short_sha s = if String.length s <= 7 then s else String.sub s ~pos:0 ~len:7
 
-let render_turn_layer_review ~(project_name : string) ?pr_number
-    ?current_head_sha ?viewer_login ~(artifact_dir : string)
-    (comments : Comment.t list) : string =
+let render_turn_layer_review
+    ?(response_transport = Session_prompt.File_artifacts)
+    ~(project_name : string) ?pr_number ?current_head_sha ?viewer_login
+    ~(artifact_dir : string) (comments : Comment.t list) : string =
   match comments with
   | [] -> "No review comments to address."
   | _ ->
@@ -1185,39 +1205,75 @@ let render_turn_layer_review ~(project_name : string) ?pr_number
            have something new to add."
         else ""
       in
-      render_with_override ~project_name ~name:"turn_review" ~vars
-        ~default:(fun () ->
-          Printf.sprintf
-            "# Review Comments%s%s\n\n\
-             The following review comments need to be addressed on your PR:\n\n\
-             %s\n\n\
-             For each comment:\n\
-             1. Implement the requested change, OR decide the current approach \
-             is correct.\n\
-             2. Write your response to `%s/<comment_id>.md` (the \
-             [comment_id=...] shown above), containing just the response text.\n\
-            \   Use the Write tool with that absolute path — the directory is \
-             outside the worktree on purpose; do not commit it.\n\n\
-             Write a response file for EVERY comment listed above.%s After \
-             this session the supervisor pushes your commits, then posts each \
-             response as a reply on its comment thread and resolves that \
-             thread. A comment without a response file stays unresolved and \
-             will be re-delivered to you.\n\n\
-             After addressing all comments, commit your changes. The \
-             supervisor will push them for you — do not run `git push`."
-            pr_ctx sha_anchor formatted artifact_dir retry_note)
+      let name =
+        match response_transport with
+        | Session_prompt.File_artifacts -> "turn_review"
+        | Session_prompt.Pi_tools -> "pi_turn_review"
+      in
+      render_with_override ~project_name ~name ~vars ~default:(fun () ->
+          match response_transport with
+          | Session_prompt.Pi_tools ->
+              let retry_note =
+                if
+                  List.exists comments ~f:(fun c ->
+                      Comment_responses.is_resolve_retry ~viewer_login c)
+                then
+                  " Comments marked [response already posted] only need a new \
+                   response if you have something new to add; the supervisor \
+                   retries resolving them."
+                else ""
+              in
+              Printf.sprintf
+                "# Review Comments%s%s\n\n\
+                 The following review comments need to be addressed on your \
+                 PR:\n\n\
+                 %s\n\n\
+                 For each comment, implement the requested change OR explain \
+                 why the current approach is correct. Call `onton_respond` \
+                 with `kind: \"review_response\"`, the exact `comment_id` as \
+                 `id`, and just the response text as `content`. Respond to \
+                 EVERY comment listed above.%s After this session the \
+                 supervisor pushes your commits, posts each response on its \
+                 comment thread and resolves that thread. A comment without a \
+                 submitted response stays unresolved and is re-delivered.\n\n\
+                 After addressing all comments, commit your changes. The \
+                 supervisor will push them — do not run `git push`."
+                pr_ctx sha_anchor formatted retry_note
+          | Session_prompt.File_artifacts ->
+              Printf.sprintf
+                "# Review Comments%s%s\n\n\
+                 The following review comments need to be addressed on your \
+                 PR:\n\n\
+                 %s\n\n\
+                 For each comment:\n\
+                 1. Implement the requested change, OR decide the current \
+                 approach is correct.\n\
+                 2. Write your response to `%s/<comment_id>.md` (the \
+                 [comment_id=...] shown above), containing just the response \
+                 text.\n\
+                \   Use the Write tool with that absolute path — the directory \
+                 is outside the worktree on purpose; do not commit it.\n\n\
+                 Write a response file for EVERY comment listed above.%s After \
+                 this session the supervisor pushes your commits, then posts \
+                 each response as a reply on its comment thread and resolves \
+                 that thread. A comment without a response file stays \
+                 unresolved and will be re-delivered to you.\n\n\
+                 After addressing all comments, commit your changes. The \
+                 supervisor will push them for you — do not run `git push`."
+                pr_ctx sha_anchor formatted artifact_dir retry_note)
 
-let render_review_prompt ~(project_name : string) ?agents_md ?pr_number
-    ?current_head_sha ?viewer_login ?patch ?gameplan ?base_branch
+let render_review_prompt ?response_transport ~(project_name : string) ?agents_md
+    ?pr_number ?current_head_sha ?viewer_login ?patch ?gameplan ?base_branch
     ~(artifact_dir : string) (comments : Comment.t list) : string =
   render_session_context ~project_name ?pr_number ?patch ?gameplan ?base_branch
     ?agents_md ()
-  ^ render_turn_layer_review ~project_name ?pr_number ?current_head_sha
-      ?viewer_login ~artifact_dir comments
+  ^ render_turn_layer_review ?response_transport ~project_name ?pr_number
+      ?current_head_sha ?viewer_login ~artifact_dir comments
 
-let render_turn_layer_findings ~(project_name : string) ?pr_number
-    ?current_head_sha ~artifact_dir (findings : Review_service.finding list) :
-    string =
+let render_turn_layer_findings
+    ?(response_transport = Session_prompt.File_artifacts)
+    ~(project_name : string) ?pr_number ?current_head_sha ~artifact_dir
+    (findings : Review_service.finding list) : string =
   let pr_num_str =
     match pr_number with
     | Some n -> Printf.sprintf "#%d" (Pr_number.to_int n)
@@ -1273,36 +1329,59 @@ let render_turn_layer_findings ~(project_name : string) ?pr_number
       ("artifact_dir", artifact_dir);
     ]
   in
-  render_with_override ~project_name ~name:"turn_findings" ~vars
-    ~default:(fun () ->
-      Printf.sprintf
-        "You are reviewing pull request %s. The findings below come from a \
-         review service, not from GitHub review threads — there is no thread \
-         to reply to. To resolve a finding, you must EITHER (a) make code \
-         changes that address it, OR (b) explicitly mark it as wontfix.%s\n\n\
-         %s\n\n\
-         ## Resolving findings\n\
-         - For each finding you fix in code, do nothing extra: it will be \
-         reported back as `addressed` after this session.\n\
-         - For each finding you decide NOT to fix (out of scope, false \
-         positive, intentional, etc.), write the reason (plain text) to \
-         `%s/<wontfix_file>`, using that finding's `wontfix_file` name shown \
-         above. The supervisor reads the directory after this session and \
-         reports those findings as `wontfix`.\n\
-         - Use the Write tool with the absolute path (the directory is outside \
-         the worktree on purpose — do not commit it). One file per finding, \
-         reason text only.\n\n\
-         After addressing the in-scope findings, commit your changes. The \
-         supervisor will push them for you — do not run `git push`."
-        pr_num_str sha_anchor formatted artifact_dir)
+  let name =
+    match response_transport with
+    | Session_prompt.File_artifacts -> "turn_findings"
+    | Session_prompt.Pi_tools -> "pi_turn_findings"
+  in
+  render_with_override ~project_name ~name ~vars ~default:(fun () ->
+      match response_transport with
+      | Session_prompt.Pi_tools ->
+          Printf.sprintf
+            "You are reviewing pull request %s. The findings below come from a \
+             review service, not GitHub review threads. Resolve each finding \
+             with code changes OR an explicit wontfix reason.%s\n\n\
+             %s\n\n\
+             ## Resolving findings\n\
+             - For findings fixed in code, do nothing extra: the supervisor \
+             reports them as `addressed` after this session.\n\
+             - For each finding you decide NOT to fix, call `onton_respond` \
+             with `kind: \"finding_wontfix\"`, the exact `wontfix_file` shown \
+             above as `id`, and the reason text as `content`. The supervisor \
+             reports these as `wontfix`.\n\n\
+             After addressing in-scope findings, commit your changes. The \
+             supervisor will push them — do not run `git push`."
+            pr_num_str sha_anchor formatted
+      | Session_prompt.File_artifacts ->
+          Printf.sprintf
+            "You are reviewing pull request %s. The findings below come from a \
+             review service, not from GitHub review threads — there is no \
+             thread to reply to. To resolve a finding, you must EITHER (a) \
+             make code changes that address it, OR (b) explicitly mark it as \
+             wontfix.%s\n\n\
+             %s\n\n\
+             ## Resolving findings\n\
+             - For each finding you fix in code, do nothing extra: it will be \
+             reported back as `addressed` after this session.\n\
+             - For each finding you decide NOT to fix (out of scope, false \
+             positive, intentional, etc.), write the reason (plain text) to \
+             `%s/<wontfix_file>`, using that finding's `wontfix_file` name \
+             shown above. The supervisor reads the directory after this \
+             session and reports those findings as `wontfix`.\n\
+             - Use the Write tool with the absolute path (the directory is \
+             outside the worktree on purpose — do not commit it). One file per \
+             finding, reason text only.\n\n\
+             After addressing the in-scope findings, commit your changes. The \
+             supervisor will push them for you — do not run `git push`."
+            pr_num_str sha_anchor formatted artifact_dir)
 
-let render_findings_prompt ~(project_name : string) ?agents_md ?pr_number
-    ?current_head_sha ?patch ?gameplan ?base_branch ~artifact_dir
-    (findings : Review_service.finding list) : string =
+let render_findings_prompt ?response_transport ~(project_name : string)
+    ?agents_md ?pr_number ?current_head_sha ?patch ?gameplan ?base_branch
+    ~artifact_dir (findings : Review_service.finding list) : string =
   render_session_context ~project_name ?pr_number ?patch ?gameplan ?base_branch
     ?agents_md ()
-  ^ render_turn_layer_findings ~project_name ?pr_number ?current_head_sha
-      ~artifact_dir findings
+  ^ render_turn_layer_findings ?response_transport ~project_name ?pr_number
+      ?current_head_sha ~artifact_dir findings
 
 type ci_check_detail = {
   artifact_dir : string;
@@ -2235,17 +2314,18 @@ let%test "gameplan-derived patch layer carries required context resources" =
 
 let%test "pr body prompt tells the author about dependent patch readers" =
   let rendered =
-    render_pr_body_prompt ~branch_only:false ~project_name:"onton"
-      ~pr_number:(Pr_number.of_int 7) ~pr_body:"body" ~spec_suffix:""
-      ~artifact_path:"/tmp/pr-body.md"
+    render_pr_body_prompt ~response_transport:Session_prompt.File_artifacts
+      ~branch_only:false ~project_name:"onton" ~pr_number:(Pr_number.of_int 7)
+      ~pr_body:"body" ~spec_suffix:"" ~artifact_path:"/tmp/pr-body.md"
   in
   String.is_substring rendered ~substring:"patches that depend on this one"
 
 let%test "feature dependency notes are a patch-scoped handoff" =
   let rendered =
-    render_pr_body_prompt ~branch_only:true ~project_name:"onton"
-      ~pr_number:(Pr_number.of_int 7) ~pr_body:"dependency changes"
-      ~spec_suffix:"dependency spec" ~artifact_path:"/tmp/pr-body.md"
+    render_pr_body_prompt ~response_transport:Session_prompt.File_artifacts
+      ~branch_only:true ~project_name:"onton" ~pr_number:(Pr_number.of_int 7)
+      ~pr_body:"dependency changes" ~spec_suffix:"dependency spec"
+      ~artifact_path:"/tmp/pr-body.md"
   in
   List.for_all
     [
@@ -2494,9 +2574,9 @@ let%test "PR descriptions and PR-note prompts retain architectural decisions" =
   in
   let body = render_pr_description ~project_name:"onton" patch gameplan in
   let prompt =
-    render_pr_body_prompt ~branch_only:false ~project_name:"onton"
-      ~pr_number:(Pr_number.of_int 1) ~pr_body:body ~spec_suffix:""
-      ~artifact_path:"notes.md"
+    render_pr_body_prompt ~response_transport:Session_prompt.File_artifacts
+      ~branch_only:false ~project_name:"onton" ~pr_number:(Pr_number.of_int 1)
+      ~pr_body:body ~spec_suffix:"" ~artifact_path:"notes.md"
   in
   String.is_substring body ~substring:"## Architectural Design"
   && List.for_all
@@ -2713,9 +2793,10 @@ let%test "human and pr_body prompts do not include the gameplan layer" =
     render_human_message_prompt ~project_name:"onton" [ "Please rebase." ]
   in
   let pr_body_prompt =
-    render_pr_body_prompt ~branch_only:false ~project_name:"onton"
-      ~pr_number:(Pr_number.of_int 42) ~pr_body:"## Patch 1: Foo\nBody."
-      ~spec_suffix:"" ~artifact_path:"/tmp/notes.md"
+    render_pr_body_prompt ~response_transport:Session_prompt.File_artifacts
+      ~branch_only:false ~project_name:"onton" ~pr_number:(Pr_number.of_int 42)
+      ~pr_body:"## Patch 1: Foo\nBody." ~spec_suffix:""
+      ~artifact_path:"/tmp/notes.md"
   in
   (* Neither contains the gameplan project heading marker — these
      intentionally stay turn-only. The pr_body prompt may legitimately

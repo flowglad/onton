@@ -1,6 +1,15 @@
 (* @archlint.module interface
    @archlint.domain session-driver *)
 
+type response_transport = File_artifacts | Pi_tools
+
+val response_transport : backend_name:string -> response_transport
+(** Select the supervisor response contract for the actual backend. *)
+
+val render_opt_out :
+  response_transport:response_transport -> artifact_path:string -> string
+(** Preserve the pre-commit offer while selecting its response mechanism. *)
+
 type t
 (** Context is delivered only when the backend starts a fresh session. *)
 
