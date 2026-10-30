@@ -18,6 +18,12 @@ ONTON_PI_EXTENSION=/absolute/path/to/onton/pi-onton/src/index.ts onton --backend
 Do not also install this package globally in Pi: the backend already loads it.
 No interactive UI or approval dialog is needed.
 
+The mode adds Onton tools and context alongside other extensions. It leaves their
+tools, prompt contributions, dialogs, policies, and lifecycle hooks in place.
+It does not change the active tool set, intercept ordinary tool calls, replace the
+system prompt, or veto session changes. Response instructions describe how to
+communicate with Onton; they do not restrict extensions used for the coding work.
+
 | Existing communication | Mode interface |
 | --- | --- |
 | Initial implementation and gameplan/patch requirements | Original prompt plus `onton_context` |
