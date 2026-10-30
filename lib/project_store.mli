@@ -127,6 +127,12 @@ val stored_gameplan_path : string -> string
 val sessions_dir : string -> string
 (** Path to the per-session artifact directory root ([sessions/]). *)
 
+val artifacts_root : string -> string
+(** Root containing the published gameplan and per-patch agent artifacts. *)
+
+val artifact_dir : project_name:string -> patch_id:Types.Patch_id.t -> string
+(** Directory for this patch's agent response artifacts. *)
+
 val gameplan_artifact_path : string -> string
 (** Absolute path of the agent-readable gameplan copy
     ([artifacts/gameplan.json]). Lives in the agent-facing [artifacts/] subtree

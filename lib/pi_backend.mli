@@ -14,7 +14,12 @@ val create :
     default. [effort] is passed via [--thinking]; [None] leaves Pi's thinking
     setting unchanged. [timeout] is the maximum idle duration in seconds without
     stdout or stderr output before the process is killed. See
-    {!Claude_backend.create} for [setsid_exec] semantics. *)
+    {!Claude_backend.create} for [setsid_exec] semantics.
+
+    Every execution writes a versioned delivery envelope and exports its path as
+    [ONTON_PI_CONTEXT] for the bundled pi-onton extension, which is loaded
+    automatically. Set [ONTON_PI_EXTENSION] to an absolute entrypoint path to
+    override the bundled extension during development. *)
 
 val parse_event : string -> Types.Stream_event.t list
 (** Parse a single NDJSON line from Pi's JSON output. Exposed for testing. *)

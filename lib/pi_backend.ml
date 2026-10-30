@@ -20,9 +20,53 @@ let run_streaming ~model ~effort ~process_mgr ~clock ~timeout ~setsid_exec
     build_args ~model ~effort ~cwd_path ~patch_id:patch_id_str ~prompt
       ~resume_session
   in
+  (* A per-execution envelope, rather than inferred paths or conversation state,
+     keeps resumed agents attached to the current supervisor delivery. *)
+  let session_dir =
+    Session_artifacts.artifact_dir ~project_name ~session_uuid
+  in
+  Project_store.ensure_dir session_dir;
+  let context_path = Stdlib.Filename.concat session_dir "pi-context.json" in
+  let context =
+    `Assoc
+      [
+        ("version", `Int 1);
+        ("project", `String project_name);
+        ("patch_id", `String patch_id_str);
+        ("session_uuid", `String session_uuid);
+        ("prompt", `String prompt);
+        ("artifacts_root", `String (Project_store.artifacts_root project_name));
+        ( "artifact_dir",
+          `String (Project_store.artifact_dir ~project_name ~patch_id) );
+        ( "gameplan_path",
+          `String (Project_store.gameplan_artifact_path project_name) );
+      ]
+  in
+  (match
+     Persistence.write_file_atomically ~path:context_path
+       ~content:(Yojson.Safe.to_string context)
+   with
+  | Ok () -> ()
+  | Error message -> failwith ("Pi context: " ^ message));
+  let extension_path =
+    match Stdlib.Sys.getenv_opt "ONTON_PI_EXTENSION" with
+    | Some path when not (String.is_empty path) -> path
+    | _ ->
+        let directory = Stdlib.Filename.concat session_dir "pi-onton" in
+        Project_store.ensure_dir directory;
+        List.iter Pi_extension_assets.files ~f:(fun (name, content) ->
+            let path = Stdlib.Filename.concat directory name in
+            match Persistence.write_file_atomically ~path ~content with
+            | Ok () -> ()
+            | Error message -> failwith ("Pi extension: " ^ message));
+        Stdlib.Filename.concat directory "index.ts"
+  in
+  let args = args @ [ "--extension"; extension_path ] in
   let env =
     Spawn_env.merge_env ~base_env:(Unix.environment ())
-      ~overrides:(Spawn_env.per_patch_env ~project_name ~patch_id)
+      ~overrides:
+        (("ONTON_PI_CONTEXT", context_path)
+        :: Spawn_env.per_patch_env ~project_name ~patch_id)
   in
   let process_line line =
     let trimmed = String.strip line in

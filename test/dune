@@ -1466,3 +1466,10 @@
    (setenv ONTON_WORKER_BINARY_DEFAULT %{exe:../bin/worker.exe}
     (setenv ONTON_SETSID_EXEC %{bin:onton-setsid-exec}
      (run %{exe:test_distributed_coordinator.exe}))))))
+
+(test
+ (name test_pi_backend_context)
+ (modules test_pi_backend_context)
+ (deps (package onton))
+ (action (setenv ONTON_SETSID_EXEC %{bin:onton-setsid-exec} (run %{test})))
+ (libraries onton onton_core eio_main unix yojson))
