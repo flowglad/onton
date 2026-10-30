@@ -1,4 +1,4 @@
-import { isAbsolute } from "node:path";
+import { isAbsolute, relative, resolve, sep } from "node:path";
 
 export interface Delivery {
   version: 1;
@@ -14,7 +14,7 @@ export interface Delivery {
 /** Reject malformed supervisor deliveries rather than guessing project paths. */
 export function decodeDelivery(value: unknown): Delivery {
   if (!value || typeof value !== "object") throw new Error("Invalid Onton delivery");
-  const v = value as Record<string, unknown>;
+  const v = { ...value } as Record<string, unknown>;
   if (v.version !== 1) throw new Error("Unsupported Onton delivery version");
   for (const key of ["project", "patch_id", "session_uuid", "prompt", "artifacts_root", "artifact_dir", "gameplan_path"]) {
     if (typeof v[key] !== "string" || v[key].length === 0) throw new Error(`Missing Onton ${key}`);
@@ -22,7 +22,16 @@ export function decodeDelivery(value: unknown): Delivery {
   for (const key of ["artifacts_root", "artifact_dir", "gameplan_path"]) {
     if (!isAbsolute(v[key] as string)) throw new Error(`Onton ${key} must be absolute`);
   }
-  return v as unknown as Delivery;
+  const root = resolve(v.artifacts_root as string);
+  for (const key of ["artifact_dir", "gameplan_path"]) {
+    const path = resolve(v[key] as string);
+    const rel = relative(root, path);
+    if (isAbsolute(rel) || rel === ".." || rel.startsWith(`..${sep}`)) {
+      throw new Error(`Onton ${key} escapes artifacts_root`);
+    }
+    v[key] = path;
+  }
+  return { ...v, artifacts_root: root } as unknown as Delivery;
 }
 
 export type ResponseKind = "implementation_notes" | "review_response" | "finding_wontfix" | "opt_out";
@@ -32,7 +41,7 @@ export function responsePath(kind: ResponseKind, id?: string): string {
     case "implementation_notes": return "pr-body.md";
     case "opt_out": return "WONTDO.md";
     case "review_response":
-      if (!id || !/^[A-Za-z0-9_-]+$/.test(id)) throw new Error("Copy the comment_id from the current prompt");
+      if (!id || id !== id.trim() || !/^[1-9][0-9]*$/.test(id)) throw new Error("Copy the comment_id from the current prompt");
       return `comment_responses/${id}.md`;
     case "finding_wontfix":
       if (!id || !/^[A-Za-z0-9_.-]+\.md$/.test(id)) throw new Error("Copy the wontfix_file from the current prompt");

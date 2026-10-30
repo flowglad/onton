@@ -1,5 +1,6 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
+import { relative } from "node:path";
 import { readFile } from "node:fs/promises";
 import { decodeDelivery, instructions, responsePath } from "./protocol.js";
 import { artifactPath, readChunk, writeResponse } from "./files.js";
@@ -44,7 +45,7 @@ export default function (pi: ExtensionAPI) {
     async execute(_id, params, signal) {
       signal?.throwIfAborted();
       const current = await delivery();
-      const path = params.source === "gameplan" ? current.gameplan_path
+      const path = params.source === "gameplan" ? await artifactPath(current.artifacts_root, relative(current.artifacts_root, current.gameplan_path))
         : await artifactPath(current.artifacts_root, params.path ?? "");
       return result(await readChunk(path, params.offset ?? 0, params.limit ?? 32768));
     },
@@ -60,7 +61,8 @@ export default function (pi: ExtensionAPI) {
     async execute(_id, params, signal) {
       signal?.throwIfAborted();
       const current = await delivery();
-      const path = await writeResponse(current.artifact_dir, responsePath(params.kind, params.id), params.content);
+      const directory = await artifactPath(current.artifacts_root, relative(current.artifacts_root, current.artifact_dir));
+      const path = await writeResponse(directory, responsePath(params.kind, params.id), params.content);
       return result({ path, written: true, message: "Response saved for supervisor processing." });
     },
   });

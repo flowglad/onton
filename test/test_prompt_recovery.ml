@@ -4,6 +4,17 @@
 open Base
 open Onton
 
+(* Every built-in prompt check must be independent of developer overrides. *)
+let () =
+  let directory = Stdlib.Filename.temp_dir "onton-prompt-defaults-" "" in
+  let previous = Stdlib.Sys.getenv_opt "ONTON_DATA_DIR" in
+  Unix.putenv "ONTON_DATA_DIR" directory;
+  Stdlib.at_exit (fun () ->
+      (match previous with
+      | Some value -> Unix.putenv "ONTON_DATA_DIR" value
+      | None -> Unix.unsetenv "ONTON_DATA_DIR");
+      ignore (Stdlib.Sys.command ("rm -rf " ^ Stdlib.Filename.quote directory)))
+
 (** Tests for live worktree guidance in implementation and cleanup sessions. *)
 
 let () =
@@ -240,6 +251,18 @@ let () =
   assert_contains "Pi preserves comment IDs" review ~substring:"comment_id=42";
   assert_contains "Pi preserves review bodies" review
     ~substring:comment.Types.Comment.body;
+  let retry_review =
+    Prompt.render_turn_layer_review ~response_transport:Session_prompt.Pi_tools
+      ~project_name:"" ~viewer_login:"onton-bot" ~artifact_dir:"/responses"
+      [
+        comment;
+        { comment with Types.Comment.last_reply_author = Some "onton-bot" };
+      ]
+  in
+  assert_contains "Pi review limits mandatory replies" retry_review
+    ~substring:"every comment without [response already posted]";
+  assert_contains "Pi review permits only new retry content" retry_review
+    ~substring:"respond only if you have something new to add";
   let findings, _, _ = List.nth_exn (render Session_prompt.Pi_tools) 2 in
   assert_contains "Pi preserves finding response names" findings
     ~substring:"service_finding-7.md";

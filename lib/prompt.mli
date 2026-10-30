@@ -105,16 +105,15 @@ val render_turn_layer_review :
   artifact_dir:string ->
   Comment.t list ->
   string
-(** File mode uses [turn_review] overrides; Pi tool mode uses [pi_turn_review]
-    and instructs [onton_respond] instead of direct file writes. [artifact_dir]
-    is the absolute [comment_responses/] directory the agent is told to write
-    per-comment response files to ({!Project_store.comment_responses_dir}, one
-    [<comment_id>.md] per comment). The agent is not asked to reply or resolve
-    itself; the supervisor replies to and resolves every comment with a written
-    response after it pushes the session's commits. [viewer_login] (the forge
-    token's account) marks comments whose thread already ends with onton's own
-    reply as [response already posted] — those need no fresh response file, only
-    a resolve retry. *)
+(** File mode uses [turn_review] overrides and asks the agent to write one
+    response file per comment below [artifact_dir]
+    ({!Project_store.comment_responses_dir}). Pi tool mode uses [pi_turn_review]
+    overrides and asks for [onton_respond] with kind [review_response]; the
+    agent does not write files directly and [artifact_dir] is unused in its
+    prompt. Both transports save response artifacts for the supervisor to post
+    and resolve after pushing. [viewer_login] marks comments whose thread
+    already ends with onton's own reply as [response already posted]; those need
+    only a resolve retry unless there is something new to add. *)
 
 val render_turn_layer_ci :
   project_name:string -> ?pr_number:Pr_number.t -> Ci_check.t list -> string
@@ -148,6 +147,11 @@ val render_turn_layer_findings :
   artifact_dir:string ->
   Review_service.finding list ->
   string
+(** File mode uses [turn_findings] overrides and requests direct writes below
+    [artifact_dir] for unaddressed findings. Pi tool mode uses
+    [pi_turn_findings] and [onton_respond] with kind [finding_wontfix] and the
+    exact [wontfix_file]; [artifact_dir] is unused in its prompt. Code-fixed
+    findings require no response in either transport. *)
 
 (** {1 Composed prompts}
 
@@ -228,9 +232,12 @@ val render_findings_prompt :
     (path:start_line-end_line), posting SHA, per-finding [wontfix_file] name
     ({!Review_service.wontfix_filename_of_id}), and body. Instructs the agent to
     address findings via code edits and, for any finding it cannot or should not
-    fix, write the reason to [artifact_dir/<wontfix_file>]
-    ({!Project_store.findings_wontfix_dir}). Findings without a file are POSTed
-    as [addressed] to the originating review backend after the session. *)
+    fix, deliver a reason. File mode writes [artifact_dir/<wontfix_file>]
+    ({!Project_store.findings_wontfix_dir}); Pi tool mode calls [onton_respond]
+    with kind [finding_wontfix] and the exact [wontfix_file]. Code-fixed
+    findings need no response. The supervisor consumes saved response artifacts
+    after the session and posts dispositions to the originating review backend.
+*)
 
 val render_ci_failure_prompt :
   project_name:string ->

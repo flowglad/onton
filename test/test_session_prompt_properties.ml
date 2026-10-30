@@ -44,7 +44,12 @@ let () =
               let text =
                 Session_prompt.render_opt_out ~response_transport ~artifact_path
               in
-              contains text "Before making your first commit"
+              (match response_transport with
+                | Session_prompt.File_artifacts ->
+                    contains text
+                      (Printf.sprintf "write your reason to `%s`" artifact_path)
+                | Session_prompt.Pi_tools -> true)
+              && contains text "Before making your first commit"
               && contains text "unavailable after any patch commit or PR exists"
               && contains text "end your turn without committing")
             [ Session_prompt.File_artifacts; Session_prompt.Pi_tools ]);

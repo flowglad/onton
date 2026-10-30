@@ -3,8 +3,8 @@
 Pi agent mode for coding sessions supervised by Onton. Requires Pi 1.2+.
 
 Onton bundles this extension and automatically loads it on every `--backend pi`
-execution, including resumed sessions. No global Pi installation or npm setup is
-needed. The extension activates only when Onton supplies `ONTON_PI_CONTEXT`;
+execution, including resumed sessions. No separate installation of the extension
+or npm setup is needed; the Pi CLI must still be installed and available on `PATH`. The extension activates only when Onton supplies `ONTON_PI_CONTEXT`;
 ordinary Pi sessions are unaffected.
 
 For development, override the bundled entrypoint:
@@ -20,7 +20,7 @@ No interactive UI or approval dialog is needed.
 
 The mode adds Onton tools and context alongside other extensions. It leaves their
 tools, prompt contributions, dialogs, policies, and lifecycle hooks in place.
-It does not change the active tool set, intercept ordinary tool calls, replace the
+It does not remove or alter existing tools, intercept ordinary tool calls, replace the
 system prompt, or veto session changes. Response instructions describe how to
 communicate with Onton; they do not restrict extensions used for the coding work.
 
@@ -40,7 +40,7 @@ communicate with Onton; they do not restrict extensions used for the coding work
 | Text, tool activity, session identity, end-of-turn, process errors | Native Pi JSON stream and process exit, consumed by existing Onton backend |
 
 The selected backend determines response instructions before delivery. Pi prompts
-use `onton_respond` for notes, review replies, findings, and opt-out; file-based
+use `onton_respond` for notes, review replies, unaddressed findings, and opt-out; file-based
 backends retain their file instructions. Pi uses separate `pi_pr_body.md`,
 `pi_turn_review.md`, and `pi_turn_findings.md` project prompt overrides so existing
 file-based response templates are not accidentally delivered to Pi.
@@ -53,7 +53,10 @@ After compaction, `session_compact` restores a pointer to the recovery tools.
 
 Artifacts are addressed relative to the returned `artifacts_root`; use paths
 from the prompt. Reads support byte `offset` and `limit` (maximum 65536), returning
-`next_offset` and `eof`. Missing evidence is a tool error, never an invented result.
+`next_offset` and `eof`. Text chunks preserve UTF-8 characters; a limit smaller
+than the first character extends by up to three bytes to ensure progress. Follow
+`next_offset`; offsets inside a character and malformed UTF-8 are rejected.
+Missing evidence is a tool error, never an invented result.
 Responses are atomic replacements of the same files Onton already consumes.
 Copy the exact comment ID or `wontfix_file` from the prompt. Code-fixed findings
 need no wontfix file. Opt-out is accepted only under Onton's existing pre-commit

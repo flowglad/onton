@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
@@ -28,10 +28,16 @@ test("supervised lifecycle and tools follow a new execution on conversation resu
     assert.equal((await tools.get("onton_context").execute()).details.prompt, "Implement the patch");
     for (const prompt of ["Address review comment 42", "Fix CI", "Human: explain the design", "Recover the captured Git operation", "Update publication metadata", "Base branch changed", "Clean up uncommitted changes", "Address these findings"]) {
       await setDelivery(prompt, "execution-2");
-      assert.equal((await tools.get("onton_context").execute()).details.prompt, prompt);
+      const resumed = (await tools.get("onton_context").execute()).details;
+      assert.equal(resumed.prompt, prompt);
+      assert.equal(resumed.session_uuid, "execution-2");
     }
     await hooks.get("session_compact")!();
     assert.equal(messages.length, 1);
+    const recovery = messages[0] as { customType: string; display: boolean; content: string };
+    assert.equal(recovery.customType, "onton-mode");
+    assert.equal(recovery.display, false);
+    assert.match(recovery.content, /onton_context/);
     assert.equal((await tools.get("onton_read_artifact").execute("call", { source: "gameplan" })).details.text, '{"patches":[]}');
     for (const [kind, id, path] of [
       ["implementation_notes", undefined, "pr-body.md"],
@@ -42,6 +48,17 @@ test("supervised lifecycle and tools follow a new execution on conversation resu
       await tools.get("onton_respond").execute("call", { kind, id, content: "Response text" });
       assert.equal(await readFile(join(patch, path!), "utf8"), "Response text");
     }
+    // Revalidate canonical paths at each use, including swapped delivery symlinks.
+    const outside = await mkdtemp(join(tmpdir(), "pi-onton-outside-"));
+    try {
+      await writeFile(join(outside, "gameplan.json"), "outside evidence");
+      await symlink(outside, join(root, "escape"));
+      await writeFile(context, JSON.stringify({ version: 1, project: "project", patch_id: "patch-1", session_uuid: "s", prompt: "p", artifacts_root: root, artifact_dir: join(root, "escape"), gameplan_path: join(root, "escape/gameplan.json") }));
+      await assert.rejects(tools.get("onton_read_artifact").execute("call", { source: "gameplan" }), /artifacts root/);
+      await assert.rejects(tools.get("onton_respond").execute("call", { kind: "opt_out", content: "escape" }), /artifacts root/);
+      await assert.rejects(readFile(join(outside, "WONTDO.md")));
+    } finally { await rm(outside, { recursive: true, force: true }); }
+    await setDelivery("Implement the patch", "execution-2");
     const cancelled = new AbortController();
     cancelled.abort();
     await assert.rejects(tools.get("onton_respond").execute("call", { kind: "opt_out", content: "cancelled" }, cancelled.signal));

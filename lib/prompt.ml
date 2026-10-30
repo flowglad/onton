@@ -1232,10 +1232,12 @@ let render_turn_layer_review
                  why the current approach is correct. Call `onton_respond` \
                  with `kind: \"review_response\"`, the exact `comment_id` as \
                  `id`, and just the response text as `content`. Respond to \
-                 EVERY comment listed above.%s After this session the \
-                 supervisor pushes your commits, posts each response on its \
-                 comment thread and resolves that thread. A comment without a \
-                 submitted response stays unresolved and is re-delivered.\n\n\
+                 every comment without [response already posted]; for marked \
+                 comments, respond only if you have something new to add.%s \
+                 After this session the supervisor pushes your commits, posts \
+                 each response on its comment thread and resolves that thread. \
+                 A comment without a submitted response stays unresolved and \
+                 is re-delivered.\n\n\
                  After addressing all comments, commit your changes. The \
                  supervisor will push them — do not run `git push`."
                 pr_ctx sha_anchor formatted retry_note

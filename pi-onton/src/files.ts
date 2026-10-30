@@ -42,8 +42,19 @@ export async function readChunk(path: string, offset: number, limit: number) {
   }
   const file = await open(path, "r");
   try {
-    const buffer = Buffer.alloc(limit);
-    const { bytesRead } = await file.read(buffer, 0, limit, offset);
-    return { text: buffer.subarray(0, bytesRead).toString("utf8"), next_offset: offset + bytesRead, eof: offset + bytesRead >= (await file.stat()).size };
+    // Look ahead for the rest of a code point. Normally stop before a split;
+    // if the first character exceeds the limit, include it to ensure progress.
+    const buffer = Buffer.alloc(limit + 3);
+    const { bytesRead } = await file.read(buffer, 0, buffer.length, offset);
+    const continuation = (index: number) => (buffer[index]! & 0xc0) === 0x80;
+    if (bytesRead > 0 && continuation(0)) throw new Error("Byte offset splits a UTF-8 character");
+    let end = Math.min(limit, bytesRead);
+    while (end > 0 && end < bytesRead && continuation(end)) end--;
+    if (end === 0 && bytesRead > 0) {
+      end = 1;
+      while (end < bytesRead && continuation(end)) end++;
+    }
+    const text = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(buffer.subarray(0, end));
+    return { text, next_offset: offset + end, eof: offset + end >= (await file.stat()).size };
   } finally { await file.close(); }
 }

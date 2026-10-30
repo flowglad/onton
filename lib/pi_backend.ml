@@ -26,6 +26,8 @@ let run_streaming ~model ~effort ~process_mgr ~clock ~timeout ~setsid_exec
     Session_artifacts.artifact_dir ~project_name ~session_uuid
   in
   Project_store.ensure_dir session_dir;
+  let artifact_dir = Project_store.artifact_dir ~project_name ~patch_id in
+  Project_store.ensure_dir artifact_dir;
   let context_path = Stdlib.Filename.concat session_dir "pi-context.json" in
   let context =
     `Assoc
@@ -36,8 +38,7 @@ let run_streaming ~model ~effort ~process_mgr ~clock ~timeout ~setsid_exec
         ("session_uuid", `String session_uuid);
         ("prompt", `String prompt);
         ("artifacts_root", `String (Project_store.artifacts_root project_name));
-        ( "artifact_dir",
-          `String (Project_store.artifact_dir ~project_name ~patch_id) );
+        ("artifact_dir", `String artifact_dir);
         ( "gameplan_path",
           `String (Project_store.gameplan_artifact_path project_name) );
       ]
@@ -50,7 +51,10 @@ let run_streaming ~model ~effort ~process_mgr ~clock ~timeout ~setsid_exec
   | Error message -> failwith ("Pi context: " ^ message));
   let extension_path =
     match Stdlib.Sys.getenv_opt "ONTON_PI_EXTENSION" with
-    | Some path when not (String.is_empty path) -> path
+    | Some path when not (String.is_empty path) ->
+        if Stdlib.Filename.is_relative path then
+          failwith "ONTON_PI_EXTENSION must be an absolute entrypoint";
+        path
     | _ ->
         let directory = Stdlib.Filename.concat session_dir "pi-onton" in
         Project_store.ensure_dir directory;

@@ -47,6 +47,24 @@ let () =
                       ~clock:(Eio.Stdenv.clock env) ~timeout:10.
                       ~setsid_exec:None
                   in
+                  with_env "ONTON_PI_EXTENSION" "relative/index.ts" (fun () ->
+                      let rejected =
+                        try
+                          ignore
+                            (backend.run_streaming ~project_name:"Pi context"
+                               ~cwd:(Eio.Stdenv.cwd env)
+                               ~patch_id:
+                                 (Types.Patch_id.of_string "invalid-patch")
+                               ~prompt:"Invalid override" ~resume_session:None
+                               ~session_uuid:"invalid" ~complexity:None
+                               ~on_event:(fun _ -> ()));
+                          false
+                        with Failure message ->
+                          String.equal message
+                            "ONTON_PI_EXTENSION must be an absolute entrypoint"
+                      in
+                      assert rejected;
+                      assert (not (Sys.file_exists argv)));
                   List.iter
                     (fun (session_uuid, resume_session, prompt) ->
                       if String.equal session_uuid "bundled" then
@@ -71,6 +89,14 @@ let () =
                       assert (field "session_uuid" = session_uuid);
                       assert (field "patch_id" = "patch-1");
                       assert (field "project" = "Pi context");
+                      assert (Sys.is_directory (field "artifact_dir"));
+                      (* A fresh session can immediately save either response. *)
+                      write
+                        (Filename.concat (field "artifact_dir") "pr-body.md")
+                        "Notes";
+                      write
+                        (Filename.concat (field "artifact_dir") "WONTDO.md")
+                        "Reason";
                       assert (
                         Yojson.Safe.Util.(json |> member "version" |> to_int)
                         = 1);
@@ -85,6 +111,17 @@ let () =
                         String.starts_with
                           ~prefix:("-p\n" ^ prompt ^ "\n--mode\njson\n")
                           args);
+                      let arguments = String.split_on_char '\n' args in
+                      (match resume_session with
+                      | None -> assert (not (List.mem "--session" arguments))
+                      | Some session ->
+                          let rec has_session = function
+                            | "--session" :: value :: _ ->
+                                String.equal value session
+                            | _ :: rest -> has_session rest
+                            | [] -> false
+                          in
+                          assert (has_session arguments));
                       if String.equal session_uuid "bundled" then (
                         let directory =
                           Filename.concat (Filename.dirname path) "pi-onton"

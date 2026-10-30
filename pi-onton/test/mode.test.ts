@@ -44,3 +44,51 @@ test("artifact writes are complete, isolated and readable by the supervisor", as
     assert.equal(await readFile(join(root, "secret"), "utf8"), "secret");
   } finally { await rm(root, { recursive: true, force: true }); }
 });
+
+test("delivery paths stay inside the normalized artifact root", () => {
+  for (const key of ["artifact_dir", "gameplan_path"]) {
+    for (const path of ["/tmp/elsewhere", "/tmp/artifacts/../secret", "/tmp/artifacts-other/file"]) {
+      assert.throws(() => decodeDelivery({ ...envelope, [key]: path }));
+    }
+  }
+  assert.equal(decodeDelivery({ ...envelope, artifact_dir: "/tmp/artifacts/a/../b" }).artifact_dir, "/tmp/artifacts/b");
+});
+
+test("review responses require positive decimal IDs while findings keep slugs", () => {
+  for (const id of ["abc", "0", "-1", "1.5", "1e3", "01", "42\n", "42_suffix"]) {
+    assert.throws(() => responsePath("review_response", id));
+  }
+  assert.equal(responsePath("review_response", "4425138835"), "comment_responses/4425138835.md");
+  assert.equal(responsePath("finding_wontfix", "service_finding-7.md"), "findings_wontfix/service_finding-7.md");
+});
+
+test("UTF-8 chunk iteration preserves text and byte offsets even with tiny limits", async () => {
+  const root = await mkdtemp(join(tmpdir(), "pi-onton-utf8-"));
+  try {
+    const path = join(root, "text");
+    for (const text of ["", "plain", "é漢😀tail", "aé漢😀z", "\uFEFFé😀"]) {
+      await writeFile(path, text);
+      for (let limit = 1; limit <= 12; limit++) {
+        let offset = 0;
+        let combined = "";
+        for (;;) {
+          const chunk = await readChunk(path, offset, limit);
+          combined += chunk.text;
+          assert.equal(chunk.next_offset, offset + Buffer.byteLength(chunk.text));
+          assert.ok(chunk.next_offset - offset <= limit + 3);
+          if (chunk.eof) {
+            assert.equal(chunk.next_offset, Buffer.byteLength(text));
+            break;
+          }
+          assert.ok(chunk.next_offset > offset);
+          offset = chunk.next_offset;
+        }
+        assert.equal(combined, text);
+      }
+    }
+    await writeFile(path, "😀");
+    await assert.rejects(readChunk(path, 1, 4), /offset splits/);
+    await writeFile(path, Buffer.from([0xff]));
+    await assert.rejects(readChunk(path, 0, 4));
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
