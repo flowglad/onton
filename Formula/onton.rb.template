@@ -16,6 +16,7 @@ class Onton < Formula
 
   def install
     bin.install "onton", "onton-coordinator", "onton-setsid-exec", "onton-worker"
+    (share/"onton").install "share/onton/pi-onton"
     # Rewrite CI's hardcoded libgmp path to this machine's Homebrew prefix
     gmp_lib = (Formula["gmp"].opt_lib/"libgmp.10.dylib").to_s
     %w[onton onton-coordinator onton-worker].each do |name|
@@ -28,6 +29,9 @@ class Onton < Formula
   end
 
   test do
+    %w[index.ts protocol.ts files.ts].each do |name|
+      assert_predicate share/"onton/pi-onton"/name, :file?
+    end
     assert_match "onton", shell_output("#{bin}/onton --version 2>&1", 0)
     assert_predicate bin/"onton-coordinator", :executable?
     assert_predicate bin/"onton-setsid-exec", :executable?

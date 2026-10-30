@@ -35,11 +35,13 @@ let () =
        ^ Filename.quote argv
        ^ "\nprintf '%s\\n' '{\"type\":\"agent_end\",\"messages\":[]}'\n");
       Unix.chmod executable 0o700;
+      let entrypoint = Filename.concat root "custom.ts" in
+      write entrypoint "export default function () {}";
       with_env "PATH"
         (root ^ ":" ^ Sys.getenv "PATH")
         (fun () ->
           with_env "ONTON_DATA_DIR" (Filename.concat root "data") (fun () ->
-              with_env "ONTON_PI_EXTENSION" "/extension/index.ts" (fun () ->
+              with_env "ONTON_PI_EXTENSION" entrypoint (fun () ->
                   Eio_main.run @@ fun env ->
                   let backend =
                     Pi_backend.create ~model:None ~effort:None
@@ -67,8 +69,6 @@ let () =
                       assert (not (Sys.file_exists argv)));
                   List.iter
                     (fun (session_uuid, resume_session, prompt) ->
-                      if String.equal session_uuid "bundled" then
-                        Unix.unsetenv "ONTON_PI_EXTENSION";
                       let result =
                         backend.run_streaming ~project_name:"Pi context"
                           ~cwd:(Eio.Stdenv.cwd env)
@@ -122,32 +122,73 @@ let () =
                             | [] -> false
                           in
                           assert (has_session arguments));
-                      if String.equal session_uuid "bundled" then (
-                        let directory =
-                          Filename.concat (Filename.dirname path) "pi-onton"
-                        in
-                        let entrypoint = Filename.concat directory "index.ts" in
-                        assert (Sys.file_exists entrypoint);
-                        assert (
-                          Sys.file_exists
-                            (Filename.concat directory "protocol.ts"));
-                        assert (
-                          Sys.file_exists (Filename.concat directory "files.ts"));
-                        assert (
-                          String.ends_with
-                            ~suffix:("--extension\n" ^ entrypoint ^ "\n")
-                            args))
-                      else
-                        assert (
-                          String.ends_with
-                            ~suffix:"--extension\n/extension/index.ts\n" args))
+                      assert (
+                        String.ends_with
+                          ~suffix:
+                            ("--extension\n" ^ Unix.realpath entrypoint ^ "\n")
+                          args))
                     [
                       ("fresh", None, "Implement this patch");
                       ( "resumed",
                         Some "conversation",
                         "Human: answer this question" );
-                      ( "bundled",
-                        Some "conversation",
-                        "Fix CI with bundled mode" );
                     ]))));
   print_endline "Pi fresh/resumed delivery handoff: OK"
+
+let () =
+  let root = Filename.temp_dir "onton-pi-install-" "" in
+  Fun.protect
+    ~finally:(fun () -> ignore (Sys.command ("rm -rf " ^ Filename.quote root)))
+    (fun () ->
+      let install prefix ~flat =
+        let directory = if flat then prefix else Filename.concat prefix "bin" in
+        Project_store.ensure_dir directory;
+        let executable = Filename.concat directory "onton" in
+        write executable "#!/bin/sh\nexit 0\n";
+        Unix.chmod executable 0o700;
+        let assets = Filename.concat prefix "share/onton/pi-onton" in
+        Project_store.ensure_dir assets;
+        List.iter
+          (fun name -> write (Filename.concat assets name) "extension source")
+          [ "index.ts"; "protocol.ts"; "files.ts" ];
+        (executable, Filename.concat assets "index.ts")
+      in
+      let check executable expected =
+        assert (Pi_backend.extension_path ~executable = Unix.realpath expected)
+      in
+      with_env "ONTON_PI_EXTENSION" "" (fun () ->
+          let executable, entrypoint =
+            install (Filename.concat root "keg") ~flat:false
+          in
+          check executable entrypoint;
+          let linked_bin = Filename.concat root "linked-bin" in
+          Project_store.ensure_dir linked_bin;
+          let symlink = Filename.concat linked_bin "onton" in
+          Unix.symlink executable symlink;
+          check symlink entrypoint;
+          with_env "PATH" linked_bin (fun () -> check "onton" entrypoint);
+          let flat, flat_entrypoint =
+            install (Filename.concat root "archive") ~flat:true
+          in
+          check flat flat_entrypoint;
+          let support =
+            Filename.concat (Filename.dirname entrypoint) "protocol.ts"
+          in
+          Unix.unlink support;
+          (match Pi_backend.extension_path ~executable with
+          | _ -> failwith "Incomplete installation unexpectedly accepted"
+          | exception Failure message ->
+              assert (
+                String.starts_with ~prefix:"Pi extension is missing" message));
+          let custom = Filename.concat root "custom.ts" in
+          write custom "export default function () {}";
+          with_env "ONTON_PI_EXTENSION" custom (fun () ->
+              check "/missing/executable" custom);
+          with_env "ONTON_PI_EXTENSION" (Filename.concat root "missing.ts")
+            (fun () ->
+              match Pi_backend.extension_path ~executable with
+              | _ -> failwith "Missing override unexpectedly accepted"
+              | exception Failure message ->
+                  assert (
+                    String.starts_with ~prefix:"Pi extension not found" message))));
+  print_endline "Pi installed extension discovery: OK"

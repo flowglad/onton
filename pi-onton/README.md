@@ -2,12 +2,15 @@
 
 Pi agent mode for coding sessions supervised by Onton. Requires Pi 1.2+.
 
-Onton bundles this extension and automatically loads it on every `--backend pi`
-execution, including resumed sessions. No separate installation of the extension
-or npm setup is needed; the Pi CLI must still be installed and available on `PATH`. The extension activates only when Onton supplies `ONTON_PI_CONTEXT`;
+Onton's installer places this extension in `share/onton/pi-onton` under its
+installation prefix. The backend automatically loads that installed copy on every
+`--backend pi` execution, including resumed sessions. No global Pi extension
+installation or npm setup is needed. The Pi CLI itself must still be installed
+and available on `PATH`. The extension activates only when Onton supplies
+`ONTON_PI_CONTEXT`;
 ordinary Pi sessions are unaffected.
 
-For development, override the bundled entrypoint:
+For source-checkout development, set the extension entrypoint:
 
 ```sh
 cd /path/to/onton/pi-onton
@@ -67,8 +70,14 @@ completion authority. Follow each prompt's Git instructions; Onton owns session
 validation, reconciliation, publication, and forge updates. Feedback is delivered
 on supervisor turns, not through an additional polling loop.
 
-Dune embeds the TypeScript sources in the Onton binary. The backend materializes
-them under each execution’s session directory and passes `--extension` to Pi.
+The release archive includes the three TypeScript files as separate assets.
+Homebrew installs them under its formula prefix at `share/onton/pi-onton`;
+`dune install` uses the same layout. The backend follows executable symlinks to
+locate the matching installation rather than a globally selected extension copy. Flat archive extraction also works when `share/` is kept beside
+the executables. Copying only the binary requires setting `ONTON_PI_EXTENSION` to
+an installed extension entrypoint. Missing or incomplete assets produce an
+installation error before Pi is started.
+
 The sources use only Node built-ins and TypeBox supplied by Pi’s extension loader.
 
 The backend writes a version-1 `pi-context.json` into the execution's session

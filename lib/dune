@@ -16,11 +16,3 @@
                   ppx_sexp_conv ppx_compare ppx_hash
                   ppx_yojson_conv
                   ppx_expect ppx_inline_test ppx_assert)))
-
-; Ship the supervised Pi mode inside every binary, including standalone releases.
-; Dune tracks the TypeScript sources so editing the extension rebuilds the bundle.
-(rule
- (target pi_extension_assets.ml)
- (action
-  (write-file %{target}
-   "(* @archlint.module shell\n   @archlint.domain pi-event-parser *)\n\nlet files = [\n  (\"index.ts\", {onton_pi|%{read:../pi-onton/src/index.ts}|onton_pi});\n  (\"protocol.ts\", {onton_pi|%{read:../pi-onton/src/protocol.ts}|onton_pi});\n  (\"files.ts\", {onton_pi|%{read:../pi-onton/src/files.ts}|onton_pi});\n]\n")))

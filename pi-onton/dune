@@ -1,0 +1,7 @@
+(install
+ (section share)
+ (package onton)
+ (files
+  (src/index.ts as pi-onton/index.ts)
+  (src/protocol.ts as pi-onton/protocol.ts)
+  (src/files.ts as pi-onton/files.ts)))

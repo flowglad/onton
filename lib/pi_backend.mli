@@ -17,9 +17,10 @@ val create :
     {!Claude_backend.create} for [setsid_exec] semantics.
 
     Every execution writes a versioned delivery envelope and exports its path as
-    [ONTON_PI_CONTEXT] for the bundled pi-onton extension, which is loaded
-    automatically. Set [ONTON_PI_EXTENSION] to an absolute entrypoint path to
-    override the bundled extension during development. *)
+    [ONTON_PI_CONTEXT] for the installed pi-onton extension, which is loaded
+    automatically from [share/onton/pi-onton] relative to the resolved
+    executable. [ONTON_PI_EXTENSION] overrides the installed entrypoint for
+    development. *)
 
 val parse_event : string -> Types.Stream_event.t list
 (** Parse a single NDJSON line from Pi's JSON output. Exposed for testing. *)
@@ -27,3 +28,9 @@ val parse_event : string -> Types.Stream_event.t list
 val auto_model : complexity:int option -> string option
 (** Pi's complexity → model ladder used to resolve [--model auto]. Exposed so
     the TUI can display the concrete model name a patch will run under. *)
+
+val extension_path : executable:string -> string
+(** Locate the installed extension for an executable, following symlinks.
+    Supports prefix/bin and flat release archive layouts; a configured override
+    takes precedence. Missing/incomplete installations fail with an actionable
+    error before starting Pi. *)

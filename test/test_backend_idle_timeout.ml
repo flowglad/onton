@@ -208,6 +208,9 @@ let () =
       let path =
         root ^ ":" ^ Option.value (Stdlib.Sys.getenv_opt "PATH") ~default:""
       in
+      let extension = Stdlib.Filename.concat root "pi-extension.ts" in
+      write_executable extension "export default function () {}";
+      with_env "ONTON_PI_EXTENSION" extension @@ fun () ->
       with_env "PATH" path @@ fun () ->
       with_env "ONTON_DATA_DIR" (Stdlib.Filename.concat root "data")
       @@ fun () ->

@@ -5,8 +5,8 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { loadExtensions } from "../node_modules/@earendil-works/pi-coding-agent/dist/core/extensions/loader.js";
 
-test("Pi loads the bundled sources outside the checkout without node_modules", async () => {
-  const directory = await mkdtemp(join(tmpdir(), "onton-bundled-extension-"));
+test("Pi loads installed extension files without node_modules", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "onton-installed-extension-"));
   const previous = process.env.ONTON_PI_CONTEXT;
   process.env.ONTON_PI_CONTEXT = join(directory, "context.json");
   try {
