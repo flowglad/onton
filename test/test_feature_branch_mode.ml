@@ -884,11 +884,31 @@ let () =
         | Branch_reconcile_runner.Idle | Waiting | Repair_needed _
         | Intervention _ ->
             false);
-      let waiting =
+      let waiting, retry_queued =
         Runtime.read runtime (fun snapshot -> snapshot.Runtime.orchestrator)
         |> fun o ->
         Orchestrator.prepare_rebase_after_checkpoint_failure o (id 2)
       in
+      check "WONTDO retry requests checkpoint backoff" retry_queued;
+      let mainline_in_flight =
+        ready_root (fresh ()) |> fun o ->
+        Orchestrator.enqueue o (id 1) Operation_kind.Rebase |> fun o ->
+        Orchestrator.fire o (Orchestrator.Rebase (id 1, main))
+      in
+      let mainline, mainline_retry =
+        Orchestrator.prepare_rebase_after_checkpoint_failure mainline_in_flight
+          (id 1)
+      in
+      check "ordinary rebase checkpoint failure skips WONTDO backoff"
+        ((not mainline_retry)
+        && not
+             (List.mem (Orchestrator.agent mainline (id 1)).Patch_agent.queue
+                Operation_kind.Rebase ~equal:Operation_kind.equal));
+      let mainline =
+        Orchestrator.complete_rebase_after_checkpoint_failure mainline (id 1)
+      in
+      check "ordinary rebase completes without waiting for WONTDO retry"
+        (not (Orchestrator.agent mainline (id 1)).Patch_agent.busy);
       let waiting_leaf = Orchestrator.agent waiting (id 2) in
       check "checkpoint backoff retains busy ownership and queues retry"
         (waiting_leaf.Patch_agent.busy
@@ -978,11 +998,19 @@ let () =
         (match pending_outcome with
         | Checkpoint_failed _ -> true
         | Idle | Waiting | Repair_needed _ | Intervention _ -> false);
-      let pending =
+      let pending_before_completion =
         Runtime.read pending_runtime (fun snapshot ->
             snapshot.Runtime.orchestrator)
-        |> fun o ->
-        Orchestrator.complete_rebase_after_checkpoint_failure o (id 2)
+      in
+      let _, pending_retry =
+        Orchestrator.prepare_rebase_after_checkpoint_failure
+          pending_before_completion (id 2)
+      in
+      check "retained reconciliation does not request WONTDO rebase backoff"
+        (not pending_retry);
+      let pending =
+        Orchestrator.complete_rebase_after_checkpoint_failure
+          pending_before_completion (id 2)
       in
       let pending_leaf = Orchestrator.agent pending (id 2) in
       check "checkpointed reconciliation resumes without a duplicate rebase"

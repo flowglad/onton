@@ -342,18 +342,21 @@ let complete t patch_id =
           })
 
 let prepare_rebase_after_checkpoint_failure t patch_id =
-  update_agent t patch_id ~f:(fun a ->
-      if
-        Option.is_some a.Patch_agent.wontdo_integration_head
-        && Option.is_none a.wontdo_reason
-        && Option.value_map a.current_op ~default:false
-             ~f:(Operation_kind.equal Operation_kind.Rebase)
-        && not (Branch_reconcile.is_unsettled a.branch_reconcile)
-      then Patch_agent.enqueue a Operation_kind.Rebase
-      else a)
+  match find_agent t patch_id with
+  | Some a
+    when Option.is_some a.Patch_agent.wontdo_integration_head
+         && Option.is_none a.wontdo_reason
+         && Option.value_map a.current_op ~default:false
+              ~f:(Operation_kind.equal Operation_kind.Rebase)
+         && not (Branch_reconcile.is_unsettled a.branch_reconcile) ->
+      ( update_agent t patch_id ~f:(fun a ->
+            Patch_agent.enqueue a Operation_kind.Rebase),
+        true )
+  | Some _ | None -> (t, false)
 
 let complete_rebase_after_checkpoint_failure t patch_id =
-  complete (prepare_rebase_after_checkpoint_failure t patch_id) patch_id
+  let t, _ = prepare_rebase_after_checkpoint_failure t patch_id in
+  complete t patch_id
 
 let enqueue t patch_id kind =
   update_agent t patch_id ~f:(fun a -> Patch_agent.enqueue a kind)
