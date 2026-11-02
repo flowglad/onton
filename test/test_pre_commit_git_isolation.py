@@ -8,9 +8,14 @@ import tempfile
 
 
 def run(args, **kwargs):
-    return subprocess.run(args, check=True, stdin=subprocess.DEVNULL,
-                          stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                          text=True, timeout=20, **kwargs)
+    result = subprocess.run(args, stdin=subprocess.DEVNULL,
+                            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                            text=True, timeout=20, **kwargs)
+    if result.returncode != 0:
+        raise AssertionError(
+            f"Command {args!r} failed with exit status {result.returncode}\n"
+            f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}")
+    return result
 
 
 def main(installer):
