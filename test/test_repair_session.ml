@@ -499,8 +499,7 @@ let () =
 
 let () =
   let root = Filename.temp_dir "repair-session-test" "" in
-  check "fixture repository initializes"
-    (Sys.command ("git init -q " ^ Filename.quote root) = 0);
+  Onton_test_support.Git_env.init_repo root;
   let previous = Sys.getenv_opt "ONTON_DATA_DIR" in
   Unix.putenv "ONTON_DATA_DIR" root;
   Fun.protect
