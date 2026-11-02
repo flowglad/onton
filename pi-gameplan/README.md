@@ -188,6 +188,10 @@ defense in depth.
 
 The footer shows `gameplan · N decisions [· M unresolved] [· finalized]`.
 
+If a run uses a gameplan tool and ends before finalization, the extension asks Pi for up to
+two more turns to finish the plan. It stops when a decision is unresolved or finalization
+needs an engineer response. A new user prompt resets this continuation allowance.
+
 Decisions are stored in the session file as custom entries and rebuilt from the active branch
 on resume, so `/fork` or `/tree` to explore a different architecture does not inherit answers
 given on the abandoned branch.

@@ -139,6 +139,33 @@ test("a finalized plan can be followed by an independent draft in the same sessi
   });
 });
 
+test("unfinished gameplan work gets bounded settle continuations", async () => {
+  await fixture(async ({ emit, restore, path }) => {
+    const settle = () => emit("agent_before_settle", { entries: [], outcome: "completed" }) as Promise<{ continue?: boolean; entries?: { content: string }[] } | undefined>;
+    await emit("before_agent_start", { messageType: "user" });
+    assert.equal(await settle(), undefined);
+    await emit("tool_call", { toolName: "gameplan_check", input: {} });
+    const first = await settle();
+    assert.equal(first?.continue, true);
+    assert.match(first?.entries?.[0]?.content ?? "", /gameplan_finalize/);
+    assert.equal((await settle())?.continue, true);
+    assert.equal(await settle(), undefined);
+    await emit("before_agent_start", { messageType: "user" });
+    assert.equal(await settle(), undefined);
+    await emit("tool_call", { toolName: "gameplan_check", input: {} });
+    assert.equal((await settle())?.continue, true);
+    await restore({ enabled: true, gameplanDir: "gameplans", gameplanPath: path, decisions: [{
+      id: "AD-1", topic: "choice", question: "Which?", choice: "A", alternatives: [], kind: "unresolved",
+      evidence: "", recordedAt: new Date().toISOString(),
+    }] });
+    assert.equal(await settle(), undefined);
+    await restore({ enabled: true, gameplanDir: "gameplans", gameplanPath: path, decisions: [] });
+    await emit("before_agent_start", { messageType: "user" });
+    await emit("tool_call", { toolName: "gameplan_finalize", input: {} });
+    assert.equal(await settle(), undefined);
+  });
+});
+
 test("loading and rewriting an unresolved decision preserves its discussion reason", async () => {
   await fixture(async ({ call, path }) => {
     const doc = parse(await readFile(path, "utf8"));

@@ -75,6 +75,9 @@ export default function gameplan(pi: ExtensionAPI) {
   const skill = resolveSkillPaths();
   const python = pythonCommand();
   let state: GameplanState = initialState;
+  let gameplanWorkThisRun = false;
+  let finalizationNeedsEngineer = false;
+  let settleContinuations = 0;
   let requirements: SkillRequirements = noRequirements;
   try {
     requirements = parseSkillRequirements(readFileSync(skill.skillMd, "utf8"));
@@ -316,6 +319,8 @@ export default function gameplan(pi: ExtensionAPI) {
   // the agent from editing the workstream or anything else. A hand edit of a gameplan document
   // just becomes the remembered gameplan file.
   pi.on("tool_call", async (event, ctx) => {
+    if (state.enabled && OUR_TOOLS.includes(event.toolName)) gameplanWorkThisRun = true;
+    if (state.enabled && event.toolName === "gameplan_finalize") finalizationNeedsEngineer = true;
     if (!state.enabled || !WRITE_TOOLS.has(event.toolName)) return;
     const target = String((event.input as { path?: unknown }).path ?? "");
     if (isGameplanWrite(ctx.cwd, state.gameplanDir, target)) {
@@ -330,6 +335,9 @@ export default function gameplan(pi: ExtensionAPI) {
   pi.on("before_agent_start", async (event, ctx) => {
     await refreshFinalized(ctx);
     if (!state.enabled || event.messageType !== "user") return;
+    gameplanWorkThisRun = false;
+    finalizationNeedsEngineer = false;
+    settleContinuations = 0;
     const ledger =
       state.decisions.length === 0
         ? "none yet"
@@ -382,6 +390,23 @@ ${toolNote}
 Decisions recorded so far:
 ${ledger}`,
       },
+    };
+  });
+
+  pi.on("agent_before_settle", async (event, ctx) => {
+    await refreshFinalized(ctx);
+    if (!state.enabled || state.finalizedPath || !gameplanWorkThisRun || finalizationNeedsEngineer
+      || settleContinuations >= 2 || event.outcome !== "completed"
+      || state.decisions.some((decision) => decision.kind === "unresolved")) return;
+    settleContinuations++;
+    return {
+      entries: [...event.entries, {
+        type: "custom_message" as const,
+        customType: "gameplan-continue",
+        content: `The active gameplan is not finalized. Continue working on ${state.gameplanPath ?? "the gameplan"}: finish its remaining sections and specs, run gameplan_check, fix any errors, and call gameplan_finalize when ready. If you need an engineer answer or cannot proceed, explain the specific blocker instead of repeating work.`,
+        display: false,
+      }],
+      continue: true,
     };
   });
 
