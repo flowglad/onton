@@ -1385,6 +1385,44 @@ let acknowledge_human_start_reply t patch_id =
       in
       a)
 
+let release_wontdo_descendants_after_publication t patch_id =
+  if
+    (not (is_integration_root t patch_id))
+    || Option.is_some (agent t patch_id).Patch_agent.wontdo_reason
+  then t
+  else
+    let root_head = integration_revision (agent t patch_id) in
+    Map.fold t.agents ~init:t ~f:(fun ~key:leaf_id ~data:leaf t ->
+        if
+          (not (Execution_mode.is_descendant t.execution_mode leaf_id))
+          || Option.is_none leaf.wontdo_reason
+          || Option.equal String.equal leaf.wontdo_integration_head root_head
+          || Option.is_none root_head
+        then t
+        else
+          let message =
+            "The integration branch has advanced after your WONTDO. Revisit \
+             the blocker and implement the patch if it is now safe. If the \
+             blocker remains, explain it in WONTDO.md."
+          in
+          if
+            Patch_agent.is_pr_present leaf
+            || Patch_agent.branch_published leaf
+            || Option.is_some leaf.worktree_path
+          then
+            let t =
+              update_agent t leaf_id ~f:Patch_agent.reset_intervention_state
+            in
+            let t = refresh_base_branch t leaf_id in
+            let t =
+              update_agent t leaf_id ~f:(fun a ->
+                  a |> fun a ->
+                  Patch_agent.add_human_message a message |> fun a ->
+                  Patch_agent.set_wontdo_integration_head a root_head)
+            in
+            enqueue t leaf_id Operation_kind.Rebase
+          else send_human_message t leaf_id message)
+
 let apply_session_result t patch_id result =
   match result with
   | Session_ok ->
@@ -1397,43 +1435,7 @@ let apply_session_result t patch_id result =
       let t =
         update_agent t patch_id ~f:Patch_agent.reset_context_exhaustion_count
       in
-      if
-        (not (is_integration_root t patch_id))
-        || Option.is_some (agent t patch_id).Patch_agent.wontdo_reason
-      then t
-      else
-        let root_head = integration_revision (agent t patch_id) in
-        Map.fold t.agents ~init:t ~f:(fun ~key:leaf_id ~data:leaf t ->
-            if
-              (not (Execution_mode.is_descendant t.execution_mode leaf_id))
-              || Option.is_none leaf.wontdo_reason
-              || Option.equal String.equal leaf.wontdo_integration_head
-                   root_head
-              || Option.is_none root_head
-            then t
-            else
-              let message =
-                "The integration branch has advanced after your WONTDO. \
-                 Revisit the blocker and implement the patch if it is now \
-                 safe. If the blocker remains, explain it in WONTDO.md."
-              in
-              if
-                Patch_agent.is_pr_present leaf
-                || Patch_agent.branch_published leaf
-                || Option.is_some leaf.worktree_path
-              then
-                let t =
-                  update_agent t leaf_id ~f:Patch_agent.reset_intervention_state
-                in
-                let t = refresh_base_branch t leaf_id in
-                let t =
-                  update_agent t leaf_id ~f:(fun a ->
-                      a |> fun a ->
-                      Patch_agent.add_human_message a message |> fun a ->
-                      Patch_agent.set_wontdo_integration_head a root_head)
-                in
-                enqueue t leaf_id Operation_kind.Rebase
-              else send_human_message t leaf_id message)
+      release_wontdo_descendants_after_publication t patch_id
   | Session_process_error { is_fresh; _ } ->
       let t = on_session_failure t patch_id ~is_fresh in
       let t = update_agent t patch_id ~f:Patch_agent.on_pre_session_failure in
@@ -1735,6 +1737,17 @@ let reconcile_branch t patch_id event =
             | Branch_reconcile.Verify_publication ->
                 t)
         | Some _ | None -> t
+      in
+      let t =
+        if
+          is_integration_root t patch_id
+          && not
+               (Option.equal Branch_reconcile.equal_publication_receipt
+                  prior_publication
+                  (List.hd
+                     (Branch_reconcile.publications agent.branch_reconcile)))
+        then release_wontdo_descendants_after_publication t patch_id
+        else t
       in
       let t = release_wontdo_retry_after_rebase t patch_id in
       (t, commands)

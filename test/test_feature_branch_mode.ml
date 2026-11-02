@@ -739,7 +739,7 @@ let () =
         else orch
       in
       let orch =
-        reply orch (B.Remote { sha = Some candidate; topology = Equal })
+        reply orch (B.Remote { sha = Some candidate; topology = B.Equal })
       in
       let child = Orchestrator.agent orch (id 2) in
       check "confirmation completes only the captured descendant revision"
@@ -783,6 +783,34 @@ let () =
   check "unchanged integration branch leaves WONTDO paused"
     (Option.is_some
        (Orchestrator.agent unchanged (id 2)).Patch_agent.wontdo_reason);
+  let module F = Onton_core_test_support.Publication_fixture in
+  let module B = Branch_reconcile in
+  let candidate = F.sha "delayed-root-publication" in
+  let step o event = fst (Orchestrator.reconcile_branch o (id 1) event) in
+  let state o = (Orchestrator.agent o (id 1)).Patch_agent.branch_reconcile in
+  let pending = F.publishing ~candidate ~step ~state unchanged in
+  check "pending root publication leaves WONTDO paused"
+    (Option.is_some
+       (Orchestrator.agent pending (id 2)).Patch_agent.wontdo_reason);
+  let acknowledged = F.reply ~step ~state pending B.Published in
+  check "push acknowledgement leaves WONTDO paused"
+    (Option.is_some
+       (Orchestrator.agent acknowledged (id 2)).Patch_agent.wontdo_reason);
+  let confirmed =
+    F.reply ~step ~state acknowledged
+      (B.Remote
+         {
+           sha = Some (Option.value_exn (B.Commit.make candidate));
+           topology = B.Equal;
+         })
+  in
+  let delayed_leaf = Orchestrator.agent confirmed (id 2) in
+  check "delayed root publication schedules rebase before WONTDO retry"
+    (Option.is_none delayed_leaf.Patch_agent.wontdo_reason
+    && Option.value_map
+         (Patch_agent.highest_priority delayed_leaf)
+         ~default:false
+         ~f:(Operation_kind.equal Operation_kind.Rebase));
   let advanced =
     Reconciliation.rebase unchanged (id 1) main |> fun o ->
     Orchestrator.apply_session_result o (id 1) Orchestrator.Session_ok
