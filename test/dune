@@ -1188,7 +1188,7 @@
  (deps (package onton))
  (action (setenv ONTON_SETSID_EXEC %{bin:onton-setsid-exec} (run %{test})))
  (flags (:standard -w -40-42))
- (libraries onton onton_core onton_core_test_support eio_main unix))
+ (libraries onton onton_core onton_core_test_support eio_main unix qcheck-core))
 
 (rule
  (alias runtest)

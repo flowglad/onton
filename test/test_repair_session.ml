@@ -479,21 +479,23 @@ let[@warning "-4"] run env root ~existing mode =
     (!record_calls = 0)
 
 let () =
-  let artifact_path = "/tmp/integration-WONTDO.md" in
-  let file_prompt =
-    Session_prompt.render_integration_opt_out
-      ~response_transport:Session_prompt.File_artifacts ~artifact_path
-  in
-  let tool_prompt =
-    Session_prompt.render_integration_opt_out
-      ~response_transport:Session_prompt.Pi_tools ~artifact_path
-  in
-  check "integration refusal file prompt names its artifact"
-    (String.contains file_prompt '`'
-    && String.length file_prompt > String.length artifact_path
-    && Base.String.is_substring file_prompt ~substring:artifact_path);
-  check "integration refusal tool prompt names opt_out response"
-    (Base.String.is_substring tool_prompt ~substring:"onton_respond")
+  QCheck2.Test.check_exn
+    (QCheck2.Test.make
+       ~name:"integration refusal prompt preserves file and tool instructions"
+       ~count:100
+       QCheck2.Gen.(string_size (int_range 1 60))
+       (fun artifact_path ->
+         let file_prompt =
+           Session_prompt.render_integration_opt_out
+             ~response_transport:Session_prompt.File_artifacts ~artifact_path
+         in
+         let tool_prompt =
+           Session_prompt.render_integration_opt_out
+             ~response_transport:Session_prompt.Pi_tools ~artifact_path
+         in
+         Base.String.is_substring file_prompt ~substring:artifact_path
+         && Base.String.is_substring tool_prompt ~substring:"onton_respond"
+         && Base.String.is_substring tool_prompt ~substring:"opt_out"))
 
 let () =
   let root = Filename.temp_dir "repair-session-test" "" in
