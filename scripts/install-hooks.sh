@@ -88,6 +88,14 @@ set -e
 # user's default switch happens to be. git-common-dir resolves to the main
 # repo's .git from any worktree; its parent is the project root that holds _opam.
 PROJECT_ROOT="$(dirname "$(git rev-parse --path-format=absolute --git-common-dir)")"
+
+# Hook Git variables describe the committing repository. Build/test subprocesses
+# operate on their own repositories; inheriting these can make a fixture's
+# `git init --bare` reinitialize this checkout instead.
+for name in $(git rev-parse --local-env-vars); do
+  unset "$name"
+done
+
 eval "$(opam env --switch="$PROJECT_ROOT" --set-switch)"
 
 echo "==> dune build"

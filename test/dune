@@ -1188,7 +1188,7 @@
  (deps (package onton))
  (action (setenv ONTON_SETSID_EXEC %{bin:onton-setsid-exec} (run %{test})))
  (flags (:standard -w -40-42))
- (libraries onton onton_core onton_core_test_support eio_main unix qcheck-core))
+ (libraries onton onton_core onton_core_test_support onton_test_support eio_main unix qcheck-core))
 
 (rule
  (alias runtest)
@@ -1473,3 +1473,9 @@
  (deps (package onton))
  (action (setenv ONTON_SETSID_EXEC %{bin:onton-setsid-exec} (run %{test})))
  (libraries onton onton_core eio_main unix yojson))
+
+(rule
+ (alias runtest)
+ (deps test_pre_commit_git_isolation.py ../scripts/install-hooks.sh)
+ (action
+  (run python3 %{dep:test_pre_commit_git_isolation.py} %{dep:../scripts/install-hooks.sh})))

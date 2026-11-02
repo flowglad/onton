@@ -70,7 +70,9 @@ let () =
         |]
       in
       let pid =
-        Unix.create_process "python3" argv Unix.stdin Unix.stdout Unix.stderr
+        Unix.create_process_env "python3" argv
+          (Onton_test_support.Git_env.clean_env ())
+          Unix.stdin Unix.stdout Unix.stderr
       in
       match snd (Unix.waitpid [] pid) with
       | Unix.WEXITED 0 -> ()
