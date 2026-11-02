@@ -442,7 +442,10 @@ let run_case ?(adopted = false) ?(cancel = false) ?(push_failure = false)
         Onton_core.Patch_decision.equal_delivery_mode delivery_mode Respond
         && Option.equal Operation_kind.equal kind (Some Human)
       in
-      if plain_human_followup then (
+      let integration_root_human_followup =
+        plain_human_followup && Poly.equal branch_role `Integration_root
+      in
+      if plain_human_followup && not integration_root_human_followup then (
         assert (String.equal delivered_prompt prompt);
         assert (Poly.equal result.disposition `Ok))
       else (
@@ -464,6 +467,7 @@ let run_case ?(adopted = false) ?(cancel = false) ?(push_failure = false)
                 (String.is_substring delivered_prompt
                    ~substring:"Feature branch construction:"))
         | None, `Mainline -> ()
+        | None, `Integration_root when integration_root_human_followup -> ()
         | None, `Integration_root ->
             assert (
               String.is_substring delivered_prompt
@@ -474,8 +478,9 @@ let run_case ?(adopted = false) ?(cancel = false) ?(push_failure = false)
                 ~substring:"Feature branch construction:"));
       let expect_wontdo_prompt =
         (not ad_hoc)
-        && Onton_core.Patch_decision.equal_delivery_mode delivery_mode Start
-        && Option.is_none resume_session
+        && (Onton_core.Patch_decision.equal_delivery_mode delivery_mode Start
+            && Option.is_none resume_session
+           || integration_root_human_followup)
       in
       assert (
         Bool.equal expect_wontdo_prompt
@@ -846,6 +851,14 @@ let () =
         ~commit:false ~expect_opt_out:false;
       run_case env ~advance_base:true ~content:"Opt out after base advancement"
         ~commit:false ~expect_opt_out:true;
+      run_case env ~branch_role:`Integration_root
+        ~delivery_mode:Onton_core.Patch_decision.Respond ~kind:(Some Human)
+        ~content:"Cannot safely cover the dependency on the integration branch"
+        ~commit:false ~expect_opt_out:true;
+      run_case env ~branch_role:`Integration_root
+        ~delivery_mode:Onton_core.Patch_decision.Respond ~kind:(Some Human)
+        ~content:"Cannot safely cover the dependency on the integration branch"
+        ~commit:true ~expect_opt_out:false;
       List.iter [ None; Some "existing-thread" ] ~f:(fun resume_session ->
           run_case env ~ad_hoc:true ?resume_session
             ~delivery_mode:Onton_core.Patch_decision.Respond ~kind:(Some Ci)

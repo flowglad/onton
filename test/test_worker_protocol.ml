@@ -275,7 +275,22 @@ let acknowledge host checkpoint =
           capsule_json
       in
       check "truncated capsule agent rejected"
-        (Result.is_error (Worker_checkpoint.decode truncated))
+        (Result.is_error (Worker_checkpoint.decode truncated));
+      let legacy =
+        replace_field "agent"
+          (`Assoc (List.remove_assoc "wontdo_integration_head" agent_fields))
+          capsule_json
+      in
+      let restored =
+        match Worker_checkpoint.decode legacy with
+        | Ok capsule -> Worker_checkpoint.encode capsule
+        | Error reason -> failwith ("legacy capsule rejected: " ^ reason)
+      in
+      check "legacy capsule defaults missing WONTDO head to null"
+        (match field "agent" restored with
+        | Some (`Assoc fields) ->
+            List.assoc_opt "wontdo_integration_head" fields = Some `Null
+        | _ -> false)
   | _ -> failwith "capsule missing agent");
   check "operation capsule needs positive version"
     (Result.is_error

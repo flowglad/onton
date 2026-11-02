@@ -91,6 +91,15 @@ val assigned_context :
 
 val complete : t -> Patch_id.t -> t
 
+val prepare_rebase_after_checkpoint_failure : t -> Patch_id.t -> t * bool
+(** Enqueue a WONTDO Rebase and return [true] when the retry marker is set, the
+    refusal is cleared, Rebase is the current operation, and branch
+    reconciliation is settled. Otherwise return the state unchanged and [false].
+*)
+
+val complete_rebase_after_checkpoint_failure : t -> Patch_id.t -> t
+(** Retain a WONTDO retry until failed initial reconciliation can be retried. *)
+
 val complete_start_after_pr_discovery : t -> Patch_id.t -> t
 (** Finish a Start after its supervisor-owned PR creation/discovery step. When a
     PR is present, completes normally and consumes any Human guidance carried by

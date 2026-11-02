@@ -24,6 +24,21 @@ let render_opt_out ~response_transport ~artifact_path =
      patch commit or PR exists."
     response
 
+let render_integration_opt_out ~response_transport ~artifact_path =
+  let response =
+    match response_transport with
+    | File_artifacts -> Printf.sprintf "write your reason to `%s`" artifact_path
+    | Pi_tools ->
+        "call `onton_respond` with `kind: \"opt_out\"` and your reason as \
+         `content`"
+  in
+  Printf.sprintf
+    "\n\n\
+     If the leaf's blocker cannot be safely resolved on the integration \
+     branch, %s and end your turn without committing. The supervisor will \
+     preserve your WONTDO and stop automatic work on the integration branch."
+    response
+
 type t = { context : string; turn : string }
 
 let create ~context ~turn = { context; turn }

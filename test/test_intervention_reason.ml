@@ -401,6 +401,19 @@ let () =
 let () =
   QCheck2.Test.check_exn
     (QCheck2.Test.make
+       ~name:
+         "captured WONTDO integration head does not itself request intervention"
+       ~count:100 QCheck2.Gen.string (fun head ->
+         let a =
+           Patch_agent.set_wontdo_integration_head (agent ()) (Some head)
+         in
+         Option.equal String.equal a.Patch_agent.wontdo_integration_head
+           (Some head)
+         && not (Patch_agent.needs_intervention a)))
+
+let () =
+  QCheck2.Test.check_exn
+    (QCheck2.Test.make
        ~name:"terminal reconciliation hold is independent of CI failures"
        ~count:200
        QCheck2.Gen.(triple bool bool (int_range 0 6))

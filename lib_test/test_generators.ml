@@ -530,6 +530,9 @@ let gen_patch_agent_fully_populated =
     let* ci_checks = list_small gen_ci_check in
     let* fallback = gen_session_fallback in
     let* wontdo_reason = option (string_size ~gen:printable (int_range 1 80)) in
+    let* wontdo_integration_head =
+      option (string_size ~gen:printable (int_range 1 80))
+    in
     let* pr_number = option gen_pr_number in
     let* merge_ready = bool in
     let* mergeability_unknown = bool in
@@ -584,6 +587,10 @@ let gen_patch_agent_fully_populated =
     let a =
       Option.value_map wontdo_reason ~default:a
         ~f:(Onton_core.Patch_agent.set_wontdo a)
+    in
+    let a =
+      Onton_core.Patch_agent.set_wontdo_integration_head a
+        wontdo_integration_head
     in
     return a)
 

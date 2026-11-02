@@ -479,6 +479,25 @@ let[@warning "-4"] run env root ~existing mode =
     (!record_calls = 0)
 
 let () =
+  QCheck2.Test.check_exn
+    (QCheck2.Test.make
+       ~name:"integration refusal prompt preserves file and tool instructions"
+       ~count:100
+       QCheck2.Gen.(string_size (int_range 1 60))
+       (fun artifact_path ->
+         let file_prompt =
+           Session_prompt.render_integration_opt_out
+             ~response_transport:Session_prompt.File_artifacts ~artifact_path
+         in
+         let tool_prompt =
+           Session_prompt.render_integration_opt_out
+             ~response_transport:Session_prompt.Pi_tools ~artifact_path
+         in
+         Base.String.is_substring file_prompt ~substring:artifact_path
+         && Base.String.is_substring tool_prompt ~substring:"onton_respond"
+         && Base.String.is_substring tool_prompt ~substring:"opt_out"))
+
+let () =
   let root = Filename.temp_dir "repair-session-test" "" in
   check "fixture repository initializes"
     (Sys.command ("git init -q " ^ Filename.quote root) = 0);

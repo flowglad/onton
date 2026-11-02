@@ -91,6 +91,31 @@ let () =
       (child_id, None);
     ]
     { view with Scheduler_decision.agents = [ rebasing; child_agent ] };
+  let retry =
+    Patch_agent.create ~branch:parent.Patch.branch parent.Patch.id |> fun a ->
+    Patch_agent.set_worktree_path a "/existing-leaf" |> fun a ->
+    Patch_agent.set_wontdo_integration_head a (Some "root-head")
+  in
+  let retry_view a =
+    { view with Scheduler_decision.agents = [ a; child_agent ] }
+  in
+  assert (
+    Option.is_none
+      (Scheduler_decision.for_patch (retry_view retry) parent.Patch.id));
+  let queued = Patch_agent.enqueue retry Operation_kind.Rebase in
+  assert (
+    Option.equal Poly.equal
+      (Scheduler_decision.for_patch (retry_view queued) parent.Patch.id)
+      (Some (Scheduler_decision.Rebase (parent.Patch.id, main))));
+  let failed_checkpoint =
+    Patch_agent.rebase queued ~base_branch:main |> Patch_agent.complete
+  in
+  assert (Option.is_some failed_checkpoint.Patch_agent.wontdo_integration_head);
+  assert (
+    Option.is_none
+      (Scheduler_decision.for_patch
+         (retry_view failed_checkpoint)
+         parent.Patch.id));
   let reconciling, _ =
     Patch_agent.reconcile_branch
       (Patch_agent.create ~branch:parent.Patch.branch parent.Patch.id)

@@ -189,6 +189,7 @@ let agent_fields =
     "max_ci_failures";
     "session_fallback";
     "wontdo_reason";
+    "wontdo_integration_head";
     "human_messages";
     "inflight_human_messages";
     "ci_checks";
@@ -231,6 +232,13 @@ let agent_fields =
     "automerge_failure_count";
     "delivered_ci_run_ids";
   ]
+
+let canonicalize_agent = function
+  | `Assoc fields as agent ->
+      if List.Assoc.mem fields "wontdo_integration_head" ~equal:String.equal
+      then agent
+      else `Assoc (("wontdo_integration_head", `Null) :: fields)
+  | agent -> agent
 
 let complete_agent = function
   | `Assoc _ as json -> Option.is_some (fields agent_fields json)
@@ -406,7 +414,7 @@ let decode json =
             Option.bind (get values "state_version") ~f:read_counter,
             operation,
             text values "guidance",
-            get values "agent",
+            Option.map (get values "agent") ~f:canonicalize_agent,
             terminal,
             optional_id values "attention_id",
             v3 )

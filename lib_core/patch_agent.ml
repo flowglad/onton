@@ -40,6 +40,7 @@ type t = {
   wontdo_reason : string option;
       (** A pre-commit opt-out explanation. Pauses automatic work until human
           guidance or an explicit intervention reset clears it. *)
+  wontdo_integration_head : string option;
   human_messages : string list;
   inflight_human_messages : string list;
   ci_checks : Ci_check.t list;
@@ -295,6 +296,7 @@ let create ~branch ?(max_ci_failures = default_max_ci_failures) patch_id =
     max_ci_failures;
     session_fallback = Fresh_available;
     wontdo_reason = None;
+    wontdo_integration_head = None;
     human_messages = [];
     inflight_human_messages = [];
     ci_checks = [];
@@ -360,6 +362,7 @@ let create_adhoc ~complexity ~patch_id ~branch ~pr_number ~max_ci_failures =
     max_ci_failures;
     session_fallback = Fresh_available;
     wontdo_reason = None;
+    wontdo_integration_head = None;
     human_messages = [];
     inflight_human_messages = [];
     ci_checks = [];
@@ -446,6 +449,9 @@ let set_wontdo t reason =
   match normalize_wontdo_reason (Some reason) with
   | None -> t
   | Some _ as wontdo_reason -> { t with wontdo_reason }
+
+let set_wontdo_integration_head t head =
+  { t with wontdo_integration_head = head }
 
 let set_session_failed t =
   match t.session_fallback with
@@ -794,6 +800,7 @@ let reset_intervention_state t =
     scheduler_repair = None;
     session_fallback = Fresh_available;
     wontdo_reason = None;
+    wontdo_integration_head = None;
     ci_failure_count = 0;
     start_attempts_without_pr = 0;
     no_commits_push_count = 0;
@@ -810,10 +817,11 @@ let restore ?(scheduler_recovery = Scheduler_recovery.empty)
     ?(complexity = None) ~has_session ~busy ~merged ~queue ~satisfies ~changed
     ~base_branch ~notified_base_branch ~ci_failure_count
     ?(max_ci_failures = default_max_ci_failures) ~session_fallback
-    ?(wontdo_reason = None) ~human_messages ~inflight_human_messages ~ci_checks
-    ~merge_ready ?(head_oid = None) ?(review_decision = None)
-    ?(unresolved_comment_count = 0) ~mergeability_unknown ~merge_queue_required
-    ~merge_queue_entry ?(merge_queue_ejection = None) ?(native_stack = false)
+    ?(wontdo_reason = None) ?(wontdo_integration_head = None) ~human_messages
+    ~inflight_human_messages ~ci_checks ~merge_ready ?(head_oid = None)
+    ?(review_decision = None) ?(unresolved_comment_count = 0)
+    ~mergeability_unknown ~merge_queue_required ~merge_queue_entry
+    ?(merge_queue_ejection = None) ?(native_stack = false)
     ?(native_stack_absent_polls = 0) ~merge_commit_sha
     ~base_contains_merged_siblings ~is_draft ~pr_body_delivered
     ?(pr_body_refresh_pending = false) ?(pr_body_refresh_version = 0)
@@ -856,6 +864,7 @@ let restore ?(scheduler_recovery = Scheduler_recovery.empty)
     max_ci_failures;
     session_fallback;
     wontdo_reason = normalize_wontdo_reason wontdo_reason;
+    wontdo_integration_head;
     human_messages;
     inflight_human_messages;
     ci_checks;
@@ -1029,8 +1038,12 @@ let start t ~base_branch =
   }
 
 let rebase t ~base_branch =
-  if not (is_pr_present t || branch_published t) then
-    invalid_arg "Patch_agent.rebase: patch has no PR (or PR is missing)";
+  if
+    not
+      (is_pr_present t || branch_published t
+      || Option.is_some t.wontdo_integration_head
+         && Option.is_some t.worktree_path)
+  then invalid_arg "Patch_agent.rebase: patch has no PR (or PR is missing)";
   if t.merged then invalid_arg "Patch_agent.rebase: patch is merged";
 
   if t.busy then invalid_arg "Patch_agent.rebase: patch is busy";

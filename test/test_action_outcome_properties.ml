@@ -2052,3 +2052,79 @@ let () =
         with _ -> false)
   in
   QCheck2.Test.check_exn property
+
+let () =
+  QCheck2.Test.check_exn
+    (QCheck2.Test.make ~count:200
+       ~name:"checkpoint recovery queues only unowned WONTDO rebases"
+       QCheck2.Gen.(pair bool bool)
+       (fun (wontdo_retry, retained_owner) ->
+         try
+           let patches = mk_patches 2 in
+           let root = pid_of_idx patches 0 in
+           let child = pid_of_idx patches 1 in
+           let child_base = (List.hd_exn patches).Patch.branch in
+           let orch = Orchestrator.create ~patches ~main_branch:main in
+           let orch =
+             Orchestrator.set_pr_number orch child (Pr_number.of_int 2)
+           in
+           let orch =
+             if wontdo_retry then
+               let mode =
+                 match Execution_mode.infer (Graph.of_patches patches) with
+                 | Ok mode -> mode
+                 | Error error -> failwith error
+               in
+               Orchestrator.set_execution_mode orch mode |> fun o ->
+               Orchestrator.set_head_oid o root (Some "previous-root")
+               |> fun o ->
+               Orchestrator.set_worktree_path o child "/existing-leaf"
+               |> fun o ->
+               Orchestrator.apply_session_result o child
+                 (Orchestrator.Session_wontdo "Needs integration changes")
+               |> fun o ->
+               Onton_test_support.Reconciliation_fixture.rebase o root main
+             else Orchestrator.enqueue orch child Operation_kind.Rebase
+           in
+           let orch =
+             Orchestrator.fire orch (Orchestrator.Rebase (child, child_base))
+           in
+           let orch =
+             if retained_owner then
+               fst
+                 (Orchestrator.reconcile_branch orch child
+                    (Branch_reconcile.Request
+                       Branch_reconcile.
+                         {
+                           base = Branch.to_string child_base;
+                           policy = Rewrite;
+                           purpose = Reconcile_base;
+                         }))
+             else orch
+           in
+           let prepared, retry_queued =
+             Orchestrator.prepare_rebase_after_checkpoint_failure orch child
+           in
+           let repeated, repeated_retry =
+             Orchestrator.prepare_rebase_after_checkpoint_failure prepared child
+           in
+           let waiting = Orchestrator.agent prepared child in
+           let completed =
+             Orchestrator.complete_rebase_after_checkpoint_failure prepared
+               child
+           in
+           let after = Orchestrator.agent completed child in
+           let expected_retry = wontdo_retry && not retained_owner in
+           Bool.equal retry_queued expected_retry
+           && Bool.equal repeated_retry expected_retry
+           && Patch_agent.equal waiting (Orchestrator.agent repeated child)
+           && waiting.Patch_agent.busy
+           && (not after.Patch_agent.busy)
+           && Bool.equal
+                (List.mem after.Patch_agent.queue Operation_kind.Rebase
+                   ~equal:Operation_kind.equal)
+                expected_retry
+           && Bool.equal
+                (Option.is_some after.Patch_agent.wontdo_integration_head)
+                wontdo_retry
+         with _ -> false))

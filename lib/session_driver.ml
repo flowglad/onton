@@ -636,14 +636,17 @@ struct
                 (try Unix.unlink wontdo_path
                  with Unix.Unix_error (Unix.ENOENT, _, _) -> ());
                 let allows_wontdo =
-                  let is_gameplan_patch =
+                  let is_gameplan_patch, is_integration_root =
                     Runtime.read runtime (fun snap ->
-                        List.exists snap.Runtime.gameplan.Types.Gameplan.patches
-                          ~f:(fun patch ->
-                            Types.Patch_id.equal patch.Types.Patch.id patch_id))
+                        ( List.exists
+                            snap.Runtime.gameplan.Types.Gameplan.patches
+                            ~f:(fun patch ->
+                              Types.Patch_id.equal patch.Types.Patch.id patch_id),
+                          Orchestrator.is_integration_root
+                            snap.Runtime.orchestrator patch_id ))
                   in
                   Patch_decision.session_allows_wontdo ~delivery_mode
-                    ~is_gameplan_patch
+                    ~is_gameplan_patch ~is_integration_root ~kind
                 in
                 let prompt =
                   let context =
@@ -689,9 +692,22 @@ struct
                       prompt ^ mode_instructions
                     else prompt
                   in
-                  if allows_wontdo && Option.is_none resume_session then
+                  if
+                    allows_wontdo
+                    && (Option.is_none resume_session
+                       || Patch_decision.equal_delivery_mode delivery_mode
+                            Respond)
+                  then
                     prompt
-                    ^ Session_prompt.render_opt_out
+                    ^
+                    if Patch_decision.equal_delivery_mode delivery_mode Respond
+                    then
+                      Session_prompt.render_integration_opt_out
+                        ~response_transport:
+                          (Session_prompt.response_transport ~backend_name)
+                        ~artifact_path:wontdo_path
+                    else
+                      Session_prompt.render_opt_out
                         ~response_transport:
                           (Session_prompt.response_transport ~backend_name)
                         ~artifact_path:wontdo_path
@@ -1372,10 +1388,19 @@ struct
                       | _ -> false
                     in
                     match
-                      Patch_decision.wontdo_message
-                        ~initial_head:pre_session_branch_sha ~final_head
-                        ~base_sha:initial_base_sha ~initial_head_in_base ~has_pr
-                        ~content:wontdo_content
+                      if
+                        allows_wontdo
+                        && Patch_decision.equal_delivery_mode delivery_mode
+                             Respond
+                      then
+                        Patch_decision.wontdo_message_for_integration_root
+                          ~initial_head:pre_session_branch_sha ~final_head
+                          ~content:wontdo_content
+                      else
+                        Patch_decision.wontdo_message
+                          ~initial_head:pre_session_branch_sha ~final_head
+                          ~base_sha:initial_base_sha ~initial_head_in_base
+                          ~has_pr ~content:wontdo_content
                     with
                     | Some message ->
                         log_event runtime ~patch_id
