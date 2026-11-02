@@ -139,6 +139,78 @@ test("a finalized plan can be followed by an independent draft in the same sessi
   });
 });
 
+test("unfinished gameplan work gets bounded settle continuations", async () => {
+  await fixture(async ({ emit, restore, path }) => {
+    const settle = (outcome: "completed" | "aborted" | "error" = "completed") => emit("agent_before_settle", { entries: [], outcome }) as Promise<{ continue?: boolean; entries?: { content: string }[] } | undefined>;
+    await emit("before_agent_start", { messageType: "user" });
+    assert.equal(await settle(), undefined);
+    for (const toolName of ["write", "edit", "bash"]) {
+      await emit("tool_call", { toolName, input: { path: "README.md", command: "pwd" } });
+      assert.equal(await settle(), undefined);
+    }
+    await emit("tool_call", { toolName: "gameplan_check", input: {} });
+    assert.equal(await settle("aborted"), undefined);
+    assert.equal(await settle("error"), undefined);
+    const first = await settle();
+    assert.equal(first?.continue, true);
+    assert.match(first?.entries?.[0]?.content ?? "", /gameplan_finalize/);
+    assert.equal((await settle())?.continue, true);
+    assert.equal(await settle(), undefined);
+    await emit("before_agent_start", { messageType: "user" });
+    assert.equal(await settle(), undefined);
+    await emit("tool_call", { toolName: "gameplan_check", input: {} });
+    assert.equal((await settle())?.continue, true);
+    await restore({ enabled: true, gameplanDir: "gameplans", gameplanPath: path, decisions: [{
+      id: "AD-1", topic: "choice", question: "Which?", choice: "A", alternatives: [], kind: "unresolved",
+      evidence: "", recordedAt: new Date().toISOString(),
+    }] });
+    assert.equal(await settle(), undefined);
+  });
+});
+
+test("successful finalization persists and stops settle continuations", async () => {
+  await fixture(async ({ call, emit, path, saved }) => {
+    await emit("before_agent_start", { messageType: "user" });
+    await emit("tool_call", { toolName: "gameplan_finalize", input: { path } });
+    await call("gameplan_finalize", { path });
+    const finalized = fromEntries([{ type: "custom", customType: "gameplan-mode", data: saved.at(-1) }]);
+    assert.equal(finalized.finalizedPath, path);
+    assert.equal(await emit("agent_before_settle", { entries: [], outcome: "completed" }), undefined);
+  });
+});
+
+test("declined finalization stops settle continuations for engineer input", async () => {
+  await fixture(async ({ call, emit, path, saved, onConfirm }) => {
+    let prompted = false;
+    onConfirm(async () => { prompted = true; return false; });
+    await emit("before_agent_start", { messageType: "user" });
+    await emit("tool_call", { toolName: "gameplan_finalize", input: { path } });
+    await assert.rejects(call("gameplan_finalize", { path }), /Engineer declined/);
+    assert.equal(prompted, true);
+    assert.equal(saved.at(-1)?.finalizedPath, undefined);
+    assert.equal(await emit("agent_before_settle", { entries: [], outcome: "completed" }), undefined);
+  });
+});
+
+test("validation failure before finalization prompts retains bounded continuations", async () => {
+  await fixture(async ({ call, emit, path, onConfirm }) => {
+    const doc = parse(await readFile(path, "utf8"));
+    delete doc.problemStatement;
+    await writeFile(path, stringify(doc));
+    let prompted = false;
+    onConfirm(async () => { prompted = true; return true; });
+    await emit("before_agent_start", { messageType: "user" });
+    await emit("tool_call", { toolName: "gameplan_finalize", input: { path } });
+    await assert.rejects(call("gameplan_finalize", { path }), /Cannot finalize; gameplan_check fails/);
+    assert.equal(prompted, false);
+    for (let i = 0; i < 2; i++) {
+      const result = await emit("agent_before_settle", { entries: [], outcome: "completed" }) as { continue?: boolean } | undefined;
+      assert.equal(result?.continue, true);
+    }
+    assert.equal(await emit("agent_before_settle", { entries: [], outcome: "completed" }), undefined);
+  });
+});
+
 test("loading and rewriting an unresolved decision preserves its discussion reason", async () => {
   await fixture(async ({ call, path }) => {
     const doc = parse(await readFile(path, "utf8"));
