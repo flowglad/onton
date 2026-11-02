@@ -1791,6 +1791,17 @@ module Make (Forge : Forge.S) (W : Worktree.S) (Env : Runner_env.S) = struct
                         | Branch_reconcile_runner.Checkpoint_failed reason ->
                             log_event runtime ~patch_id
                               ("Base reconciliation: " ^ reason));
+                        (match outcome with
+                        | Branch_reconcile_runner.Checkpoint_failed _ ->
+                            (* Queue before waiting so cancellation retains the
+                               retry when the busy guard completes the action. *)
+                            Runtime.update_orchestrator runtime (fun orch ->
+                                Orchestrator
+                                .prepare_rebase_after_checkpoint_failure orch
+                                  patch_id);
+                            Eio.Time.sleep clock 30.
+                        | Idle | Waiting | Repair_needed _ | Intervention _ ->
+                            ());
                         Runtime.update_orchestrator runtime (fun orch ->
                             match outcome with
                             | Branch_reconcile_runner.Checkpoint_failed _ ->

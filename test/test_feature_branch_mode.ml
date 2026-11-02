@@ -884,10 +884,33 @@ let () =
         | Branch_reconcile_runner.Idle | Waiting | Repair_needed _
         | Intervention _ ->
             false);
-      let recovered =
+      let waiting =
         Runtime.read runtime (fun snapshot -> snapshot.Runtime.orchestrator)
         |> fun o ->
-        Orchestrator.complete_rebase_after_checkpoint_failure o (id 2)
+        Orchestrator.prepare_rebase_after_checkpoint_failure o (id 2)
+      in
+      let waiting_leaf = Orchestrator.agent waiting (id 2) in
+      check "checkpoint backoff retains busy ownership and queues retry"
+        (waiting_leaf.Patch_agent.busy
+        && List.mem waiting_leaf.Patch_agent.queue Operation_kind.Rebase
+             ~equal:Operation_kind.equal
+        && not
+             (List.exists (Patch_controller.plan_actions waiting ~patches)
+                ~f:(function
+               | Orchestrator.Start (pid, _) | Rebase (pid, _) ->
+                   Patch_id.equal pid (id 2)
+               | Respond _ | Reconcile_branch _ -> false)));
+      let cancelled =
+        Orchestrator.apply_force_complete waiting (id 2) Orchestrator.Cancelled
+      in
+      let cancelled_leaf = Orchestrator.agent cancelled (id 2) in
+      check "cancelling the backoff retains the rebase and WONTDO marker"
+        ((not cancelled_leaf.Patch_agent.busy)
+        && Option.is_some cancelled_leaf.Patch_agent.wontdo_integration_head
+        && List.mem cancelled_leaf.Patch_agent.queue Operation_kind.Rebase
+             ~equal:Operation_kind.equal);
+      let recovered =
+        Orchestrator.complete_rebase_after_checkpoint_failure waiting (id 2)
       in
       let leaf = Orchestrator.agent recovered (id 2) in
       check
