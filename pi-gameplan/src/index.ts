@@ -320,7 +320,6 @@ export default function gameplan(pi: ExtensionAPI) {
   // just becomes the remembered gameplan file.
   pi.on("tool_call", async (event, ctx) => {
     if (state.enabled && OUR_TOOLS.includes(event.toolName)) gameplanWorkThisRun = true;
-    if (state.enabled && event.toolName === "gameplan_finalize") finalizationNeedsEngineer = true;
     if (!state.enabled || !WRITE_TOOLS.has(event.toolName)) return;
     const target = String((event.input as { path?: unknown }).path ?? "");
     if (isGameplanWrite(ctx.cwd, state.gameplanDir, target)) {
@@ -891,6 +890,7 @@ ${ledger}`,
       if (unresolved.length > 0) {
         throw new Error(`Cannot finalize; unresolved decisions: ${unresolved.map((d) => d.id).join(", ")}. Ask again with gameplan_decide.`);
       }
+      finalizationNeedsEngineer = true;
       if (audit.constrained.length > 0) {
         const list = audit.constrained.map((c) => `${c.id}: ${c.choice}\n   constraint: ${c.evidence}`).join("\n");
         const accepted = await ctx.ui.confirm(
