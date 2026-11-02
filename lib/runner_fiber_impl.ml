@@ -1792,7 +1792,14 @@ module Make (Forge : Forge.S) (W : Worktree.S) (Env : Runner_env.S) = struct
                             log_event runtime ~patch_id
                               ("Base reconciliation: " ^ reason));
                         Runtime.update_orchestrator runtime (fun orch ->
-                            Orchestrator.complete orch patch_id)))
+                            match outcome with
+                            | Branch_reconcile_runner.Checkpoint_failed _ ->
+                                Orchestrator
+                                .complete_rebase_after_checkpoint_failure orch
+                                  patch_id
+                            | Idle | Waiting | Repair_needed _ | Intervention _
+                              ->
+                                Orchestrator.complete orch patch_id)))
             | Orchestrator.Respond (patch_id, kind) ->
                 (* Use pre-fire agent state for human_messages — fire/respond
                  clears them as a postcondition. *)

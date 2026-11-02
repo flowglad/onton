@@ -856,6 +856,131 @@ let () =
       | Orchestrator.Start _ | Orchestrator.Respond _
       | Orchestrator.Reconcile_branch _ ->
           false));
+  Eio_main.run (fun _env ->
+      let open Branch_reconcile_runner in
+      let open Orchestrator in
+      let in_flight =
+        Orchestrator.fire unpublished (Orchestrator.Rebase (id 2, branch 1))
+      in
+      let runtime = Runtime.create ~gameplan:gp ~main_branch:main () in
+      Runtime.update_orchestrator runtime (fun _ -> in_flight);
+      let outcome =
+        Branch_reconcile_runner.run ~runtime
+          ~persist:(fun _ -> Error "checkpoint unavailable")
+          ~patch_id:(id 2)
+          ~now:(fun () -> 100.)
+          ~execute:(fun ~operation:_ _ -> failwith "unexpected Git command")
+          (Branch_reconcile.Request
+             Branch_reconcile.
+               {
+                 base = Branch.to_string (branch 1);
+                 policy = Rewrite;
+                 purpose = Reconcile_base;
+               })
+      in
+      check "initial rebase checkpoint failure is reported"
+        (match outcome with
+        | Branch_reconcile_runner.Checkpoint_failed _ -> true
+        | Branch_reconcile_runner.Idle | Waiting | Repair_needed _
+        | Intervention _ ->
+            false);
+      let recovered =
+        Runtime.read runtime (fun snapshot -> snapshot.Runtime.orchestrator)
+        |> fun o ->
+        Orchestrator.complete_rebase_after_checkpoint_failure o (id 2)
+      in
+      let leaf = Orchestrator.agent recovered (id 2) in
+      check
+        "failed rebase checkpoint requeues Rebase and retains retry guidance"
+        (Option.is_some leaf.Patch_agent.wontdo_integration_head
+        && (not (List.is_empty leaf.Patch_agent.human_messages))
+        && Option.value_map
+             (Patch_agent.highest_priority leaf)
+             ~default:false
+             ~f:(Operation_kind.equal Operation_kind.Rebase)
+        && List.exists (Patch_controller.plan_actions recovered ~patches)
+             ~f:(function
+             | Orchestrator.Rebase (pid, _) -> Patch_id.equal pid (id 2)
+             | Orchestrator.Start _ | Respond _ | Reconcile_branch _ -> false));
+      let with_old_receipt =
+        Orchestrator.set_head_oid (fresh ()) (id 1) (Some "old-root")
+        |> fun o ->
+        Orchestrator.set_worktree_path o (id 2) "/old-leaf" |> fun o ->
+        Reconciliation.rebase ~noop:true o (id 2) (branch 1) |> fun o ->
+        Orchestrator.apply_session_result o (id 2)
+          (Orchestrator.Session_wontdo "Needs updated integration")
+        |> fun o ->
+        Reconciliation.rebase o (id 1) main |> fun o ->
+        Orchestrator.apply_session_result o (id 1) Orchestrator.Session_ok
+        |> fun o -> Orchestrator.fire o (Orchestrator.Rebase (id 2, branch 1))
+      in
+      check "old integration receipt matches the same base"
+        (Option.equal Branch.equal
+           (Patch_agent.branch_rebased_onto
+              (Orchestrator.agent with_old_receipt (id 2)))
+           (Some (branch 1)));
+      let after_failure =
+        Orchestrator.complete_rebase_after_checkpoint_failure with_old_receipt
+          (id 2)
+      in
+      let old_leaf = Orchestrator.agent after_failure (id 2) in
+      check "old receipt cannot release retry after failed checkpoint"
+        (Option.is_some old_leaf.Patch_agent.wontdo_integration_head
+        && Option.value_map
+             (Patch_agent.highest_priority old_leaf)
+             ~default:false
+             ~f:(Operation_kind.equal Operation_kind.Rebase));
+      let pending_runtime = Runtime.create ~gameplan:gp ~main_branch:main () in
+      Runtime.update_orchestrator pending_runtime (fun _ -> in_flight);
+      let attempts = ref 0 in
+      let pending_outcome =
+        Branch_reconcile_runner.run ~runtime:pending_runtime
+          ~persist:(fun _ ->
+            Int.incr attempts;
+            if !attempts = 1 then Ok ()
+            else Error "result checkpoint unavailable")
+          ~patch_id:(id 2)
+          ~now:(fun () -> 100.)
+          ~execute:(fun ~operation:_ _ ->
+            Branch_reconcile.Needs_diagnosis "fixture")
+          (Branch_reconcile.Request
+             Branch_reconcile.
+               {
+                 base = Branch.to_string (branch 1);
+                 policy = Rewrite;
+                 purpose = Reconcile_base;
+               })
+      in
+      check "result checkpoint failure is reported"
+        (match pending_outcome with
+        | Checkpoint_failed _ -> true
+        | Idle | Waiting | Repair_needed _ | Intervention _ -> false);
+      let pending =
+        Runtime.read pending_runtime (fun snapshot ->
+            snapshot.Runtime.orchestrator)
+        |> fun o ->
+        Orchestrator.complete_rebase_after_checkpoint_failure o (id 2)
+      in
+      let pending_leaf = Orchestrator.agent pending (id 2) in
+      check "checkpointed reconciliation resumes without a duplicate rebase"
+        (Option.is_some pending_leaf.Patch_agent.wontdo_integration_head
+        && (not
+              (List.mem pending_leaf.Patch_agent.queue Operation_kind.Rebase
+                 ~equal:Operation_kind.equal))
+        && List.exists (Patch_controller.plan_actions pending ~patches)
+             ~f:(function
+             | Orchestrator.Reconcile_branch (pid, _) ->
+                 Patch_id.equal pid (id 2)
+             | Start _ | Rebase _ | Respond _ -> false));
+      let retry =
+        Orchestrator.fire recovered (Orchestrator.Rebase (id 2, branch 1))
+        |> fun o -> Reconciliation.rebase ~noop:true o (id 2) (branch 1)
+      in
+      check "confirmed retry releases Human guidance"
+        (Option.value_map
+           (Patch_agent.highest_priority (Orchestrator.agent retry (id 2)))
+           ~default:false
+           ~f:(Operation_kind.equal Operation_kind.Human)));
   let ready = ready_branch (fresh ()) 3 in
   let waiting =
     Orchestrator.fire
