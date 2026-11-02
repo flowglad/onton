@@ -189,6 +189,7 @@ let agent_fields =
     "max_ci_failures";
     "session_fallback";
     "wontdo_reason";
+    "wontdo_integration_head";
     "human_messages";
     "inflight_human_messages";
     "ci_checks";

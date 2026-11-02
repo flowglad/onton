@@ -754,6 +754,75 @@ let () =
 [@@warning "-42"]
 
 let () =
+  let blocked =
+    fresh () |> fun o ->
+    Orchestrator.set_head_oid o (id 1) (Some "root-before") |> fun o ->
+    Orchestrator.set_pr_number o (id 2) (Pr_number.of_int 2) |> fun o ->
+    Orchestrator.apply_session_result o (id 2)
+      (Orchestrator.Session_wontdo "Needs a shared integration API")
+  in
+  check "leaf WONTDO reaches integration root"
+    (List.exists (Orchestrator.agent blocked (id 1)).Patch_agent.human_messages
+       ~f:(fun message ->
+         String.is_substring message ~substring:"Needs a shared integration API"
+         && String.is_substring message ~substring:"raise WONTDO"));
+  let refused_root =
+    Orchestrator.apply_session_result blocked (id 1)
+      (Orchestrator.Session_wontdo "Cannot safely repair the integration API")
+    |> fun o ->
+    Orchestrator.apply_session_result o (id 3)
+      (Orchestrator.Session_wontdo "Also needs the API")
+  in
+  check "another leaf does not erase the integration agent's WONTDO"
+    (Option.equal String.equal
+       (Orchestrator.agent refused_root (id 1)).Patch_agent.wontdo_reason
+       (Some "Cannot safely repair the integration API"));
+  let unchanged =
+    Orchestrator.apply_session_result blocked (id 1) Orchestrator.Session_ok
+  in
+  check "unchanged integration branch leaves WONTDO paused"
+    (Option.is_some
+       (Orchestrator.agent unchanged (id 2)).Patch_agent.wontdo_reason);
+  let advanced =
+    Reconciliation.rebase unchanged (id 1) main |> fun o ->
+    Orchestrator.apply_session_result o (id 1) Orchestrator.Session_ok
+  in
+  let leaf = Orchestrator.agent advanced (id 2) in
+  check "integration advance schedules rebase before patch retry"
+    (Option.is_none leaf.Patch_agent.wontdo_reason
+    && Option.value_map
+         (Patch_agent.highest_priority leaf)
+         ~default:false
+         ~f:(Operation_kind.equal Operation_kind.Rebase)
+    && not (List.is_empty leaf.Patch_agent.human_messages));
+  let rebasing =
+    Orchestrator.fire advanced (Orchestrator.Rebase (id 2, branch 1))
+  in
+  let reprompted =
+    Reconciliation.rebase ~noop:true rebasing (id 2) (branch 1)
+  in
+  check "completed rebase releases patch guidance"
+    (Option.value_map
+       (Patch_agent.highest_priority (Orchestrator.agent reprompted (id 2)))
+       ~default:false
+       ~f:(Operation_kind.equal Operation_kind.Human));
+  let unpublished =
+    Orchestrator.set_worktree_path (fresh ()) (id 2) "/existing-leaf"
+    |> fun o ->
+    Orchestrator.apply_session_result o (id 2)
+      (Orchestrator.Session_wontdo "Needs a shared prerequisite")
+    |> fun o ->
+    Reconciliation.rebase o (id 1) main |> fun o ->
+    Orchestrator.apply_session_result o (id 1) Orchestrator.Session_ok
+  in
+  check "unpublished leaf rebases before its next Start"
+    (List.exists (Patch_controller.plan_actions unpublished ~patches)
+       ~f:(function
+      | Orchestrator.Rebase (pid, base) ->
+          Patch_id.equal pid (id 2) && Branch.equal base (branch 1)
+      | Orchestrator.Start _ | Orchestrator.Respond _
+      | Orchestrator.Reconcile_branch _ ->
+          false));
   let ready = ready_branch (fresh ()) 3 in
   let waiting =
     Orchestrator.fire

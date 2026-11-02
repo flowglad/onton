@@ -262,6 +262,30 @@ let refresh_base_branch t patch_id =
           update_agent t patch_id ~f:(fun a ->
               Patch_agent.set_base_branch a fresh))
 
+let release_wontdo_retry_after_rebase t patch_id =
+  match find_agent t patch_id with
+  | Some a
+    when Option.is_some a.wontdo_integration_head
+         && Option.is_none a.wontdo_reason
+         && (not
+               (List.mem a.queue Operation_kind.Rebase
+                  ~equal:Operation_kind.equal))
+         && (not (Branch_reconcile.is_unsettled a.branch_reconcile))
+         && Option.equal Branch.equal
+              (Patch_agent.branch_rebased_onto a)
+              a.base_branch ->
+      update_agent t patch_id ~f:(fun a ->
+          a |> fun a ->
+          Patch_agent.set_wontdo_integration_head a None |> fun a ->
+          Patch_agent.enqueue a Operation_kind.Human)
+  | Some _ | None -> t
+
+let integration_revision (a : Patch_agent.t) =
+  match List.hd (Branch_reconcile.publications a.branch_reconcile) with
+  | Some receipt ->
+      Some (Branch_reconcile.Commit.to_string receipt.published_revision)
+  | None -> a.head_oid
+
 let complete t patch_id =
   (* Refresh base_branch before transitioning to idle — a dependency may
      have merged while this patch was busy, leaving base_branch stale. *)
@@ -271,7 +295,20 @@ let complete t patch_id =
     | None -> None
     | Some agent -> agent.current_message_id
   in
+  let retry_after_rebase =
+    match find_agent t patch_id with
+    | Some a ->
+        Option.is_some a.wontdo_integration_head
+        && Option.is_none a.wontdo_reason
+        && Option.value_map a.current_op ~default:false
+             ~f:(Operation_kind.equal Operation_kind.Rebase)
+    | None -> false
+  in
   let t = update_agent t patch_id ~f:Patch_agent.complete in
+  let t =
+    if retry_after_rebase then release_wontdo_retry_after_rebase t patch_id
+    else t
+  in
   match current_message_id with
   | None -> t
   | Some message_id -> (
@@ -1357,7 +1394,46 @@ let apply_session_result t patch_id result =
       let t =
         update_agent t patch_id ~f:Patch_agent.reset_no_commits_push_count
       in
-      update_agent t patch_id ~f:Patch_agent.reset_context_exhaustion_count
+      let t =
+        update_agent t patch_id ~f:Patch_agent.reset_context_exhaustion_count
+      in
+      if
+        (not (is_integration_root t patch_id))
+        || Option.is_some (agent t patch_id).Patch_agent.wontdo_reason
+      then t
+      else
+        let root_head = integration_revision (agent t patch_id) in
+        Map.fold t.agents ~init:t ~f:(fun ~key:leaf_id ~data:leaf t ->
+            if
+              (not (Execution_mode.is_descendant t.execution_mode leaf_id))
+              || Option.is_none leaf.wontdo_reason
+              || Option.equal String.equal leaf.wontdo_integration_head
+                   root_head
+              || Option.is_none root_head
+            then t
+            else
+              let message =
+                "The integration branch has advanced after your WONTDO. \
+                 Revisit the blocker and implement the patch if it is now \
+                 safe. If the blocker remains, explain it in WONTDO.md."
+              in
+              if
+                Patch_agent.is_pr_present leaf
+                || Patch_agent.branch_published leaf
+                || Option.is_some leaf.worktree_path
+              then
+                let t =
+                  update_agent t leaf_id ~f:Patch_agent.reset_intervention_state
+                in
+                let t = refresh_base_branch t leaf_id in
+                let t =
+                  update_agent t leaf_id ~f:(fun a ->
+                      a |> fun a ->
+                      Patch_agent.add_human_message a message |> fun a ->
+                      Patch_agent.set_wontdo_integration_head a root_head)
+                in
+                enqueue t leaf_id Operation_kind.Rebase
+              else send_human_message t leaf_id message)
   | Session_process_error { is_fresh; _ } ->
       let t = on_session_failure t patch_id ~is_fresh in
       let t = update_agent t patch_id ~f:Patch_agent.on_pre_session_failure in
@@ -1384,6 +1460,31 @@ let apply_session_result t patch_id result =
   | Session_wontdo reason ->
       let t =
         update_agent t patch_id ~f:(fun a -> Patch_agent.set_wontdo a reason)
+      in
+      let t =
+        match Execution_mode.root t.execution_mode with
+        | Some root_id
+          when Execution_mode.is_descendant t.execution_mode patch_id
+               && Option.is_some (find_agent t root_id) ->
+            let root_head = integration_revision (agent t root_id) in
+            let t =
+              update_agent t patch_id ~f:(fun a ->
+                  Patch_agent.set_wontdo_integration_head a root_head)
+            in
+            if Option.is_some (agent t root_id).Patch_agent.wontdo_reason then t
+            else
+              send_human_message t root_id
+                (Printf.sprintf
+                   "Patch %s raised WONTDO:\n\n\
+                    %s\n\n\
+                    Assess whether an integration dependency blocks safe \
+                    implementation. If so, cover the gap on the integration \
+                    branch and publish that change. If this cannot be safely \
+                    resolved from the integration branch, raise WONTDO \
+                    yourself and explain why."
+                   (Patch_id.to_string patch_id)
+                   reason)
+        | Some _ | None -> t
       in
       (* An explicit refusal answers the inflight guidance. Complete it without
          restoring that guidance to the inbox for a later manual bump. *)
@@ -1635,6 +1736,7 @@ let reconcile_branch t patch_id event =
                 t)
         | Some _ | None -> t
       in
+      let t = release_wontdo_retry_after_rebase t patch_id in
       (t, commands)
 
 let record_session_completion t patch_id completion =

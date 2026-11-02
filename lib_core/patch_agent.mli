@@ -57,6 +57,9 @@ type t = private {
   wontdo_reason : string option;
       (** A pre-commit opt-out explanation. Pauses automatic work until human
           guidance or an explicit intervention reset clears it. *)
+  wontdo_integration_head : string option;
+      (** Integration HEAD captured when a feature descendant refuses, then
+          retained while its rebase completes before the retry prompt. *)
   human_messages : string list;
   inflight_human_messages : string list;
   ci_checks : Types.Ci_check.t list;
@@ -314,6 +317,8 @@ val add_human_messages : t -> string list -> t
 (** Prepend multiple messages to the pending list, preserving their order. *)
 
 val set_wontdo : t -> string -> t
+
+val set_wontdo_integration_head : t -> string option -> t
 (** Record a trimmed nonblank opt-out explanation. Blank reasons are ignored.
     The pause bypasses the Human exemption in {!needs_intervention}; human
     guidance must explicitly reset it before scheduling resumes. *)
@@ -703,6 +708,7 @@ val restore :
   ?max_ci_failures:int ->
   session_fallback:session_fallback ->
   ?wontdo_reason:string option ->
+  ?wontdo_integration_head:string option ->
   human_messages:string list ->
   inflight_human_messages:string list ->
   ci_checks:Types.Ci_check.t list ->

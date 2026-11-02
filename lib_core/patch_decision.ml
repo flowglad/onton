@@ -112,8 +112,14 @@ type start_delivery =
 type delivery_mode = Session_result.delivery_mode = Start | Respond
 [@@deriving show, eq, sexp_of, compare]
 
-let session_allows_wontdo ~delivery_mode ~is_gameplan_patch =
-  is_gameplan_patch && equal_delivery_mode delivery_mode Start
+let session_allows_wontdo ~delivery_mode ~is_gameplan_patch ~is_integration_root
+    ~kind =
+  is_gameplan_patch
+  && (equal_delivery_mode delivery_mode Start
+     || is_integration_root
+        && equal_delivery_mode delivery_mode Respond
+        && Option.value_map kind ~default:false
+             ~f:(Operation_kind.equal Operation_kind.Human))
 
 let session_prompt_requires_patch_instructions ~delivery_mode ~kind =
   match kind with
@@ -446,11 +452,23 @@ let classify_artifact_sync_outcome ~(plan : artifact_sync_plan)
   | Sync_attempt_pr_body, Some (`Missing | `Empty) -> Sync_no_op
   | Sync_attempt_pr_body, None -> Sync_no_op
 
-let wontdo_message ~initial_head ~final_head ~base_sha ~initial_head_in_base
-    ~has_pr ~content =
+let wontdo_message_impl ~allow_existing_branch ~initial_head ~final_head
+    ~base_sha ~initial_head_in_base ~has_pr ~content =
   match (initial_head, final_head, base_sha, content) with
-  | Some initial, Some final, Some _, Some message
-    when (not has_pr) && initial_head_in_base && String.equal final initial ->
+  | Some initial, Some final, _, Some message
+    when String.equal final initial
+         && (allow_existing_branch
+            || ((not has_pr) && initial_head_in_base && Option.is_some base_sha)
+            ) ->
       let message = String.strip message in
       if String.is_empty message then None else Some message
   | _ -> None
+
+let wontdo_message ~initial_head ~final_head ~base_sha ~initial_head_in_base
+    ~has_pr ~content =
+  wontdo_message_impl ~allow_existing_branch:false ~initial_head ~final_head
+    ~base_sha ~initial_head_in_base ~has_pr ~content
+
+let wontdo_message_for_integration_root ~initial_head ~final_head ~content =
+  wontdo_message_impl ~allow_existing_branch:true ~initial_head ~final_head
+    ~base_sha:None ~initial_head_in_base:false ~has_pr:true ~content

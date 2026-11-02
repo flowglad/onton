@@ -10,6 +10,10 @@ val render_opt_out :
   response_transport:response_transport -> artifact_path:string -> string
 (** Preserve the pre-commit offer while selecting its response mechanism. *)
 
+val render_integration_opt_out :
+  response_transport:response_transport -> artifact_path:string -> string
+(** Offer a refusal on an existing integration branch without new commits. *)
+
 type t
 (** Context is delivered only when the backend starts a fresh session. *)
 

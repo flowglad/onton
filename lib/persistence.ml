@@ -228,6 +228,9 @@ let patch_agent_to_yojson (a : Patch_agent.t) =
       ( "wontdo_reason",
         Option.value_map a.wontdo_reason ~default:`Null ~f:(fun s -> `String s)
       );
+      ( "wontdo_integration_head",
+        Option.value_map a.wontdo_integration_head ~default:`Null ~f:(fun s ->
+            `String s) );
       ( "human_messages",
         `List (List.map a.human_messages ~f:(fun s -> `String s)) );
       ( "inflight_human_messages",
@@ -455,6 +458,8 @@ let patch_agent_of_yojson ?(snapshot_version = 1) ~main_branch ~gameplan json =
              ~default:Patch_agent.default_max_ci_failures)
         ~session_fallback
         ~wontdo_reason:(string_member_opt "wontdo_reason" json)
+        ~wontdo_integration_head:
+          (string_member_opt "wontdo_integration_head" json)
         ~human_messages ~inflight_human_messages ~ci_checks
         ~merge_ready:(bool_member "merge_ready" json)
         ~head_oid:(string_member_opt "head_oid" json)

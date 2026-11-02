@@ -85,9 +85,12 @@ type delivery_mode = Session_result.delivery_mode = Start | Respond
 [@@deriving show, eq, sexp_of, compare]
 
 val session_allows_wontdo :
-  delivery_mode:delivery_mode -> is_gameplan_patch:bool -> bool
-(** Only gameplan Start turns offer and accept pre-commit opt-out. Independent
-    of backend resume/fresh selection and human guidance carried by a Start. *)
+  delivery_mode:delivery_mode ->
+  is_gameplan_patch:bool ->
+  is_integration_root:bool ->
+  kind:Types.Operation_kind.t option ->
+  bool
+(** Gameplan Start turns and integration-root Human responses may opt out. *)
 
 val session_prompt_requires_patch_instructions :
   delivery_mode:delivery_mode -> kind:Types.Operation_kind.t option -> bool
@@ -301,7 +304,15 @@ val wontdo_message :
   has_pr:bool ->
   content:string option ->
   string option
-(** Accept a nonblank opt-out only when the branch has no commits outside the
-    base and no PR exists, and its head stayed unchanged during the turn.
+(** Accept a nonblank pre-commit opt-out only when the head stayed unchanged
+    during the turn, no commits exist outside the base, and no PR exists.
     [initial_head_in_base] must establish that the initial head is reachable
     from [base_sha]. Missing Git observations fail closed. *)
+
+val wontdo_message_for_integration_root :
+  initial_head:string option ->
+  final_head:string option ->
+  content:string option ->
+  string option
+(** Accept a refusal on an existing integration branch only if the turn made no
+    branch change. *)

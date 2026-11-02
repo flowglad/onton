@@ -132,14 +132,23 @@ let () =
             equal_start_delivery (start_delivery a)
               (Start_with_human { messages })
           with _ -> false);
-      Test.make ~name:"only gameplan Start turns allow WONTDO" ~count:100
+      Test.make ~name:"gameplan Starts and root Human responses allow WONTDO"
+        ~count:100
         Gen.(pair (oneof_list [ Start; Respond ]) bool)
         (fun (delivery_mode, is_gameplan_patch) ->
           Bool.equal
-            (session_allows_wontdo ~delivery_mode ~is_gameplan_patch)
+            (session_allows_wontdo ~delivery_mode ~is_gameplan_patch
+               ~is_integration_root:false ~kind:None)
             (match delivery_mode with
             | Start -> is_gameplan_patch
-            | Respond -> false));
+            | Respond -> false)
+          && session_allows_wontdo ~delivery_mode:Respond
+               ~is_gameplan_patch:true ~is_integration_root:true
+               ~kind:(Some Operation_kind.Human)
+          && not
+               (session_allows_wontdo ~delivery_mode:Respond
+                  ~is_gameplan_patch:true ~is_integration_root:true
+                  ~kind:(Some Operation_kind.Ci)));
       Test.make
         ~name:"Starts retain role instructions; Human Respond prompts omit them"
         ~count:500
@@ -1445,6 +1454,14 @@ let () =
               ~base_sha:(Some (sha ^ "x"))
               ~initial_head_in_base:true ~has_pr:false ~content:(Some "Opt out"))
            (Some "Opt out")));
+  Test.check_exn
+    (Test.make
+       ~name:"integration-root Human response can refuse with an existing PR"
+       Gen.string (fun sha ->
+         Option.equal String.equal
+           (wontdo_message_for_integration_root ~initial_head:(Some sha)
+              ~final_head:(Some sha) ~content:(Some "Cannot safely resolve"))
+           (Some "Cannot safely resolve")));
   Test.check_exn
     (Test.make ~name:"wontdo: total over arbitrary observations" ~count:500
        Gen.(

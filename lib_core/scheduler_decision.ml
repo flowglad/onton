@@ -114,6 +114,10 @@ let for_patch v id =
     | None -> None
     | Some a ->
         let present = Patch_agent.is_pr_present a || branch_only v id in
+        let retry_rebase =
+          Option.is_some a.wontdo_integration_head
+          && Option.is_some a.worktree_path
+        in
         if Option.is_some (Patch_agent.reconciliation_hold_reason a) then None
         else if Branch_reconcile.is_pending a.branch_reconcile then
           if a.busy || a.automerge_inflight then None
@@ -130,12 +134,12 @@ let for_patch v id =
         then None
         else if
           (not (Patch_agent.has_pr a || branch_only v id))
-          && (not a.busy) && (not a.merged)
+          && (not retry_rebase) && (not a.busy) && (not a.merged)
           && (not (Patch_agent.needs_intervention a))
           && dependencies_admitted v id
         then Option.map (selected_base v id) ~f:(fun b -> Start (id, b))
         else if
-          present
+          (present || retry_rebase)
           && Option.is_some (selected_base v id)
           && (not a.merged) && (not a.busy) && (not a.branch_blocked)
           && (not (Branch_reconcile.is_unsettled a.branch_reconcile))
