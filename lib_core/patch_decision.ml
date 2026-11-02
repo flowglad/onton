@@ -470,5 +470,8 @@ let wontdo_message ~initial_head ~final_head ~base_sha ~initial_head_in_base
     ~base_sha ~initial_head_in_base ~has_pr ~content
 
 let wontdo_message_for_integration_root ~initial_head ~final_head ~content =
-  wontdo_message_impl ~allow_existing_branch:true ~initial_head ~final_head
-    ~base_sha:None ~initial_head_in_base:false ~has_pr:true ~content
+  match (initial_head, final_head, content) with
+  | Some initial, Some final, Some message when String.equal initial final ->
+      let message = String.strip message in
+      if String.is_empty message then None else Some message
+  | _ -> None

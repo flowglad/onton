@@ -773,6 +773,11 @@ let () =
     Orchestrator.apply_session_result o (id 3)
       (Orchestrator.Session_wontdo "Also needs the API")
   in
+  check "another leaf does not add guidance to a paused integration root"
+    (List.length
+       (Orchestrator.agent refused_root (id 1)).Patch_agent.human_messages
+    = List.length (Orchestrator.agent blocked (id 1)).Patch_agent.human_messages
+    );
   check "another leaf does not erase the integration agent's WONTDO"
     (Option.equal String.equal
        (Orchestrator.agent refused_root (id 1)).Patch_agent.wontdo_reason

@@ -1463,6 +1463,28 @@ let () =
               ~final_head:(Some sha) ~content:(Some "Cannot safely resolve"))
            (Some "Cannot safely resolve")));
   Test.check_exn
+    (Test.make
+       ~name:
+         "integration-root refusal rejects changed or missing heads and blank \
+          content" Gen.string (fun sha ->
+         let decide ~initial_head ~final_head ~content =
+           wontdo_message_for_integration_root ~initial_head ~final_head
+             ~content
+         in
+         Option.is_none
+           (decide ~initial_head:(Some sha)
+              ~final_head:(Some (sha ^ "x"))
+              ~content:(Some "Cannot safely resolve"))
+         && Option.is_none
+              (decide ~initial_head:(Some sha) ~final_head:None
+                 ~content:(Some "Cannot safely resolve"))
+         && Option.is_none
+              (decide ~initial_head:None ~final_head:(Some sha)
+                 ~content:(Some "Cannot safely resolve"))
+         && Option.is_none
+              (decide ~initial_head:(Some sha) ~final_head:(Some sha)
+                 ~content:(Some " \n\t "))));
+  Test.check_exn
     (Test.make ~name:"wontdo: total over arbitrary observations" ~count:500
        Gen.(
          pair

@@ -855,6 +855,10 @@ let () =
         ~delivery_mode:Onton_core.Patch_decision.Respond ~kind:(Some Human)
         ~content:"Cannot safely cover the dependency on the integration branch"
         ~commit:false ~expect_opt_out:true;
+      run_case env ~branch_role:`Integration_root
+        ~delivery_mode:Onton_core.Patch_decision.Respond ~kind:(Some Human)
+        ~content:"Cannot safely cover the dependency on the integration branch"
+        ~commit:true ~expect_opt_out:false;
       List.iter [ None; Some "existing-thread" ] ~f:(fun resume_session ->
           run_case env ~ad_hoc:true ?resume_session
             ~delivery_mode:Onton_core.Patch_decision.Respond ~kind:(Some Ci)

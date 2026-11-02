@@ -284,8 +284,9 @@ val start : t -> base_branch:Types.Branch.t -> t
     as [respond Human]. *)
 
 val rebase : t -> base_branch:Types.Branch.t -> t
-(** [PatchCtx ~> Rebase] — orchestrator-executed rebase. Preconditions:
-    [has_pr], [~merged], [~busy], [Rebase] in [queue], [Rebase] is
+(** [PatchCtx ~> Rebase] — orchestrator-executed rebase. Preconditions: [has_pr]
+    or [branch_published] or both [wontdo_integration_head] and [worktree_path]
+    are set; [~merged], [~busy], [Rebase] in [queue], [Rebase] is
     [highest_priority]. Postconditions: [busy]; dequeues [Rebase]; preserves
     [has_session] (does not force true); updates [base_branch]. *)
 
@@ -317,11 +318,13 @@ val add_human_messages : t -> string list -> t
 (** Prepend multiple messages to the pending list, preserving their order. *)
 
 val set_wontdo : t -> string -> t
-
-val set_wontdo_integration_head : t -> string option -> t
 (** Record a trimmed nonblank opt-out explanation. Blank reasons are ignored.
     The pause bypasses the Human exemption in {!needs_intervention}; human
     guidance must explicitly reset it before scheduling resumes. *)
+
+val set_wontdo_integration_head : t -> string option -> t
+(** Record the integration HEAD captured when a descendant refuses; retain it
+    until the scheduled rebase finishes and the retry guidance is released. *)
 
 val set_session_failed : t -> t
 (** Mark session fallback as [Given_up]. *)
