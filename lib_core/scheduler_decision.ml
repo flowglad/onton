@@ -117,7 +117,6 @@ let for_patch v id =
         let retry_rebase =
           Option.is_some a.wontdo_integration_head
           && Option.is_some a.worktree_path
-          && List.mem a.queue Operation_kind.Rebase ~equal:Operation_kind.equal
         in
         if Option.is_some (Patch_agent.reconciliation_hold_reason a) then None
         else if Branch_reconcile.is_pending a.branch_reconcile then
