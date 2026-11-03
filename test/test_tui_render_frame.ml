@@ -200,41 +200,68 @@ let test_list_view_long_activity_preserves_patches () =
           if height >= 18 then assert (line_contains lines (String.make 10 'x'))))
 
 let test_list_view_wide_activity_preserves_patches () =
-  let wide_text = String.concat (List.init 40 ~f:(fun _ -> "界")) in
-  List.iter [ 40; 41; 80 ] ~f:(fun width ->
-      List.iter [ 16; 18; 24 ] ~f:(fun height ->
-          let activity =
-            [
-              Tui.Event
-                { patch_id = Some "1"; message = wide_text; timestamp = 0.0 };
-            ]
-          in
-          let frame = render ~width ~height ~activity many_views in
-          let lines = plain_lines frame in
-          assert (Tui.patch_count frame = List.length many_views);
-          List.iter many_views ~f:(fun pv ->
-              assert (
-                line_contains lines
-                  ("Patch " ^ Patch_id.to_string pv.Tui.patch_id)));
-          (* In this fixture only 界 is double-width; all other glyphs are
+  List.iter
+    [
+      "界";
+      "⌚";
+      "⌛";
+      "⏩";
+      "⏬";
+      "⏰";
+      "⏳";
+      "◽";
+      "◾";
+      "⬛";
+      "⬜";
+      "⭐";
+      "⭕";
+      "\u{a960}";
+      "\u{a97c}";
+      "\u{1d300}";
+      "\u{1d356}";
+      "\u{1d360}";
+      "\u{1d376}";
+    ] ~f:(fun glyph ->
+      let wide_text = String.concat (List.init 40 ~f:(fun _ -> glyph)) in
+      List.iter [ 20; 21; 40; 41; 80 ] ~f:(fun width ->
+          List.iter [ 16; 18; 24 ] ~f:(fun height ->
+              let activity =
+                [
+                  Tui.Event
+                    {
+                      patch_id = Some "1";
+                      message = wide_text;
+                      timestamp = 0.0;
+                    };
+                ]
+              in
+              let frame = render ~width ~height ~activity many_views in
+              let lines = plain_lines frame in
+              assert (Tui.patch_count frame = List.length many_views);
+              List.iter many_views ~f:(fun pv ->
+                  assert (
+                    line_contains lines
+                      ("Patch " ^ Patch_id.to_string pv.Tui.patch_id)));
+              (* In this fixture only [glyph] is double-width; all other glyphs are
              single-cell. Measure independently of the production fitter. *)
-          let physical_rows =
-            List.sum
-              (module Int)
-              lines
-              ~f:(fun line ->
-                assert (Stdlib.String.is_valid_utf_8 line);
-                let wide_count =
-                  String.substr_index_all line ~pattern:"界" ~may_overlap:false
-                  |> List.length
-                in
-                let cells = Onton.Term.visible_length line + wide_count in
-                assert (cells <= width);
-                if String.is_empty line then 0
-                else Int.max 1 ((cells + width - 1) / width))
-          in
-          assert (physical_rows <= height);
-          if height >= 18 then assert (line_contains lines "界界界")))
+              let physical_rows =
+                List.sum
+                  (module Int)
+                  lines
+                  ~f:(fun line ->
+                    assert (Stdlib.String.is_valid_utf_8 line);
+                    let wide_count =
+                      String.substr_index_all line ~pattern:glyph
+                        ~may_overlap:false
+                      |> List.length
+                    in
+                    let cells = Onton.Term.visible_length line + wide_count in
+                    assert (cells <= width);
+                    if String.is_empty line then 0
+                    else Int.max 1 ((cells + width - 1) / width))
+              in
+              assert (physical_rows <= height);
+              if height >= 18 then assert (line_contains lines (glyph ^ glyph)))))
 
 let test_frame_anchored_at_top () =
   (* The header must be on the first emitted line — paint_frame moves the

@@ -1690,16 +1690,26 @@ let render_frame ~width ~height ~selected ~scroll_offset ~view_mode
               let fit_cells line =
                 let width = Int.max 0 width in
                 let buf = Buffer.create (String.length line) in
-                (* Wide/full-width Unicode ranges and emoji occupy two cells.
+                (* Covers all Wide/Fullwidth scalars in Unicode 17.0's
+                   https://www.unicode.org/Public/17.0.0/ucd/EastAsianWidth.txt,
+                   with conservative two-cell reservations for emoji ranges.
                    Other scalars conservatively reserve one cell, including
                    combining marks, so they cannot cause an underestimated row. *)
                 let cells u =
                   let u = Stdlib.Uchar.to_int u in
                   if
                     u >= 0x1100
-                    && (u <= 0x115f || u = 0x2329 || u = 0x232a
+                    && (u <= 0x115f
+                       || (u >= 0x231a && u <= 0x231b)
+                       || u = 0x2329 || u = 0x232a
+                       || (u >= 0x23e9 && u <= 0x23ec)
+                       || u = 0x23f0 || u = 0x23f3
+                       || (u >= 0x25fd && u <= 0x25fe)
                        || (u >= 0x2600 && u <= 0x27bf)
+                       || (u >= 0x2b1b && u <= 0x2b1c)
+                       || u = 0x2b50 || u = 0x2b55
                        || (u >= 0x2e80 && u <= 0xa4cf && u <> 0x303f)
+                       || (u >= 0xa960 && u <= 0xa97c)
                        || (u >= 0xac00 && u <= 0xd7a3)
                        || (u >= 0xf900 && u <= 0xfaff)
                        || (u >= 0xfe10 && u <= 0xfe19)
@@ -1708,6 +1718,8 @@ let render_frame ~width ~height ~selected ~scroll_offset ~view_mode
                        || (u >= 0xffe0 && u <= 0xffe6)
                        || (u >= 0x16fe0 && u <= 0x18dff)
                        || (u >= 0x1aff0 && u <= 0x1b2ff)
+                       || (u >= 0x1d300 && u <= 0x1d356)
+                       || (u >= 0x1d360 && u <= 0x1d376)
                        || (u >= 0x1f000 && u <= 0x1faff)
                        || (u >= 0x20000 && u <= 0x3ffff))
                   then 2
