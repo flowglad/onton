@@ -270,7 +270,7 @@ let send t req =
         Poly.equal r.status Resource_protocol.Ok
         && Option.value_map r.owner_epoch ~default:false
              ~f:(Int64.equal t.owner_epoch)
-        && Option.value_map r.run_id ~default:true ~f:(String.equal t.run_id)
+        && Option.value_map r.run_id ~default:false ~f:(String.equal t.run_id)
       then
         Option.iter r.revision ~f:(fun revision ->
             if Int64.(revision > t.revision) then t.revision <- revision);

@@ -89,7 +89,11 @@ let transport (f : fixture) ~argv:_ ~input =
             f.writes <- (write_id, f.version) :: f.writes);
           if f.drop_write then Error "lost write response"
           else
-            Ok (0, reply ~revision:f.revision ~state_version:f.version "ok", "")
+            Ok
+              ( 0,
+                reply ~run_id:(string "run_id" fields) ~revision:f.revision
+                  ~state_version:f.version "ok",
+                "" )
       | "state-read" -> (
           if f.refuse_read then Ok (0, reply "pending", "")
           else
@@ -109,8 +113,8 @@ let transport (f : fixture) ~argv:_ ~input =
             | Some v ->
                 Ok
                   ( 0,
-                    reply ~revision:f.revision ~state_version:f.version
-                      ~receipt_state_version:v "ok",
+                    reply ~run_id:(string "run_id" fields) ~revision:f.revision
+                      ~state_version:f.version ~receipt_state_version:v "ok",
                     "" ))
       | op -> fail ("unexpected op " ^ op)
   in
@@ -278,9 +282,67 @@ let test_confirmed_read_guards () =
   check (Coordinator_host.refresh host = Ok ()) "restored exact current bytes";
   (* A new store must validate the durable data without any in-memory cache. *)
   let restarted, _, _ = setup f in
+  let cold =
+    match Coordinator_store.load restarted with
+    | Ok cold -> cold
+    | Error _ -> fail "cold restore failed"
+  in
   check
-    (Result.is_ok (Coordinator_store.load restarted))
+    (String.equal
+       (Coordinator_store.encode cold)
+       (Coordinator_store.encode (Coordinator_host.envelope host)))
     "cold restore disagrees with warm restore"
+
+let test_reply_revision_identity () =
+  List.iter
+    (fun (run_id, owner_epoch, expected) ->
+      let revisions = ref [] in
+      let transport ~argv:_ ~input =
+        let fields =
+          match Yojson.Safe.from_string input with
+          | `Assoc fields -> fields
+          | _ -> fail "invalid request"
+        in
+        revisions := !revisions @ [ string "revision" fields ];
+        let identity =
+          List.filter_map Fun.id
+            [
+              Option.map (fun id -> ("run_id", `String id)) run_id;
+              Option.map (fun epoch -> ("owner_epoch", `Int epoch)) owner_epoch;
+            ]
+        in
+        Ok
+          ( 0,
+            Yojson.Safe.to_string
+              (`Assoc
+                 (("status", `String "ok")
+                 :: ("reason", `String "none")
+                 :: ("revision", `Int 9)
+                 :: identity)),
+            "" )
+      in
+      let client = Resource_client.create ~helper:"fixture" ~transport in
+      let counter = ref 0 in
+      let next_id () =
+        incr counter;
+        "read-" ^ string_of_int !counter
+      in
+      let store =
+        Coordinator_store.create ~client ~run_id:"r" ~coordinator_id:"c"
+          ~owner_epoch:1L ~revision:1L ~next_id
+      in
+      ignore (Coordinator_store.load store);
+      ignore (Coordinator_store.load store);
+      check
+        (!revisions = [ "1"; expected ])
+        "reply advanced revision without matching run and owner identity")
+    [
+      (None, Some 1, "1");
+      (Some "other", Some 1, "1");
+      (Some "r", None, "1");
+      (Some "r", Some 2, "1");
+      (Some "r", Some 1, "9");
+    ]
 
 let test_host_barrier () =
   let f = fixture () in
@@ -462,6 +524,7 @@ let test_capacity_and_retirement () =
     "unbound result released capacity"
 
 let () =
+  test_reply_revision_identity ();
   test_confirmed_read_guards ();
   test_capacity_and_retirement ();
   test_host_barrier ();
