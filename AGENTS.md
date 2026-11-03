@@ -12,7 +12,7 @@
 - Always run `dune build` after edits and fix all errors before moving on.
 - An agent hook may run `dune build` automatically after edits — check its output.
 - All warnings except 44 (open-shadow) and 70 (missing-mli) are fatal errors.
-- The pre-commit hook runs build + test + format check — commits will be rejected if any fail.
+- The pre-commit hook runs `dune build @check @fmt` with a 90-second wall-clock budget (85 seconds for the command, leaving startup/cleanup headroom). Failures and timeouts reject the commit. Full builds and `dune runtest` run in CI; run targeted tests locally for logic changes.
 
 ## Code patterns
 

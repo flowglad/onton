@@ -4,8 +4,8 @@
 # Currently installs:
 #   - post-checkout: runs sync-skills.sh after branch switches so ~/.agents/skills
 #     always points at the current checkout
-#   - pre-commit: runs dune build / runtest / fmt against the project's local
-#     opam switch (5.5.1), not whatever the user's default switch happens to be
+#   - pre-commit: bounded type-check and format check against the project's
+#     local opam switch; the full build and test suite run in CI
 #
 # Safe to run repeatedly. Refuses to overwrite a pre-existing hook that isn't
 # onton's own (detected via a sentinel comment). Also runs sync-skills.sh once
@@ -96,16 +96,44 @@ for name in $(git rev-parse --local-env-vars); do
   unset "$name"
 done
 
-eval "$(opam env --switch="$PROJECT_ROOT" --set-switch)"
+# Leave five seconds for hook startup and cleanup within the 90-second budget.
+# A shorter local deadline is allowed; it cannot increase the cap.
+exec python3 - "$PROJECT_ROOT" <<'PY'
+import math
+import os
+import signal
+import subprocess
+import sys
+import time
 
-echo "==> dune build"
-dune build
-
-echo "==> dune runtest"
-dune runtest
-
-echo "==> format check"
-dune build @fmt
+try:
+    timeout = float(os.environ.get("ONTON_PRE_COMMIT_TIMEOUT_SECONDS", "85"))
+    if not math.isfinite(timeout) or timeout <= 0:
+        raise ValueError()
+except ValueError:
+    sys.exit("Invalid ONTON_PRE_COMMIT_TIMEOUT_SECONDS: expected positive seconds")
+timeout = min(timeout, 85)
+deadline = time.monotonic() + timeout
+print("==> dune build @check @fmt (90-second pre-commit budget)", flush=True)
+process = subprocess.Popen(
+    ["opam", "exec", "--switch=" + sys.argv[1], "--", "dune", "build", "@check", "@fmt"],
+    stdin=subprocess.DEVNULL, start_new_session=True)
+expired = False
+try:
+    status = process.wait(timeout=max(0, deadline - time.monotonic()))
+except subprocess.TimeoutExpired:
+    expired = True
+    print("Pre-commit deadline exceeded; full validation runs in CI.", file=sys.stderr)
+    status = 1
+finally:
+    if expired or process.poll() is None:
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        process.wait()
+sys.exit(status if status >= 0 else 1)
+PY
 HOOK
 
 "$SCRIPT_DIR/sync-skills.sh"

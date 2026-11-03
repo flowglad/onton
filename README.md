@@ -49,6 +49,12 @@ This symlinks each skill into `~/.claude/skills/` and installs a git
 after branch switches. Running `./scripts/sync-skills.sh` directly has the
 same effect without installing the hook.
 
+The installer also installs a pre-commit hook that runs `dune build @check @fmt`
+using the local opam switch. It rejects failures or timeouts within a 90-second
+budget; the command has an 85-second limit to leave startup and cleanup headroom.
+Full builds and tests run in CI. Run targeted tests locally for logic changes.
+Set `ONTON_PRE_COMMIT_TIMEOUT_SECONDS` to request a shorter deadline.
+
 For [Pi](https://pi.dev) users, `pi-gameplan/` is an extension that runs the
 write-gameplan skill as a mode: engineer-answered architecture decisions,
 schema-validated writes, pant-checked specs, and a finalize gate. See

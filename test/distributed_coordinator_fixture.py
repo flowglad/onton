@@ -445,7 +445,10 @@ def scenario(coordinator, worker, template):
         wait_for("sleep retirement", lambda: all(p.poll() is not None for p, _, _ in world.resources.values()))
         assert not world.closed, "sleep must not seal opaque storage"
         assert control(root / "control", "wake-generation", "wake") == "accepted"
-        wait_for("acknowledged-idle maintenance replacements", lambda: len(world.resources) >= count + 5, seconds=300)
+        # Capacity two requires two completed recovery waves before the fifth
+        # replacement can start. Restoring retained history and confirming each
+        # checkpoint needs extra headroom on the macOS release runner.
+        wait_for("acknowledged-idle maintenance replacements", lambda: len(world.resources) >= count + 5, seconds=600)
         assert len([e for e in events() if e["kind"] == "start" and e["resource"] not in first_resources]) < 10, "idle recovery must not replay all finished work"
         assert control(root / "control", "cancel-generation", "cancel") == "accepted"
         wait_for("terminal helper close", lambda: world.closed)
