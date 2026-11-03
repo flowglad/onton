@@ -74,7 +74,11 @@ let transport (f : fixture) ~argv:_ ~input =
   in
   let response =
     if stale then
-      Ok (0, reply ~revision:f.revision ~reason:"stale_guard" "rejected", "")
+      Ok
+        ( 0,
+          reply ~run_id:(string "run_id" fields) ~revision:f.revision
+            ~reason:"stale_guard" "rejected",
+          "" )
     else
       match op with
       | "state-write" when f.reject_write ->

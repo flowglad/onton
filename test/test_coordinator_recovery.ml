@@ -71,7 +71,11 @@ let transport (f : fixture) ~argv:_ ~input =
   in
   let response =
     if stale then
-      Ok (0, reply ~revision:f.revision ~reason:"stale_guard" "rejected", "")
+      Ok
+        ( 0,
+          reply ~run_id:(string "run_id" fields) ~revision:f.revision
+            ~reason:"stale_guard" "rejected",
+          "" )
     else
       match op with
       | "state-write" ->
@@ -293,7 +297,7 @@ let test_confirmed_read_guards () =
        (Coordinator_store.encode (Coordinator_host.envelope host)))
     "cold restore disagrees with warm restore"
 
-let test_reply_revision_identity () =
+let test_reply_revision_identity ~status ~reason ~matching_requests =
   List.iter
     (fun (run_id, owner_epoch, expected) ->
       let revisions = ref [] in
@@ -315,8 +319,8 @@ let test_reply_revision_identity () =
           ( 0,
             Yojson.Safe.to_string
               (`Assoc
-                 (("status", `String "ok")
-                 :: ("reason", `String "none")
+                 (("status", `String status)
+                 :: ("reason", `String reason)
                  :: ("revision", `Int 9)
                  :: identity)),
             "" )
@@ -333,15 +337,14 @@ let test_reply_revision_identity () =
       in
       ignore (Coordinator_store.load store);
       ignore (Coordinator_store.load store);
-      check
-        (!revisions = [ "1"; expected ])
+      check (!revisions = expected)
         "reply advanced revision without matching run and owner identity")
     [
-      (None, Some 1, "1");
-      (Some "other", Some 1, "1");
-      (Some "r", None, "1");
-      (Some "r", Some 2, "1");
-      (Some "r", Some 1, "9");
+      (None, Some 1, [ "1"; "1" ]);
+      (Some "other", Some 1, [ "1"; "1" ]);
+      (Some "r", None, [ "1"; "1" ]);
+      (Some "r", Some 2, [ "1"; "1" ]);
+      (Some "r", Some 1, matching_requests);
     ]
 
 let test_host_barrier () =
@@ -524,7 +527,10 @@ let test_capacity_and_retirement () =
     "unbound result released capacity"
 
 let () =
-  test_reply_revision_identity ();
+  test_reply_revision_identity ~status:"ok" ~reason:"none"
+    ~matching_requests:[ "1"; "9" ];
+  test_reply_revision_identity ~status:"rejected" ~reason:"stale_guard"
+    ~matching_requests:[ "1"; "9"; "9" ];
   test_confirmed_read_guards ();
   test_capacity_and_retirement ();
   test_host_barrier ();

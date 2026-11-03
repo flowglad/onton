@@ -288,6 +288,7 @@ let query t ~op extra =
          && Poly.equal r.reason Resource_protocol.Stale_guard
          && Option.value_map r.owner_epoch ~default:false
               ~f:(Int64.equal t.owner_epoch)
+         && Option.value_map r.run_id ~default:false ~f:(String.equal t.run_id)
          && Option.value_map r.revision ~default:false ~f:(fun n ->
              Int64.(n > t.revision)) ->
       t.revision <- Option.value r.revision ~default:t.revision;
