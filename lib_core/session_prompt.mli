@@ -14,6 +14,11 @@ val render_integration_opt_out :
   response_transport:response_transport -> artifact_path:string -> string
 (** Offer a refusal on an existing integration branch without new commits. *)
 
+val render_branch_context :
+  is_integration_root:bool -> patch_id:string -> branch:string -> string
+(** Explain the feature root's dual role; other branches need no extra context.
+*)
+
 type t
 (** Context is delivered only when the backend starts a fresh session. *)
 

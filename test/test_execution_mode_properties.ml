@@ -99,6 +99,25 @@ let integration a =
 
 let tests =
   [
+    property "feature root PR title names the whole gameplan"
+      (G.triple G.string G.string G.string)
+      (fun (project_name, gameplan_name, title) ->
+        let patch = { (patch 1 []) with Patch.title } in
+        String.equal
+          (Execution_mode.pr_title mode ~project_name ~gameplan_name ~patch)
+          gameplan_name);
+    property "ordinary PR titles retain their patch identity"
+      (G.triple G.string G.string G.string)
+      (fun (project_name, gameplan_name, title) ->
+        List.for_all
+          [
+            (Execution_mode.mainline, 1); (Execution_mode.mainline, 2); (mode, 2);
+          ]
+          ~f:(fun (mode, n) ->
+            let patch = { (patch n []) with Patch.title } in
+            String.equal
+              (Execution_mode.pr_title mode ~project_name ~gameplan_name ~patch)
+              (Printf.sprintf "[%s] Patch %d: %s" project_name n title)));
     property "root availability follows busy and native-stack interleavings"
       (G.list (G.pair G.bool G.bool))
       (fun steps ->

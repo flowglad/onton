@@ -39,6 +39,21 @@ let render_integration_opt_out ~response_transport ~artifact_path =
      preserve your WONTDO and stop automatic work on the integration branch."
     response
 
+let render_branch_context ~is_integration_root ~patch_id ~branch =
+  if not is_integration_root then ""
+  else
+    Printf.sprintf
+      "\n\n\
+       ## Feature branch context\n\n\
+       Branch `%s` has two roles: it is the branch for your own patch %s and \
+       the integration branch for the entire feature. The supervisor \
+       integrates completed descendant patches into this branch, so its \
+       contents and PR diff may include work beyond your own patch. Implement \
+       your patch's requirements while preserving integrated descendant work. \
+       When addressing feedback or failures, account for the combined feature \
+       state. The supervisor manages integration, pushes, and PR lifecycle.\n\n"
+      branch patch_id
+
 type t = { context : string; turn : string }
 
 let create ~context ~turn = { context; turn }

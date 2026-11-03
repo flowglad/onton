@@ -27,6 +27,21 @@ let () =
   in
   let tests =
     [
+      Test.make ~name:"integration root context preserves both branch roles"
+        ~count:500 input (fun (patch_id, branch) ->
+          let text =
+            Session_prompt.render_branch_context ~is_integration_root:true
+              ~patch_id ~branch
+          in
+          contains text ("Branch `" ^ branch ^ "`")
+          && contains text ("branch for your own patch " ^ patch_id)
+          && contains text "integration branch for the entire feature"
+          && contains text "preserving integrated descendant work");
+      Test.make ~name:"ordinary branches have no integration root context"
+        ~count:500 input (fun (patch_id, branch) ->
+          Session_prompt.render_branch_context ~is_integration_root:false
+            ~patch_id ~branch
+          = "");
       Test.make ~name:"backend response transport is total and case invariant"
         ~count:500 backend_names (fun backend_name ->
           Session_prompt.response_transport ~backend_name
