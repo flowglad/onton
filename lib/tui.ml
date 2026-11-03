@@ -1114,18 +1114,19 @@ let render_timeline ~width ~scroll (entries : activity_entry list) =
           | Transition { patch_id; from_label; to_status; to_label; action; _ }
             ->
               Printf.sprintf "  %s: %s → %s (%s)"
-                (Term.styled [ Term.Sgr.dim ] patch_id)
-                from_label
-                (styled_status to_status to_label)
-                (Term.styled [ Term.Sgr.dim ] action)
+                (Term.styled [ Term.Sgr.dim ] (sanitize_text patch_id))
+                (sanitize_text from_label)
+                (styled_status to_status (sanitize_text to_label))
+                (Term.styled [ Term.Sgr.dim ] (sanitize_text action))
           | Event { patch_id; message; _ } ->
               let prefix =
                 match patch_id with
-                | Some pid -> Term.styled [ Term.Sgr.dim ] (pid ^ ": ")
+                | Some pid ->
+                    Term.styled [ Term.Sgr.dim ] (sanitize_text pid ^ ": ")
                 | None -> "  "
               in
               Printf.sprintf "  %s%s" prefix
-                (Term.styled [ Term.Sgr.dim ] message)
+                (Term.styled [ Term.Sgr.dim ] (sanitize_text message))
         in
         Term.fit_width (Int.max 1 (width - 1)) row)
   in

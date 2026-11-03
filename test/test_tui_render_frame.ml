@@ -260,6 +260,51 @@ let test_timeline_view_no_summary () =
   assert (not (line_contains lines "1/1 merged"));
   assert (line_contains lines "something happened")
 
+let test_activity_views_sanitize_all_text_fields () =
+  let unsafe name = name ^ "\027[2J\027[31m\n\r\t\007\000\127tail" in
+  let activity =
+    [
+      Tui.Transition
+        {
+          patch_id = unsafe "transition-id";
+          from_label = unsafe "from";
+          to_status = Tui.Pending;
+          to_label = unsafe "to";
+          action = unsafe "action";
+          timestamp = 0.0;
+        };
+      Tui.Event
+        {
+          patch_id = Some (unsafe "event-id");
+          message = unsafe "message";
+          timestamp = 0.0;
+        };
+      Tui.Event
+        { patch_id = None; message = unsafe "unscoped"; timestamp = 0.0 };
+    ]
+  in
+  List.iter [ Tui.List_view; Tui.Timeline_view ] ~f:(fun view_mode ->
+      let frame = render ~width:240 ~height:30 ~view_mode ~activity one_view in
+      let raw = Tui.frame_to_string frame in
+      assert (not (String.is_substring raw ~substring:"\027[2J"));
+      let lines = plain_lines frame in
+      List.iter
+        [
+          "transition-id";
+          "from";
+          "to";
+          "action";
+          "event-id";
+          "message";
+          "unscoped";
+        ] ~f:(fun name ->
+          assert (line_contains lines (name ^ String.make 6 ' ' ^ "tail")));
+      List.iter lines ~f:(fun line ->
+          assert (
+            String.for_all line ~f:(fun c ->
+                let code = Char.to_int c in
+                code >= 0x20 && code <> 0x7f))))
+
 let test_patches_render_above_activity () =
   let frame = render ~activity:one_activity_entry many_views in
   let lines = plain_lines frame in
@@ -428,6 +473,7 @@ let () =
   test_checks_overlay_clamps_offset ();
   test_checks_overlay_zero_visible_range ();
   test_timeline_view_no_summary ();
+  test_activity_views_sanitize_all_text_fields ();
   test_patches_render_above_activity ();
   test_patches_sort_lexicographically_by_id ();
   QCheck2.Test.check_exn
