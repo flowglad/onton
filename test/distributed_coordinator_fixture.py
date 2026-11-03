@@ -103,7 +103,6 @@ class World:
         self.drop_write = False
         self.refuse_receipt = False
         self.refuse_stop = False
-        self.requests = []
 
     def reply(self, status="ok", reason="none", **fields):
         return dict(status=status, reason=reason, run_id=self.run, owner_epoch=self.epoch,
@@ -134,7 +133,6 @@ class World:
 
     def resource(self, request):
         with self.lock:
-            self.requests.append(copy.deepcopy(request))
             with open(self.root / 'requests', 'a') as log:
                 log.write(json.dumps(dict(time=time.monotonic(), op=request['op'], version=self.version))+'\n')
             op = request["op"]
@@ -158,7 +156,7 @@ class World:
                 receipt = self.receipts.get(request["write_id"])
                 if not receipt:
                     return self.reply("rejected", "not_found")
-                return self.reply(receipt_state_version=receipt[0])
+                return self.reply(receipt_state_version=receipt)
             if int(request["revision"]) != self.revision:
                 return self.reply("rejected", "stale_guard")
             if op == "state-read":
@@ -173,7 +171,7 @@ class World:
                 self.version += 1
                 self.revision += 1
                 self.payload = request["payload"]
-                self.receipts[request["write_id"]] = (self.version, self.payload)
+                self.receipts[request["write_id"]] = self.version
                 if self.drop_write:
                     self.drop_write = False
                     return None
@@ -461,6 +459,8 @@ def scenario(coordinator, worker, template):
         if process and process.poll() is None:
             process.terminate()
         print((root / "requests").read_text()[-6000:], file=sys.stderr)
+        for path in root.glob("*.out"):
+            print(path, path.read_text()[-12000:], file=sys.stderr)
         for path in root.glob("*.err"):
             print(path, path.read_text()[-12000:], file=sys.stderr)
         for _, directory, _ in world.resources.values():

@@ -316,6 +316,45 @@ let () =
   in
   barrier "bind" (command "assignment-1" bind);
   send_committed (receive "assignment-1" (recv !output) ());
+  (* Warm decoding must not reuse a stream after its durable bytes change. *)
+  check "warm stream load" (Result.is_ok (Coordinator_store.load store));
+  let saved_payload = f.payload in
+  (match saved_payload with
+  | None -> failwith "missing committed stream payload"
+  | Some bytes ->
+      let prefix = "onton-coordinator-3\n" in
+      let packed =
+        String.sub bytes (String.length prefix)
+          (String.length bytes - String.length prefix)
+      in
+      let plain =
+        match
+          Coordinator_archive.decode ~max_bytes:(64 * 1024 * 1024) packed
+        with
+        | Ok plain -> plain
+        | Error why -> failwith why
+      in
+      let envelope = Yojson.Safe.from_string plain in
+      let streams =
+        match field "streams" envelope with
+        | Some (`List (`List [ `String id; `String bytes ] :: rest)) ->
+            let corrupted =
+              replace "history" (`List []) (Yojson.Safe.from_string bytes)
+              |> Yojson.Safe.to_string
+            in
+            `List (`List [ `String id; `String corrupted ] :: rest)
+        | _ -> failwith "missing durable stream"
+      in
+      f.payload <-
+        Some
+          (prefix
+          ^ Coordinator_archive.encode
+              (Yojson.Safe.to_string (replace "streams" streams envelope)));
+      check "changed stream history rejected despite warm cache"
+        (Result.is_error (Coordinator_store.load store));
+      f.payload <- saved_payload;
+      check "original stream still restores"
+        (Result.is_ok (Coordinator_store.load store)));
   let version = ref 0L in
   let work =
     `Assoc

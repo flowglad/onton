@@ -5,11 +5,19 @@ open Base
 
 [@@@warning "-4"]
 
+type serialized = {
+  plain : string;
+  packed : string Lazy.t;
+  stream_bytes : (string * string) list;
+  largest_stream : int;
+}
+
 type envelope = {
   version : int64;
   write_id : string;
   state : Coordinator_state.t;
   streams : (string * Worker_stream.t) list;
+  serialized : serialized Lazy.t;
 }
 
 type receipt = { write_id : string; state_version : int64 }
@@ -36,6 +44,7 @@ type t = {
   mutable revision : int64;
   next_id : unit -> string;
   mutable pending : pending option;
+  mutable loaded : (string * envelope) option;
 }
 
 let create ~client ~run_id ~coordinator_id ~owner_epoch ~revision ~next_id =
@@ -47,50 +56,87 @@ let create ~client ~run_id ~coordinator_id ~owner_epoch ~revision ~next_id =
     revision;
     next_id;
     pending = None;
+    loaded = None;
   }
 
 let authority t = (t.run_id, t.coordinator_id, t.owner_epoch, t.revision)
 let state e = e.state
 let version e = e.version
 let write_id (e : envelope) = e.write_id
-let initial state = { version = 0L; write_id = "initial"; state; streams = [] }
+let archive_prefix = "onton-coordinator-3\n"
+
+(* The envelope is immutable and opaque, so derived bytes belong to this exact
+   value. Every constructor replaces the cache along with its contents. *)
+let make_envelope ?previous ~version ~write_id ~state ~streams () =
+  let serialized =
+    lazy
+      (let streams =
+         List.map streams ~f:(fun (id, stream) ->
+             let reused =
+               Option.bind previous ~f:(fun (e : envelope) ->
+                   match List.Assoc.find e.streams id ~equal:String.equal with
+                   | Some old when phys_equal old stream ->
+                       List.Assoc.find (Lazy.force e.serialized).stream_bytes id
+                         ~equal:String.equal
+                   | Some _ | None -> None)
+             in
+             ( id,
+               match reused with
+               | Some bytes -> bytes
+               | None -> Worker_stream.encode stream ))
+       in
+       let plain =
+         Yojson.Safe.to_string
+           (`Assoc
+              [
+                ("schema", `String "onton-coordinator-3");
+                ("version", `String (Int64.to_string version));
+                ("write_id", `String write_id);
+                ("state", `String (Coordinator_state.encode state));
+                ( "streams",
+                  `List
+                    (List.map streams ~f:(fun (id, bytes) ->
+                         `List [ `String id; `String bytes ])) );
+              ])
+       in
+       {
+         plain;
+         stream_bytes = streams;
+         packed = lazy (archive_prefix ^ Coordinator_archive.encode plain);
+         largest_stream =
+           List.fold streams ~init:0 ~f:(fun n (_, bytes) ->
+               Int.max n (String.length bytes));
+       })
+  in
+  { version; write_id; state; streams; serialized }
+
+let initial state =
+  make_envelope ~version:0L ~write_id:"initial" ~state ~streams:[] ()
+
+let streams e = e.streams
 
 let stream e assignment =
   List.Assoc.find e.streams assignment ~equal:String.equal
 
 let with_stream e assignment stream =
-  {
-    e with
-    streams =
-      (assignment, stream)
-      :: List.Assoc.remove e.streams assignment ~equal:String.equal;
-  }
+  make_envelope ~previous:e ~version:e.version ~write_id:e.write_id
+    ~state:e.state
+    ~streams:
+      ((assignment, stream)
+      :: List.Assoc.remove e.streams assignment ~equal:String.equal)
+    ()
 
-let with_state e state = { e with state }
+let with_state e state =
+  make_envelope ~previous:e ~version:e.version ~write_id:e.write_id ~state
+    ~streams:e.streams ()
 
 let committed e (receipt : receipt) =
-  { e with version = receipt.state_version; write_id = receipt.write_id }
+  make_envelope ~previous:e ~version:receipt.state_version
+    ~write_id:receipt.write_id ~state:e.state ~streams:e.streams ()
 
-let archive_prefix = "onton-coordinator-3\n"
+let encode e = Lazy.force (Lazy.force e.serialized).packed
 
-let encode_plain e =
-  Yojson.Safe.to_string
-    (`Assoc
-       [
-         ("schema", `String "onton-coordinator-3");
-         ("version", `String (Int64.to_string e.version));
-         ("write_id", `String e.write_id);
-         ("state", `String (Coordinator_state.encode e.state));
-         ( "streams",
-           `List
-             (List.map e.streams ~f:(fun (id, stream) ->
-                  `List [ `String id; `String (Worker_stream.encode stream) ]))
-         );
-       ])
-
-let encode e = archive_prefix ^ Coordinator_archive.encode (encode_plain e)
-
-let decode bytes =
+let decode ?previous bytes =
   if String.length bytes > 8 * 1024 * 1024 then
     Error (Invalid "oversized state")
   else
@@ -114,7 +160,21 @@ let decode bytes =
         | Some (`List xs) ->
             List.map xs ~f:(function
               | `List [ `String id; `String bytes ] -> (
-                  match Worker_stream.decode bytes with
+                  let cached =
+                    Option.bind previous ~f:(fun e ->
+                        let serialized = Lazy.force e.serialized in
+                        match
+                          List.Assoc.find serialized.stream_bytes id
+                            ~equal:String.equal
+                        with
+                        | Some old when String.equal old bytes -> stream e id
+                        | Some _ | None -> None)
+                  in
+                  match
+                    match cached with
+                    | Some stream -> Ok stream
+                    | None -> Worker_stream.decode bytes
+                  with
                   | Ok stream -> (id, stream)
                   | Error _ -> failwith "invalid stream")
               | _ -> failwith "invalid stream record")
@@ -169,7 +229,10 @@ let decode bytes =
                                 && String.equal capsule.receipt receipt)
                         | _ -> false)
                   in
-                  if bound then Ok { version; write_id; state; streams }
+                  if bound then
+                    Ok
+                      (make_envelope ?previous ~version ~write_id ~state
+                         ~streams ())
                   else
                     Error
                       (Invalid "stream and coordinator owner artifacts disagree")
@@ -200,7 +263,18 @@ let request t ~op ~request_id extra =
 let send t req =
   match Resource_client.request t.client req with
   | Error e -> Error (Helper e)
-  | Ok r -> Ok r
+  | Ok r ->
+      (* A matching successful reply supplies the next query guard. This is not
+         a commit receipt: confirmation still reads the receipt and current bytes. *)
+      if
+        Poly.equal r.status Resource_protocol.Ok
+        && Option.value_map r.owner_epoch ~default:false
+             ~f:(Int64.equal t.owner_epoch)
+        && Option.value_map r.run_id ~default:false ~f:(String.equal t.run_id)
+      then
+        Option.iter r.revision ~f:(fun revision ->
+            if Int64.(revision > t.revision) then t.revision <- revision);
+      Ok r
 
 let query t ~op extra =
   let perform () =
@@ -214,13 +288,14 @@ let query t ~op extra =
          && Poly.equal r.reason Resource_protocol.Stale_guard
          && Option.value_map r.owner_epoch ~default:false
               ~f:(Int64.equal t.owner_epoch)
+         && Option.value_map r.run_id ~default:false ~f:(String.equal t.run_id)
          && Option.value_map r.revision ~default:false ~f:(fun n ->
              Int64.(n > t.revision)) ->
       t.revision <- Option.value r.revision ~default:t.revision;
       perform ()
   | other -> other
 
-let load t =
+let load_snapshot t =
   match query t ~op:"state-read" [] with
   | Error e -> Error e
   | Ok r -> (
@@ -238,20 +313,29 @@ let load t =
           match Base64.decode encoded with
           | Error _ -> Error (Invalid "invalid state-read base64")
           | Ok bytes -> (
-              match decode bytes with
+              let decoded =
+                match t.loaded with
+                | Some (old, e) when String.equal old bytes -> Ok e
+                | previous ->
+                    decode ?previous:(Option.map previous ~f:snd) bytes
+              in
+              match decoded with
               | Error e -> Error e
               | Ok e
                 when Int64.equal e.version version
                      && String.equal (Coordinator_state.run_id e.state) t.run_id
                 ->
                   t.revision <- revision;
-                  Ok e
+                  t.loaded <- Some (bytes, e);
+                  Ok (bytes, e)
               | Ok _ -> Error (Invalid "envelope identity/version mismatch")))
       | Ok, _, _, _, _, _ ->
           Error (Invalid "state-read missing current bytes or guards")
       | Pending, _, _, _, _, _ | Attention, _, _, _, _, _ ->
           Error (Uncertain "state-read not confirmed")
       | Rejected, _, _, _, _, _ -> Error (Refused r))
+
+let load t = Result.map (load_snapshot t) ~f:snd
 
 let confirm t pending =
   (* A known receipt is metadata, not historical bytes. Check current bytes too. *)
@@ -265,11 +349,11 @@ let confirm t pending =
                 ~f:(Int64.equal Int64.(succ pending.expected)))
       then Error (Uncertain "write receipt unconfirmed")
       else
-        match load t with
-        | Ok current
+        match load_snapshot t with
+        | Ok (bytes, current)
           when Int64.equal current.version Int64.(succ pending.expected)
                && String.equal current.write_id pending.id
-               && String.equal (encode current) pending.payload ->
+               && String.equal bytes pending.payload ->
             t.pending <- None;
             Ok { write_id = pending.id; state_version = current.version }
         | Ok _ -> Error (Conflict "write is not current")
@@ -282,19 +366,23 @@ let commit ?(emergency = false) t ~expected_version ~write_id e =
     || String.is_empty write_id
   then Error (Invalid "invalid write identity/version")
   else
-    let next = { e with version = Int64.succ expected_version; write_id } in
-    let plain = encode_plain next in
+    let next =
+      make_envelope ~previous:e
+        ~version:(Int64.succ expected_version)
+        ~write_id ~state:e.state ~streams:e.streams ()
+    in
+    let serialized = Lazy.force next.serialized in
+    let plain = serialized.plain in
     let payload =
       if String.length plain > 64 * 1024 * 1024 then ""
-      else archive_prefix ^ Coordinator_archive.encode plain
+      else Lazy.force serialized.packed
     in
     if
       (String.length plain > (64 * 1024 * 1024) - if emergency then 0 else 65536)
       || (String.length payload
          > (8 * 1024 * 1024) - if emergency then 0 else 65536)
-      || List.exists next.streams ~f:(fun (_, stream) ->
-          String.length (Worker_stream.encode stream)
-          > (8 * 1024 * 1024) - if emergency then 0 else 65536)
+      || serialized.largest_stream
+         > (8 * 1024 * 1024) - if emergency then 0 else 65536
     then Error (Invalid "emergency state reserve exhausted")
     else
       let prospective =

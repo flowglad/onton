@@ -459,7 +459,8 @@ let command t ~assignment ~frame =
                     (Some (`String (Coordinator_state.plan_id (state t)))))
           then invalid "bind configuration/plan mismatch"
           else if
-            List.exists t.current.streams ~f:(fun (id, stream) ->
+            List.exists (Coordinator_store.streams t.current)
+              ~f:(fun (id, stream) ->
                 if String.equal id assignment then false
                 else
                   match Worker_stream.identity stream with

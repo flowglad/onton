@@ -46,6 +46,53 @@ let () =
         (Result.is_error (Onton.Resource_client.request client changed))
         "changed guard with same ID must not reach helper"
   | Error e -> failwith e);
+  let writes = ref 0 in
+  let large_client =
+    Onton.Resource_client.create ~helper:"fixture"
+      ~transport:(fun ~argv:_ ~input:_ ->
+        incr writes;
+        Ok (0, {|{"status":"ok","reason":"none"}|}, ""))
+  in
+  let write_request run payload =
+    let bytes =
+      Yojson.Safe.to_string
+        (`Assoc
+           [
+             ("version", `String "resource-v1");
+             ("op", `String "state-write");
+             ("run_id", `String run);
+             ("request_id", `String "large");
+             ("coordinator_id", `String "c");
+             ("owner_epoch", `String "0");
+             ("revision", `String "0");
+             ("state_version", `String "0");
+             ("write_id", `String "large");
+             ("payload", `String (Base64.encode_string payload));
+           ])
+    in
+    match Resource_protocol.make_request bytes with
+    | Ok request -> request
+    | Error reason -> failwith reason
+  in
+  let payload = String.make 65536 'x' in
+  let original = write_request "r" payload in
+  check
+    (Result.is_ok (Onton.Resource_client.request large_client original))
+    "large write accepted";
+  check
+    (Result.is_ok (Onton.Resource_client.request large_client original))
+    "exact large write retry accepted";
+  let changed = write_request "r" (payload ^ "changed") in
+  check
+    (Result.is_error (Onton.Resource_client.request large_client changed)
+    && !writes = 2)
+    "changed payload must not reach helper";
+  check
+    (Result.is_ok
+       (Onton.Resource_client.request large_client
+          (write_request "other-run" (payload ^ "changed")))
+    && !writes = 3)
+    "request identities are scoped to their run";
   let failed =
     Onton.Resource_client.create ~helper:"fixture"
       ~transport:(fun ~argv:_ ~input:_ ->
