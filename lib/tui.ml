@@ -794,20 +794,21 @@ let render_activity (entries : activity_entry list) =
             ->
               Printf.sprintf "  %s  %s: %s → %s (%s)"
                 (Term.styled [ Term.Sgr.dim ] (format_activity_ts timestamp))
-                (Term.styled [ Term.Sgr.dim ] patch_id)
-                from_label
-                (styled_status to_status to_label)
-                (Term.styled [ Term.Sgr.dim ] action)
+                (Term.styled [ Term.Sgr.dim ] (sanitize_text patch_id))
+                (sanitize_text from_label)
+                (styled_status to_status (sanitize_text to_label))
+                (Term.styled [ Term.Sgr.dim ] (sanitize_text action))
           | Event { patch_id; message; timestamp } ->
               let prefix =
                 match patch_id with
-                | Some pid -> Term.styled [ Term.Sgr.dim ] (pid ^ ": ")
+                | Some pid ->
+                    Term.styled [ Term.Sgr.dim ] (sanitize_text pid ^ ": ")
                 | None -> ""
               in
               Printf.sprintf "  %s  %s%s"
                 (Term.styled [ Term.Sgr.dim ] (format_activity_ts timestamp))
                 prefix
-                (Term.styled [ Term.Sgr.dim ] message))
+                (Term.styled [ Term.Sgr.dim ] (sanitize_text message)))
     in
     header :: lines
 
@@ -1687,6 +1688,9 @@ let render_frame ~width ~height ~selected ~scroll_offset ~view_mode
             let lines =
               header @ [ "" ] @ patches @ activity_lines @ [ "" ] @ status_line
               @ footer
+              (* Every budgeted row must occupy one terminal row, including
+                 long activity messages and the footer on narrow terminals. *)
+              |> List.map ~f:(Term.fit_width (Int.max 0 width))
             in
             {
               no_patches with

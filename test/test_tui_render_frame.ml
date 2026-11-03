@@ -169,6 +169,36 @@ let test_list_view_activity_squeezed_partial () =
   assert (visible_events >= 1);
   assert (visible_events < 4)
 
+let test_list_view_long_activity_preserves_patches () =
+  let long_text = String.make 2000 'x' ^ "\nsecond line\r\nthird line" in
+  let activity =
+    [
+      Tui.Event { patch_id = Some "1"; message = long_text; timestamp = 0.0 };
+      Tui.Transition
+        {
+          patch_id = "2";
+          from_label = long_text;
+          to_status = Tui.Pending;
+          to_label = long_text;
+          action = long_text;
+          timestamp = 0.0;
+        };
+    ]
+  in
+  List.iter [ 40; 80; 120 ] ~f:(fun width ->
+      List.iter [ 16; 18; 24 ] ~f:(fun height ->
+          let frame = render ~width ~height ~activity many_views in
+          let lines = String.split_lines (Tui.frame_to_string frame) in
+          assert (Tui.patch_count frame = List.length many_views);
+          List.iter many_views ~f:(fun pv ->
+              assert (
+                line_contains lines
+                  ("Patch " ^ Patch_id.to_string pv.Tui.patch_id)));
+          assert (List.length lines <= height);
+          List.iter lines ~f:(fun line ->
+              assert (Onton.Term.visible_length line <= width));
+          if height >= 18 then assert (line_contains lines (String.make 10 'x'))))
+
 let test_frame_anchored_at_top () =
   (* The header must be on the first emitted line — paint_frame moves the
      cursor to row 1 and then writes [lines.[0]] first. *)
@@ -351,6 +381,7 @@ let () =
   test_list_view_collapses_activity_when_tight ();
   test_list_view_patches_survive_activity_at_short_height ();
   test_list_view_activity_squeezed_partial ();
+  test_list_view_long_activity_preserves_patches ();
   test_frame_anchored_at_top ();
   test_detail_view_no_summary ();
   test_detail_inline_ci_checks_capped ();
