@@ -4,21 +4,22 @@
 class Onton < Formula
   desc "OCaml orchestrator for parallel Claude Code agents executing gameplan patches"
   homepage "https://github.com/flowglad/onton"
-  version "0.69.2"
+  version "0.70.0"
   license "MIT"
 
   on_arm do
-    url "https://github.com/flowglad/onton/releases/download/v0.69.2/onton-arm64-apple-darwin.tar.gz"
-    sha256 "636a6322ff293f13cdbbc8cbf2d7d362d6df7a9d8838383742d5de9a2d0b1e12"
+    url "https://github.com/flowglad/onton/releases/download/v0.70.0/onton-arm64-apple-darwin.tar.gz"
+    sha256 "c9426884c973da43b39c70a664c31536c2178726b5df1ad6e53fb3c0befcfe4c"
   end
 
   depends_on "gmp"
 
   def install
-    bin.install "onton", "onton-setsid-exec", "onton-worker"
+    bin.install "onton", "onton-coordinator", "onton-setsid-exec", "onton-worker"
+    (share/"onton").install "share/onton/pi-onton"
     # Rewrite CI's hardcoded libgmp path to this machine's Homebrew prefix
     gmp_lib = (Formula["gmp"].opt_lib/"libgmp.10.dylib").to_s
-    %w[onton onton-worker].each do |name|
+    %w[onton onton-coordinator onton-worker].each do |name|
       old_path = Utils.popen_read("otool", "-L", bin/name)
         .lines.find { |l| l.include?("libgmp") }&.strip&.split&.first
       if old_path && old_path != gmp_lib
@@ -28,8 +29,13 @@ class Onton < Formula
   end
 
   test do
+    %w[index.ts protocol.ts files.ts].each do |name|
+      assert_predicate share/"onton/pi-onton"/name, :file?
+    end
     assert_match "onton", shell_output("#{bin}/onton --version 2>&1", 0)
+    assert_predicate bin/"onton-coordinator", :executable?
     assert_predicate bin/"onton-setsid-exec", :executable?
+    assert_match "Usage: onton-coordinator", shell_output("#{bin}/onton-coordinator 2>&1", 2)
     assert_match "Usage: onton-worker", shell_output("#{bin}/onton-worker 2>&1", 2)
   end
 end
