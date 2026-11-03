@@ -1037,6 +1037,15 @@ module Make (Forge : Forge.S) (W : Worktree.S) (Env : Runner_env.S) = struct
        main-freshness fetch to avoid ref-lock races on the shared
        [refs/remotes/origin/*] store. Shared via [Env.fetch_mutex] so a
        single mutex covers every fiber. See [Worktree.fetch_origin]. *)
+    let branch_context ~patch_id ~(agent : Patch_agent.t) =
+      Session_prompt.render_branch_context
+        ~is_integration_root:
+          (Runtime.read runtime (fun snap ->
+               Orchestrator.is_integration_root snap.Runtime.orchestrator
+                 patch_id))
+        ~patch_id:(Patch_id.to_string patch_id)
+        ~branch:(Branch.to_string agent.branch)
+    in
     let run_llm_session ~write_owner ~kind ~delivery_mode ~patch_id ~prompt
         ~(agent : Patch_agent.t) ~on_pr_detected ~complexity =
       let gameplan = Runtime.read runtime (fun snap -> snap.Runtime.gameplan) in
@@ -1067,6 +1076,7 @@ module Make (Forge : Forge.S) (W : Worktree.S) (Env : Runner_env.S) = struct
             ?patch ~gameplan
             ~base_branch:(Branch.to_string base_branch)
             ?agents_md ()
+          ^ branch_context ~patch_id ~agent
         in
         let turn =
           match gameplan.Gameplan.publication with
@@ -1386,6 +1396,7 @@ module Make (Forge : Forge.S) (W : Worktree.S) (Env : Runner_env.S) = struct
                                              (Stdlib.Filename.concat
                                                 (path agent) "AGENTS.md"))
                                         ()
+                                      ^ branch_context ~patch_id ~agent
                                     in
                                     let cwd =
                                       match turn.Branch_reconcile.mode with
@@ -1652,10 +1663,14 @@ module Make (Forge : Forge.S) (W : Worktree.S) (Env : Runner_env.S) = struct
                                                patch_id))
                                   in
                                   let pr_title =
-                                    Printf.sprintf "[%s] Patch %s: %s"
-                                      project_name
-                                      (Patch_id.to_string patch.Patch.id)
-                                      patch.Patch.title
+                                    Runtime.read runtime (fun snap ->
+                                        Execution_mode.pr_title
+                                          (Orchestrator.execution_mode
+                                             snap.Runtime.orchestrator)
+                                          ~project_name
+                                          ~gameplan_name:
+                                            snap.Runtime.gameplan.project_name
+                                          ~patch)
                                   in
                                   let pr_body, _ =
                                     render_pr_content ~runtime ~project_name

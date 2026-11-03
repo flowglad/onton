@@ -13,6 +13,13 @@ let mainline = Mainline
 let root = function Mainline -> None | Feature_branch f -> Some f.root
 let is_root t id = Option.equal Patch_id.equal (root t) (Some id)
 
+let pr_title t ~project_name ~gameplan_name ~(patch : Patch.t) =
+  if is_root t patch.id then gameplan_name
+  else
+    Printf.sprintf "[%s] Patch %s: %s" project_name
+      (Patch_id.to_string patch.id)
+      patch.title
+
 let is_descendant t id =
   match t with
   | Mainline -> false

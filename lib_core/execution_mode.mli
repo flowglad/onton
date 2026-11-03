@@ -7,6 +7,12 @@ type t [@@deriving sexp_of, show, eq]
 val mainline : t
 val root : t -> Patch_id.t option
 val is_root : t -> Patch_id.t -> bool
+
+val pr_title :
+  t -> project_name:string -> gameplan_name:string -> patch:Patch.t -> string
+(** Feature roots represent the whole gameplan; other PRs represent one patch.
+*)
+
 val is_descendant : t -> Patch_id.t -> bool
 
 val branch_only_published : t -> Patch_agent.t -> bool
