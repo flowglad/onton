@@ -10,11 +10,11 @@ type t = {
   helper : string;
   transport : transport;
   mutable attachments : string list;
-  mutable submitted : (string * string * string) list;
+  submitted : (string * string, string) Hashtbl.Poly.t;
 }
 
 let create ~helper ~transport =
-  { helper; transport; attachments = []; submitted = [] }
+  { helper; transport; attachments = []; submitted = Hashtbl.Poly.create () }
 
 let close fd = try Unix.close fd with _ -> ()
 
@@ -181,30 +181,33 @@ let request t req =
   match Resource_protocol.encode_request req with
   | Error e -> Error (Transport e)
   | Ok input -> (
-      let previous =
-        List.find t.submitted ~f:(fun (run, id, _) ->
-            String.equal run req.run_id && String.equal id req.request_id)
+      (* Keep request identity without retaining every historical checkpoint
+         payload. This fingerprint is only a local reuse guard; storage commit
+         confirmation still compares the complete current envelope bytes. *)
+      let fingerprint = Stdlib.Digest.BLAKE256.string input in
+      let key = (req.run_id, req.request_id) in
+      let same_request =
+        match Hashtbl.add t.submitted ~key ~data:fingerprint with
+        | `Ok -> true
+        | `Duplicate ->
+            Option.value_map
+              (Hashtbl.find t.submitted key)
+              ~default:false ~f:(String.equal fingerprint)
       in
-      match previous with
-      | Some (_, _, bytes) when not (String.equal bytes input) ->
-          Error (Transport "changed request identity")
-      | _ -> (
-          if Option.is_none previous then
-            t.submitted <- (req.run_id, req.request_id, input) :: t.submitted;
-          match
-            t.transport
-              ~argv:
-                [
-                  t.helper; "resources"; Resource_protocol.op_name req.operation;
-                ]
-              ~input
-          with
-          | Error e -> Error (Transport e)
-          | Ok (exit, stdout, _stderr) -> (
-              match Resource_protocol.decode_response stdout with
-              | Error e -> Error (Invalid_response (exit, e))
-              | Ok r when exit <> 0 -> Error (Helper_exit (exit, r))
-              | Ok r -> Ok r)))
+      if not same_request then Error (Transport "changed request identity")
+      else
+        match
+          t.transport
+            ~argv:
+              [ t.helper; "resources"; Resource_protocol.op_name req.operation ]
+            ~input
+        with
+        | Error e -> Error (Transport e)
+        | Ok (exit, stdout, _stderr) -> (
+            match Resource_protocol.decode_response stdout with
+            | Error e -> Error (Invalid_response (exit, e))
+            | Ok r when exit <> 0 -> Error (Helper_exit (exit, r))
+            | Ok r -> Ok r))
 
 type attachment = {
   stdin : Unix.file_descr;

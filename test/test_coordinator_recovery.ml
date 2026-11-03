@@ -21,6 +21,7 @@ type fixture = {
   mutable drop_write : bool;
   mutable refuse_read : bool;
   mutable refuse_receipt : bool;
+  mutable requests : string list;
 }
 
 let get field xs = List.assoc_opt field xs
@@ -63,6 +64,7 @@ let transport (f : fixture) ~argv:_ ~input =
     | _ -> fail "invalid helper request"
   in
   let op = string "op" fields in
+  f.requests <- f.requests @ [ op ];
   let stale =
     (String.equal op "state-read" || String.equal op "write-status")
     && int_of_string (string "revision" fields) <> f.revision
@@ -123,6 +125,7 @@ let fixture () =
     drop_write = false;
     refuse_read = false;
     refuse_receipt = false;
+    requests = [];
   }
 
 let setup f =
@@ -237,6 +240,47 @@ let test_missing_current_read () =
   with
   | Error (Coordinator_store.Uncertain _) -> ()
   | _ -> fail "receipt without current bytes was treated as commit"
+
+let test_confirmed_read_guards () =
+  let f = fixture () in
+  let store, state, next_id = setup f in
+  ignore
+    (committed
+       (Coordinator_store.commit store ~expected_version:0L ~write_id:"write-1"
+          (Coordinator_store.initial state)));
+  check
+    (f.requests = [ "state-write"; "write-status"; "state-read" ])
+    "successful write incurred a stale-guard retry";
+  let host =
+    match Coordinator_host.restore ~store ~next_write_id:next_id with
+    | Ok host -> host
+    | Error _ -> fail "restore confirmed state"
+  in
+  f.requests <- [];
+  check (Coordinator_host.refresh host = Ok ()) "unchanged current bytes";
+  check (f.requests = [ "state-read" ]) "refresh must read current bytes";
+  f.refuse_read <- true;
+  check
+    (Result.is_error (Coordinator_store.load store))
+    "cached envelope hid an unavailable current read";
+  f.refuse_read <- false;
+  f.version <- Int64.succ f.version;
+  check
+    (Result.is_error (Coordinator_store.load store))
+    "cached envelope hid a response version mismatch";
+  f.version <- Int64.pred f.version;
+  let saved = f.payload in
+  f.payload <- Some "malformed current bytes";
+  check
+    (Result.is_error (Coordinator_store.load store))
+    "cached envelope hid changed malformed bytes";
+  f.payload <- saved;
+  check (Coordinator_host.refresh host = Ok ()) "restored exact current bytes";
+  (* A new store must validate the durable data without any in-memory cache. *)
+  let restarted, _, _ = setup f in
+  check
+    (Result.is_ok (Coordinator_store.load restarted))
+    "cold restore disagrees with warm restore"
 
 let test_host_barrier () =
   let f = fixture () in
@@ -418,6 +462,7 @@ let test_capacity_and_retirement () =
     "unbound result released capacity"
 
 let () =
+  test_confirmed_read_guards ();
   test_capacity_and_retirement ();
   test_host_barrier ();
   test_lost_response ();

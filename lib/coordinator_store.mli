@@ -1,13 +1,7 @@
 (* @archlint.module interface
    @archlint.domain coordinator-state *)
 
-type envelope = private {
-  version : int64;
-  write_id : string;
-  state : Coordinator_state.t;
-  streams : (string * Worker_stream.t) list;
-}
-
+type envelope
 type receipt = private { write_id : string; state_version : int64 }
 
 type error =
@@ -34,6 +28,7 @@ val version : envelope -> int64
 val write_id : envelope -> string
 val initial : Coordinator_state.t -> envelope
 val with_state : envelope -> Coordinator_state.t -> envelope
+val streams : envelope -> (string * Worker_stream.t) list
 val stream : envelope -> string -> Worker_stream.t option
 val with_stream : envelope -> string -> Worker_stream.t -> envelope
 val committed : envelope -> receipt -> envelope
