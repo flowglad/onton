@@ -169,6 +169,100 @@ let test_list_view_activity_squeezed_partial () =
   assert (visible_events >= 1);
   assert (visible_events < 4)
 
+let test_list_view_long_activity_preserves_patches () =
+  let long_text = String.make 2000 'x' ^ "\nsecond line\r\nthird line" in
+  let activity =
+    [
+      Tui.Event { patch_id = Some "1"; message = long_text; timestamp = 0.0 };
+      Tui.Transition
+        {
+          patch_id = "2";
+          from_label = long_text;
+          to_status = Tui.Pending;
+          to_label = long_text;
+          action = long_text;
+          timestamp = 0.0;
+        };
+    ]
+  in
+  List.iter [ 40; 80; 120 ] ~f:(fun width ->
+      List.iter [ 16; 18; 24 ] ~f:(fun height ->
+          let frame = render ~width ~height ~activity many_views in
+          let lines = String.split_lines (Tui.frame_to_string frame) in
+          assert (Tui.patch_count frame = List.length many_views);
+          List.iter many_views ~f:(fun pv ->
+              assert (
+                line_contains lines
+                  ("Patch " ^ Patch_id.to_string pv.Tui.patch_id)));
+          assert (List.length lines <= height);
+          List.iter lines ~f:(fun line ->
+              assert (Onton.Term.visible_length line <= width));
+          if height >= 18 then assert (line_contains lines (String.make 10 'x'))))
+
+let test_list_view_wide_activity_preserves_patches () =
+  List.iter
+    [
+      "界";
+      "⌚";
+      "⌛";
+      "⏩";
+      "⏬";
+      "⏰";
+      "⏳";
+      "◽";
+      "◾";
+      "⬛";
+      "⬜";
+      "⭐";
+      "⭕";
+      "\u{a960}";
+      "\u{a97c}";
+      "\u{1d300}";
+      "\u{1d356}";
+      "\u{1d360}";
+      "\u{1d376}";
+    ] ~f:(fun glyph ->
+      let wide_text = String.concat (List.init 40 ~f:(fun _ -> glyph)) in
+      List.iter [ 20; 21; 40; 41; 80 ] ~f:(fun width ->
+          List.iter [ 16; 18; 24 ] ~f:(fun height ->
+              let activity =
+                [
+                  Tui.Event
+                    {
+                      patch_id = Some "1";
+                      message = wide_text;
+                      timestamp = 0.0;
+                    };
+                ]
+              in
+              let frame = render ~width ~height ~activity many_views in
+              let lines = plain_lines frame in
+              assert (Tui.patch_count frame = List.length many_views);
+              List.iter many_views ~f:(fun pv ->
+                  assert (
+                    line_contains lines
+                      ("Patch " ^ Patch_id.to_string pv.Tui.patch_id)));
+              (* In this fixture only [glyph] is double-width; all other glyphs are
+             single-cell. Measure independently of the production fitter. *)
+              let physical_rows =
+                List.sum
+                  (module Int)
+                  lines
+                  ~f:(fun line ->
+                    assert (Stdlib.String.is_valid_utf_8 line);
+                    let wide_count =
+                      String.substr_index_all line ~pattern:glyph
+                        ~may_overlap:false
+                      |> List.length
+                    in
+                    let cells = Onton.Term.visible_length line + wide_count in
+                    assert (cells <= width);
+                    if String.is_empty line then 0
+                    else Int.max 1 ((cells + width - 1) / width))
+              in
+              assert (physical_rows <= height);
+              if height >= 18 then assert (line_contains lines (glyph ^ glyph)))))
+
 let test_frame_anchored_at_top () =
   (* The header must be on the first emitted line — paint_frame moves the
      cursor to row 1 and then writes [lines.[0]] first. *)
@@ -192,6 +286,51 @@ let test_timeline_view_no_summary () =
   let lines = plain_lines frame in
   assert (not (line_contains lines "1/1 merged"));
   assert (line_contains lines "something happened")
+
+let test_activity_views_sanitize_all_text_fields () =
+  let unsafe name = name ^ "\027[2J\027[31m\n\r\t\007\000\127tail" in
+  let activity =
+    [
+      Tui.Transition
+        {
+          patch_id = unsafe "transition-id";
+          from_label = unsafe "from";
+          to_status = Tui.Pending;
+          to_label = unsafe "to";
+          action = unsafe "action";
+          timestamp = 0.0;
+        };
+      Tui.Event
+        {
+          patch_id = Some (unsafe "event-id");
+          message = unsafe "message";
+          timestamp = 0.0;
+        };
+      Tui.Event
+        { patch_id = None; message = unsafe "unscoped"; timestamp = 0.0 };
+    ]
+  in
+  List.iter [ Tui.List_view; Tui.Timeline_view ] ~f:(fun view_mode ->
+      let frame = render ~width:240 ~height:30 ~view_mode ~activity one_view in
+      let raw = Tui.frame_to_string frame in
+      assert (not (String.is_substring raw ~substring:"\027[2J"));
+      let lines = plain_lines frame in
+      List.iter
+        [
+          "transition-id";
+          "from";
+          "to";
+          "action";
+          "event-id";
+          "message";
+          "unscoped";
+        ] ~f:(fun name ->
+          assert (line_contains lines (name ^ String.make 6 ' ' ^ "tail")));
+      List.iter lines ~f:(fun line ->
+          assert (
+            String.for_all line ~f:(fun c ->
+                let code = Char.to_int c in
+                code >= 0x20 && code <> 0x7f))))
 
 let test_patches_render_above_activity () =
   let frame = render ~activity:one_activity_entry many_views in
@@ -351,6 +490,8 @@ let () =
   test_list_view_collapses_activity_when_tight ();
   test_list_view_patches_survive_activity_at_short_height ();
   test_list_view_activity_squeezed_partial ();
+  test_list_view_long_activity_preserves_patches ();
+  test_list_view_wide_activity_preserves_patches ();
   test_frame_anchored_at_top ();
   test_detail_view_no_summary ();
   test_detail_inline_ci_checks_capped ();
@@ -359,6 +500,7 @@ let () =
   test_checks_overlay_clamps_offset ();
   test_checks_overlay_zero_visible_range ();
   test_timeline_view_no_summary ();
+  test_activity_views_sanitize_all_text_fields ();
   test_patches_render_above_activity ();
   test_patches_sort_lexicographically_by_id ();
   QCheck2.Test.check_exn

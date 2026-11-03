@@ -794,20 +794,21 @@ let render_activity (entries : activity_entry list) =
             ->
               Printf.sprintf "  %s  %s: %s → %s (%s)"
                 (Term.styled [ Term.Sgr.dim ] (format_activity_ts timestamp))
-                (Term.styled [ Term.Sgr.dim ] patch_id)
-                from_label
-                (styled_status to_status to_label)
-                (Term.styled [ Term.Sgr.dim ] action)
+                (Term.styled [ Term.Sgr.dim ] (sanitize_text patch_id))
+                (sanitize_text from_label)
+                (styled_status to_status (sanitize_text to_label))
+                (Term.styled [ Term.Sgr.dim ] (sanitize_text action))
           | Event { patch_id; message; timestamp } ->
               let prefix =
                 match patch_id with
-                | Some pid -> Term.styled [ Term.Sgr.dim ] (pid ^ ": ")
+                | Some pid ->
+                    Term.styled [ Term.Sgr.dim ] (sanitize_text pid ^ ": ")
                 | None -> ""
               in
               Printf.sprintf "  %s  %s%s"
                 (Term.styled [ Term.Sgr.dim ] (format_activity_ts timestamp))
                 prefix
-                (Term.styled [ Term.Sgr.dim ] message))
+                (Term.styled [ Term.Sgr.dim ] (sanitize_text message)))
     in
     header :: lines
 
@@ -1113,18 +1114,19 @@ let render_timeline ~width ~scroll (entries : activity_entry list) =
           | Transition { patch_id; from_label; to_status; to_label; action; _ }
             ->
               Printf.sprintf "  %s: %s → %s (%s)"
-                (Term.styled [ Term.Sgr.dim ] patch_id)
-                from_label
-                (styled_status to_status to_label)
-                (Term.styled [ Term.Sgr.dim ] action)
+                (Term.styled [ Term.Sgr.dim ] (sanitize_text patch_id))
+                (sanitize_text from_label)
+                (styled_status to_status (sanitize_text to_label))
+                (Term.styled [ Term.Sgr.dim ] (sanitize_text action))
           | Event { patch_id; message; _ } ->
               let prefix =
                 match patch_id with
-                | Some pid -> Term.styled [ Term.Sgr.dim ] (pid ^ ": ")
+                | Some pid ->
+                    Term.styled [ Term.Sgr.dim ] (sanitize_text pid ^ ": ")
                 | None -> "  "
               in
               Printf.sprintf "  %s%s" prefix
-                (Term.styled [ Term.Sgr.dim ] message)
+                (Term.styled [ Term.Sgr.dim ] (sanitize_text message))
         in
         Term.fit_width (Int.max 1 (width - 1)) row)
   in
@@ -1685,8 +1687,82 @@ let render_frame ~width ~height ~selected ~scroll_offset ~view_mode
                 "" :: List.take raw (Int.min (List.length raw) max_raw)
             in
             let lines =
+              let fit_cells line =
+                let width = Int.max 0 width in
+                let buf = Buffer.create (String.length line) in
+                (* Covers all Wide/Fullwidth scalars in Unicode 17.0's
+                   https://www.unicode.org/Public/17.0.0/ucd/EastAsianWidth.txt,
+                   with conservative two-cell reservations for emoji ranges.
+                   Other scalars conservatively reserve one cell, including
+                   combining marks, so they cannot cause an underestimated row. *)
+                let cells u =
+                  let u = Stdlib.Uchar.to_int u in
+                  if
+                    u >= 0x1100
+                    && (u <= 0x115f
+                       || (u >= 0x231a && u <= 0x231b)
+                       || u = 0x2329 || u = 0x232a
+                       || (u >= 0x23e9 && u <= 0x23ec)
+                       || u = 0x23f0 || u = 0x23f3
+                       || (u >= 0x25fd && u <= 0x25fe)
+                       || (u >= 0x2600 && u <= 0x27bf)
+                       || (u >= 0x2b1b && u <= 0x2b1c)
+                       || u = 0x2b50 || u = 0x2b55
+                       || (u >= 0x2e80 && u <= 0xa4cf && u <> 0x303f)
+                       || (u >= 0xa960 && u <= 0xa97c)
+                       || (u >= 0xac00 && u <= 0xd7a3)
+                       || (u >= 0xf900 && u <= 0xfaff)
+                       || (u >= 0xfe10 && u <= 0xfe19)
+                       || (u >= 0xfe30 && u <= 0xfe6f)
+                       || (u >= 0xff01 && u <= 0xff60)
+                       || (u >= 0xffe0 && u <= 0xffe6)
+                       || (u >= 0x16fe0 && u <= 0x18dff)
+                       || (u >= 0x1aff0 && u <= 0x1b2ff)
+                       || (u >= 0x1d300 && u <= 0x1d356)
+                       || (u >= 0x1d360 && u <= 0x1d376)
+                       || (u >= 0x1f000 && u <= 0x1faff)
+                       || (u >= 0x20000 && u <= 0x3ffff))
+                  then 2
+                  else 1
+                in
+                let len = String.length line in
+                let rec copy i used =
+                  if i >= len then used
+                  else if Char.equal line.[i] '\027' then (
+                    let rec escape_end j =
+                      if j >= len then len
+                      else if
+                        Char.to_int line.[j] >= 0x40
+                        && Char.to_int line.[j] <= 0x7e
+                      then j + 1
+                      else escape_end (j + 1)
+                    in
+                    let next =
+                      if i + 1 < len && Char.equal line.[i + 1] '[' then
+                        escape_end (i + 2)
+                      else Int.min len (i + 2)
+                    in
+                    Buffer.add_substring buf line ~pos:i ~len:(next - i);
+                    copy next used)
+                  else
+                    let decoded = Stdlib.String.get_utf_8_uchar line i in
+                    let size = cells (Stdlib.Uchar.utf_decode_uchar decoded) in
+                    if used + size > width then used
+                    else
+                      let bytes = Stdlib.Uchar.utf_decode_length decoded in
+                      Buffer.add_substring buf line ~pos:i ~len:bytes;
+                      copy (i + bytes) (used + size)
+                in
+                let used = copy 0 0 in
+                Buffer.add_string buf Term.Sgr.reset;
+                Buffer.add_string buf (String.make (width - used) ' ');
+                Buffer.contents buf
+              in
               header @ [ "" ] @ patches @ activity_lines @ [ "" ] @ status_line
               @ footer
+              (* Every budgeted row must occupy one terminal row, including
+                 long activity messages and the footer on narrow terminals. *)
+              |> List.map ~f:fit_cells
             in
             {
               no_patches with
