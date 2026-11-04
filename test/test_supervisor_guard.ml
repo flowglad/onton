@@ -65,6 +65,17 @@ let () =
 
   Eio_main.run @@ fun env ->
   let clock = Eio.Stdenv.clock env in
+  let started = ref false in
+  (match
+     Supervisor_guard.run_after_startup
+       ~startup:(fun () ->
+         Eio.Fiber.yield ();
+         raise Test_quit)
+       [ (fun () -> started := true) ]
+   with
+  | () -> failwith "expected startup failure"
+  | exception Test_quit -> ());
+  assert (not !started);
   let sibling_cancelled = ref false in
   (match
      Eio.Fiber.all

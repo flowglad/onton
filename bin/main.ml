@@ -1250,10 +1250,12 @@ let run_main_loop ~net (setup : runtime_setup) (cap : constructed_capabilities)
       ~is_normal_quit:(function Fibers.Tui.Quit -> true | _ -> false)
       ~log:log_fatal f ()
   in
+  let startup =
+    guard_fiber ~return_is_normal:true "startup-reconciler"
+      cap.reconciliation_fiber
+  in
   let common_fibers =
     [
-      guard_fiber ~return_is_normal:true "startup-reconciler"
-        cap.reconciliation_fiber;
       guard_fiber "poller" (fun () -> Fibers.Poller.run cap.startup_reconciler);
       guard_fiber "persistence" (fun () -> Fibers.Persistence.run ());
     ]
@@ -1271,7 +1273,7 @@ let run_main_loop ~net (setup : runtime_setup) (cap : constructed_capabilities)
       | Some _ | None -> []
     in
     try
-      Eio.Fiber.all
+      Supervisor_guard.run_after_startup ~startup
         (guard_fiber "headless" (fun () -> Fibers.Headless.run ())
          :: guard_fiber "runner" (fun () -> Fibers.Runner.run ())
          :: control_fibers
@@ -1294,7 +1296,7 @@ let run_main_loop ~net (setup : runtime_setup) (cap : constructed_capabilities)
         (fun () ->
           Term.Raw.install_suspend_handlers raw_state;
           try
-            Eio.Fiber.all
+            Supervisor_guard.run_after_startup ~startup
               (guard_fiber ~quit_is_normal:true "tui" (fun () ->
                    Fibers.Tui.run ())
               :: guard_fiber ~quit_is_normal:true ~return_is_normal:true
