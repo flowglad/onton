@@ -336,6 +336,47 @@ let terminal_during_capacity_wait ~root ~merged =
   check "terminal state also blocks direct recovery"
     (outcome = R.Intervention reason)
 
+let merged_while_stopped ~root =
+  let previous = runtime ~root in
+  Runtime.update_orchestrator previous (fun orch ->
+      Orchestrator.set_pr_number orch id (Types.Pr_number.of_int 42));
+  let token = claim previous in
+  let restored =
+    Runtime.create ~gameplan ~main_branch:main
+      ~snapshot:(Runtime.snapshot_unsync previous)
+      ()
+  in
+  let discovery_finished = ref false and runner_started = ref false in
+  Supervisor_guard.run_after_startup
+    ~startup:(fun () ->
+      (* Forge IO yields while the restored checkpoint still says unmerged. *)
+      Eio.Fiber.yield ();
+      Runtime.update_orchestrator restored (fun orch ->
+          Orchestrator.mark_merged orch id);
+      discovery_finished := true)
+    [
+      (fun () ->
+        runner_started := true;
+        check "runner waits for startup merge discovery" !discovery_finished;
+        check "restored merged repair is not runnable"
+          (Runtime.read restored (fun snap ->
+               Base.List.is_empty
+                 (Orchestrator.runnable_messages snap.Runtime.orchestrator)));
+        let outcome =
+          R.run_repair ~runtime:restored ~persist ~patch_id:id
+            ~with_capacity:(fun f -> f ())
+            ~now
+            ~execute:(fun ~agent:_ ~operation:_ _ ->
+              failwith "merged PR cannot execute Git repair")
+            ~perform:(fun ~agent:_ ~turn:_ ->
+              failwith "merged PR cannot launch a repair session")
+            token
+        in
+        check "startup merge observation blocks restored repair"
+          (outcome = R.Intervention "patch_merged"));
+    ];
+  check "runner starts after successful discovery" !runner_started
+
 let cancelled_session ~root =
   let runtime = runtime ~root in
   let message =
@@ -728,6 +769,7 @@ let () =
                   cancelled_active_repair ~root ~resolved:true ~compete)
                 [ false; true ];
               terminal_during_capacity_wait ~root ~merged:false;
-              terminal_during_capacity_wait ~root ~merged:true)
+              terminal_during_capacity_wait ~root ~merged:true;
+              merged_while_stopped ~root)
             [ false; true ]));
   print_endline "reconciliation capacity and Git ownership: OK"

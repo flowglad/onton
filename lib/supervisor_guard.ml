@@ -3,6 +3,10 @@
 
 open Base
 
+let run_after_startup ~startup fibers =
+  startup ();
+  Eio.Fiber.all fibers
+
 exception
   Fatal_supervisor_error of {
     name : string;

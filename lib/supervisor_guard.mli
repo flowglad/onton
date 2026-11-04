@@ -3,6 +3,12 @@
 
 (** Effectful guard for long-lived supervisor fibers. *)
 
+val run_after_startup : startup:(unit -> unit) -> (unit -> unit) list -> unit
+(** Complete startup before starting any supervisor fibers. A failed or
+    cancelled startup propagates without starting them. In particular, restored
+    work must wait for startup's forge discovery to apply merged PR
+    observations. *)
+
 exception
   Fatal_supervisor_error of {
     name : string;
