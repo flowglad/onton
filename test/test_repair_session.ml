@@ -358,11 +358,12 @@ let[@warning "-4"] run env root ~existing mode =
         [
           (true, "deadline");
           (true, "no rollout found");
+          (true, "No conversation found with session ID: retained-thread");
           (false, "backend transport failed");
         ])
     [ SD.run_repair; Strict.run_repair ];
   List.iter
-    (fun (raises, run_repair) ->
+    (fun (error, raises, run_repair) ->
       Runtime.update_orchestrator runtime (fun orch ->
           Orchestrator.set_llm_session_id orch id (Some "missing-thread"));
       get
@@ -393,10 +394,6 @@ let[@warning "-4"] run env root ~existing mode =
                 if !attempts = 1 then (
                   check "first repair resumes the saved thread"
                     (resume_session = Some "missing-thread");
-                  let error =
-                    "thread/resume failed: no rollout found for thread id \
-                     missing-thread"
-                  in
                   if raises then failwith error;
                   on_event (Types.Stream_event.Error error);
                   {
@@ -474,12 +471,18 @@ let[@warning "-4"] run env root ~existing mode =
         Runtime.update_orchestrator runtime (fun _ -> saved.orchestrator)
       done;
       check "recovery uses one invocation per owner attempt" (!attempts = 2))
-    [
-      (false, SD.run_repair);
-      (true, SD.run_repair);
-      (false, Strict.run_repair);
-      (true, Strict.run_repair);
-    ];
+    (List.concat_map
+       (fun error ->
+         [
+           (error, false, SD.run_repair);
+           (error, true, SD.run_repair);
+           (error, false, Strict.run_repair);
+           (error, true, Strict.run_repair);
+         ])
+       [
+         "thread/resume failed: no rollout found for thread id missing-thread";
+         "No conversation found with session ID: missing-thread";
+       ]);
   check "strict repair completes through the snapshot checkpoint alone"
     (!record_calls = 0)
 

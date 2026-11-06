@@ -391,7 +391,11 @@ struct
           | Branch_reconcile.Repair_interrupted { reason; _ }
             when (not !timed_out)
                  && Option.is_some resume_session
-                 && String.is_substring reason ~substring:"no rollout found" ->
+                 &&
+                 let reason = String.lowercase reason in
+                 String.is_substring reason ~substring:"no rollout found"
+                 || String.is_substring reason
+                      ~substring:"no conversation found" ->
               Runtime_logging.log_event Env.runtime ~patch_id
                 "Repair resume was not accepted — retrying with a fresh session";
               (match C.clear_session_id ~patch_id with
