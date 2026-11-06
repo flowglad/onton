@@ -49,7 +49,9 @@ def format_yaml(text: str, width: int = 88) -> str:
                 return self.DEFAULT_SCALAR_TAG
             return super().resolve(kind, value, implicit)
 
-    yaml = YAML()
+    # Round-trip mode preserves comments without enabling Python object
+    # construction. parse_yaml above also rejects all explicit tags and aliases.
+    yaml = YAML(typ="rt")
     yaml.Resolver = GameplanResolver
     yaml.preserve_quotes = True
     # Automatic quoted-scalar wrapping in ruamel 0.18 can split an escape
