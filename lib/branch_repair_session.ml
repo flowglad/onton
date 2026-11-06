@@ -30,8 +30,9 @@ let run ~context ~guidance ~backend ~on_event ~cwd ~project_name ~patch_id
         ( Some
             (backend.Llm_backend.run_streaming ~project_name ~cwd ~patch_id
                ~prompt:
-                 (Branch_reconcile.recovery_prompt ~context ~guidance turn)
-               ~resume_session ~session_uuid ~complexity ~on_event:(fun event ->
+                 (Branch_reconcile.recovery_prompt ?resume_session ~context
+                    ~guidance turn) ~resume_session ~session_uuid ~complexity
+               ~on_event:(fun event ->
                  if Branch_reconcile.repair_event_accepted event then
                    turn_accepted := true;
                  on_event event)),

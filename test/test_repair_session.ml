@@ -164,8 +164,12 @@ let[@warning "-4"] run env root ~existing mode =
             | Some id ->
                 check "repair reuses the conversation UUID" (session_uuid = id)
             | None -> conversation := Some session_uuid);
-            check "repair context is delivered"
-              (Base.String.is_substring prompt ~substring:"repair context");
+            check "repair context is delivered only to fresh conversations"
+              (Base.String.is_substring prompt ~substring:"repair context"
+              = Option.is_none resume_session);
+            check "repair instructions are always delivered"
+              (Base.String.is_substring prompt
+                 ~substring:"Owned recovery instructions:");
             (* Even a protocol error after turn acceptance must retain the
                conversation rather than replaying work in a fresh session. *)
             if !calls = 4 then on_event Types.Stream_event.Turn_started;
@@ -354,11 +358,12 @@ let[@warning "-4"] run env root ~existing mode =
         [
           (true, "deadline");
           (true, "no rollout found");
+          (true, "No conversation found with session ID: retained-thread");
           (false, "backend transport failed");
         ])
     [ SD.run_repair; Strict.run_repair ];
   List.iter
-    (fun (raises, run_repair) ->
+    (fun (error, raises, run_repair) ->
       Runtime.update_orchestrator runtime (fun orch ->
           Orchestrator.set_llm_session_id orch id (Some "missing-thread"));
       get
@@ -381,17 +386,14 @@ let[@warning "-4"] run env root ~existing mode =
                 ~on_event
               ->
                 incr attempts;
-                check "fresh repair retains context and guidance"
+                check "repair context follows conversation lifetime"
                   (Base.String.is_substring prompt ~substring:"repair context"
-                  && Base.String.is_substring prompt ~substring:"human guidance"
-                  );
+                  = Option.is_none resume_session);
+                check "repair retains guidance on every attempt"
+                  (Base.String.is_substring prompt ~substring:"human guidance");
                 if !attempts = 1 then (
                   check "first repair resumes the saved thread"
                     (resume_session = Some "missing-thread");
-                  let error =
-                    "thread/resume failed: no rollout found for thread id \
-                     missing-thread"
-                  in
                   if raises then failwith error;
                   on_event (Types.Stream_event.Error error);
                   {
@@ -469,12 +471,18 @@ let[@warning "-4"] run env root ~existing mode =
         Runtime.update_orchestrator runtime (fun _ -> saved.orchestrator)
       done;
       check "recovery uses one invocation per owner attempt" (!attempts = 2))
-    [
-      (false, SD.run_repair);
-      (true, SD.run_repair);
-      (false, Strict.run_repair);
-      (true, Strict.run_repair);
-    ];
+    (List.concat_map
+       (fun error ->
+         [
+           (error, false, SD.run_repair);
+           (error, true, SD.run_repair);
+           (error, false, Strict.run_repair);
+           (error, true, Strict.run_repair);
+         ])
+       [
+         "thread/resume failed: no rollout found for thread id missing-thread";
+         "No conversation found with session ID: missing-thread";
+       ]);
   check "strict repair completes through the snapshot checkpoint alone"
     (!record_calls = 0)
 

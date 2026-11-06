@@ -309,7 +309,9 @@ struct
     let session_uuid =
       Option.value_or_thunk resume_session ~default:Session_id.mint
     in
-    let prompt = Branch_reconcile.recovery_prompt ~context ~guidance turn in
+    let prompt =
+      Branch_reconcile.recovery_prompt ?resume_session ~context ~guidance turn
+    in
     let text_buf =
       begin_transcript ~patch_id ~backend_name:backend.Llm_backend.name
         ~resume_session ~prompt
@@ -389,7 +391,11 @@ struct
           | Branch_reconcile.Repair_interrupted { reason; _ }
             when (not !timed_out)
                  && Option.is_some resume_session
-                 && String.is_substring reason ~substring:"no rollout found" ->
+                 &&
+                 let reason = String.lowercase reason in
+                 String.is_substring reason ~substring:"no rollout found"
+                 || String.is_substring reason
+                      ~substring:"no conversation found" ->
               Runtime_logging.log_event Env.runtime ~patch_id
                 "Repair resume was not accepted — retrying with a fresh session";
               (match C.clear_session_id ~patch_id with

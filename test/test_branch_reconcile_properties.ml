@@ -483,7 +483,16 @@ let[@warning "-4"] tests =
                 Option.get (B.repair_turn state ~branch:"patch" token)
               in
               let prompt = B.recovery_prompt ~context ~guidance turn in
-              Base.String.is_prefix prompt ~prefix:context
+              let resumed =
+                B.recovery_prompt ~resume_session:"existing-thread" ~context
+                  ~guidance turn
+              in
+              String.equal prompt (context ^ resumed)
+              && String.equal resumed
+                   (B.recovery_prompt ~resume_session:"existing-thread"
+                      ~context:(context ^ "changed context")
+                      ~guidance turn)
+              && Base.String.is_prefix prompt ~prefix:context
               && Base.String.is_suffix prompt ~suffix:turn.prompt
               && List.for_all
                    (fun text -> Base.String.is_substring prompt ~substring:text)
