@@ -13,6 +13,20 @@ EXAMPLE = SCRIPTS.parent / 'references' / 'example.yaml'
 
 
 class FormatYaml(unittest.TestCase):
+    def test_rejects_object_construction_tags(self):
+        for source in [
+            'value: !!python/object/apply:builtins.str [123]\n',
+            'value: !!python/object/new:builtins.str [123]\n',
+            'value: !!python/name:builtins.str\n',
+            'value: !<tag:yaml.org,2002:python/object/apply:builtins.str> [123]\n',
+            '%TAG !py! tag:yaml.org,2002:python/\n---\n'
+            'value: !py!object/apply:builtins.str [123]\n',
+        ]:
+            with self.subTest(source=source), self.assertRaisesRegex(
+                ValueError, "YAML tags and anchors|YAML tag directives"
+            ):
+                format_yaml(source)
+
     def test_spacing_and_wrapping_preserve_values(self):
         prose = ' '.join(['Readable gameplan prose with several words.'] * 8)
         source = 'projectName: demo\nproblemStatement: ' + prose + '\npatches: []\n'
