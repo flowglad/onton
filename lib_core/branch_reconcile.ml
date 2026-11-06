@@ -3929,13 +3929,16 @@ let repair_turn t ~branch token =
       } ->
       None
 
-let recovery_prompt ~context ~guidance (turn : repair_turn) =
-  context
-  ^ (if List.is_empty guidance then ""
+let recovery_prompt ?resume_session ~context ~guidance (turn : repair_turn) =
+  let next_turn =
+    (if List.is_empty guidance then ""
      else
        "\nPending human guidance (retained for normal task delivery):\n"
        ^ String.concat ~sep:"\n\n" (List.rev guidance))
-  ^ "\nOwned recovery instructions:\n" ^ turn.prompt
+    ^ "\nOwned recovery instructions:\n" ^ turn.prompt
+  in
+  Session_prompt.render ~resume_session
+    (Session_prompt.create ~context ~turn:next_turn)
 
 let repair_head_matches (turn : repair_turn) head =
   match turn.mode with

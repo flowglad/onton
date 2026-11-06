@@ -164,8 +164,12 @@ let[@warning "-4"] run env root ~existing mode =
             | Some id ->
                 check "repair reuses the conversation UUID" (session_uuid = id)
             | None -> conversation := Some session_uuid);
-            check "repair context is delivered"
-              (Base.String.is_substring prompt ~substring:"repair context");
+            check "repair context is delivered only to fresh conversations"
+              (Base.String.is_substring prompt ~substring:"repair context"
+              = Option.is_none resume_session);
+            check "repair instructions are always delivered"
+              (Base.String.is_substring prompt
+                 ~substring:"Owned recovery instructions:");
             (* Even a protocol error after turn acceptance must retain the
                conversation rather than replaying work in a fresh session. *)
             if !calls = 4 then on_event Types.Stream_event.Turn_started;
@@ -381,10 +385,11 @@ let[@warning "-4"] run env root ~existing mode =
                 ~on_event
               ->
                 incr attempts;
-                check "fresh repair retains context and guidance"
+                check "repair context follows conversation lifetime"
                   (Base.String.is_substring prompt ~substring:"repair context"
-                  && Base.String.is_substring prompt ~substring:"human guidance"
-                  );
+                  = Option.is_none resume_session);
+                check "repair retains guidance on every attempt"
+                  (Base.String.is_substring prompt ~substring:"human guidance");
                 if !attempts = 1 then (
                   check "first repair resumes the saved thread"
                     (resume_session = Some "missing-thread");

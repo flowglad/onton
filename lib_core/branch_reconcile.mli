@@ -680,8 +680,13 @@ val repair_turn : t -> branch:string -> token -> repair_turn option
 (** Available only for the current durably claimed repair turn. *)
 
 val recovery_prompt :
-  context:string -> guidance:string list -> repair_turn -> string
-(** Include task context and pending guidance without acknowledging normal task
+  ?resume_session:string ->
+  context:string ->
+  guidance:string list ->
+  repair_turn ->
+  string
+(** Include task context only for a fresh conversation. Pending guidance and
+    repair instructions accompany every turn without acknowledging normal task
     delivery. *)
 
 val repair_head_matches : repair_turn -> Commit.t option -> bool

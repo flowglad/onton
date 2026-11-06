@@ -309,7 +309,9 @@ struct
     let session_uuid =
       Option.value_or_thunk resume_session ~default:Session_id.mint
     in
-    let prompt = Branch_reconcile.recovery_prompt ~context ~guidance turn in
+    let prompt =
+      Branch_reconcile.recovery_prompt ?resume_session ~context ~guidance turn
+    in
     let text_buf =
       begin_transcript ~patch_id ~backend_name:backend.Llm_backend.name
         ~resume_session ~prompt
