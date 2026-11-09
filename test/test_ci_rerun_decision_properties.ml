@@ -163,7 +163,10 @@ let prop_workflow_observations =
       ({|{"status":"completed","conclusion":"neutral"}|}, Resolved);
       ({|{"status":"completed","conclusion":"skipped"}|}, Resolved);
       ({|{"status":"completed","conclusion":"timed_out"}|}, Failed);
-      ({|{"status":"completed","conclusion":"cancelled"}|}, Failed);
+      ({|{"status":"completed","conclusion":"cancelled"}|}, Resolved);
+      ({|{"status":"completed","conclusion":"stale"}|}, Resolved);
+      ({|{"status":"completed","conclusion":"action_required"}|}, Failed);
+      ({|{"status":"completed","conclusion":"startup_failure"}|}, Failed);
       ({|{"status":"completed"}|}, Malformed);
       ({|{"status":"completed","conclusion":null}|}, Malformed);
       ({|{"status":"completed","conclusion":"unknown"}|}, Malformed);
@@ -172,10 +175,11 @@ let prop_workflow_observations =
   in
   QCheck2.Test.make
     ~name:"fresh workflow observations supersede delivered failures" ~count:100
-    (QCheck2.Gen.oneof_list cases) (fun (body, expected) ->
-      Ci_rerun_decision.equal_workflow_status
-        (Ci_rerun_decision.workflow_status_of_response body)
-        expected)
+    QCheck2.Gen.unit (fun () ->
+      List.for_all cases ~f:(fun (body, expected) ->
+          Ci_rerun_decision.equal_workflow_status
+            (Ci_rerun_decision.workflow_status_of_response body)
+            expected))
 
 let prop_url_boundaries =
   QCheck2.Test.make ~name:"workflow run URL boundaries" ~count:1

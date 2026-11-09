@@ -77,10 +77,13 @@ module type S = sig
   val rerun_failed_jobs_for_check :
     check:Types.Ci_check.t -> (unit, error) Result.t
   (** Request failed-job retry for the check's provider run. GitHub observes
-      current workflow state once: running or resolved work is a successful
-      no-op, and only a completed failure requests a retry. It returns to the
-      scheduler without waiting for workflow completion and rejects checks
-      without a workflow identity rather than requesting a full rerun. *)
+      current workflow state once: queued or running work (including waiting,
+      requested, and pending states) is a successful no-op, as are completed
+      success, neutral, skipped, cancelled, or stale outcomes. Only completed
+      failure, timed_out, action_required, or startup_failure outcomes request a
+      retry. It returns to the scheduler without waiting for workflow completion
+      and rejects checks without a workflow identity rather than requesting a
+      full rerun. *)
 
   val list_prs :
     branch:Types.Branch.t ->

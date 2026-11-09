@@ -45,10 +45,11 @@ let workflow_status_of_response body =
       | Some "completed" -> (
           match Json.string_field "conclusion" json with
           | Some
-              ( "failure" | "timed_out" | "cancelled" | "action_required"
-              | "startup_failure" | "stale" ) ->
+              ("failure" | "timed_out" | "action_required" | "startup_failure")
+            ->
               Failed
-          | Some ("success" | "neutral" | "skipped") -> Resolved
+          | Some ("success" | "neutral" | "skipped" | "cancelled" | "stale") ->
+              Resolved
           | Some _ | None -> Malformed)
       | Some ("queued" | "in_progress" | "waiting" | "requested" | "pending") ->
           Pending
