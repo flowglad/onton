@@ -1175,12 +1175,6 @@ let job_log_timeout = 60.0
     fiber indefinitely — which is how the poll loop wedged in production. *)
 let default_timeout = 30.0
 
-(** Overall budget for waiting for an in-progress Actions run to finish before
-    requesting its failed-job rerun. This is deliberately separate from the
-    per-request timeout: workflows commonly run for several minutes, while an
-    individual GitHub API request should still fail quickly if it is wedged. *)
-let workflow_completion_poll_timeout = 30.0 *. 60.0
-
 (** Internal: execute an HTTP request against api.github.com. Returns the raw
     response body on 2xx, [Http_error] otherwise. *)
 let meth_to_string = function
@@ -1401,21 +1395,7 @@ let rerun_failed_jobs_for_check ~net ~clock ?timeout t
         Printf.sprintf "/repos/%s/%s/actions/runs/%d/rerun-failed-jobs" t.owner
           t.repo run_id
       in
-      let rec wait_until_complete () =
-        match request ~net ~clock ?timeout t ~meth:`GET ~path:run_path () with
-        | Error _ as error -> error
-        | Ok body -> (
-            match Ci_rerun_decision.workflow_status_of_response body with
-            | Ci_rerun_decision.Completed -> Ok ()
-            | Ci_rerun_decision.Pending ->
-                Eio.Time.sleep clock 10.0;
-                wait_until_complete ()
-            | Ci_rerun_decision.Malformed ->
-                Error
-                  (Json_parse_error
-                     (Printf.sprintf
-                        "workflow run %d response has no valid status" run_id)))
-      and request_rerun () =
+      let request_rerun () =
         match
           request ~net ~clock ?timeout t ~meth:`POST ~path:rerun_path ()
         with
@@ -1435,20 +1415,21 @@ let rerun_failed_jobs_for_check ~net ~clock ?timeout t
              | Transport_error _ ) as error) ->
             Error error
       in
-      match
-        Eio.Time.with_timeout clock workflow_completion_poll_timeout (fun () ->
-            Ok (wait_until_complete ()))
-      with
-      | Ok (Ok ()) -> request_rerun ()
-      | Ok (Error _ as error) -> error
-      | Error `Timeout ->
-          Error
-            (Timeout
-               {
-                 meth = "GET";
-                 path = run_path;
-                 seconds = workflow_completion_poll_timeout;
-               }))
+      (* Observe once and return to the scheduler. Another actor (including
+         the just-finished agent) may already have retried this workflow. Waiting
+         here holds the patch's busy/write ownership after the turn has ended. *)
+      match request ~net ~clock ?timeout t ~meth:`GET ~path:run_path () with
+      | Error _ as error -> error
+      | Ok body -> (
+          match Ci_rerun_decision.workflow_status_of_response body with
+          | Ci_rerun_decision.Failed -> request_rerun ()
+          | Ci_rerun_decision.Pending | Ci_rerun_decision.Resolved -> Ok ()
+          | Ci_rerun_decision.Malformed ->
+              Error
+                (Json_parse_error
+                   (Printf.sprintf
+                      "workflow run %d response has no valid status/conclusion"
+                      run_id))))
 
 let check_repo_access_internal ~net ~clock ?timeout t =
   let path = Printf.sprintf "/repos/%s/%s" t.owner t.repo in

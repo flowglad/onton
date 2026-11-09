@@ -2913,9 +2913,9 @@ module Make (Forge : Forge.S) (W : Worktree.S) (Env : Runner_env.S) = struct
                                                         ~patch_id
                                                         (Printf.sprintf
                                                            "ci-rerun: \
-                                                            requested \
-                                                            failed-job rerun \
-                                                            for %s"
+                                                            reconciled \
+                                                            workflow retry for \
+                                                            %s"
                                                            check.Ci_check.name);
                                                       true
                                                   | Error err ->
