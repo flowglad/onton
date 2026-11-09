@@ -81,9 +81,10 @@ module type S = sig
       requested, and pending states) is a successful no-op, as are completed
       success, neutral, skipped, cancelled, or stale outcomes. Only completed
       failure, timed_out, action_required, or startup_failure outcomes request a
-      retry. It returns to the scheduler without waiting for workflow completion
-      and rejects checks without a workflow identity rather than requesting a
-      full rerun. *)
+      retry. Unknown, malformed, or incomplete workflow responses return [Error]
+      for scheduler retry. It returns to the scheduler without waiting for
+      workflow completion and rejects checks without a workflow identity rather
+      than requesting a full rerun. *)
 
   val list_prs :
     branch:Types.Branch.t ->

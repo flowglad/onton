@@ -16,7 +16,8 @@ val unique_workflow_checks : Types.Ci_check.t list -> Types.Ci_check.t list
     report their individual errors instead of silently dropping them. *)
 
 val workflow_status_of_response : string -> workflow_status
-(** Decode the current workflow observation. Only a completed failed conclusion
-    permits a retry. Running/queued work is [Pending],
+(** Decode the current workflow observation. Only completed [failure],
+    [timed_out], [action_required], or [startup_failure] conclusions map to
+    [Failed] and permit a retry. Running/queued work is [Pending],
     successful/neutral/skipped/cancelled/stale completion is [Resolved], and
     incomplete or unknown data is [Malformed]. Never raises. *)
