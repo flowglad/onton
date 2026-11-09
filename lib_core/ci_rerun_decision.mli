@@ -3,7 +3,8 @@
 
 (** Pure decisions used when requesting GitHub Actions failed-job reruns. *)
 
-type workflow_status = Completed | Pending | Malformed [@@deriving show, eq]
+type workflow_status = Failed | Pending | Resolved | Malformed
+[@@deriving show, eq]
 
 val workflow_run_id_from_url : string -> int option
 (** Extract the numeric run id after [/actions/runs/] from a check URL. Returns
@@ -15,7 +16,8 @@ val unique_workflow_checks : Types.Ci_check.t list -> Types.Ci_check.t list
     report their individual errors instead of silently dropping them. *)
 
 val workflow_status_of_response : string -> workflow_status
-(** Decode [GET /actions/runs/:id]. [Completed] is returned only for
-    [{"status":"completed"}], any other string status is [Pending], and
-    malformed JSON or a missing/non-string status is [Malformed]. Never raises.
-*)
+(** Decode the current workflow observation. Only completed [failure],
+    [timed_out], [action_required], or [startup_failure] conclusions map to
+    [Failed] and permit a retry. Running/queued work is [Pending],
+    successful/neutral/skipped/cancelled/stale completion is [Resolved], and
+    incomplete or unknown data is [Malformed]. Never raises. *)

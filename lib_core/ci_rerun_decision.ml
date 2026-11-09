@@ -3,7 +3,8 @@
 
 open Base
 
-type workflow_status = Completed | Pending | Malformed [@@deriving show, eq]
+type workflow_status = Failed | Pending | Resolved | Malformed
+[@@deriving show, eq]
 
 let workflow_run_id_from_url url =
   let marker = "/actions/runs/" in
@@ -41,6 +42,16 @@ let workflow_status_of_response body =
   | None -> Malformed
   | Some json -> (
       match Json.string_field "status" json with
-      | Some "completed" -> Completed
-      | Some _ -> Pending
+      | Some "completed" -> (
+          match Json.string_field "conclusion" json with
+          | Some
+              ("failure" | "timed_out" | "action_required" | "startup_failure")
+            ->
+              Failed
+          | Some ("success" | "neutral" | "skipped" | "cancelled" | "stale") ->
+              Resolved
+          | Some _ | None -> Malformed)
+      | Some ("queued" | "in_progress" | "waiting" | "requested" | "pending") ->
+          Pending
+      | Some _ -> Malformed
       | None -> Malformed)

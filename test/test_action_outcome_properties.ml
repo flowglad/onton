@@ -2128,3 +2128,53 @@ let () =
                 (Option.is_some after.Patch_agent.wontdo_integration_head)
                 wontdo_retry
          with _ -> false))
+
+let () =
+  QCheck2.Test.check_exn
+    (QCheck2.Test.make
+       ~name:"no-commit CI completion returns control to the scheduler"
+       ~count:100
+       QCheck2.Gen.(
+         oneof_list
+           [
+             None;
+             Some Operation_kind.Review_comments;
+             Some Operation_kind.Human;
+             Some Operation_kind.Pr_body;
+           ])
+       (fun queued ->
+         try
+           let orch, _, _, pid = bootstrap_one () in
+           let orch = Orchestrator.enqueue orch pid Operation_kind.Ci in
+           let orch =
+             Orchestrator.fire orch
+               (Orchestrator.Respond (pid, Operation_kind.Ci))
+           in
+           let orch =
+             Option.value_map queued ~default:orch ~f:(fun kind ->
+                 Orchestrator.enqueue orch pid kind)
+           in
+           let orch =
+             Orchestrator.apply_session_result orch pid
+               Orchestrator.Session_no_commits
+           in
+           (* Retry reconciliation can observe an already-running or resolved
+              workflow without another commit or a workflow-completion wait. *)
+           let orch =
+             Orchestrator.apply_respond_outcome orch pid Operation_kind.Ci
+               Orchestrator.Respond_ok
+           in
+           let agent = Orchestrator.agent orch pid in
+           (not agent.Patch_agent.busy)
+           && Option.is_none agent.Patch_agent.current_op
+           &&
+           match queued with
+           | None ->
+               Patch_decision.equal_disposition
+                 (Patch_decision.disposition agent)
+                 Patch_decision.Idle
+           | Some kind ->
+               Patch_decision.equal_disposition
+                 (Patch_decision.disposition agent)
+                 (Patch_decision.Ready_respond kind)
+         with _ -> false))

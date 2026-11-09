@@ -135,12 +135,12 @@ let prop_unidentifiable_checks_retained =
         (count_unidentified (Ci_rerun_decision.unique_workflow_checks checks)))
 
 let prop_status_boundaries =
-  QCheck2.Test.make ~name:"only a completed workflow status permits a rerun"
-    ~count:1 QCheck2.Gen.unit (fun () ->
+  QCheck2.Test.make ~name:"only a completed failure permits a rerun" ~count:1
+    QCheck2.Gen.unit (fun () ->
       Ci_rerun_decision.equal_workflow_status
         (Ci_rerun_decision.workflow_status_of_response
-           {|{"status":"completed"}|})
-        Ci_rerun_decision.Completed
+           {|{"status":"completed","conclusion":"failure"}|})
+        Ci_rerun_decision.Failed
       && Ci_rerun_decision.equal_workflow_status
            (Ci_rerun_decision.workflow_status_of_response
               {|{"status":"in_progress"}|})
@@ -151,6 +151,35 @@ let prop_status_boundaries =
       && Ci_rerun_decision.equal_workflow_status
            (Ci_rerun_decision.workflow_status_of_response "not-json")
            Ci_rerun_decision.Malformed)
+
+let prop_workflow_observations =
+  let open Ci_rerun_decision in
+  let cases =
+    [
+      ( {|{"status":"in_progress","conclusion":null,"run_attempt":3}|},
+        Ci_rerun_decision.Pending );
+      ({|{"status":"queued","conclusion":null}|}, Pending);
+      ({|{"status":"completed","conclusion":"success"}|}, Resolved);
+      ({|{"status":"completed","conclusion":"neutral"}|}, Resolved);
+      ({|{"status":"completed","conclusion":"skipped"}|}, Resolved);
+      ({|{"status":"completed","conclusion":"timed_out"}|}, Failed);
+      ({|{"status":"completed","conclusion":"cancelled"}|}, Resolved);
+      ({|{"status":"completed","conclusion":"stale"}|}, Resolved);
+      ({|{"status":"completed","conclusion":"action_required"}|}, Failed);
+      ({|{"status":"completed","conclusion":"startup_failure"}|}, Failed);
+      ({|{"status":"completed"}|}, Malformed);
+      ({|{"status":"completed","conclusion":null}|}, Malformed);
+      ({|{"status":"completed","conclusion":"unknown"}|}, Malformed);
+      ({|{"status":"unknown"}|}, Malformed);
+    ]
+  in
+  QCheck2.Test.make
+    ~name:"fresh workflow observations supersede delivered failures" ~count:100
+    QCheck2.Gen.unit (fun () ->
+      List.for_all cases ~f:(fun (body, expected) ->
+          Ci_rerun_decision.equal_workflow_status
+            (Ci_rerun_decision.workflow_status_of_response body)
+            expected))
 
 let prop_url_boundaries =
   QCheck2.Test.make ~name:"workflow run URL boundaries" ~count:1
@@ -195,5 +224,6 @@ let () =
       prop_identifiable_runs_unique;
       prop_unidentifiable_checks_retained;
       prop_status_boundaries;
+      prop_workflow_observations;
       prop_url_boundaries;
     ]
