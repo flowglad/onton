@@ -19,6 +19,7 @@ type command =
   | Back
   | Noop
   | Timeline
+  | Toggle_activity
   | Send_message of string
   | Add_pr of Types.Pr_number.t
   | Add_worktree of string

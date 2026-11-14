@@ -13,6 +13,7 @@ type t = {
   input_mode : Tui_input.input_mode ref;
   prompt_line : Tui.prompt_info option ref;
   show_help : bool ref;
+  show_activity : bool ref;
   show_checks : bool ref;
   checks_scroll : int ref;
   status_msg : Tui.status_msg option ref;
@@ -37,6 +38,7 @@ let create () =
     input_mode = ref Tui_input.Normal;
     prompt_line = ref None;
     show_help = ref false;
+    show_activity = ref false;
     show_checks = ref false;
     checks_scroll = ref 0;
     status_msg = ref None;
