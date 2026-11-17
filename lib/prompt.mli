@@ -239,6 +239,9 @@ val render_findings_prompt :
     after the session and posts dispositions to the originating review backend.
 *)
 
+val render_ci_advisory : string -> string
+(** Add advisory guidance while preserving the full CI diagnostics. *)
+
 val render_ci_failure_prompt :
   project_name:string ->
   ?agents_md:string ->

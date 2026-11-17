@@ -807,6 +807,13 @@ let () =
       Orchestrator.Respond_ok
   in
   assert (ci_count orch pid = before);
+  let orch, pid, before = with_ci_busy () in
+  let orch =
+    Orchestrator.apply_respond_outcome ~ci_advisory:true orch pid
+      Operation_kind.Ci Orchestrator.Respond_ok
+  in
+  assert (ci_count orch pid = before);
+  assert (not (Orchestrator.agent orch pid).Patch_agent.busy);
   Stdlib.print_endline "AO-7 passed"
 
 (* ========== AO-7b: failed CI push remains deliverable ========== *)

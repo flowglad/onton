@@ -44,6 +44,7 @@ type t = {
   human_messages : string list;
   inflight_human_messages : string list;
   ci_checks : Ci_check.t list;
+  pending_ci_checks : Ci_check.t list;
   merge_ready : bool;
   head_oid : string option;
   review_decision : string option;
@@ -300,6 +301,7 @@ let create ~branch ?(max_ci_failures = default_max_ci_failures) patch_id =
     human_messages = [];
     inflight_human_messages = [];
     ci_checks = [];
+    pending_ci_checks = [];
     merge_ready = false;
     head_oid = None;
     review_decision = None;
@@ -366,6 +368,7 @@ let create_adhoc ~complexity ~patch_id ~branch ~pr_number ~max_ci_failures =
     human_messages = [];
     inflight_human_messages = [];
     ci_checks = [];
+    pending_ci_checks = [];
     merge_ready = false;
     head_oid = None;
     review_decision = None;
@@ -415,13 +418,45 @@ let highest_priority t =
   List.min_elt queue ~compare:(fun a b ->
       Int.compare (Priority.priority a) (Priority.priority b))
 
+let deliverable_ci_checks (agent : t) : Ci_check.t list =
+  let retrying =
+    agent.ci_failure_count > 0
+    ||
+    match agent.session_fallback with
+    | Tried_fresh -> true
+    | Fresh_available | Given_up -> false
+  in
+  List.filter agent.ci_checks ~f:(fun (c : Ci_check.t) ->
+      if not (Ci_check.is_failure c) then false
+      else
+        match c.id with
+        | None -> true
+        | Some id ->
+            retrying
+            || not (List.mem agent.delivered_ci_run_ids id ~equal:Int.equal))
+
+let merge_ci_feedback fresh retained =
+  List.fold (fresh @ retained) ~init:[] ~f:(fun acc check ->
+      if List.exists acc ~f:(Ci_check.same_run check) then acc else check :: acc)
+  |> List.rev
+
+let ci_feedback_checks t =
+  merge_ci_feedback (deliverable_ci_checks t) t.pending_ci_checks
+
 let enqueue t k =
   if
     Operation_kind.equal k Operation_kind.Rebase
     && Branch_reconcile.is_unsettled t.branch_reconcile
     || List.mem t.queue k ~equal:Operation_kind.equal
   then t
-  else { t with queue = k :: t.queue }
+  else
+    {
+      t with
+      queue = k :: t.queue;
+      pending_ci_checks =
+        (if Operation_kind.equal k Operation_kind.Ci then ci_feedback_checks t
+         else t.pending_ci_checks);
+    }
 
 let mark_merged t = { t with merged = true }
 
@@ -718,10 +753,14 @@ let set_ci_checks t checks =
   {
     t with
     ci_checks = checks;
+    pending_ci_checks =
+      (if List.mem t.queue Operation_kind.Ci ~equal:Operation_kind.equal then
+         ci_feedback_checks { t with ci_checks = checks }
+       else t.pending_ci_checks);
     ci_failure_count = (if has_new_failure then 0 else t.ci_failure_count);
   }
 
-let record_delivered_ci_run_ids t ids =
+let record_delivered_ci_run_ids ?(checks = []) t ids =
   (* Maintain sorted + deduplicated list. Small enough (tens of entries per
      patch lifetime) that a list is fine; sorting keeps equality checks stable
      across serialization round-trips. *)
@@ -729,7 +768,16 @@ let record_delivered_ci_run_ids t ids =
   let deduped =
     List.dedup_and_sort combined ~compare:(fun a b -> Int.compare a b)
   in
-  { t with delivered_ci_run_ids = deduped }
+  {
+    t with
+    delivered_ci_run_ids = deduped;
+    pending_ci_checks =
+      List.filter t.pending_ci_checks ~f:(fun check ->
+          (not (List.mem checks check ~equal:Ci_check.equal))
+          && not
+               (Option.value_map check.Ci_check.id ~default:false ~f:(fun id ->
+                    List.mem ids id ~equal:Int.equal)));
+  }
 
 let set_branch_blocked t = { t with branch_blocked = true }
 let clear_branch_blocked t = { t with branch_blocked = false }
@@ -818,8 +866,8 @@ let restore ?(scheduler_recovery = Scheduler_recovery.empty)
     ~base_branch ~notified_base_branch ~ci_failure_count
     ?(max_ci_failures = default_max_ci_failures) ~session_fallback
     ?(wontdo_reason = None) ?(wontdo_integration_head = None) ~human_messages
-    ~inflight_human_messages ~ci_checks ~merge_ready ?(head_oid = None)
-    ?(review_decision = None) ?(unresolved_comment_count = 0)
+    ~inflight_human_messages ~ci_checks ?(pending_ci_checks = []) ~merge_ready
+    ?(head_oid = None) ?(review_decision = None) ?(unresolved_comment_count = 0)
     ~mergeability_unknown ~merge_queue_required ~merge_queue_entry
     ?(merge_queue_ejection = None) ?(native_stack = false)
     ?(native_stack_absent_polls = 0) ~merge_commit_sha
@@ -868,6 +916,7 @@ let restore ?(scheduler_recovery = Scheduler_recovery.empty)
     human_messages;
     inflight_human_messages;
     ci_checks;
+    pending_ci_checks;
     merge_ready;
     head_oid;
     review_decision;
@@ -943,6 +992,7 @@ let set_pr_number t pr_number =
         checks_passing = false;
         start_attempts_without_pr = 0;
         ci_checks = [];
+        pending_ci_checks = [];
         ci_failure_count = 0;
         delivered_ci_run_ids = [];
       }
@@ -968,6 +1018,7 @@ let clear_pr t =
     native_stack_absent_polls = 0;
     checks_passing = false;
     ci_checks = [];
+    pending_ci_checks = [];
     ci_failure_count = 0;
     base_branch = None;
     notified_base_branch = None;

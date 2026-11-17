@@ -32,7 +32,7 @@ type ci_decision =
   | Enqueue_ci  (** CI failure count below cap — enqueue Ci feedback. *)
   | Ci_already_queued  (** Ci already in queue — no action needed. *)
   | Ci_fix_in_progress
-      (** Agent is already fixing CI — suppress until checks pass. *)
+      (** Agent is already handling these failing runs; new runs may queue. *)
   | Ci_already_delivered
       (** Every currently failing check with a stable run id was already
           delivered to the agent. *)
@@ -128,11 +128,11 @@ val session_no_commits_is_ok :
   kind:Types.Operation_kind.t option ->
   bool
 (** Whether a no-commit session is an accepted no-op. This exemption is limited
-    to [Respond] deliveries for Human, Findings, and Uncommitted_changes
-    operations on an existing PR or published branch. Cleanup may correctly
-    discard changes rather than create a commit. A Human-carrying [Start]
-    retains Start's ordinary no-commit behavior even if it associates a PR
-    mid-session. *)
+    to [Respond] deliveries for Human, Findings, Uncommitted_changes, and
+    advisory CI operations on an existing PR or published branch. Cleanup may
+    correctly discard changes rather than create a commit. A Human-carrying
+    [Start] retains Start's ordinary no-commit behavior even if it associates a
+    PR mid-session. *)
 
 (** {2 Respond delivery — pre-session decisions for the runner} *)
 
@@ -161,6 +161,9 @@ type respond_delivery =
   | Respond_stale
 [@@deriving show, eq, sexp_of, compare]
 
+val ci_is_advisory : Patch_agent.t -> bool
+(** Retained failures remain to assess, but current checks show no failures. *)
+
 val respond_delivery :
   agent:Patch_agent.t ->
   kind:Operation_kind.t ->
@@ -177,8 +180,9 @@ val respond_delivery :
     [agent]. Review comments come from [prefetched_comments] (fetched from
     GitHub before the decision). CI checks are read from [agent] — the caller
     re-polls GitHub before delivery and writes the fresh list into
-    [agent.ci_checks] via [Orchestrator.set_ci_checks], then skips the call
-    entirely if no failures remain. *)
+    [agent.ci_checks] via [Orchestrator.set_ci_checks]. Queued failure evidence
+    survives that refresh in [pending_ci_checks]; when current failures are
+    absent, it is delivered as advisory feedback. *)
 
 (** {2 Pr_body post-session classification} *)
 

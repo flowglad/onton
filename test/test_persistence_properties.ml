@@ -1549,3 +1549,43 @@ let () =
   if exit_code <> 0 then Stdlib.exit exit_code
 
 let () = Stdlib.print_endline "all persistence property tests passed"
+
+let () =
+  QCheck2.Test.check_exn
+    (QCheck2.Test.make
+       ~name:"queued CI advisory evidence survives checkpoint refresh"
+       QCheck2.Gen.bool (fun idless ->
+         try
+           let module A = Onton_core.Patch_agent in
+           let check =
+             Ci_check.
+               {
+                 name = "queued";
+                 conclusion = "failure";
+                 details_url = Some "https://example.test/check";
+                 description = Some "failure detail";
+                 started_at = None;
+                 app_id = None;
+                 check_suite_id = None;
+                 id = (if idless then None else Some 42);
+               }
+           in
+           let a =
+             A.create ~branch:(Branch.of_string "b") (Patch_id.of_string "p")
+           in
+           let a =
+             A.set_ci_checks a [ check ] |> fun a ->
+             A.enqueue a Operation_kind.Ci
+           in
+           let a = A.set_ci_checks a [] in
+           match
+             Onton.Persistence.patch_agent_of_yojson ~snapshot_version:2
+               ~main_branch:(Branch.of_string "main")
+               ~gameplan:(gameplan_for_agent a)
+               (Onton.Persistence.patch_agent_to_yojson a)
+           with
+           | Error _ -> false
+           | Ok restored ->
+               List.equal Ci_check.equal restored.pending_ci_checks [ check ]
+               && Onton_core.Patch_decision.ci_is_advisory restored
+         with _ -> false))

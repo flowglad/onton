@@ -1525,3 +1525,102 @@ let () =
              Option.is_none
                (decide ~initial_head:(Some sha) ~final_head:(Some sha)
                   ~base_sha:(Some sha) ~has_pr:false ~content))))
+
+(* Queued failures are evidence to assess even after the branch advances. *)
+let () =
+  let open QCheck2 in
+  Test.check_exn
+    (Test.make
+       ~name:"queued CI failures survive refresh interleavings as advisory"
+       ~count:300
+       Gen.(list bool)
+       (fun refreshes ->
+         try
+           let check = failing_check 101 in
+           let a = with_pr (Patch_id.of_string "p") (Branch.of_string "b") in
+           let a =
+             set_ci_checks a [ check ] |> fun a -> enqueue a Operation_kind.Ci
+           in
+           let a =
+             List.fold refreshes ~init:a ~f:(fun a failing ->
+                 set_ci_checks a (if failing then [ check ] else []))
+           in
+           let a = set_ci_checks a [] |> fun a -> respond a Operation_kind.Ci in
+           let delivered =
+             match
+               respond_delivery ~agent:a ~kind:Operation_kind.Ci
+                 ~pre_fire_agent:None ~prefetched_comments:[]
+                 ~prefetched_findings:[] ~main_branch:"main"
+             with
+             | Deliver { payload = Ci_payload { failed_checks }; _ } ->
+                 List.equal Ci_check.equal failed_checks [ check ]
+             | _ -> false
+           in
+           delivered && ci_is_advisory a
+           && session_no_commits_is_ok ~agent:a ~delivery_mode:Respond
+                ~kind:(Some Operation_kind.Ci)
+           && (not
+                 (session_no_commits_is_ok ~agent:a ~delivery_mode:Start
+                    ~kind:(Some Operation_kind.Ci)))
+           &&
+           let failed = complete a in
+           List.equal Ci_check.equal failed.pending_ci_checks [ check ]
+           &&
+           let accepted =
+             record_delivered_ci_run_ids ~checks:[ check ] a [ 101 ]
+           in
+           List.is_empty accepted.pending_ci_checks
+           && not (ci_is_advisory accepted)
+         with _ -> false));
+  Test.check_exn
+    (Test.make ~name:"CI acknowledgement preserves other pending checks"
+       Gen.bool (fun idless ->
+         try
+           let first = failing_check 101 in
+           let second =
+             {
+               (failing_check 202) with
+               id = (if idless then None else Some 202);
+             }
+           in
+           let a = with_pr (Patch_id.of_string "p") (Branch.of_string "b") in
+           let a =
+             set_ci_checks a [ first ] |> fun a -> enqueue a Operation_kind.Ci
+           in
+           let a = set_ci_checks a [ second ] |> fun a -> set_ci_checks a [] in
+           let a = record_delivered_ci_run_ids ~checks:[ first ] a [ 101 ] in
+           List.equal Ci_check.equal a.pending_ci_checks [ second ]
+           && List.is_empty
+                (record_delivered_ci_run_ids ~checks:[ second ] a
+                   (if idless then [] else [ 202 ]))
+                  .pending_ci_checks
+         with _ -> false))
+
+let () =
+  QCheck2.Test.check_exn
+    (QCheck2.Test.make
+       ~name:
+         "new CI failure queues during repair and survives its acknowledgement"
+       ~count:300 QCheck2.Gen.string (fun description ->
+         try
+           let first = failing_check 101 and second = failing_check 202 in
+           let a = with_pr (Patch_id.of_string "p") (Branch.of_string "b") in
+           let a =
+             set_ci_checks a [ first ] |> fun a -> enqueue a Operation_kind.Ci
+           in
+           let a = respond a Operation_kind.Ci in
+           let repeated =
+             set_ci_checks a [ { first with description = Some description } ]
+           in
+           let a = set_ci_checks a [ first; second ] in
+           equal_ci_decision (on_ci_failure repeated) Ci_fix_in_progress
+           && equal_ci_decision (on_ci_failure a) Enqueue_ci
+           &&
+           let a = enqueue a Operation_kind.Ci in
+           let a =
+             record_delivered_ci_run_ids ~checks:[ first ] a [ 101 ] |> complete
+           in
+           let a = set_ci_checks a [] |> fun a -> respond a Operation_kind.Ci in
+           ci_is_advisory a
+           && List.equal Ci_check.equal (ci_feedback_checks a) [ second ]
+         with _ -> false))

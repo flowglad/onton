@@ -167,7 +167,8 @@ val increment_ci_failure_count : t -> Patch_id.t -> t
 val reset_ci_failure_count : t -> Patch_id.t -> t
 val set_ci_checks : t -> Patch_id.t -> Ci_check.t list -> t
 
-val record_delivered_ci_run_ids : t -> Patch_id.t -> int list -> t
+val record_delivered_ci_run_ids :
+  ?checks:Ci_check.t list -> t -> Patch_id.t -> int list -> t
 (** Record CheckRun [databaseId]s as delivered to the agent for this patch so
     subsequent CI deliveries do not re-deliver the same runs. See
     {!Patch_agent.record_delivered_ci_run_ids}. *)
@@ -381,14 +382,21 @@ type respond_outcome =
 [@@deriving show, eq, sexp_of]
 
 val apply_respond_outcome :
-  ?now:float -> t -> Patch_id.t -> Operation_kind.t -> respond_outcome -> t
-(** Live Human repair completions must pass their completion clock as [now].
-    Omitting it uses the last scheduler observation time for legacy/offline
-    calls. Apply the outcome of a Respond action fiber. [Respond_ok] -> complete
-    \+ reset_no_commits_push_count + kind-specific transitions (Merge_conflict
-    -> preserves owner conflict evidence; Review_comments ->
-    reset_review_unresolved_cycle_count so the cap counts only consecutive
-    non-converged cycles; Pr_body -> set_pr_body_delivered +
+  ?now:float ->
+  ?ci_advisory:bool ->
+  t ->
+  Patch_id.t ->
+  Operation_kind.t ->
+  respond_outcome ->
+  t
+(** [ci_advisory] exempts a completed advisory assessment from the CI repair
+    attempt budget. Live Human repair completions must pass their completion
+    clock as [now]. Omitting it uses the last scheduler observation time for
+    legacy/offline calls. Apply the outcome of a Respond action fiber.
+    [Respond_ok] -> complete \+ reset_no_commits_push_count + kind-specific
+    transitions (Merge_conflict -> preserves owner conflict evidence;
+    Review_comments -> reset_review_unresolved_cycle_count so the cap counts
+    only consecutive non-converged cycles; Pr_body -> set_pr_body_delivered +
     reset_pr_body_artifact_miss_count so the cap counts only consecutive
     misses). [Respond_failed] -> complete_failed (restores inflight human
     messages). [Respond_skip_empty], [Respond_retry_push], and

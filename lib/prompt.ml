@@ -1572,6 +1572,15 @@ let render_turn_layer_ci_detailed ~(project_name : string) ?pr_number
          for you — do not run `git push`."
         pr_ctx formatted_checks ci_detailed_footer)
 
+let render_ci_advisory details =
+  "# Advisory: earlier CI failures\n\n\
+   The queued failures below were observed before the latest CI refresh. \
+   Current checks show no failures, but newer commits may still be awaiting \
+   CI. Review the failure details against the current branch. If a failure \
+   still applies, resolve it and commit your changes. If more recent commits \
+   should already resolve these failures, disregard them and end your turn \
+   without changes. You do not need to rerun the old workflows.\n\n" ^ details
+
 let render_ci_failure_prompt ~(project_name : string) ?agents_md ?pr_number
     ?patch ?gameplan ?base_branch (checks : Ci_check.t list) : string =
   render_session_context ~project_name ?pr_number ?patch ?gameplan ?base_branch
@@ -3167,3 +3176,31 @@ let%test
           && List.length producer.acceptance_criteria = 1
           && List.length consumer.acceptance_criteria = 1
       | [] | [ _ ] | _ :: _ :: _ :: _ -> false)
+
+let%test
+    "advisory CI keeps diagnostic details and permits ending without changes" =
+  let check =
+    Types.Ci_check.
+      {
+        name = "build";
+        conclusion = "failure";
+        details_url = Some "https://example.test/check/42";
+        description = Some "compiler diagnostic";
+        started_at = None;
+        app_id = None;
+        check_suite_id = None;
+        id = Some 42;
+      }
+  in
+  let text =
+    render_turn_layer_ci_detailed ~project_name:"advisory-test"
+      [ (check, None) ]
+    |> render_ci_advisory
+  in
+  List.for_all
+    [
+      "https://example.test/check/42";
+      "compiler diagnostic";
+      "check_id=42";
+      "disregard them and end your turn without changes";
+    ] ~f:(fun expected -> String.is_substring text ~substring:expected)

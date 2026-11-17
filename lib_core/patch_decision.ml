@@ -72,7 +72,7 @@ type ci_decision =
   | Enqueue_ci  (** CI failure count below cap — enqueue Ci feedback. *)
   | Ci_already_queued  (** Ci already in queue — no action needed. *)
   | Ci_fix_in_progress
-      (** Agent is already fixing CI — suppress until checks pass. *)
+      (** Agent is already handling these failing runs; new runs may queue. *)
   | Ci_already_delivered
       (** Every currently failing check with a stable run id was already
           delivered to the agent. *)
@@ -157,11 +157,15 @@ let human_acceptance_delivers_messages ~(agent : Patch_agent.t)
   && equal_delivery_mode delivery_mode Respond
   && Option.equal Operation_kind.equal kind (Some Operation_kind.Human)
 
-(** Human, Findings, and Uncommitted_changes turns may legitimately produce no
-    commit when responding to an existing PR or published branch. Cleanup can
-    correctly discard changes instead of committing them. A Human-carrying Start
-    retains the ordinary Start no-commit retry/intervention semantics even after
-    PR association. *)
+let ci_is_advisory (agent : Patch_agent.t) =
+  (not (List.is_empty agent.pending_ci_checks))
+  && not (List.exists agent.ci_checks ~f:Ci_check.is_failure)
+
+(** Human, Findings, advisory CI, and Uncommitted_changes turns may legitimately
+    produce no commit when responding to an existing PR or published branch.
+    Cleanup can correctly discard changes instead of committing them. A
+    Human-carrying Start retains the ordinary Start no-commit retry/intervention
+    semantics even after PR association. *)
 let session_no_commits_is_ok ~(agent : Patch_agent.t)
     ~(delivery_mode : delivery_mode) ~(kind : Operation_kind.t option) : bool =
   (Patch_agent.is_pr_present agent || Patch_agent.branch_published agent)
@@ -172,7 +176,7 @@ let session_no_commits_is_ok ~(agent : Patch_agent.t)
   | Some Operation_kind.Findings
   | Some Operation_kind.Uncommitted_changes ->
       true
-  | Some Operation_kind.Ci
+  | Some Operation_kind.Ci -> ci_is_advisory agent
   | Some Operation_kind.Review_comments
   | Some Operation_kind.Pr_body
   | Some Operation_kind.Merge_conflict
@@ -206,40 +210,16 @@ type respond_delivery =
   | Respond_stale
 [@@deriving show, eq, sexp_of, compare]
 
-(** Keep failing CI checks that are eligible for this attempt. Before the first
-    attempt, stable run ids are delivered once. After an incomplete session
-    ([session_fallback = Tried_fresh]) or a completed attempt whose checks still
-    fail ([ci_failure_count > 0]), the same ids become deliverable again.
-    [Given_up] is terminal, so that fallback state does not itself make
-    delivered ids eligible again. This matches [on_ci_failure]'s retry decision
-    and heals snapshots written by older supervisors that recorded ids before a
-    timed-out session completed.
-
-    Checks without a stable [id] (StatusContext entries, legacy snapshots)
-    bypass dedup — they can't be keyed reliably, and the conservative choice is
-    to deliver rather than silently drop. *)
-let filter_deliverable_ci_failures (agent : Patch_agent.t) : Ci_check.t list =
-  let retrying =
-    agent.ci_failure_count > 0
-    ||
-    match agent.session_fallback with
-    | Patch_agent.Tried_fresh -> true
-    | Patch_agent.Fresh_available | Patch_agent.Given_up -> false
-  in
-  List.filter agent.ci_checks ~f:(fun (c : Ci_check.t) ->
-      if not (Ci_check.is_failure c) then false
-      else
-        match c.id with
-        | None -> true
-        | Some id ->
-            retrying
-            || not (List.mem agent.delivered_ci_run_ids id ~equal:Int.equal))
+let filter_deliverable_ci_failures = Patch_agent.deliverable_ci_checks
 
 let on_ci_failure (a : Patch_agent.t) : ci_decision =
   if a.ci_failure_count >= a.max_ci_failures then Cap_reached
   else if
     a.busy
     && Option.equal Operation_kind.equal a.current_op (Some Operation_kind.Ci)
+    && not
+         (List.exists (filter_deliverable_ci_failures a) ~f:(fun check ->
+              not (List.exists a.pending_ci_checks ~f:(Ci_check.same_run check))))
   then Ci_fix_in_progress
   else if List.mem a.queue Operation_kind.Ci ~equal:Operation_kind.equal then
     Ci_already_queued
@@ -273,7 +253,7 @@ let respond_delivery ~(agent : Patch_agent.t) ~(kind : Operation_kind.t)
     (* Precompute the CI failure list once so emptiness and payload agree. The
        delivery filter deduplicates an initial attempt while allowing explicit
        retries after failed or completed attempts. *)
-    let ci_deliverable = filter_deliverable_ci_failures agent in
+    let ci_deliverable = Patch_agent.ci_feedback_checks agent in
     let is_empty =
       match kind with
       | Operation_kind.Uncommitted_changes -> false
@@ -285,13 +265,9 @@ let respond_delivery ~(agent : Patch_agent.t) ~(kind : Operation_kind.t)
           && Option.is_none
                (Scheduler_recovery.pending source.scheduler_recovery)
       | Operation_kind.Ci ->
-          (* Freshness is the caller's responsibility: it re-polls GitHub
-             and skips delivery before calling us when the failure is
-             already resolved. This is a belt-and-suspenders guard so the
-             pure function never emits an empty [Ci_payload] in isolation
-             (e.g. if a future caller forgets the freshness hop). Also
-             catches the case where every fresh failure has already been
-             delivered — no new information to send. *)
+          (* Fresh observations and retained queued failures share the same
+             diagnostics path. The latter remain useful as advisory feedback
+             after the branch advances. *)
           List.is_empty ci_deliverable
       | Operation_kind.Merge_conflict | Operation_kind.Pr_body
       | Operation_kind.Rebase ->

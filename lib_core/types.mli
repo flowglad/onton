@@ -220,6 +220,10 @@ module Ci_check : sig
   val success_conclusions : string list
   (** Conclusions that represent a terminal successful outcome. *)
 
+  val same_run : t -> t -> bool
+  (** Stable CheckRun IDs own feedback identity; id-less observations match only
+      when their full metadata agrees. *)
+
   val is_failure : t -> bool
   val is_success : t -> bool
 
