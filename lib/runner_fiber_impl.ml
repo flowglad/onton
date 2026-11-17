@@ -1840,9 +1840,8 @@ module Make (Forge : Forge.S) (W : Worktree.S) (Env : Runner_env.S) = struct
                   (fun () ->
                     (* For Review_comments and Ci, fetch fresh state from
                      GitHub before acquiring a session slot to avoid blocking
-                     concurrency on GitHub API I/O. The Ci fetch is the
-                     freshness gate against delivering a failure that's
-                     already been superseded by a newer run. *)
+                     concurrency on GitHub API I/O. The CI fetch distinguishes
+                     current failures from retained advisory feedback. *)
                     let is_review =
                       Operation_kind.equal kind Operation_kind.Review_comments
                     in
@@ -1875,7 +1874,7 @@ module Make (Forge : Forge.S) (W : Worktree.S) (Env : Runner_env.S) = struct
                             None)
                       else None
                     in
-                    let fresh_branch_state =
+                    let initial_branch_observation =
                       if
                         is_ci
                         && Runtime.read runtime (fun snap ->
@@ -1888,10 +1887,12 @@ module Make (Forge : Forge.S) (W : Worktree.S) (Env : Runner_env.S) = struct
                                  patch_id)
                                 .Patch_agent.branch)
                         in
-                        match Forge.branch_state branch with
-                        | Ok state -> Some state
-                        | Error _ -> None
+                        Some (Forge.branch_state branch)
                       else None
+                    in
+                    let fresh_branch_state =
+                      Base.Option.bind initial_branch_observation
+                        ~f:Result.to_option
                     in
                     let prefetched_comments =
                       if is_review then
@@ -1914,13 +1915,10 @@ module Make (Forge : Forge.S) (W : Worktree.S) (Env : Runner_env.S) = struct
                         | Some _ | None -> []
                       else []
                     in
-                    (* Ci freshness gate: if we have no PR number, couldn't
-                     fetch, or the fetched state shows no current failures,
-                     skip the delivery — don't wake the agent for a failure
-                     that's already been superseded. The [set_ci_checks]
-                     write is deferred to inside [with_busy_guard] so it
-                     can't corrupt state on a stale/cancelled delivery nor
-                     race with the poller. *)
+                    (* Retry failed branch observations and skip empty feedback. Retained
+                     queued failures remain deliverable as advisory feedback
+                     when a successful refresh finds no current failures.
+                     Observation writes stay inside the busy guard. *)
                     let ci_skip_reason =
                       if is_ci then
                         match (pr_number, fresh_pr_state) with
@@ -1950,10 +1948,21 @@ module Make (Forge : Forge.S) (W : Worktree.S) (Env : Runner_env.S) = struct
                             then None
                             else (
                               log_event runtime ~patch_id
-                                "Fresh CI state shows no failures — skipping \
-                                 CI delivery";
+                                "Fresh CI state shows no current failures";
                               Some "no current failures")
                       else None
+                    in
+                    let ci_skip_reason =
+                      match ci_skip_reason with
+                      | Some "no current failures"
+                        when Runtime.read runtime (fun snap ->
+                                 not
+                                   (Base.List.is_empty
+                                      (Orchestrator.agent
+                                         snap.Runtime.orchestrator patch_id)
+                                        .Patch_agent.pending_ci_checks)) ->
+                          None
+                      | reason -> reason
                     in
                     let message_id = Orchestrator.message_id msg in
                     let owns_current_message () =
@@ -2002,12 +2011,22 @@ module Make (Forge : Forge.S) (W : Worktree.S) (Env : Runner_env.S) = struct
                                    .Patch_agent.pr_body_delivered)
                         in
                         let ci_run_ids_to_record = ref [] in
+                        let ci_checks_to_record = ref [] in
+                        let ci_delivered = ref false in
+                        let ci_advisory = ref false in
                         let result =
                           match (owns_current_message (), ci_skip_reason) with
                           | false, _ ->
                               log_event runtime ~patch_id
                                 "Skipping action — became stale before delivery";
                               `Stale
+                          | true, _
+                            when Base.Option.exists initial_branch_observation
+                                   ~f:Result.is_error ->
+                              log_event runtime ~patch_id
+                                "Deferred CI delivery — initial branch HEAD \
+                                 fetch failed; retry queued";
+                              `Retry_ci_observation
                           | true, Some reason ->
                               (* Fast path: skip decision already made. Don't
                                consume a session slot for a no-op — that
@@ -2040,8 +2059,7 @@ module Make (Forge : Forge.S) (W : Worktree.S) (Env : Runner_env.S) = struct
                               in
                               let branch_state_after_wait =
                                 match fresh_branch_state with
-                                | Some initial when is_ci && owns_after_wait
-                                  -> (
+                                | Some _ when is_ci && owns_after_wait -> (
                                     let branch =
                                       Runtime.read runtime (fun snap ->
                                           (Orchestrator.agent
@@ -2049,17 +2067,11 @@ module Make (Forge : Forge.S) (W : Worktree.S) (Env : Runner_env.S) = struct
                                             .Patch_agent.branch)
                                     in
                                     match Forge.branch_state branch with
-                                    | Ok current
-                                      when String.equal current.head_sha
-                                             initial.head_sha
-                                           && Base.List.exists current.checks
-                                                ~f:Ci_check.is_failure ->
-                                        Some current
-                                    | Ok _ | Error _ ->
+                                    | Ok current -> Some current
+                                    | Error _ ->
                                         log_event runtime ~patch_id
-                                          "Skipped CI delivery — branch HEAD \
-                                           or checks changed during semaphore \
-                                           wait";
+                                          "Retrying CI delivery — branch HEAD \
+                                           fetch failed after semaphore wait";
                                         None)
                                 | Some _ | None -> fresh_branch_state
                               in
@@ -2163,17 +2175,20 @@ module Make (Forge : Forge.S) (W : Worktree.S) (Env : Runner_env.S) = struct
                                     Orchestrator.agent snap.Runtime.orchestrator
                                       patch_id)
                               in
+                              ci_advisory :=
+                                is_ci && Patch_decision.ci_is_advisory agent;
                               let delivery =
-                                if branch_ci_stale then
+                                if
+                                  not
+                                    (owns_after_wait && owns_current_message ())
+                                then Patch_decision.Respond_stale
+                                else if branch_ci_stale then
                                   Patch_decision.Skip_empty
-                                else if
-                                  owns_after_wait && owns_current_message ()
-                                then
+                                else
                                   Patch_decision.respond_delivery ~agent ~kind
                                     ~pre_fire_agent ~prefetched_comments
                                     ~prefetched_findings
                                     ~main_branch:(Branch.to_string main)
-                                else Patch_decision.Respond_stale
                               in
                               let render_base_changed_prefix base_change =
                                 match base_change with
@@ -2197,7 +2212,10 @@ module Make (Forge : Forge.S) (W : Worktree.S) (Env : Runner_env.S) = struct
                                   `Stale
                               | Patch_decision.Skip_empty ->
                                   log_event runtime ~patch_id
-                                    (if
+                                    (if branch_ci_stale then
+                                       "Deferred CI delivery — branch \
+                                        observation unavailable; retry queued"
+                                     else if
                                        Operation_kind.equal kind
                                          Operation_kind.Findings
                                      then
@@ -2208,7 +2226,8 @@ module Make (Forge : Forge.S) (W : Worktree.S) (Env : Runner_env.S) = struct
                                        Printf.sprintf
                                          "Skipped %s — nothing to deliver"
                                          (Operation_kind.to_label kind));
-                                  `Skip_empty
+                                  if branch_ci_stale then `Retry_ci_observation
+                                  else `Skip_empty
                               | Patch_decision.Deliver
                                   {
                                     payload =
@@ -2400,7 +2419,20 @@ module Make (Forge : Forge.S) (W : Worktree.S) (Env : Runner_env.S) = struct
                                                   when not
                                                          (is_merge_queue_removal_check
                                                             check) ->
-                                                    current_head_oid
+                                                    if
+                                                      Base.Option.value_map
+                                                        fresh_pr_state
+                                                        ~default:false
+                                                        ~f:(fun state ->
+                                                          Base.List.exists
+                                                            state
+                                                              .Pr_state
+                                                               .ci_checks
+                                                            ~f:
+                                                              (Ci_check.same_run
+                                                                 check))
+                                                    then current_head_oid
+                                                    else None
                                                 | Some _ | None -> None
                                               in
                                               let detail_for_check check =
@@ -2498,7 +2530,10 @@ module Make (Forge : Forge.S) (W : Worktree.S) (Env : Runner_env.S) = struct
                                                 ~project_name ?pr_number
                                                 detailed_checks
                                           in
-                                          common_prompt text
+                                          common_prompt
+                                            (if !ci_advisory then
+                                               Prompt.render_ci_advisory text
+                                             else text)
                                       | Patch_decision.Review_payload
                                           { comments } ->
                                           let current_head_sha =
@@ -2658,6 +2693,8 @@ module Make (Forge : Forge.S) (W : Worktree.S) (Env : Runner_env.S) = struct
                                     (match payload with
                                     | Patch_decision.Ci_payload
                                         { failed_checks } ->
+                                        ci_delivered := true;
+                                        ci_checks_to_record := failed_checks;
                                         ci_run_ids_to_record :=
                                           Base.List.filter_map failed_checks
                                             ~f:(fun (c : Ci_check.t) ->
@@ -2894,7 +2931,11 @@ module Make (Forge : Forge.S) (W : Worktree.S) (Env : Runner_env.S) = struct
                                             result)
                                       | Patch_decision.Ci_payload
                                           { failed_checks } ->
-                                          if session_no_commits then
+                                          if
+                                            !ci_advisory
+                                            && (session_ok || session_no_commits)
+                                          then `Ok
+                                          else if session_no_commits then
                                             let failed_checks =
                                               Ci_rerun_decision
                                               .unique_workflow_checks
@@ -3045,13 +3086,13 @@ module Make (Forge : Forge.S) (W : Worktree.S) (Env : Runner_env.S) = struct
                                          | `Pr_body_miss
                                          | `Review_unresolved
                                          | `Retry_push
+                                         | `Retry_ci_observation
                                          | `Skip_empty
                                          | `Stale ])
                                   with Skip_delivery -> `Skip_empty))
                         in
                         (match result with
-                        | (`Ok | `No_commits)
-                          when not (Base.List.is_empty !ci_run_ids_to_record) ->
+                        | (`Ok | `No_commits) when !ci_delivered ->
                             (* Ownership is rechecked at commit time. If this
                                message was superseded during the session, leave
                                deduplication state to the newer operation; a
@@ -3065,17 +3106,20 @@ module Make (Forge : Forge.S) (W : Worktree.S) (Env : Runner_env.S) = struct
                                     agent.Patch_agent.current_message_id
                                     (Some message_id)
                                 then
-                                  Orchestrator.record_delivered_ci_run_ids orch
-                                    patch_id !ci_run_ids_to_record
+                                  Orchestrator.record_delivered_ci_run_ids
+                                    ~checks:!ci_checks_to_record orch patch_id
+                                    !ci_run_ids_to_record
                                 else orch)
                         | `Failed | `Pr_body_miss | `Review_unresolved
-                        | `Skip_empty | `Stale | `Ok | `No_commits | `Retry_push
-                          ->
+                        | `Retry_ci_observation | `Skip_empty | `Stale | `Ok
+                        | `No_commits | `Retry_push ->
                             ());
                         let respond_outcome =
                           match result with
                           | `Stale -> Orchestrator.Respond_stale
                           | `Skip_empty -> Orchestrator.Respond_skip_empty
+                          | `Retry_ci_observation ->
+                              Orchestrator.Respond_retry_ci_observation
                           | `Failed -> Orchestrator.Respond_failed
                           | `No_commits -> Orchestrator.Respond_no_commits
                           | `Retry_push -> Orchestrator.Respond_retry_push
@@ -3091,13 +3135,15 @@ module Make (Forge : Forge.S) (W : Worktree.S) (Env : Runner_env.S) = struct
                           | Orchestrator.Respond_retry_push
                           | Orchestrator.Respond_no_commits
                           | Orchestrator.Respond_skip_empty
+                          | Orchestrator.Respond_retry_ci_observation
                           | Orchestrator.Respond_pr_body_miss
                           | Orchestrator.Respond_review_unresolved
                           | Orchestrator.Respond_ok ->
                               update_if_current (fun orch ->
                                   Orchestrator.apply_respond_outcome
-                                    ~now:(Eio.Time.now Env.clock) orch patch_id
-                                    kind respond_outcome)
+                                    ~now:(Eio.Time.now Env.clock)
+                                    ~ci_advisory:!ci_advisory orch patch_id kind
+                                    respond_outcome)
                         in
                         (* A session can be superseded after delivery begins.
                            Treat an outcome that no longer owns the message as
@@ -3192,7 +3238,8 @@ module Make (Forge : Forge.S) (W : Worktree.S) (Env : Runner_env.S) = struct
                         | Orchestrator.Respond_stale
                         | Orchestrator.Respond_no_commits
                         | Orchestrator.Respond_retry_push
-                        | Orchestrator.Respond_skip_empty ->
+                        | Orchestrator.Respond_skip_empty
+                        | Orchestrator.Respond_retry_ci_observation ->
                             ())))
       in
       (* Spawn action fibers without waiting for completion. Each fiber is

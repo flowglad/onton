@@ -1507,9 +1507,103 @@ let () =
                  queued.merge_queue_entry queued_restored.merge_queue_entry
         | Error _, _ | _, Error _ -> false)
   in
+  let queued_ci_advisory =
+    QCheck2.Test.make
+      ~name:"queued CI advisory evidence survives checkpoint refresh"
+      QCheck2.Gen.bool (fun idless ->
+        try
+          let module A = Onton_core.Patch_agent in
+          let check =
+            Ci_check.
+              {
+                name = "queued";
+                conclusion = "failure";
+                details_url = Some "https://example.test/check";
+                description = Some "failure detail";
+                started_at = None;
+                app_id = None;
+                check_suite_id = None;
+                id = (if idless then None else Some 42);
+              }
+          in
+          let a =
+            A.create ~branch:(Branch.of_string "b") (Patch_id.of_string "p")
+          in
+          let a =
+            A.set_ci_checks a [ check ] |> fun a ->
+            A.enqueue a Operation_kind.Ci
+          in
+          let a = A.set_ci_checks a [] in
+          match
+            Onton.Persistence.patch_agent_of_yojson ~snapshot_version:2
+              ~main_branch:(Branch.of_string "main")
+              ~gameplan:(gameplan_for_agent a)
+              (Onton.Persistence.patch_agent_to_yojson a)
+          with
+          | Error _ -> false
+          | Ok restored ->
+              List.equal Ci_check.equal restored.pending_ci_checks [ check ]
+              && Onton_core.Patch_decision.ci_is_advisory restored
+        with _ -> false)
+  in
+  let legacy_pending_ci =
+    QCheck2.Test.make
+      ~name:"legacy queued CI restores only unacknowledged failures"
+      QCheck2.Gen.bool (fun idless ->
+        try
+          let module A = Onton_core.Patch_agent in
+          let old =
+            Ci_check.
+              {
+                name = "delivered";
+                conclusion = "failure";
+                details_url = None;
+                description = None;
+                started_at = None;
+                app_id = None;
+                check_suite_id = None;
+                id = Some 101;
+              }
+          in
+          let fresh =
+            {
+              old with
+              name = "fresh";
+              id = (if idless then None else Some 202);
+            }
+          in
+          let a =
+            A.create ~branch:(Branch.of_string "b") (Patch_id.of_string "p")
+          in
+          let a = A.record_delivered_ci_run_ids a [ 101 ] in
+          let a =
+            A.set_ci_checks a [ old; fresh ] |> fun a ->
+            A.enqueue a Operation_kind.Ci
+          in
+          let json =
+            match Onton.Persistence.patch_agent_to_yojson a with
+            | `Assoc fields ->
+                `Assoc
+                  (List.Assoc.remove fields "pending_ci_checks"
+                     ~equal:String.equal)
+            | json -> json
+          in
+          match
+            Onton.Persistence.patch_agent_of_yojson ~snapshot_version:2
+              ~main_branch:(Branch.of_string "main")
+              ~gameplan:(gameplan_for_agent a) json
+          with
+          | Error _ -> false
+          | Ok restored ->
+              List.equal Int.equal restored.delivered_ci_run_ids [ 101 ]
+              && List.equal Ci_check.equal restored.pending_ci_checks [ fresh ]
+        with _ -> false)
+  in
   let exit_code =
     QCheck_base_runner.run_tests
       [
+        queued_ci_advisory;
+        legacy_pending_ci;
         malformed_ejection;
         ejection_roundtrip;
         runnable_snapshot;

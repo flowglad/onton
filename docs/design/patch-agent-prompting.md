@@ -229,7 +229,16 @@ Gaps:
   does not act on its content — a structured disagreement field could
   let it distinguish "fixed" from "wontfix" replies.
 
-### `render_ci_failure_prompt` and `render_ci_failure_unknown_prompt`
+### `render_ci_failure_prompt`, `render_ci_failure_unknown_prompt`, and `render_ci_advisory`
+
+Queued CI failures retain their check metadata across polling and checkpoints.
+If a pre-delivery refresh finds no current failures, the worker receives the
+retained failures as advisory feedback with the same diagnostic details. It
+should fix failures that still apply, or disregard them and end its turn if
+newer commits should already resolve them. A successful advisory assessment
+acknowledges the checks without rerunning old workflows or consuming the CI
+repair-attempt budget. Failed advisory sessions retain the evidence for an explicit retry without
+automatically scheduling another advisory turn.
 
 Strong points:
 - Per-check formatting with name, conclusion, URL, description.

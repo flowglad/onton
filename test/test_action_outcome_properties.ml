@@ -397,6 +397,7 @@ let () =
       Orchestrator.Respond_retry_push;
       Orchestrator.Respond_no_commits;
       Orchestrator.Respond_skip_empty;
+      Orchestrator.Respond_retry_ci_observation;
       Orchestrator.Respond_pr_body_miss;
       Orchestrator.Respond_review_unresolved;
     ]
@@ -633,6 +634,7 @@ let () =
       Orchestrator.Respond_retry_push;
       Orchestrator.Respond_no_commits;
       Orchestrator.Respond_skip_empty;
+      Orchestrator.Respond_retry_ci_observation;
     ]
   in
   let prop =
@@ -807,6 +809,17 @@ let () =
       Orchestrator.Respond_ok
   in
   assert (ci_count orch pid = before);
+  let orch, pid, before = with_ci_busy () in
+  let orch =
+    Orchestrator.apply_respond_outcome ~ci_advisory:true orch pid
+      Operation_kind.Ci Orchestrator.Respond_ok
+  in
+  assert (ci_count orch pid = before);
+  assert (not (Orchestrator.agent orch pid).Patch_agent.busy);
+  assert (
+    not
+      (List.mem (Orchestrator.agent orch pid).Patch_agent.queue
+         Operation_kind.Ci ~equal:Operation_kind.equal));
   Stdlib.print_endline "AO-7 passed"
 
 (* ========== AO-7b: failed CI push remains deliverable ========== *)
@@ -862,6 +875,48 @@ let () =
   assert redelivered;
   Stdlib.print_endline "AO-7b passed"
 
+(* Advisory completion also derives its status for worker callers. Unsuccessful
+   turns retain evidence for explicit retry without scheduling an unbounded loop. *)
+let () =
+  let check =
+    Ci_check.
+      {
+        name = "advisory";
+        conclusion = "failure";
+        details_url = None;
+        description = None;
+        started_at = None;
+        app_id = None;
+        check_suite_id = None;
+        id = Some 101;
+      }
+  in
+  List.iter
+    Orchestrator.[ Respond_ok; Respond_failed; Respond_retry_push ]
+    ~f:(fun outcome ->
+      List.iter [ None; Some true ] ~f:(fun ci_advisory ->
+          let orch, patches, gameplan, pid = bootstrap_one () in
+          let orch = Orchestrator.set_ci_checks orch pid [ check ] in
+          let orch = Orchestrator.enqueue orch pid Operation_kind.Ci in
+          let orch = Orchestrator.set_ci_checks orch pid [] in
+          let orch = make_busy orch patches gameplan pid Operation_kind.Ci in
+          let before =
+            (Orchestrator.agent orch pid).Patch_agent.ci_failure_count
+          in
+          let orch =
+            Orchestrator.apply_respond_outcome ?ci_advisory orch pid
+              Operation_kind.Ci outcome
+          in
+          let a = Orchestrator.agent orch pid in
+          assert (not a.Patch_agent.busy);
+          assert (a.Patch_agent.ci_failure_count = before);
+          assert (
+            not
+              (List.mem a.Patch_agent.queue Operation_kind.Ci
+                 ~equal:Operation_kind.equal));
+          assert (
+            List.equal Ci_check.equal a.Patch_agent.pending_ci_checks [ check ])))
+
 (* ========== AO-8: Respond_ok + Pr_body sets pr_body_delivered ========== *)
 
 let () =
@@ -891,6 +946,7 @@ let () =
     [
       Orchestrator.Respond_failed;
       Orchestrator.Respond_skip_empty;
+      Orchestrator.Respond_retry_ci_observation;
       Orchestrator.Respond_retry_push;
       Orchestrator.Respond_no_commits;
       Orchestrator.Respond_stale;
@@ -2177,4 +2233,115 @@ let () =
                Patch_decision.equal_disposition
                  (Patch_decision.disposition agent)
                  (Patch_decision.Ready_respond kind)
+         with _ -> false))
+
+let () =
+  QCheck2.Test.check_exn
+    (QCheck2.Test.make
+       ~name:
+         "CI observation failure keeps advisory evidence scheduled until \
+          delivery"
+       ~count:100
+       QCheck2.Gen.(triple bool bool (int_range 1 5))
+       (fun (no_pr_descendant, idless, failures) ->
+         try
+           let check =
+             Ci_check.
+               {
+                 name = "retained";
+                 conclusion = "failure";
+                 details_url = Some "https://example.test/check";
+                 description = Some "diagnostic";
+                 started_at = None;
+                 app_id = None;
+                 check_suite_id = None;
+                 id = (if idless then None else Some 101);
+               }
+           in
+           let orch, pid =
+             if no_pr_descendant then (
+               let patches = mk_patches 2 in
+               let mode =
+                 match Execution_mode.infer (Graph.of_patches patches) with
+                 | Ok mode -> mode
+                 | Error error -> failwith error
+               in
+               let pid = pid_of_idx patches 1 in
+               let orch =
+                 Orchestrator.create ~patches ~main_branch:main |> fun orch ->
+                 Orchestrator.set_execution_mode orch mode
+               in
+               let orch =
+                 Orchestrator.fire orch (Orchestrator.Start (pid, main))
+                 |> fun orch -> Orchestrator.complete orch pid
+               in
+               let orch = publish_fixture orch pid (String.make 40 'a') in
+               assert (Orchestrator.is_feature_descendant orch pid);
+               assert (Orchestrator.branch_only_published orch pid);
+               assert (
+                 Option.is_none
+                   (Orchestrator.respond_pr_number orch pid Operation_kind.Ci));
+               (orch, pid))
+             else
+               let orch, _, _, pid = bootstrap_one () in
+               (orch, pid)
+           in
+           let orch = Orchestrator.set_ci_checks orch pid [ check ] in
+           let orch = Orchestrator.enqueue orch pid Operation_kind.Ci in
+           let orch = Orchestrator.set_ci_checks orch pid [] in
+           let before = Orchestrator.agent orch pid in
+           let orch =
+             List.fold (List.init failures ~f:Fn.id) ~init:orch
+               ~f:(fun orch _ ->
+                 let orch =
+                   Orchestrator.fire orch
+                     (Orchestrator.Respond (pid, Operation_kind.Ci))
+                 in
+                 let orch =
+                   Orchestrator.apply_respond_outcome orch pid Operation_kind.Ci
+                     Orchestrator.Respond_retry_ci_observation
+                 in
+                 let a = Orchestrator.agent orch pid in
+                 assert (not a.Patch_agent.busy);
+                 assert (
+                   List.count a.Patch_agent.queue
+                     ~f:(Operation_kind.equal Operation_kind.Ci)
+                   = 1);
+                 assert (
+                   List.equal Ci_check.equal a.Patch_agent.pending_ci_checks
+                     [ check ]);
+                 assert (
+                   a.Patch_agent.ci_failure_count
+                   = before.Patch_agent.ci_failure_count);
+                 assert (List.is_empty a.Patch_agent.delivered_ci_run_ids);
+                 orch)
+           in
+           let orch =
+             Orchestrator.fire orch
+               (Orchestrator.Respond (pid, Operation_kind.Ci))
+           in
+           let a = Orchestrator.agent orch pid in
+           Patch_decision.ci_is_advisory a
+           &&
+           match
+             Patch_decision.respond_delivery ~agent:a ~kind:Operation_kind.Ci
+               ~pre_fire_agent:None ~prefetched_comments:[]
+               ~prefetched_findings:[] ~main_branch:"main"
+           with
+           | Patch_decision.Deliver
+               { payload = Patch_decision.Ci_payload { failed_checks }; _ } ->
+               List.equal Ci_check.equal failed_checks [ check ]
+           | Patch_decision.Deliver
+               {
+                 payload =
+                   ( Patch_decision.Uncommitted_changes_payload
+                   | Patch_decision.Human_payload _
+                   | Patch_decision.Review_payload _
+                   | Patch_decision.Findings_payload _
+                   | Patch_decision.Pr_body_payload
+                   | Patch_decision.Merge_conflict_payload );
+                 _;
+               }
+           | Patch_decision.Skip_empty | Patch_decision.Respond_stale ->
+               false
          with _ -> false))

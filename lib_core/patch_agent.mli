@@ -63,6 +63,9 @@ type t = private {
   human_messages : string list;
   inflight_human_messages : string list;
   ci_checks : Types.Ci_check.t list;
+  pending_ci_checks : Types.Ci_check.t list;
+      (** Failure evidence retained from queued CI feedback until successful
+          delivery, independently of the latest observed checks. *)
   merge_ready : bool;
       (** Component-derived merge readiness ([Pr_state.merge_ready_of]), not
           GitHub's [mergeStateStatus]. *)
@@ -561,17 +564,26 @@ val set_branch_blocked : t -> t
 val clear_branch_blocked : t -> t
 (** Clear the branch-blocked flag (branch is no longer in repo root). *)
 
+val ci_feedback_checks : t -> Types.Ci_check.t list
+(** Current deliverable failures plus retained evidence, deduplicated by run. *)
+
+val deliverable_ci_checks : t -> Types.Ci_check.t list
+(** Failing checks eligible for initial delivery or a repair retry. *)
+
 val set_ci_checks : t -> Types.Ci_check.t list -> t
 (** Replace the stored CI check details. Reset [ci_failure_count] when a failing
     check has a stable ID absent from [delivered_ci_run_ids]. Repeated
     observations of delivered failures and id-less statuses retain the budget.
     Other intervention counters and session fallback state are preserved. *)
 
-val record_delivered_ci_run_ids : t -> int list -> t
+val record_delivered_ci_run_ids :
+  ?checks:Types.Ci_check.t list -> t -> int list -> t
 (** Mark the given CheckRun [databaseId]s as delivered so the CI feedback path
     will not re-deliver them. Merges with the existing set, sorts, and dedups.
     [ids] should contain only CheckRuns that carried an id (StatusContext
-    entries without stable numeric ids cannot be deduped). *)
+    entries without stable numeric ids cannot be deduped). Also acknowledges
+    retained evidence matching these IDs or [checks], including id-less checks.
+    Failures queued concurrently remain pending. *)
 
 val reset_busy : t -> t
 (** Reset a stale [busy] flag from a crashed session. If [busy], clears it.
@@ -715,6 +727,7 @@ val restore :
   human_messages:string list ->
   inflight_human_messages:string list ->
   ci_checks:Types.Ci_check.t list ->
+  ?pending_ci_checks:Types.Ci_check.t list ->
   merge_ready:bool ->
   ?head_oid:string option ->
   ?review_decision:string option ->

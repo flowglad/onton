@@ -167,7 +167,8 @@ val increment_ci_failure_count : t -> Patch_id.t -> t
 val reset_ci_failure_count : t -> Patch_id.t -> t
 val set_ci_checks : t -> Patch_id.t -> Ci_check.t list -> t
 
-val record_delivered_ci_run_ids : t -> Patch_id.t -> int list -> t
+val record_delivered_ci_run_ids :
+  ?checks:Ci_check.t list -> t -> Patch_id.t -> int list -> t
 (** Record CheckRun [databaseId]s as delivered to the agent for this patch so
     subsequent CI deliveries do not re-deliver the same runs. See
     {!Patch_agent.record_delivered_ci_run_ids}. *)
@@ -376,31 +377,44 @@ type respond_outcome =
   | Respond_no_commits
   | Respond_stale
   | Respond_skip_empty
+  | Respond_retry_ci_observation
   | Respond_pr_body_miss
   | Respond_review_unresolved
 [@@deriving show, eq, sexp_of]
 
 val apply_respond_outcome :
-  ?now:float -> t -> Patch_id.t -> Operation_kind.t -> respond_outcome -> t
-(** Live Human repair completions must pass their completion clock as [now].
-    Omitting it uses the last scheduler observation time for legacy/offline
-    calls. Apply the outcome of a Respond action fiber. [Respond_ok] -> complete
-    \+ reset_no_commits_push_count + kind-specific transitions (Merge_conflict
-    -> preserves owner conflict evidence; Review_comments ->
-    reset_review_unresolved_cycle_count so the cap counts only consecutive
-    non-converged cycles; Pr_body -> set_pr_body_delivered +
+  ?now:float ->
+  ?ci_advisory:bool ->
+  t ->
+  Patch_id.t ->
+  Operation_kind.t ->
+  respond_outcome ->
+  t
+(** [ci_advisory] exempts a completed advisory assessment from the CI repair
+    attempt budget; when omitted, it is derived from the agent's retained CI
+    evidence. Live Human repair completions must pass their completion clock as
+    [now]. Omitting it uses the last scheduler observation time for
+    legacy/offline calls. Apply the outcome of a Respond action fiber.
+    [Respond_ok] -> complete \+ reset_no_commits_push_count + kind-specific
+    transitions (Merge_conflict -> preserves owner conflict evidence;
+    Review_comments -> reset_review_unresolved_cycle_count so the cap counts
+    only consecutive non-converged cycles; Pr_body -> set_pr_body_delivered +
     reset_pr_body_artifact_miss_count so the cap counts only consecutive
     misses). [Respond_failed] -> complete_failed (restores inflight human
     messages). [Respond_skip_empty], [Respond_retry_push], and
-    [Respond_no_commits] -> complete. [Respond_stale] -> identity.
-    [Respond_pr_body_miss] -> complete + increment_pr_body_artifact_miss_count
-    (does NOT set_pr_body_delivered — the reconciler re-enqueues Pr_body
-    naturally). [Respond_review_unresolved] -> complete +
-    increment_review_unresolved_cycle_count — the still-unresolved threads
-    re-deliver via the next poll until the cap (>=2) surfaces the agent through
-    [needs_intervention]. Every non-stale completion for [Uncommitted_changes]
-    also enqueues [Rebase], so both committed and discarded cleanup paths retry
-    the blocked rebase. *)
+    [Respond_no_commits] -> complete. Failed and retry-push advisory turns
+    retain their evidence without automatically re-enqueuing [Ci].
+    [Respond_retry_ci_observation] -> complete + enqueue [Ci] for a CI action
+    whose pre-delivery branch observation failed; retains evidence without
+    consuming the repair budget. Other operation kinds only complete.
+    [Respond_stale] -> identity. [Respond_pr_body_miss] -> complete +
+    increment_pr_body_artifact_miss_count (does NOT set_pr_body_delivered — the
+    reconciler re-enqueues Pr_body naturally). [Respond_review_unresolved] ->
+    complete + increment_review_unresolved_cycle_count — the still-unresolved
+    threads re-deliver via the next poll until the cap (>=2) surfaces the agent
+    through [needs_intervention]. Every non-stale completion for
+    [Uncommitted_changes] also enqueues [Rebase], so both committed and
+    discarded cleanup paths retry the blocked rebase. *)
 
 type force_complete_reason = Cancelled | Unexpected_exception
 [@@deriving show, eq, sexp_of]

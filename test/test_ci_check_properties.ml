@@ -38,6 +38,20 @@ let unordered_same a b =
 let tests =
   let open QCheck2 in
   [
+    Test.make ~name:"feedback run identity is reflexive and symmetric"
+      ~count:500
+      Gen.(pair gen_check gen_check)
+      (fun (a, b) ->
+        Check.same_run a a
+        && Bool.equal (Check.same_run a b) (Check.same_run b a));
+    Test.make ~name:"stable feedback identity survives diagnostic updates"
+      ~count:500
+      Gen.(pair gen_check string)
+      (fun (a, description) ->
+        let updated = { a with Check.description = Some description } in
+        match a.Check.id with
+        | Some _ -> Check.same_run a updated
+        | None -> Bool.equal (Check.same_run a updated) (Check.equal a updated));
     Test.make ~name:"current runs are total and idempotent" ~count:500
       gen_checks (fun checks ->
         let current = Check.current_runs checks in

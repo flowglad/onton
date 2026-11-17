@@ -276,6 +276,13 @@ let acknowledge host checkpoint =
       in
       check "truncated capsule agent rejected"
         (Result.is_error (Worker_checkpoint.decode truncated));
+      let missing_ci_evidence =
+        replace_field "agent"
+          (`Assoc (List.remove_assoc "pending_ci_checks" agent_fields))
+          capsule_json
+      in
+      check "capsule requires pending CI evidence"
+        (Result.is_error (Worker_checkpoint.decode missing_ci_evidence));
       let legacy =
         replace_field "agent"
           (`Assoc (List.remove_assoc "wontdo_integration_head" agent_fields))

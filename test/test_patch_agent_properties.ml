@@ -10,6 +10,73 @@ let agent id =
 let tests =
   [
     QCheck2.Test.make ~count:300
+      ~name:
+        "CI feedback filters delivered runs and retains queued evidence until \
+         acknowledgement"
+      QCheck2.Gen.(triple bool (int_range 0 5) string)
+      (fun (idless, attempts, description) ->
+        try
+          let old =
+            Ci_check.
+              {
+                name = "old";
+                conclusion = "failure";
+                details_url = None;
+                description = Some description;
+                started_at = None;
+                app_id = None;
+                check_suite_id = None;
+                id = Some 101;
+              }
+          in
+          let fresh =
+            Ci_check.
+              {
+                old with
+                name = "fresh";
+                id = (if idless then None else Some 202);
+              }
+          in
+          let success =
+            Ci_check.
+              {
+                old with
+                name = "passed";
+                conclusion = "success";
+                id = Some 303;
+              }
+          in
+          let a =
+            Patch_agent.record_delivered_ci_run_ids (agent "ci") [ 101 ]
+          in
+          let a = Patch_agent.set_ci_checks a [ old; fresh; success ] in
+          let a =
+            List.fold (List.init attempts ~f:Fn.id) ~init:a ~f:(fun a _ ->
+                Patch_agent.increment_ci_failure_count a)
+          in
+          let expected = if attempts > 0 then [ old; fresh ] else [ fresh ] in
+          let deliverable = Patch_agent.deliverable_ci_checks a in
+          let a = Patch_agent.enqueue a Operation_kind.Ci in
+          let queued = Patch_agent.ci_feedback_checks a in
+          let a = Patch_agent.set_ci_checks a [] in
+          let retained = Patch_agent.ci_feedback_checks a in
+          let acknowledged =
+            Patch_agent.record_delivered_ci_run_ids ~checks:expected a
+              (List.filter_map expected ~f:(fun check -> check.Ci_check.id))
+          in
+          List.equal Ci_check.equal deliverable expected
+          && List.equal Ci_check.equal queued expected
+          && List.is_empty (Patch_agent.deliverable_ci_checks a)
+          && List.equal Ci_check.equal retained expected
+          && List.is_empty (Patch_agent.ci_feedback_checks acknowledged)
+          && List.is_empty
+               (Patch_agent.ci_feedback_checks
+                  (Patch_agent.record_delivered_ci_run_ids ~checks:expected
+                     acknowledged
+                     (List.filter_map expected ~f:(fun check ->
+                          check.Ci_check.id))))
+        with _ -> false);
+    QCheck2.Test.make ~count:300
       ~name:"lost workspace forgets checkout and conversation authority"
       QCheck2.Gen.(pair string string)
       (fun (path, session_id) ->

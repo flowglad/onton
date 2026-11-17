@@ -229,6 +229,9 @@ module Ci_check = struct
   (** Conclusions that represent a terminal successful outcome. *)
   let success_conclusions = [ "success"; "skipped"; "neutral" ]
 
+  let same_run a b =
+    match (a.id, b.id) with Some a, Some b -> Int.equal a b | _ -> equal a b
+
   let is_failure (c : t) =
     List.mem failure_conclusions c.conclusion ~equal:String.equal
 

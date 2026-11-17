@@ -236,6 +236,8 @@ let patch_agent_to_yojson (a : Patch_agent.t) =
       ( "inflight_human_messages",
         `List (List.map a.inflight_human_messages ~f:(fun s -> `String s)) );
       ("ci_checks", `List (List.map a.ci_checks ~f:Ci_check.yojson_of_t));
+      ( "pending_ci_checks",
+        `List (List.map a.pending_ci_checks ~f:Ci_check.yojson_of_t) );
       ("merge_ready", `Bool a.merge_ready);
       ("merge_queue_required", `Bool a.merge_queue_required);
       ( "merge_queue_entry",
@@ -331,6 +333,28 @@ let patch_agent_of_yojson ?(snapshot_version = 1) ~main_branch ~gameplan json =
   let* ci_checks =
     result_all
       (List.map ci_checks_raw ~f:(fun j -> try_of_yojson Ci_check.t_of_yojson j))
+  in
+  let delivered_ci_run_ids =
+    match member "delivered_ci_run_ids" json with
+    | `List items ->
+        List.filter_map items ~f:Json.int
+        |> List.dedup_and_sort ~compare:Int.compare
+    | _ -> []
+  in
+  let* pending_ci_checks =
+    match Json.field "pending_ci_checks" json with
+    | None when List.mem queue Operation_kind.Ci ~equal:Operation_kind.equal ->
+        Ok
+          (List.filter ci_checks ~f:(fun check ->
+               Ci_check.is_failure check
+               && not
+                    (Option.value_map check.Ci_check.id ~default:false
+                       ~f:(fun id ->
+                         List.mem delivered_ci_run_ids id ~equal:Int.equal))))
+    | _ ->
+        result_all
+          (List.map (list_member "pending_ci_checks" json) ~f:(fun j ->
+               try_of_yojson Ci_check.t_of_yojson j))
   in
   let* branch_reconcile =
     match Json.field "branch_reconcile" json with
@@ -460,7 +484,7 @@ let patch_agent_of_yojson ?(snapshot_version = 1) ~main_branch ~gameplan json =
         ~wontdo_reason:(string_member_opt "wontdo_reason" json)
         ~wontdo_integration_head:
           (string_member_opt "wontdo_integration_head" json)
-        ~human_messages ~inflight_human_messages ~ci_checks
+        ~human_messages ~inflight_human_messages ~ci_checks ~pending_ci_checks
         ~merge_ready:(bool_member "merge_ready" json)
         ~head_oid:(string_member_opt "head_oid" json)
         ~review_decision:(string_member_opt "review_decision" json)
@@ -601,13 +625,7 @@ let patch_agent_of_yojson ?(snapshot_version = 1) ~main_branch ~gameplan json =
           (Option.value
              (int_member_opt "automerge_failure_count" json)
              ~default:0)
-        ~delivered_ci_run_ids:
-          (match member "delivered_ci_run_ids" json with
-          | `List items ->
-              List.filter_map items ~f:(fun j -> Json.int j)
-              |> List.dedup_and_sort ~compare:Int.compare
-          | _ -> [])
-        ()
+        ~delivered_ci_run_ids ()
     |> migrate
     |> fun agent ->
       if Option.value (bool_member_opt "has_conflict" json) ~default:false then
