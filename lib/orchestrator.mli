@@ -377,6 +377,7 @@ type respond_outcome =
   | Respond_no_commits
   | Respond_stale
   | Respond_skip_empty
+  | Respond_retry_ci_observation
   | Respond_pr_body_miss
   | Respond_review_unresolved
 [@@deriving show, eq, sexp_of]
@@ -403,6 +404,9 @@ val apply_respond_outcome :
     messages). [Respond_skip_empty], [Respond_retry_push], and
     [Respond_no_commits] -> complete. Failed and retry-push advisory turns
     retain their evidence without automatically re-enqueuing [Ci].
+    [Respond_retry_ci_observation] -> complete + enqueue [Ci] for a CI action
+    whose pre-delivery branch observation failed; retains evidence without
+    consuming the repair budget. Other operation kinds only complete.
     [Respond_stale] -> identity. [Respond_pr_body_miss] -> complete +
     increment_pr_body_artifact_miss_count (does NOT set_pr_body_delivered — the
     reconciler re-enqueues Pr_body naturally). [Respond_review_unresolved] ->

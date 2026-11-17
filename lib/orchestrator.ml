@@ -1561,6 +1561,7 @@ type respond_outcome =
   | Respond_no_commits
   | Respond_stale
   | Respond_skip_empty
+  | Respond_retry_ci_observation
   | Respond_pr_body_miss
       (** Pr_body session finished cleanly but the PR body was not durably
           delivered. Two cases:
@@ -1595,8 +1596,8 @@ let apply_respond_outcome ?now ?ci_advisory t patch_id kind outcome =
       | Respond_ok | Respond_no_commits | Respond_retry_push ->
           update_agent t patch_id ~f:(fun a ->
               Patch_agent.finish_scheduler_repair ?now a ~success:true)
-      | Respond_failed | Respond_skip_empty | Respond_pr_body_miss
-      | Respond_review_unresolved ->
+      | Respond_failed | Respond_skip_empty | Respond_retry_ci_observation
+      | Respond_pr_body_miss | Respond_review_unresolved ->
           update_agent t patch_id ~f:(fun a ->
               Patch_agent.finish_scheduler_repair ?now a ~success:false)
       | Respond_stale -> t
@@ -1620,6 +1621,11 @@ let apply_respond_outcome ?now ?ci_advisory t patch_id kind outcome =
   | Respond_retry_push -> complete t patch_id |> retry_rebase_after_cleanup
   | Respond_no_commits -> complete t patch_id |> retry_rebase_after_cleanup
   | Respond_skip_empty -> complete t patch_id |> retry_rebase_after_cleanup
+  | Respond_retry_ci_observation ->
+      let t = complete t patch_id |> retry_rebase_after_cleanup in
+      if Operation_kind.equal kind Operation_kind.Ci then
+        enqueue t patch_id Operation_kind.Ci
+      else t
   | Respond_pr_body_miss ->
       let t = complete t patch_id in
       let t =

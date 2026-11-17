@@ -2061,7 +2061,7 @@ module Make (Forge : Forge.S) (W : Worktree.S) (Env : Runner_env.S) = struct
                                     | Ok current -> Some current
                                     | Error _ ->
                                         log_event runtime ~patch_id
-                                          "Skipped CI delivery — branch HEAD \
+                                          "Retrying CI delivery — branch HEAD \
                                            fetch failed after semaphore wait";
                                         None)
                                 | Some _ | None -> fresh_branch_state
@@ -2169,16 +2169,17 @@ module Make (Forge : Forge.S) (W : Worktree.S) (Env : Runner_env.S) = struct
                               ci_advisory :=
                                 is_ci && Patch_decision.ci_is_advisory agent;
                               let delivery =
-                                if branch_ci_stale then
+                                if
+                                  not
+                                    (owns_after_wait && owns_current_message ())
+                                then Patch_decision.Respond_stale
+                                else if branch_ci_stale then
                                   Patch_decision.Skip_empty
-                                else if
-                                  owns_after_wait && owns_current_message ()
-                                then
+                                else
                                   Patch_decision.respond_delivery ~agent ~kind
                                     ~pre_fire_agent ~prefetched_comments
                                     ~prefetched_findings
                                     ~main_branch:(Branch.to_string main)
-                                else Patch_decision.Respond_stale
                               in
                               let render_base_changed_prefix base_change =
                                 match base_change with
@@ -2202,7 +2203,10 @@ module Make (Forge : Forge.S) (W : Worktree.S) (Env : Runner_env.S) = struct
                                   `Stale
                               | Patch_decision.Skip_empty ->
                                   log_event runtime ~patch_id
-                                    (if
+                                    (if branch_ci_stale then
+                                       "Deferred CI delivery — branch \
+                                        observation unavailable; retry queued"
+                                     else if
                                        Operation_kind.equal kind
                                          Operation_kind.Findings
                                      then
@@ -2213,7 +2217,8 @@ module Make (Forge : Forge.S) (W : Worktree.S) (Env : Runner_env.S) = struct
                                        Printf.sprintf
                                          "Skipped %s — nothing to deliver"
                                          (Operation_kind.to_label kind));
-                                  `Skip_empty
+                                  if branch_ci_stale then `Retry_ci_observation
+                                  else `Skip_empty
                               | Patch_decision.Deliver
                                   {
                                     payload =
@@ -3072,6 +3077,7 @@ module Make (Forge : Forge.S) (W : Worktree.S) (Env : Runner_env.S) = struct
                                          | `Pr_body_miss
                                          | `Review_unresolved
                                          | `Retry_push
+                                         | `Retry_ci_observation
                                          | `Skip_empty
                                          | `Stale ])
                                   with Skip_delivery -> `Skip_empty))
@@ -3096,13 +3102,15 @@ module Make (Forge : Forge.S) (W : Worktree.S) (Env : Runner_env.S) = struct
                                     !ci_run_ids_to_record
                                 else orch)
                         | `Failed | `Pr_body_miss | `Review_unresolved
-                        | `Skip_empty | `Stale | `Ok | `No_commits | `Retry_push
-                          ->
+                        | `Retry_ci_observation | `Skip_empty | `Stale | `Ok
+                        | `No_commits | `Retry_push ->
                             ());
                         let respond_outcome =
                           match result with
                           | `Stale -> Orchestrator.Respond_stale
                           | `Skip_empty -> Orchestrator.Respond_skip_empty
+                          | `Retry_ci_observation ->
+                              Orchestrator.Respond_retry_ci_observation
                           | `Failed -> Orchestrator.Respond_failed
                           | `No_commits -> Orchestrator.Respond_no_commits
                           | `Retry_push -> Orchestrator.Respond_retry_push
@@ -3118,6 +3126,7 @@ module Make (Forge : Forge.S) (W : Worktree.S) (Env : Runner_env.S) = struct
                           | Orchestrator.Respond_retry_push
                           | Orchestrator.Respond_no_commits
                           | Orchestrator.Respond_skip_empty
+                          | Orchestrator.Respond_retry_ci_observation
                           | Orchestrator.Respond_pr_body_miss
                           | Orchestrator.Respond_review_unresolved
                           | Orchestrator.Respond_ok ->
@@ -3220,7 +3229,8 @@ module Make (Forge : Forge.S) (W : Worktree.S) (Env : Runner_env.S) = struct
                         | Orchestrator.Respond_stale
                         | Orchestrator.Respond_no_commits
                         | Orchestrator.Respond_retry_push
-                        | Orchestrator.Respond_skip_empty ->
+                        | Orchestrator.Respond_skip_empty
+                        | Orchestrator.Respond_retry_ci_observation ->
                             ())))
       in
       (* Spawn action fibers without waiting for completion. Each fiber is

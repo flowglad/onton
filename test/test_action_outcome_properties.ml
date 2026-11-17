@@ -397,6 +397,7 @@ let () =
       Orchestrator.Respond_retry_push;
       Orchestrator.Respond_no_commits;
       Orchestrator.Respond_skip_empty;
+      Orchestrator.Respond_retry_ci_observation;
       Orchestrator.Respond_pr_body_miss;
       Orchestrator.Respond_review_unresolved;
     ]
@@ -633,6 +634,7 @@ let () =
       Orchestrator.Respond_retry_push;
       Orchestrator.Respond_no_commits;
       Orchestrator.Respond_skip_empty;
+      Orchestrator.Respond_retry_ci_observation;
     ]
   in
   let prop =
@@ -944,6 +946,7 @@ let () =
     [
       Orchestrator.Respond_failed;
       Orchestrator.Respond_skip_empty;
+      Orchestrator.Respond_retry_ci_observation;
       Orchestrator.Respond_retry_push;
       Orchestrator.Respond_no_commits;
       Orchestrator.Respond_stale;
@@ -2230,4 +2233,88 @@ let () =
                Patch_decision.equal_disposition
                  (Patch_decision.disposition agent)
                  (Patch_decision.Ready_respond kind)
+         with _ -> false))
+
+let () =
+  QCheck2.Test.check_exn
+    (QCheck2.Test.make
+       ~name:
+         "CI observation failure keeps advisory evidence scheduled until \
+          delivery"
+       ~count:100
+       QCheck2.Gen.(pair bool (int_range 1 5))
+       (fun (idless, failures) ->
+         try
+           let check =
+             Ci_check.
+               {
+                 name = "retained";
+                 conclusion = "failure";
+                 details_url = Some "https://example.test/check";
+                 description = Some "diagnostic";
+                 started_at = None;
+                 app_id = None;
+                 check_suite_id = None;
+                 id = (if idless then None else Some 101);
+               }
+           in
+           let orch, _, _, pid = bootstrap_one () in
+           let orch = Orchestrator.set_ci_checks orch pid [ check ] in
+           let orch = Orchestrator.enqueue orch pid Operation_kind.Ci in
+           let orch = Orchestrator.set_ci_checks orch pid [] in
+           let before = Orchestrator.agent orch pid in
+           let orch =
+             List.fold (List.init failures ~f:Fn.id) ~init:orch
+               ~f:(fun orch _ ->
+                 let orch =
+                   Orchestrator.fire orch
+                     (Orchestrator.Respond (pid, Operation_kind.Ci))
+                 in
+                 let orch =
+                   Orchestrator.apply_respond_outcome orch pid Operation_kind.Ci
+                     Orchestrator.Respond_retry_ci_observation
+                 in
+                 let a = Orchestrator.agent orch pid in
+                 assert (not a.Patch_agent.busy);
+                 assert (
+                   List.count a.Patch_agent.queue
+                     ~f:(Operation_kind.equal Operation_kind.Ci)
+                   = 1);
+                 assert (
+                   List.equal Ci_check.equal a.Patch_agent.pending_ci_checks
+                     [ check ]);
+                 assert (
+                   a.Patch_agent.ci_failure_count
+                   = before.Patch_agent.ci_failure_count);
+                 assert (List.is_empty a.Patch_agent.delivered_ci_run_ids);
+                 orch)
+           in
+           let orch =
+             Orchestrator.fire orch
+               (Orchestrator.Respond (pid, Operation_kind.Ci))
+           in
+           let a = Orchestrator.agent orch pid in
+           Patch_decision.ci_is_advisory a
+           &&
+           match
+             Patch_decision.respond_delivery ~agent:a ~kind:Operation_kind.Ci
+               ~pre_fire_agent:None ~prefetched_comments:[]
+               ~prefetched_findings:[] ~main_branch:"main"
+           with
+           | Patch_decision.Deliver
+               { payload = Patch_decision.Ci_payload { failed_checks }; _ } ->
+               List.equal Ci_check.equal failed_checks [ check ]
+           | Patch_decision.Deliver
+               {
+                 payload =
+                   ( Patch_decision.Uncommitted_changes_payload
+                   | Patch_decision.Human_payload _
+                   | Patch_decision.Review_payload _
+                   | Patch_decision.Findings_payload _
+                   | Patch_decision.Pr_body_payload
+                   | Patch_decision.Merge_conflict_payload );
+                 _;
+               }
+           | Patch_decision.Skip_empty | Patch_decision.Respond_stale ->
+               false
          with _ -> false))
