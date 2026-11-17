@@ -1874,7 +1874,7 @@ module Make (Forge : Forge.S) (W : Worktree.S) (Env : Runner_env.S) = struct
                             None)
                       else None
                     in
-                    let fresh_branch_state =
+                    let initial_branch_observation =
                       if
                         is_ci
                         && Runtime.read runtime (fun snap ->
@@ -1887,10 +1887,12 @@ module Make (Forge : Forge.S) (W : Worktree.S) (Env : Runner_env.S) = struct
                                  patch_id)
                                 .Patch_agent.branch)
                         in
-                        match Forge.branch_state branch with
-                        | Ok state -> Some state
-                        | Error _ -> None
+                        Some (Forge.branch_state branch)
                       else None
+                    in
+                    let fresh_branch_state =
+                      Base.Option.bind initial_branch_observation
+                        ~f:Result.to_option
                     in
                     let prefetched_comments =
                       if is_review then
@@ -1913,7 +1915,7 @@ module Make (Forge : Forge.S) (W : Worktree.S) (Env : Runner_env.S) = struct
                         | Some _ | None -> []
                       else []
                     in
-                    (* Skip failed observations and empty feedback. Retained
+                    (* Retry failed branch observations and skip empty feedback. Retained
                      queued failures remain deliverable as advisory feedback
                      when a successful refresh finds no current failures.
                      Observation writes stay inside the busy guard. *)
@@ -2018,6 +2020,13 @@ module Make (Forge : Forge.S) (W : Worktree.S) (Env : Runner_env.S) = struct
                               log_event runtime ~patch_id
                                 "Skipping action — became stale before delivery";
                               `Stale
+                          | true, _
+                            when Base.Option.exists initial_branch_observation
+                                   ~f:Result.is_error ->
+                              log_event runtime ~patch_id
+                                "Deferred CI delivery — initial branch HEAD \
+                                 fetch failed; retry queued";
+                              `Retry_ci_observation
                           | true, Some reason ->
                               (* Fast path: skip decision already made. Don't
                                consume a session slot for a no-op — that

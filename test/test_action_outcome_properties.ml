@@ -2242,8 +2242,8 @@ let () =
          "CI observation failure keeps advisory evidence scheduled until \
           delivery"
        ~count:100
-       QCheck2.Gen.(pair bool (int_range 1 5))
-       (fun (idless, failures) ->
+       QCheck2.Gen.(triple bool bool (int_range 1 5))
+       (fun (no_pr_descendant, idless, failures) ->
          try
            let check =
              Ci_check.
@@ -2258,7 +2258,34 @@ let () =
                  id = (if idless then None else Some 101);
                }
            in
-           let orch, _, _, pid = bootstrap_one () in
+           let orch, pid =
+             if no_pr_descendant then (
+               let patches = mk_patches 2 in
+               let mode =
+                 match Execution_mode.infer (Graph.of_patches patches) with
+                 | Ok mode -> mode
+                 | Error error -> failwith error
+               in
+               let pid = pid_of_idx patches 1 in
+               let orch =
+                 Orchestrator.create ~patches ~main_branch:main |> fun orch ->
+                 Orchestrator.set_execution_mode orch mode
+               in
+               let orch =
+                 Orchestrator.fire orch (Orchestrator.Start (pid, main))
+                 |> fun orch -> Orchestrator.complete orch pid
+               in
+               let orch = publish_fixture orch pid (String.make 40 'a') in
+               assert (Orchestrator.is_feature_descendant orch pid);
+               assert (Orchestrator.branch_only_published orch pid);
+               assert (
+                 Option.is_none
+                   (Orchestrator.respond_pr_number orch pid Operation_kind.Ci));
+               (orch, pid))
+             else
+               let orch, _, _, pid = bootstrap_one () in
+               (orch, pid)
+           in
            let orch = Orchestrator.set_ci_checks orch pid [ check ] in
            let orch = Orchestrator.enqueue orch pid Operation_kind.Ci in
            let orch = Orchestrator.set_ci_checks orch pid [] in
