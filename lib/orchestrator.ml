@@ -1584,7 +1584,11 @@ type respond_outcome =
           resolution is supervisor-owned. *)
 [@@deriving show, eq, sexp_of]
 
-let apply_respond_outcome ?now ?(ci_advisory = false) t patch_id kind outcome =
+let apply_respond_outcome ?now ?ci_advisory t patch_id kind outcome =
+  let ci_advisory =
+    Option.value ci_advisory
+      ~default:(Patch_decision.ci_is_advisory (agent t patch_id))
+  in
   let t =
     if Operation_kind.equal kind Operation_kind.Human then
       match outcome with
@@ -1610,17 +1614,10 @@ let apply_respond_outcome ?now ?(ci_advisory = false) t patch_id kind outcome =
       enqueue t patch_id Operation_kind.Rebase
     else t
   in
-  let retry_advisory t =
-    if ci_advisory && Operation_kind.equal kind Operation_kind.Ci then
-      enqueue t patch_id Operation_kind.Ci
-    else t
-  in
   match outcome with
   | Respond_stale -> t
-  | Respond_failed ->
-      complete_failed t patch_id |> retry_rebase_after_cleanup |> retry_advisory
-  | Respond_retry_push ->
-      complete t patch_id |> retry_rebase_after_cleanup |> retry_advisory
+  | Respond_failed -> complete_failed t patch_id |> retry_rebase_after_cleanup
+  | Respond_retry_push -> complete t patch_id |> retry_rebase_after_cleanup
   | Respond_no_commits -> complete t patch_id |> retry_rebase_after_cleanup
   | Respond_skip_empty -> complete t patch_id |> retry_rebase_after_cleanup
   | Respond_pr_body_miss ->

@@ -193,6 +193,7 @@ let agent_fields =
     "human_messages";
     "inflight_human_messages";
     "ci_checks";
+    "pending_ci_checks";
     "merge_ready";
     "merge_queue_required";
     "merge_queue_entry";

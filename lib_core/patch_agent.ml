@@ -750,14 +750,19 @@ let set_ci_checks t checks =
         | None -> false
         | Some id -> not (List.mem t.delivered_ci_run_ids id ~equal:Int.equal))
   in
+  let t =
+    {
+      t with
+      ci_checks = checks;
+      ci_failure_count = (if has_new_failure then 0 else t.ci_failure_count);
+    }
+  in
   {
     t with
-    ci_checks = checks;
     pending_ci_checks =
       (if List.mem t.queue Operation_kind.Ci ~equal:Operation_kind.equal then
-         ci_feedback_checks { t with ci_checks = checks }
+         ci_feedback_checks t
        else t.pending_ci_checks);
-    ci_failure_count = (if has_new_failure then 0 else t.ci_failure_count);
   }
 
 let record_delivered_ci_run_ids ?(checks = []) t ids =

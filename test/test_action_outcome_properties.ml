@@ -814,6 +814,10 @@ let () =
   in
   assert (ci_count orch pid = before);
   assert (not (Orchestrator.agent orch pid).Patch_agent.busy);
+  assert (
+    not
+      (List.mem (Orchestrator.agent orch pid).Patch_agent.queue
+         Operation_kind.Ci ~equal:Operation_kind.equal));
   Stdlib.print_endline "AO-7 passed"
 
 (* ========== AO-7b: failed CI push remains deliverable ========== *)
@@ -868,6 +872,48 @@ let () =
   in
   assert redelivered;
   Stdlib.print_endline "AO-7b passed"
+
+(* Advisory completion also derives its status for worker callers. Unsuccessful
+   turns retain evidence for explicit retry without scheduling an unbounded loop. *)
+let () =
+  let check =
+    Ci_check.
+      {
+        name = "advisory";
+        conclusion = "failure";
+        details_url = None;
+        description = None;
+        started_at = None;
+        app_id = None;
+        check_suite_id = None;
+        id = Some 101;
+      }
+  in
+  List.iter
+    Orchestrator.[ Respond_ok; Respond_failed; Respond_retry_push ]
+    ~f:(fun outcome ->
+      List.iter [ None; Some true ] ~f:(fun ci_advisory ->
+          let orch, patches, gameplan, pid = bootstrap_one () in
+          let orch = Orchestrator.set_ci_checks orch pid [ check ] in
+          let orch = Orchestrator.enqueue orch pid Operation_kind.Ci in
+          let orch = Orchestrator.set_ci_checks orch pid [] in
+          let orch = make_busy orch patches gameplan pid Operation_kind.Ci in
+          let before =
+            (Orchestrator.agent orch pid).Patch_agent.ci_failure_count
+          in
+          let orch =
+            Orchestrator.apply_respond_outcome ?ci_advisory orch pid
+              Operation_kind.Ci outcome
+          in
+          let a = Orchestrator.agent orch pid in
+          assert (not a.Patch_agent.busy);
+          assert (a.Patch_agent.ci_failure_count = before);
+          assert (
+            not
+              (List.mem a.Patch_agent.queue Operation_kind.Ci
+                 ~equal:Operation_kind.equal));
+          assert (
+            List.equal Ci_check.equal a.Patch_agent.pending_ci_checks [ check ])))
 
 (* ========== AO-8: Respond_ok + Pr_body sets pr_body_delivered ========== *)
 

@@ -1563,8 +1563,8 @@ let () =
                  (session_no_commits_is_ok ~agent:a ~delivery_mode:Start
                     ~kind:(Some Operation_kind.Ci)))
            &&
-           let failed = complete a in
-           List.equal Ci_check.equal failed.pending_ci_checks [ check ]
+           let completed = complete a in
+           List.equal Ci_check.equal completed.pending_ci_checks [ check ]
            &&
            let accepted =
              record_delivered_ci_run_ids ~checks:[ check ] a [ 101 ]
@@ -1623,4 +1623,26 @@ let () =
            let a = set_ci_checks a [] |> fun a -> respond a Operation_kind.Ci in
            ci_is_advisory a
            && List.equal Ci_check.equal (ci_feedback_checks a) [ second ]
+         with _ -> false))
+
+let () =
+  QCheck2.Test.check_exn
+    (QCheck2.Test.make
+       ~name:"new CI failure resets budget before capturing queued evidence"
+       ~count:100
+       QCheck2.Gen.(int_range 1 10)
+       (fun attempts ->
+         try
+           let old = failing_check 101 and fresh = failing_check 202 in
+           let a = with_pr (Patch_id.of_string "p") (Branch.of_string "b") in
+           let a = record_delivered_ci_run_ids a [ 101 ] in
+           let a =
+             List.fold (List.init attempts ~f:Fn.id) ~init:a ~f:(fun a _ ->
+                 increment_ci_failure_count a)
+           in
+           let a = enqueue a Operation_kind.Ci in
+           let a = set_ci_checks a [ old; fresh ] in
+           a.ci_failure_count = 0
+           && List.equal Ci_check.equal (deliverable_ci_checks a) [ fresh ]
+           && List.equal Ci_check.equal a.pending_ci_checks [ fresh ]
          with _ -> false))
