@@ -30,11 +30,13 @@ let () =
             Prompt.render_start_delivery ~project_name:"" ~has_existing_changes
               (Onton_core.Patch_decision.Start_with_human { messages })
           in
-          let expected =
-            Prompt.render_human_message_prompt ~project_name:"" messages
+          let body =
+            match messages with
+            | [ message ] -> message
+            | _ -> "1. " ^ question ^ "\n2. Which branch are you on?"
           in
-          if not (String.equal prompt expected) then
-            failwith "human-guided start must deliver only human guidance");
+          if not (String.equal prompt ("# Patch guidance\n\n" ^ body)) then
+            failwith "guided start must deliver only the queued messages");
       let initial =
         Prompt.render_start_delivery ~project_name:"" ~has_existing_changes
           Onton_core.Patch_decision.Start_initial
@@ -59,6 +61,19 @@ let assert_not_contains label haystack ~substring =
     Stdlib.print_endline ("FAIL: " ^ label);
     Stdlib.print_endline ("  unexpected substring: " ^ substring);
     Stdlib.exit 1)
+
+let () =
+  let prompt =
+    Prompt.render_patch_guidance ~project_name:""
+      ~scheduler_repair:Onton_core.Scheduler_recovery.Forge_revision
+      [ "Please preserve the existing commits." ]
+  in
+  assert_contains "repair has a scheduler heading" prompt
+    ~substring:"# Onton scheduler repair\n\nRepair the scheduler blockage:";
+  assert_contains "queued guidance has its own heading" prompt
+    ~substring:"# Patch guidance\n\nPlease preserve the existing commits.";
+  assert_not_contains "repair prompt never implies a live operator" prompt
+    ~substring:"from Human"
 
 let () =
   let prompt =

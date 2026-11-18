@@ -283,14 +283,19 @@ val render_uncommitted_changes_prompt :
   unit ->
   string
 
-val render_human_message_prompt : project_name:string -> string list -> string
+val render_patch_guidance :
+  project_name:string ->
+  ?scheduler_repair:Scheduler_recovery.kind ->
+  string list ->
+  string
+(** Render guidance from the shared inbox and any scheduler-owned repair. *)
 
 val render_start_delivery :
   project_name:string ->
   has_existing_changes:bool ->
   Patch_decision.start_delivery ->
   string
-(** Human-guided starts deliver only the human messages, without implicit
+(** Starts with queued guidance deliver only that guidance, without implicit
     implementation or worktree-cleanup instructions. *)
 
 val render_base_branch_changed : old_base:string -> new_base:string -> string

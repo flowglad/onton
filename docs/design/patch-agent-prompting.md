@@ -276,18 +276,12 @@ Gaps:
   Add: "If after three resolution attempts the rebase still fails,
   write the unresolved conflicts to `<artifact_path>` and stop."
 
-### `render_human_message_prompt`
+### `render_patch_guidance`
 
-Strong points:
-- Pass-through is the right design — the orchestrator does not try
-  to interpret the human message, just delivers it numbered.
-- Distinct singular/plural framing is a small but real quality
-  improvement.
-
-Gaps:
-- This is the one prompt where a human *is* in the loop, indirectly.
-  Per memory `feedback_human_message_no_commit_suffix.md`, do not
-  append commit-and-push instructions here.
+Queued guidance can include operator messages and automated WONTDO follow-ups.
+The shared heading leaves the sender unspecified. Onton identifies itself in
+automated follow-ups and gives scheduler repairs a dedicated heading. Queued
+messages are delivered verbatim and numbered when there is more than one.
 
 ### `render_base_branch_changed`
 

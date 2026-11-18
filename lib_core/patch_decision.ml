@@ -193,7 +193,10 @@ type base_change = { old_base : string; new_base : string }
 
 type delivery_payload =
   | Uncommitted_changes_payload
-  | Human_payload of { messages : string list }
+  | Human_payload of {
+      messages : string list;
+      scheduler_repair : Scheduler_recovery.kind option;
+    }
   | Ci_payload of { failed_checks : Ci_check.t list }
   | Review_payload of { comments : Comment.t list }
   | Findings_payload of { findings : Review_service.finding list }
@@ -296,12 +299,12 @@ let respond_delivery ~(agent : Patch_agent.t) ~(kind : Operation_kind.t)
               Option.first_some agent.scheduler_repair
                 (Scheduler_recovery.pending source.scheduler_recovery)
             in
-            let repair =
-              Option.to_list
-                (Option.map ticket ~f:(fun ticket ->
-                     Scheduler_recovery.prompt ticket.kind))
-            in
-            Human_payload { messages = repair @ List.rev source.human_messages }
+            Human_payload
+              {
+                messages = List.rev source.human_messages;
+                scheduler_repair =
+                  Option.map ticket ~f:(fun ticket -> ticket.kind);
+              }
         | Operation_kind.Ci -> Ci_payload { failed_checks = ci_deliverable }
         | Operation_kind.Review_comments ->
             Review_payload { comments = prefetched_comments }

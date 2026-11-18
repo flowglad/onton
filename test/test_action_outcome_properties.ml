@@ -486,7 +486,7 @@ let () =
           with
           | Patch_decision.Deliver { payload; _ } -> (
               match payload with
-              | Patch_decision.Human_payload { messages } ->
+              | Patch_decision.Human_payload { messages; _ } ->
                   List.equal String.equal messages [ second_msg ]
                   && (not (List.mem messages first_msg ~equal:String.equal))
                   && List.mem first_pre.Patch_agent.human_messages first_msg

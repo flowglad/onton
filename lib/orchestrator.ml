@@ -876,7 +876,7 @@ let ensure_reconciliation_message t patch_id =
       | None -> t)
   | Some _ | None -> t
 
-let send_human_message t patch_id message =
+let enqueue_patch_guidance t patch_id message =
   let t = update_agent t patch_id ~f:Patch_agent.reset_intervention_state in
   let t = refresh_base_branch t patch_id in
   let t =
@@ -885,6 +885,8 @@ let send_human_message t patch_id message =
   in
   enqueue t patch_id Operation_kind.Human |> fun t ->
   ensure_reconciliation_message t patch_id
+
+let send_human_message = enqueue_patch_guidance
 
 let set_pr_number t patch_id pr_number =
   update_agent t patch_id ~f:(fun a -> Patch_agent.set_pr_number a pr_number)
@@ -1418,9 +1420,9 @@ let release_wontdo_descendants_after_publication t patch_id =
         then t
         else
           let message =
-            "The integration branch has advanced after your WONTDO. Revisit \
-             the blocker and implement the patch if it is now safe. If the \
-             blocker remains, explain it in WONTDO.md."
+            "Onton detected that the integration branch advanced after your \
+             WONTDO. Revisit the blocker and implement the patch if it is now \
+             safe. If the blocker remains, explain it in WONTDO.md."
           in
           if
             Patch_agent.is_pr_present leaf
@@ -1438,7 +1440,7 @@ let release_wontdo_descendants_after_publication t patch_id =
                   Patch_agent.set_wontdo_integration_head a root_head)
             in
             enqueue t leaf_id Operation_kind.Rebase
-          else send_human_message t leaf_id message)
+          else enqueue_patch_guidance t leaf_id message)
 
 let apply_session_result t patch_id result =
   match result with
@@ -1492,9 +1494,9 @@ let apply_session_result t patch_id result =
             in
             if Option.is_some (agent t root_id).Patch_agent.wontdo_reason then t
             else
-              send_human_message t root_id
+              enqueue_patch_guidance t root_id
                 (Printf.sprintf
-                   "Patch %s raised WONTDO:\n\n\
+                   "Onton received a WONTDO report from Patch %s:\n\n\
                     %s\n\n\
                     Assess whether an integration dependency blocks safe \
                     implementation. If so, cover the gap on the integration \

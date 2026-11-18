@@ -764,7 +764,10 @@ let () =
   check "leaf WONTDO reaches integration root"
     (List.exists (Orchestrator.agent blocked (id 1)).Patch_agent.human_messages
        ~f:(fun message ->
-         String.is_substring message ~substring:"Needs a shared integration API"
+         String.is_prefix message
+           ~prefix:"Onton received a WONTDO report from Patch 2:"
+         && String.is_substring message
+              ~substring:"Needs a shared integration API"
          && String.is_substring message ~substring:"raise WONTDO"));
   let refused_root =
     Orchestrator.apply_session_result blocked (id 1)

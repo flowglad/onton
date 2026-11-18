@@ -144,7 +144,10 @@ type base_change = { old_base : string; new_base : string }
 
 type delivery_payload =
   | Uncommitted_changes_payload
-  | Human_payload of { messages : string list }
+  | Human_payload of {
+      messages : string list;
+      scheduler_repair : Scheduler_recovery.kind option;
+    }
   | Ci_payload of { failed_checks : Ci_check.t list }
   | Review_payload of { comments : Comment.t list }
   | Findings_payload of { findings : Review_service.finding list }
@@ -177,7 +180,8 @@ val respond_delivery :
 
     When [pre_fire_agent] is [Some pfa], human messages are read from [pfa] (the
     snapshot before fire moved messages to inflight); when [None], falls back to
-    [agent]. Review comments come from [prefetched_comments] (fetched from
+    [agent]. Scheduler repair stays separate from queued guidance in the
+    payload. Review comments come from [prefetched_comments] (fetched from
     GitHub before the decision). CI checks are read from [agent] — the caller
     re-polls GitHub before delivery and writes the fresh list into
     [agent.ci_checks] via [Orchestrator.set_ci_checks]. Queued failure evidence

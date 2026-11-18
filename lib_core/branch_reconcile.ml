@@ -3933,9 +3933,9 @@ let recovery_prompt ?resume_session ~context ~guidance (turn : repair_turn) =
   let next_turn =
     (if List.is_empty guidance then ""
      else
-       "\nPending human guidance (retained for normal task delivery):\n"
+       "\nPending patch guidance (retained for normal task delivery):\n"
        ^ String.concat ~sep:"\n\n" (List.rev guidance))
-    ^ "\nOwned recovery instructions:\n" ^ turn.prompt
+    ^ "\nOnton branch recovery instructions:\n" ^ turn.prompt
   in
   Session_prompt.render ~resume_session
     (Session_prompt.create ~context ~turn:next_turn)
