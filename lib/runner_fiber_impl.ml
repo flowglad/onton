@@ -2343,13 +2343,18 @@ module Make (Forge : Forge.S) (W : Worktree.S) (Env : Runner_env.S) = struct
                                           (pluralize
                                              (Base.List.length findings)
                                              "finding")
-                                    | Patch_decision.Human_payload { messages }
-                                      ->
-                                        Printf.sprintf "Delivering %s (%s)"
-                                          (Operation_kind.to_label kind)
+                                    | Patch_decision.Human_payload
+                                        { messages; scheduler_repair } ->
+                                        let task =
+                                          if
+                                            Base.Option.is_some scheduler_repair
+                                          then "Onton scheduler repair"
+                                          else "patch guidance"
+                                        in
+                                        Printf.sprintf "Delivering %s (%s)" task
                                           (pluralize
                                              (Base.List.length messages)
-                                             "message")
+                                             "guidance message")
                                     | Patch_decision.Ci_payload _
                                     | Patch_decision.Pr_body_payload
                                     | Patch_decision.Merge_conflict_payload ->
@@ -2581,9 +2586,10 @@ module Make (Forge : Forge.S) (W : Worktree.S) (Env : Runner_env.S) = struct
                                               ?pr_number ?current_head_sha
                                               ~artifact_dir findings
                                       | Patch_decision.Human_payload
-                                          { messages } ->
-                                          Prompt.render_human_message_prompt
-                                            ~project_name messages
+                                          { messages; scheduler_repair } ->
+                                          Prompt.render_patch_guidance
+                                            ~project_name ?scheduler_repair
+                                            messages
                                           |> common_prompt
                                       | Patch_decision.Pr_body_payload ->
                                           let pr, patch =

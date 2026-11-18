@@ -11,7 +11,7 @@ type kind =
   | Pr_base
   | Pr_draft
   | Merge_attempt
-[@@deriving eq, compare, sexp_of, yojson]
+[@@deriving show, eq, compare, sexp_of, yojson]
 
 type scope = {
   head : string option;

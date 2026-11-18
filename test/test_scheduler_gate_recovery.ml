@@ -71,8 +71,16 @@ let claim t now =
        ~pre_fire_agent:(Some before) ~prefetched_comments:[]
        ~prefetched_findings:[] ~main_branch:"main"
    with
-  | Deliver { payload = Human_payload { messages }; _ } ->
-      assert (not (List.is_empty messages))
+  | Deliver { payload = Human_payload { messages; scheduler_repair }; _ } ->
+      let ticket = Option.value_exn agent.scheduler_repair in
+      assert (List.equal String.equal messages (List.rev before.human_messages));
+      assert (Option.equal R.equal_kind scheduler_repair (Some ticket.kind));
+      let prompt =
+        Prompt.render_patch_guidance ~project_name:gp.project_name
+          ?scheduler_repair messages
+      in
+      assert (String.is_prefix prompt ~prefix:"# Onton scheduler repair\n\n");
+      assert (String.is_substring prompt ~substring:(R.label ticket.kind))
   | Deliver
       {
         payload =

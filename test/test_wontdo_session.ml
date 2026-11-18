@@ -359,8 +359,8 @@ let run_case ?(adopted = false) ?(cancel = false) ?(push_failure = false)
           | Start_with_human { messages } ->
               assert (List.equal String.equal messages [ "Original guidance" ]);
               prompt ^ "\n\n"
-              ^ Prompt.render_human_message_prompt
-                  ~project_name:gameplan.project_name messages
+              ^ Prompt.render_patch_guidance ~project_name:gameplan.project_name
+                  messages
           | Start_initial -> failwith "Expected queued human guidance at start"
         else prompt
       in
@@ -883,8 +883,8 @@ let () =
                 ]
                 ~f:(fun messages ->
                   let prompt =
-                    Prompt.render_human_message_prompt
-                      ~project_name:"Wontdo test" messages
+                    Prompt.render_patch_guidance ~project_name:"Wontdo test"
+                      messages
                   in
                   run_case env ~branch_role ?resume_session ~prompt
                     ~delivery_mode:Onton_core.Patch_decision.Respond

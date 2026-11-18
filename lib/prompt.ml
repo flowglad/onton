@@ -1677,29 +1677,39 @@ let render_uncommitted_changes_prompt ~(project_name : string) ?agents_md
   ^ render_turn_layer_uncommitted_changes ~project_name ?pr_number ~git_status
       ()
 
-let render_human_message_prompt ~(project_name : string)
+let render_patch_guidance ~(project_name : string) ?scheduler_repair
     (messages : string list) =
-  match messages with
-  | [] -> "No messages."
-  | _ ->
-      let formatted_flat = String.concat ~sep:"\n" messages in
-      let formatted_numbered =
-        List.mapi messages ~f:(fun i msg -> Printf.sprintf "%d. %s" (i + 1) msg)
-        |> String.concat ~sep:"\n"
+  let render_messages () =
+    let formatted_flat = String.concat ~sep:"\n" messages in
+    let formatted_numbered =
+      List.mapi messages ~f:(fun i msg -> Printf.sprintf "%d. %s" (i + 1) msg)
+      |> String.concat ~sep:"\n"
+    in
+    let vars =
+      [
+        ("project_name", project_name);
+        ("messages", formatted_flat);
+        ("messages_numbered", formatted_numbered);
+        ("count", Int.to_string (List.length messages));
+      ]
+    in
+    (* Keep the existing project override name for the shared guidance inbox. *)
+    render_with_override ~project_name ~name:"human_message" ~vars
+      ~default:(fun () ->
+        "# Patch guidance\n\n"
+        ^
+        if Int.equal (List.length messages) 1 then formatted_flat
+        else formatted_numbered)
+  in
+  match (scheduler_repair, messages) with
+  | None, [] -> "No messages."
+  | None, _ -> render_messages ()
+  | Some kind, _ ->
+      let repair =
+        "# Onton scheduler repair\n\n" ^ Scheduler_recovery.prompt kind
       in
-      let vars =
-        [
-          ("project_name", project_name);
-          ("messages", formatted_flat);
-          ("messages_numbered", formatted_numbered);
-          ("count", Int.to_string (List.length messages));
-        ]
-      in
-      render_with_override ~project_name ~name:"human_message" ~vars
-        ~default:(fun () ->
-          if Int.equal (List.length messages) 1 then
-            Printf.sprintf "# Message from Human\n\n%s" formatted_flat
-          else Printf.sprintf "# Messages from Human\n\n%s" formatted_numbered)
+      if List.is_empty messages then repair
+      else repair ^ "\n\n" ^ render_messages ()
 
 let render_start_delivery ~project_name ~has_existing_changes = function
   | Patch_decision.Start_initial ->
@@ -1707,7 +1717,7 @@ let render_start_delivery ~project_name ~has_existing_changes = function
   | Patch_decision.Start_with_human { messages } ->
       (* Start is a scheduler delivery mode, not permission to implement.
          Human guidance may only ask a question, including after WONTDO. *)
-      render_human_message_prompt ~project_name messages
+      render_patch_guidance ~project_name messages
 
 let render_base_branch_changed ~old_base ~new_base =
   Printf.sprintf
@@ -2801,7 +2811,7 @@ let%test
 
 let%test "human and pr_body prompts do not include the gameplan layer" =
   let human_prompt =
-    render_human_message_prompt ~project_name:"onton" [ "Please rebase." ]
+    render_patch_guidance ~project_name:"onton" [ "Please rebase." ]
   in
   let pr_body_prompt =
     render_pr_body_prompt ~response_transport:Session_prompt.File_artifacts

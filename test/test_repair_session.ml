@@ -169,7 +169,12 @@ let[@warning "-4"] run env root ~existing mode =
               = Option.is_none resume_session);
             check "repair instructions are always delivered"
               (Base.String.is_substring prompt
-                 ~substring:"Owned recovery instructions:");
+                 ~substring:"Onton branch recovery instructions:");
+            check "queued guidance has a source-neutral heading"
+              (Base.String.is_substring prompt
+                 ~substring:
+                   "Pending patch guidance (retained for normal task delivery):\n\
+                    human guidance");
             (* Even a protocol error after turn acceptance must retain the
                conversation rather than replaying work in a fresh session. *)
             if !calls = 4 then on_event Types.Stream_event.Turn_started;

@@ -649,7 +649,7 @@ let () =
          ~pre_fire_agent:(Some pre_fire) ~prefetched_comments:[]
          ~prefetched_findings:[] ~main_branch
      with
-    | Deliver { payload = Human_payload { messages }; _ } ->
+    | Deliver { payload = Human_payload { messages; _ }; _ } ->
         assert (List.equal String.equal messages [ "fix this" ])
     | Deliver
         {
@@ -683,7 +683,7 @@ let () =
          ~pre_fire_agent:(Some pre_fire) ~prefetched_comments:[]
          ~prefetched_findings:[] ~main_branch
      with
-    | Deliver { payload = Human_payload { messages }; _ } ->
+    | Deliver { payload = Human_payload { messages; _ }; _ } ->
         (* Messages come from pre_fire.human_messages (reversed) *)
         assert (Int.equal (List.length messages) 2)
     | Deliver
@@ -1412,7 +1412,7 @@ let () =
              ~pre_fire_agent:(Some pre_fire) ~prefetched_comments:[]
              ~prefetched_findings:[] ~main_branch:"main"
          with
-         | Deliver { payload = Human_payload { messages }; _ } ->
+         | Deliver { payload = Human_payload { messages; _ }; _ } ->
              Int.equal (List.length messages) (List.length msgs)
          | Deliver _ | Skip_empty | Respond_stale -> false));
   QCheck2.Test.check_exn
