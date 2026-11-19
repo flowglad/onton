@@ -331,11 +331,12 @@ let observation io ~destination ~branch ~intent ~policy ~boundaries ~target
     },
     checkout )
 
+let recovery_ref ~prefix token label =
+  Printf.sprintf "%s/%d/%d/%s" prefix token.Branch_reconcile.operation
+    token.command label
+
 let pin io ~prefix token label sha =
-  let ref_name =
-    Printf.sprintf "%s/%d/%d/%s" prefix token.Branch_reconcile.operation
-      token.command label
-  in
+  let ref_name = recovery_ref ~prefix token label in
   let sha = Branch_reconcile.Commit.to_string sha in
   let code, _, _ = io.git [ "update-ref"; ref_name; sha; "" ] in
   if
@@ -498,6 +499,10 @@ let execute ~io ~prefix ~branch ~(operation : Branch_reconcile.operation)
        with
       | Ok () -> ()
       | Error reason -> raise (Unsupported_destination reason));
+      let prefix =
+        Option.value_map operation.recovery_id ~default:prefix ~f:(fun id ->
+            prefix ^ "/run-" ^ Branch_reconcile.Recovery_id.to_string id)
+      in
       ignore (checked io [ "check-ref-format"; prefix ^ "/probe" ] : string);
       let pin_captured () =
         List.iter
@@ -597,7 +602,7 @@ let execute ~io ~prefix ~branch ~(operation : Branch_reconcile.operation)
       | Branch_reconcile.Inspect
         when match operation.candidate_origin with
              | Branch_reconcile.Capture_agent_repair _ -> true
-             | Deterministic | Accepted_agent_repair _ -> false ->
+             | Deterministic | Accepted_agent_repair _ -> false -> (
           let turn =
             match operation.candidate_origin with
             | Branch_reconcile.Capture_agent_repair turn -> turn
@@ -614,25 +619,31 @@ let execute ~io ~prefix ~branch ~(operation : Branch_reconcile.operation)
           then
             Branch_reconcile.Recovery_required "repair_capture_checkout_changed"
           else
-            let ref_name =
-              Printf.sprintf "%s/%d/%d/accepted-agent-repair" prefix
-                turn.operation turn.command
-            in
+            let label = "accepted-agent-repair" in
+            let ref_name = recovery_ref ~prefix turn label in
             let code, _, err =
               io.git [ "show-ref"; "--verify"; "--quiet"; ref_name ]
             in
-            let head =
-              match code with
-              | 0 -> resolve io ref_name
-              | 1 ->
-                  let head = resolve io "HEAD" in
-                  pin io ~prefix turn "accepted-agent-repair" head;
-                  head
-              | _ ->
-                  raise
-                    (Probe_failed ("repair capture ref probe failed: " ^ err))
-            in
-            Branch_reconcile.Integrated head
+            match code with
+            | 0 ->
+                let captured = resolve io ref_name in
+                (* Legacy numeric refs can belong to an earlier operation. *)
+                if
+                  Option.is_none operation.recovery_id
+                  && not
+                       (Branch_reconcile.Commit.equal captured
+                          (resolve io "HEAD"))
+                then
+                  Branch_reconcile.Recovery_required
+                    "legacy_repair_capture_mismatch"
+                else Branch_reconcile.Integrated captured
+            | 1 ->
+                let head = resolve io "HEAD" in
+                pin io ~prefix turn label head;
+                Branch_reconcile.Integrated head
+            | _ ->
+                raise (Probe_failed ("repair capture ref probe failed: " ^ err))
+          )
       | Branch_reconcile.Inspect
         when Option.exists operation.candidate
                ~f:(Branch_reconcile.agent_candidate operation) ->

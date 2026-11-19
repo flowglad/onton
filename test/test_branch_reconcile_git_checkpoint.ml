@@ -6,6 +6,74 @@ open Onton_core
 open Onton_test_support.Branch_reconcile_git_fixture
 
 let () =
+  timed ~name:"reused-operation-identity" (fun () ->
+      Eio_main.run @@ fun env ->
+      Git.with_temp_repo @@ fun remote ->
+      let base = commit remote "base" "base\n" "base" in
+      Git.with_temp_repo @@ fun dir ->
+      prepare remote dir;
+      let io =
+        E.make_io
+          ~process_mgr:(Eio.Stdenv.process_mgr env)
+          ~clock:(Eio.Stdenv.clock env) ~path:dir
+      in
+      let unrelated = commit dir "old" "old\n" "older operation" in
+      let legacy_ref = prefix ^ "/1/2/source" in
+      Git.run_git ~cwd:dir [ "update-ref"; legacy_ref; unrelated ];
+      Git.run_git ~cwd:dir [ "reset"; "--hard"; base ];
+      let first = commit dir "first" "first\n" "first publication" in
+      let publish revision =
+        B.Request { intent with purpose = Publish_revision (sha revision) }
+      in
+      let checkpoint = Filename.temp_file "reused-operation" ".json" in
+      Fun.protect
+        ~finally:(fun () -> Sys.remove checkpoint)
+        (fun () ->
+          check "publication succeeds with retained legacy refs"
+            (run (make_runtime ()) (persist checkpoint) io (publish first)
+            = R.Idle);
+          let second = commit dir "second" "second\n" "second publication" in
+          let stop_before_push ~operation command =
+            match command.B.kind with
+            | B.Publish _ -> raise Simulated_stop
+            | B.Observe | B.Pin _ | B.Integrate _ | B.Commit_merge _
+            | B.Plan_remote_replay _ | B.Checkout_remote _ | B.Inspect
+            | B.Verify_recovery | B.Continue _ | B.Confirm _ ->
+                execute io ~operation command
+          in
+          let stopped =
+            try
+              ignore
+                (R.run ~runtime:(make_runtime ()) ~persist:(persist checkpoint)
+                   ~patch_id:id
+                   ~now:(fun () -> 100.)
+                   ~execute:stop_before_push (publish second));
+              false
+            with Simulated_stop -> true
+          in
+          check "fresh owner reaches publication with a reused operation number"
+            stopped;
+          let runtime =
+            Runtime.create ~gameplan
+              ~main_branch:(Types.Branch.of_string "main")
+              ~snapshot:(get (Persistence.load ~path:checkpoint))
+              ()
+          in
+          check "publication resumes from checkpoint"
+            (run runtime (persist checkpoint) io B.Recover = R.Idle);
+          check "remote has the new owner's revision"
+            (Git.git_capture ~cwd:remote [ "rev-parse"; "patch" ] = second);
+          check "legacy ref still points to the older operation"
+            (Git.git_capture ~cwd:dir [ "rev-parse"; legacy_ref ] = unrelated);
+          let retained =
+            Git.git_capture ~cwd:dir
+              [ "for-each-ref"; "--format=%(objectname)"; prefix ]
+            |> String.split_on_char '\n'
+          in
+          check "recovery refs retain both published revisions"
+            (List.mem first retained && List.mem second retained)))
+
+let () =
   timed ~name:"checkpoint-contracts" (fun () ->
       Eio_main.run @@ fun env ->
       let make_io dir =
@@ -67,8 +135,12 @@ let () =
             (Git.git_capture ~cwd:remote [ "rev-parse"; "patch" ] = advanced);
           check "settled recovery" (B.phase (state runtime) = Some B.Settled);
           check "pinned source retained"
-            (Git.git_capture ~cwd:dir [ "rev-parse"; prefix ^ "/1/2/source" ]
-            = work));
+            (Git.git_capture ~cwd:dir
+               [ "for-each-ref"; "--format=%(objectname) %(refname)"; prefix ]
+            |> String.split_on_char '\n'
+            |> List.exists (fun ref_line ->
+                String.starts_with ~prefix:(work ^ " ") ref_line
+                && String.ends_with ~suffix:"/source" ref_line)));
       (* The repair agent completes both conflicting replay steps before reporting success. *)
       Git.with_temp_repo @@ fun repair_dir ->
       prepare remote repair_dir;

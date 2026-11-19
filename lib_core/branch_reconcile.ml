@@ -21,6 +21,19 @@ module Remote_id = struct
     String.length value = 64 && Option.is_some (Commit.make value)
 end
 
+module Recovery_id = struct
+  type t = string [@@deriving eq, compare, sexp_of, yojson_of]
+
+  let of_entropy entropy = Stdlib.Digest.BLAKE256.(to_hex (bytes entropy))
+  let to_string t = t
+
+  let t_of_yojson = function
+    | `String id when Remote_id.valid id -> id
+    | json ->
+        Ppx_yojson_conv_lib.Yojson_conv.of_yojson_error
+          "invalid recovery ref identity" json
+end
+
 type remote_binding =
   | Unobserved_remote
   | Bound_remote of Remote_id.t
@@ -246,6 +259,7 @@ type candidate_origin =
 
 type operation = {
   id : int;
+  recovery_id : Recovery_id.t option; [@yojson.default None]
   intent : intent;
   local_action : local_action;
   preservation_policy : policy; [@yojson.default Rewrite]
@@ -368,6 +382,7 @@ type event =
     }
   | Materialized of materialization
   | Request of intent
+  | Bind_recovery_refs of { token : token; id : Recovery_id.t }
   | Result of { token : token; at : float; result : result }
   | Repair_invalidated of { token : token; reason : string }
   | Repair_dispatched of token
@@ -649,6 +664,7 @@ let required_revisions t =
   let operation
       {
         id = _;
+        recovery_id = _;
         intent = desired;
         local_action;
         preservation_policy = _;
@@ -1027,6 +1043,7 @@ let start t intent =
   let op =
     {
       id = t.next_operation;
+      recovery_id = None;
       intent;
       local_action =
         (match intent.purpose with
@@ -1539,6 +1556,7 @@ let integrate_remote t op preserved incoming =
     {
       op with
       id = t.next_operation;
+      recovery_id = None;
       local_action = Prepare_remote_replay request;
       source = Some incoming;
       target = Some preserved;
@@ -2305,7 +2323,7 @@ let[@warning "-4"] rec step_workspace t event =
   | _, None, _ -> (t, [])
 
 let step_ordinary_transition t = function
-  | Workspace_lost _ | Workspace_lost_without_operation _
+  | Bind_recovery_refs _ | Workspace_lost _ | Workspace_lost_without_operation _
   | Workspace_forge_observed _ | Renew_workspace_intent _ | Workspace_resumed ->
       (t, [])
   | Worktree_hook event ->
@@ -2860,6 +2878,13 @@ let step_ordinary_transition t = function
 
 let step_transition t event =
   match event with
+  | Bind_recovery_refs { token; id } -> (
+      match t.active with
+      | Some ({ recovery_id = None; pending = Some command; _ } as op)
+        when equal_token token command.token ->
+          ( { t with active = Some { op with recovery_id = Some id } },
+            [ Execute command ] )
+      | Some _ | None -> (t, []))
   | Workspace_lost _ | Workspace_lost_without_operation _
   | Workspace_forge_observed _ | Renew_workspace_intent _ | Workspace_resumed ->
       step_workspace t event

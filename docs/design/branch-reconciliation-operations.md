@@ -12,6 +12,9 @@ Stop the project before manually changing its checkout. Preserve its snapshot,
 managed repository and worktrees together, including untracked files, the index,
 sequencer directories and private `refs/onton/reconcile/` refs. Do not delete those
 refs to clear an error: they retain source, target and recovery revisions.
+Each new operation checkpoints its own recovery ref namespace before executing
+Git commands. A fresh checkpoint can use the same displayed operation numbers
+even when the repository still holds recovery refs from earlier operations.
 
 Inspect the operation's captured SHAs and the checkout's `git status`, index,
 sequencer and reflogs. Correct the reported problem without replacing the

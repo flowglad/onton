@@ -18,6 +18,13 @@ module Remote_id : sig
   *)
 end
 
+module Recovery_id : sig
+  type t [@@deriving eq, compare, sexp_of, yojson]
+
+  val of_entropy : bytes -> t
+  val to_string : t -> string
+end
+
 type materialization =
   | New_branch of Commit.t
       (** Creation evidence without a named base, including legacy receipts. *)
@@ -250,6 +257,7 @@ type candidate_origin =
 
 type operation = private {
   id : int;
+  recovery_id : Recovery_id.t option;
   intent : intent;
   local_action : local_action;
   preservation_policy : policy;
@@ -392,6 +400,7 @@ type event =
     }
   | Materialized of materialization
   | Request of intent
+  | Bind_recovery_refs of { token : token; id : Recovery_id.t }
   | Result of { token : token; at : float; result : result }
   | Repair_invalidated of { token : token; reason : string }
   | Repair_dispatched of token
