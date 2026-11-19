@@ -406,9 +406,9 @@ struct
           | Request _ | Result _ | Repair_invalidated _ | Repair_dispatched _
           | Repair_started _ | Repair_interrupted _ | Repair_failed _ | Tick _
           | Recover | Reconfirm_publication | Resume | Refresh _
-          | Workspace_lost _ | Workspace_lost_without_operation _
-          | Workspace_forge_observed _ | Renew_workspace_intent _
-          | Workspace_resumed ->
+          | Bind_recovery_refs _ | Workspace_lost _
+          | Workspace_lost_without_operation _ | Workspace_forge_observed _
+          | Renew_workspace_intent _ | Workspace_resumed ->
               None
         in
         Option.iter conversation_update ~f:(fun session_id ->

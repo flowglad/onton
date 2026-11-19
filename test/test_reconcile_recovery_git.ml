@@ -511,6 +511,12 @@ let trusted_migration_repair ?(lost_checkpoint = false) env ~held ~lost_capture
                      ~substring:"renamed SQL migration");
               check "resumed repair need not create a commit"
                 (Git.git_capture ~cwd:dir [ "rev-parse"; "HEAD" ] = candidate);
+              (if lost_checkpoint then
+                 let old_capture =
+                   Printf.sprintf "%s/%d/%d/accepted-agent-repair" prefix
+                     token.operation token.command
+                 in
+                 Git.run_git ~cwd:dir [ "update-ref"; old_capture; "HEAD^" ]);
               fail_capture := lost_capture;
               let outcome =
                 run runtime save checked_io

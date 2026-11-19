@@ -238,16 +238,30 @@ let () =
                       ~execute:(fun ~operation command ->
                         (match command.B.kind with
                         | B.Integrate _ ->
-                            let saved label =
+                            let saved =
                               Git.git_capture ~cwd:dir
-                                [ "rev-parse"; prefix ^ "/1/2/" ^ label ]
+                                [
+                                  "for-each-ref";
+                                  "--format=%(objectname) %(refname)";
+                                  prefix;
+                                ]
+                              |> String.split_on_char '\n'
+                            in
+                            let pinned label revision =
+                              List.exists
+                                (fun ref_line ->
+                                  String.starts_with ~prefix:(revision ^ " ")
+                                    ref_line
+                                  && String.ends_with ~suffix:("/" ^ label)
+                                       ref_line)
+                                saved
                             in
                             check "source pinned before integration"
-                              (saved "source" = source);
+                              (pinned "source" source);
                             check "target pinned before integration"
-                              (saved "target" = target);
+                              (pinned "target" target);
                             check "remote lease pinned before integration"
-                              (saved "remote" = base);
+                              (pinned "remote" base);
                             checked := true
                         | B.Commit_merge _ | B.Plan_remote_replay _
                         | B.Checkout_remote _ | B.Observe | B.Pin _ | B.Inspect
