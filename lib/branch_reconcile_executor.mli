@@ -3,6 +3,10 @@
 
 type io = { git : string list -> int * string * string }
 
+val new_recovery_id : unit -> (Branch_reconcile.Recovery_id.t, string) result
+(** Allocate an unpredictable recovery-ref identity from operating-system
+    entropy. The runner checkpoints the identity before any Git mutation. *)
+
 val remote_head_at :
   io ->
   destination:string ->

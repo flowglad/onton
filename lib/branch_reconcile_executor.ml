@@ -6,6 +6,17 @@ module G = Git_observation
 
 type io = { git : string list -> int * string * string }
 
+let new_recovery_id () =
+  try
+    let entropy = Bytes.create 16 in
+    Stdlib.In_channel.with_open_bin "/dev/urandom" (fun input ->
+        Stdlib.really_input input entropy 0 (Bytes.length entropy));
+    Ok (Branch_reconcile.Recovery_id.of_entropy entropy)
+  with
+  | Sys_error reason ->
+      Error ("Could not allocate recovery ref identity: " ^ reason)
+  | End_of_file -> Error "Could not read entropy for recovery ref identity"
+
 exception Probe_failed of string
 exception Mutation_failed of string
 exception Unsupported_destination of string

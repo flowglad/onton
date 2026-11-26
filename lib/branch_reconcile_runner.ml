@@ -15,17 +15,6 @@ let checkpoint ~runtime ~persist ~patch_id event =
       in
       ({ snap with Runtime.orchestrator }, commands))
 
-let new_recovery_id () =
-  try
-    let entropy = Bytes.create 16 in
-    In_channel.with_open_bin "/dev/urandom" (fun input ->
-        really_input input entropy 0 (Bytes.length entropy));
-    Ok (Branch_reconcile.Recovery_id.of_entropy entropy)
-  with
-  | Sys_error reason ->
-      Error ("Could not allocate recovery ref identity: " ^ reason)
-  | End_of_file -> Error "Could not read entropy for recovery ref identity"
-
 let run_unlocked ~runtime ~persist ~patch_id ~now ~execute event =
   let hold_reason () =
     Runtime.read runtime (fun snap ->
@@ -80,7 +69,7 @@ let run_unlocked ~runtime ~persist ~patch_id ~now ~execute event =
                   ref. Inspect it before changing the operation's namespace. *)
                | Capture_agent_repair _ -> false
                | Deterministic | Accepted_agent_repair _ -> true -> (
-            match new_recovery_id () with
+            match Branch_reconcile_executor.new_recovery_id () with
             | Error reason -> Checkpoint_failed reason
             | Ok id -> (
                 match
